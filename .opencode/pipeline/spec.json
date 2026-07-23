@@ -1,0 +1,236 @@
+{
+  "obiettivo": "Revisione completa cfmesh-autogui v2.0.0 — bug fix, refactoring, type safety, testing, build",
+  "analisi_dimensioni": {
+    "bug_error_handling": {
+      "punteggio": 5,
+      "lacune": [
+        "main_window.py:1161 — auto-recovery after meshing failure: max_cell *= 1.3 (OK, cells coarser) ma min_cell *= 0.7 (SBAGLIATO: rende le celle piu fini, peggiorando il problema). Dovrebbe essere min_cell *= 1.3 (allenta entrambi i vincoli)",
+        "openfoam_runner.py:44 — _extract_detail() usa `lines[-min(len(lines), max_lines)]` che restituisce UNA singola riga (stringa) invece di piu righe. min() restituisce int, e lines[int] e una riga singola, non un union di righe",
+        "main_window.py:761 — dopo feature detection, setValue su _max_cell/_min_cell senza chiamare validate_cell_sizes prima",
+        "main_window.py:1510 — subprocess.Popen(['paraview', ...]) senza shell=True su Windows, paraview potrebbe non essere in PATH",
+        "viewer_widget.py:399 — self._cad_meshes[0].scale potrebbe sollevare AttributeError se il trimesh non ha attributo 'scale'",
+        "gmsh_wrapper.py:55 — variabile module-level _GMSH_INITIALIZED non thread-safe: due chiamate concorrenti possono inizializzare gmsh due volte",
+        "case_setup.py:241-256 — modello di turbolenza kOmegaSST hardcoded: non tutti i casi CFD usano k-omega SST",
+        "main_window.py:684-690 — blocco di codice duplicato identico alle righe 651-658 (doppio run_id increment e controllo is_running)",
+        "openfoam_runner.py:532-542 — errore: variabile 'error' potrebbe essere undefined se analyze_error restituisce None (ma il tipo e ErrorInfo, non None — falso positivo?)",
+        "main_window.py:1160-1168 — dopo auto-recovery, i nuovi valori di cell size NON vengono passati a write_meshdict() prima del re-run"
+      ],
+      "raccomandazioni": [
+        "main_window.py:1161 — correggere min_cell *= 0.7 in min_cell *= 1.3 (allenta invece di stringere)",
+        "openfoam_runner.py:44 — sostituire `lines[-min(len(lines), max_lines)]` con `'\\n'.join(lines[-max_lines:])`",
+        "main_window.py:761 — aggiungere validate_cell_sizes() dopo feature detection prima di setValue",
+        "main_window.py:1510 — usare `subprocess.Popen(['paraview', str(self._case_dir)], shell=sys.platform == 'win32')`",
+        "viewer_widget.py:399 — avvolgere in try/except o usare getattr con default",
+        "gmsh_wrapper.py:55 — aggiungere threading.Lock() intorno a _GMSH_INITIALIZED",
+        "main_window.py:684-690 — eliminare il blocco duplicato (righe 684-690 identiche a 651-658)",
+        "main_window.py:1168 — chiamare write_meshdict() con i nuovi valori prima di _on_run_meshing()",
+        "case_setup.py:241 — rendere il modello di turbolenza parametrizzabile via argomento"
+      ]
+    },
+    "codice_morto_duplicato": {
+      "punteggio": 3,
+      "lacune": [
+        "openfoam_runner.py:572-670 — BatchRunner (classe completa con 98 righe) non utilizzata da nessuna parte, marcata 'kept for future'",
+        "stl_writer.py:118-122 — validate_stl_solids() definita ma mai chiamata in nessun file",
+        "viewer_widget.py:639-647 — set_clip_plane() definita ma mai chiamata (la logica clipping e unificata in _on_section_toggled)",
+        "core/__init__.py — file vuoto, nessuna esportazione di modulo",
+        "gui/__init__.py — file vuoto, nessuna esportazione di modulo",
+        "core/boundary_reader.py e viewer_widget.py:86-101 — DUPLICAZIONE: entrambi i file hanno un parser per il file boundary di OpenFOAM con pattern regex quasi identici",
+        "main_window.py:651-658 — codice duplicato identico alle righe 684-690 (controllo is_running prima di meshing)",
+        "gui/style.py:7-28 — marcato 'legacy' ma ancora usato da quality_panel.py, params_panel.py; crea dipendenza da modulo deprecato",
+        "openfoam_runner.py:24 — logger importato a livello modulo ma mai usato (tutti i metodi usano logging.getLogger(__name__) locale)"
+      ],
+      "raccomandazioni": [
+        "openfoam_runner.py:572-670 — eliminare BatchRunner o spostarlo in file separato se serve in futuro",
+        "stl_writer.py:118-122 — eliminare validate_stl_solids() o integrarla in export_multisolid_stl() se serve validazione",
+        "viewer_widget.py:639-647 — eliminare set_clip_plane() o agganciarla a un segnale UI",
+        "core/__init__.py e gui/__init__.py — aggiungere __all__ esplicito per esportare le API pubbliche",
+        "Unificare il parser boundary tra boundary_reader.py e viewer_widget.py in unico helper in core/",
+        "main_window.py:651-658 — eliminare le righe duplicate 684-690",
+        "gui/style.py — migrare i consumer (quality_panel, params_panel) a design_tokens direttamente, deprecare style.py"
+      ]
+    },
+    "type_safety": {
+      "punteggio": 4,
+      "lacune": [
+        "geometry.py:287-292 — _empty_analysis() restituisce dict senza TypedDict, chiamanti accedono a ['p5'], ['p10'] etc senza verifica statica",
+        "geometry.py:415 — suggest_cell_sizes() accetta meshes: list[trimesh.Trimesh] | None ma restituisce tuple[float, float] — OK, ma bbox_max_dim: float | None = None con controllo interno, meglio sovraccarico esplicito",
+        "main_window.py:75 — self._meshes: list (manca generic: list[trimesh.Trimesh])",
+        "params_panel.py:67 — self._suggest_meshes: list (manca generic)",
+        "openfoam_runner.py:356-358 — Callable[[ErrorInfo, int], bool] | None, Callable[[str], None] | None — OK ma on_finished ha signature diverse tra RetryRunner (3 arg) e QualityFixWorker (1 arg)",
+        "openfoam_runner.py:1200 — QualityFixWorker.run() signature cambia tra @Slot() e uso con lambda in main_window.py:1489 (kwargs passati come argomenti posizionali)",
+        "openfoam_runner.py:41 — _extract_detail() restituisce str ma la docstring dice 'multi-line' — l'implementazione restituisce una stringa singola",
+        "geometry.py:588-593 — height_scale() return type è float ma se shape.BoundingBox() fallisce solleva eccezione non dichiarata"
+      ],
+      "raccomandazioni": [
+        "Creare TypedDict per AnalysisResult in geometry.py (con p5, p10, p25, p50, p75, n_samples, bbox)",
+        "Aggiungere typevar o overload a suggest_cell_sizes per separare il caso meshes=None da meshes=presente",
+        "Tipizzare self._meshes come list[trimesh.Trimesh] in main_window.py:75 e params_panel.py:67",
+        "Allineare le signature delle callback in openfoam_runner.py: QualityFixWorker e RetryRunner devono avere on_finished con stessa signature o usare wrapper",
+        "Correggere _extract_detail() per restituire davvero multi-line (\\n.join(...))",
+        "Aggiungere raise annotation o docstring a height_scale()"
+      ]
+    },
+    "ui_ux": {
+      "punteggio": 6,
+      "lacune": [
+        "main_window.py:1160-1168 — dopo auto-recovery (Yes/No dialog), se l'utente dice Yes i parametri cambiano SENZA scrivere meshDict, causando discrepanza tra UI e filesystem",
+        "new_case_wizard.py:44-91 — Step1GeometryPage non ha feedback di progresso durante il caricamento di file STEP/STL grandi (blocco UI per diversi secondi)",
+        "quality_panel.py:53 — fixedHeight=80: metriche con testi lunghi (es. max_skewness=999.99) vengono troncate",
+        "quality_panel.py:55 — setSizePolicy Expanding/Fixed: non si adatta a finestre ridimensionate",
+        "main_window.py:110-118 — _show_shortcuts() mostra messaggio informativo fisso senza menu Edit/UndoRedo",
+        "viewer_widget.py:244 — bg_selector cambia background senza preview o conferma",
+        "params_panel.py:507 — template presets: se template file non esiste, logga warning silenzioso senza feedback utente",
+        "LogPanel non supporta ricerca/testo colorato/highlighting per livelli (ERROR=rosso, WARN=giallo, etc.)",
+        "params_panel.py:87 — template combobox ha opzioni hardcoded (Internal Flow, External Aero, CHT) ma template JSON files non verificati all'avvio",
+        "app.py:103-107 — splash screen non mostra progresso reale (e solo un pixmap statico)"
+      ],
+      "raccomandazioni": [
+        "main_window.py:1168 — prima di _on_run_meshing(), chiamare write_meshdict() con i nuovi valori aggiornati",
+        "new_case_wizard.py — aggiungere QProgressBar + QThread per caricamento asincrono della geometria",
+        "quality_panel.py:53 — rimuovere fixedHeight, usare sizePolicy Preferred + maxHeight dinamico",
+        "viewer_widget.py:244 — aggiungere segnale di preview o cambiamento immediato (gia fatto) + QSettings persistente",
+        "params_panel.py:507 — mostrare QMessageBox.warning se template JSON non trovato, non solo log",
+        "LogPanel — aggiungere highlight ANSI/semantico per tag (ERROR=red, WARN=orange, DONE=green)",
+        "params_panel.py — aggiungere QTimer all'avvio per verificare esistenza template files e disabilitare opzioni mancanti",
+        "app.py — agganciare _load_plugins() con progresso sullo splash"
+
+      ]
+    },
+    "performance": {
+      "punteggio": 5,
+      "lacune": [
+        "viewer_widget.py:118 — _MESH_CACHE dizionario globale senza limite di dimensione: ogni caricamento geometria si accumula, potenziale memory leak",
+        "geometry.py:230 — np.vstack([np.asarray(m.vertices) for m in meshes]) per ogni chiamata a analyze_local_thickness: la memoria raddoppia ogni volta",
+        "openfoam_runner.py:244-256 — stdout reader thread con polling 0.5s: CPU usage elevato quando subprocess non produce output",
+        "main_window.py:737-760 — FeatureDetector.analyze_step() chiamato on-run-meshing: gmsh genera mesh 2D completa ogni volta, costoso per geometrie grandi",
+        "stl_writer.py:112-114 — binary vs ASCII scelto su estimate_stl_size (approssimativo) invece che su soglia effettiva",
+        "main_window.py:1277-1328 — _make_fix_action() ricarica e ritassella l'intera geometria a ogni retry: per STEP con >100k facce e molto lento",
+        "main_window.py:751-756 — dopo feature detection, setValue su spinbox triggers valueChanged → _on_max_cell_changed → undo stack push + emissione segnale → ciclo di eventi non necessario"
+      ],
+      "raccomandazioni": [
+        "viewer_widget.py:118 — aggiungere LRU eviction (max 5 entries) o WeakValueDictionary a _MESH_CACHE",
+        "geometry.py:230 — calcolare bbox iterativamente senza vstack (gia fatto in compute_bbox_dim, riusare quel risultato)",
+        "openfoam_runner.py:244 — ridurre polling a 0.1s o usare wait() condizionale, misurare CPU idle",
+        "main_window.py:737 — spostare feature detection in QThread separato per non bloccare la UI",
+        "stl_writer.py:112 — usare soglia dimensionale reale: if stl_size_estimate > 5MB usa binary",
+        "main_window.py:1286-1292 — cache della tassellazione tra un retry e l'altro (la geometria non cambia tra tentativi)",
+        "main_window.py:756 — bloccare signals durante setValue dopo feature detection per evitare reazioni a catena"
+      ]
+    },
+    "manutenibilita": {
+      "punteggio": 5,
+      "lacune": [
+        "src/cfmesh_autogui/__init__.py:1 — __version__ = '0.1.0' in conflitto con design_tokens.py:300 APP_VERSION = '2.0.0'",
+        "main_window.py:1533 righe — viola SRP: gestisce menu, ribbon, workflow tree, meshing, GMSH, checkMesh, export, drag-drop, shortcuts, theme, settings",
+        "gui/style.py — esplicitamente marcato 'legacy' ma 3 file (quality_panel.py, params_panel.py, new_case_wizard.py) lo importano ancora",
+        "design_tokens.py:231-235 — SHADOW_XS/SM/MD/LG/XL sono stringhe CSS ma non vengono MAI usate nel QSS effettivo (solo in documentazione)",
+        "config.py:60 — import shlex dentro if extra_args: fare import a livello modulo per chiarezza",
+        "openfoam_runner.py:14-20 — try/except ImportError per PySide6: se manca, l'errore viene sollevato prima che l'utente possa vedere un messaggio significativo (meglio in app.py entry point)",
+        "core/mesh_converter.py — 336 righe per converter da GMSH a OpenFOAM: logica complessa senza docstring delle fasi",
+        "Dipendenza circolare potenziale: config.py → OFConfig usato da openfoam_runner.py → RetryRunner usato da main_window.py → importa config.py"
+      ],
+      "raccomandazioni": [
+        "__init__.py:1 — allineare __version__ con design_tokens.APP_VERSION (2.0.0)",
+        "main_window.py — decomporre in classi separate: MeshOrchestrator, RibbonManager, WorkflowTree, ThemeController, ExportManager",
+        "gui/style.py — eliminare o migrare tutti i consumer a design_tokens.py, poi rimuovere il file",
+        "design_tokens.py — eliminare SHADOW_* stringhe o integrarle in QSS effettivo",
+        "config.py:60 — spostare import shlex all'inizio del file",
+        "openfoam_runner.py:14-20 — spostare il try/except PySide6 in app.py, non nel modulo core",
+        "core/mesh_converter.py — aggiungere docstring Phase-based (Phase 1/2/3/4) per leggibilita"
+      ]
+    },
+    "testing": {
+      "punteggio": 6,
+      "lacune": [
+        "Nessun test per GUI components: params_panel.py, quality_panel.py, viewer_widget.py, about_dialog.py, new_case_wizard.py",
+        "Nessun test per WSL integration: MeshWorker.run(), CheckMeshWorker.run(), PolyDualWorker.run()",
+        "test_openfoam_runner.py:44 — hardcoded path 'C:/cfmesh_runner_test_case' che puo esistere o causare conflitti",
+        "test_analyze_error() testa solo 5 pattern su 8 ErrorType (manca test per CRASH, NON_MAPPABLE, BOUNDARY_NOT_FOUND)",
+        "Nessun test per pdf_report.py (MeshReportPDF.generate)",
+        "Nessun test per gmsh_wrapper.py (compute_sizing, generate_surface_stl, generate_volume_mesh)",
+        "test_design_system.py e test_design_review_fixes.py coprono solo il design system, non la logica applicativa",
+        "Nessun test per il wizard (test_wizard.py esiste ma non testa il flusso completo di NewCaseWizard)",
+        "tests usano sys.path.insert(0, ...) invece di pytest config in pyproject.toml"
+      ],
+      "raccomandazioni": [
+        "Aggiungere test per QualityPanel.show_report() con report fittizio",
+        "Aggiungere test per ParamsPanel._validate_params() con casi limite (max <= min)",
+        "Aggiungere test per analyze_error() coprendo TUTTI gli 8 ErrorType + edge cases",
+        "Aggiungere test per MeshReportPDF.generate() con metriche fittizie",
+        "test_openfoam_runner.py:44 — usare tempfile.TemporaryDirectory invece di path hardcoded",
+        "Aggiungere pyproject.toml [tool.pytest.ini_options] testpaths = ['tests'] per evitare sys.path.insert",
+        "Aggiungere test per gmsh_wrapper.compute_sizing() con mock di gmsh.initialize()"
+      ]
+    },
+    "build_deploy": {
+      "punteggio": 5,
+      "lacune": [
+        "CFMesh-AutoGUI.spec:7 — datas include ('src/cfmesh_autogui', 'cfmesh_autogui') che COPIA i sorgenti .py nell'EXE (dati duplicati inutili, aumenta dimensione bundle)",
+        "metagpt_impl_result.json:41 — EXE size 331 MB (molto grande per un'app desktop di mesh generation)",
+        "CFMesh-AutoGUI.spec:15 — optimize=0: nessuna ottimizzazione bytecode, appena piu lento all'avvio",
+        "CFMesh-AutoGUI.spec:32 — console=False ma disable_windowed_traceback=False: crash silenzioso senza feedback all'utente",
+        "CFMesh-AutoGUI.spec:29 — upx=True senza upx_exclude: alcuni DLL notoriamente causano falsi positivi antivirus",
+        "CFMesh-AutoGUI.spec:8 — datas include ('plugins', 'plugins') ma plugins/ potrebbe non esistere in tutte le build",
+        "pyproject.toml:29 — package find where=['src'] ma CFMesh-AutoGUI.spec usa path espliciti, potenziale mismatch",
+        "Nessun workflow CI/CD (GitHub Actions) per build/test automatici"
+      ],
+      "raccomandazioni": [
+        "CFMesh-AutoGUI.spec:8 — rimuovere ('src/cfmesh_autogui', 'cfmesh_autogui') dai datas (i .py vengono inclusi automaticamente come scripts)",
+        "Aggiungere exclude=['matplotlib', 'PIL', 'notebook', 'ipython'] per ridurre EXE size",
+        "CFMesh-AutoGUI.spec:15 — impostare optimize=2 per bytecode optimization",
+        "CFMesh-AutoGUI.spec:32 — impostare disable_windowed_traceback=True per crash visibili su Windows",
+        "CFMesh-AutoGUI.spec — aggiungere upx_exclude=['*msvcp*', '*vcruntime*'] per evitare falsi positivi",
+        "Aggiungere check di esistenza per plugins/ prima di includerlo nei datas",
+        "Aggiungere GitHub Actions workflow: pytest su push/PR, build EXE on tag"
+      ]
+    }
+  },
+  "priorita_assoluta": [
+    "P1: main_window.py:1161 — min_cell *= 0.7 bug causa peggioramento mesh dopo failure (correggere in *= 1.3)",
+    "P1: openfoam_runner.py:44 — _extract_detail() restituisce 1 riga invece di N righe (correggere con '\\n'.join)",
+    "P1: main_window.py:1168 — mancata scrittura meshDict dopo auto-recovery (mesh corre con parametri UI ma filesystem non aggiornato)",
+    "P1: main_window.py:684-690 — codice duplicato identico causa double run_id increment + doppio controllo is_running",
+    "P2: main_window.py:1286-1292 — ritassellazione completa della geometria a ogni retry senza cache",
+    "P2: gmsh_wrapper.py:55 — _GMSH_INITIALIZED non thread-safe",
+    "P2: __init__.py:1 — version mismatch (0.1.0 vs 2.0.0)",
+    "P2: Eliminare BatchRunner in openfoam_runner.py (codice morto, 98 righe)",
+    "P3: main_window.py — decomporre 1533 righe in classi separate",
+    "P3: Aggiungere test coverage per GUI components e analyze_error() tutti gli 8 ErrorType",
+    "P3: Ottimizzare EXE build (eliminare datas duplicati, optimize=2, disable_windowed_traceback=True)"
+  ],
+  "acceptance_criteria": [
+    "AC-1: analyze_error() restituisce detail multi-riga (\\n.join ultime N righe), non una stringa singola",
+    "AC-2: Auto-recovery dopo meshing failure allenta ENTRAMBI i vincoli (max_cell *= 1.3, min_cell *= 1.3) E riscrive meshDict prima del re-run",
+    "AC-3: main_window._on_run_meshing() non ha codice duplicato (singolo controllo is_running, singolo run_id++)",
+    "AC-4: _GMSH_INITIALIZED protetto da threading.Lock() in gmsh_wrapper.py",
+    "AC-5: BatchRunner eliminato da openfoam_runner.py; validate_stl_solids() e set_clip_plane() eliminati o integrati",
+    "AC-6: __version__ in __init__.py allineato a 2.0.0 (match design_tokens.APP_VERSION)",
+    "AC-7: self._meshes e self._suggest_meshes hanno tipo generico (list[trimesh.Trimesh])",
+    "AC-8: GUI tests aggiunti per QualityPanel.show_report(), ParamsPanel._validate_params(), analyze_error() 8/8 ErrorType",
+    "AC-9: CFMesh-AutoGUI.spec: optimize=2, datas senza sorgenti duplicati, disable_windowed_traceback=True",
+    "AC-10: EXE size ridotto da 331 MB a <250 MB con exclude appropriati"
+  ],
+  "file_coinvolti": [
+    "src/cfmesh_autogui/__init__.py",
+    "src/cfmesh_autogui/app.py",
+    "src/cfmesh_autogui/core/openfoam_runner.py",
+    "src/cfmesh_autogui/core/geometry.py",
+    "src/cfmesh_autogui/core/gmsh_wrapper.py",
+    "src/cfmesh_autogui/core/meshdict_gen.py",
+    "src/cfmesh_autogui/core/__init__.py",
+    "src/cfmesh_autogui/core/boundary_reader.py",
+    "src/cfmesh_autogui/core/stl_writer.py",
+    "src/cfmesh_autogui/gui/main_window.py",
+    "src/cfmesh_autogui/gui/params_panel.py",
+    "src/cfmesh_autogui/gui/quality_panel.py",
+    "src/cfmesh_autogui/gui/viewer_widget.py",
+    "src/cfmesh_autogui/gui/style.py",
+    "src/cfmesh_autogui/gui/design_tokens.py",
+    "src/cfmesh_autogui/gui/__init__.py",
+    "src/cfmesh_autogui/gui/pdf_report.py",
+    "src/cfmesh_autogui/gui/new_case_wizard.py",
+    "tests/test_openfoam_runner.py",
+    "CFMesh-AutoGUI.spec"
+  ]
+}

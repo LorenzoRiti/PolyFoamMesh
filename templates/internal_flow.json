@@ -1,0 +1,15 @@
+{
+    "name": "Internal Flow",
+    "description": "Pipe, duct, channel internal flow",
+    "defaults": {
+        "detail": "coarse",
+        "max_cell_ratio": 0.05,
+        "min_cell_ratio": 0.005,
+        "boundary_layers": {
+            "nLayers": 5,
+            "thicknessRatio": 0.002,
+            "expansionRatio": 1.3
+        },
+        "mesher_type": "gmsh_hybrid"
+    }
+}

@@ -1,0 +1,131 @@
+"""CFMesh-AutoGUI application entry point.
+
+Configures logging (before any module imports to capture init errors),
+shows a branded splash, applies the design system theme, and launches
+the main window.
+"""
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+import os as _os
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+_log_dir = _os.path.join(_os.environ.get("APPDATA", _os.path.expanduser("~")), "cfmesh-autogui", "logs")
+_os.makedirs(_log_dir, exist_ok=True)
+_file_handler = _RotatingFileHandler(_os.path.join(_log_dir, "app.log"), maxBytes=5*1024*1024, backupCount=3)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(_file_handler)
+
+import sys as _sys
+
+# Fix: add OCP DLL directory to PATH so cadquery/OCP native libraries load
+try:
+    import OCP as _ocp
+    _ocp_dir = _os.path.dirname(_ocp.__file__)
+    if _ocp_dir not in _os.environ.get("PATH", ""):
+        _os.environ["PATH"] = _ocp_dir + _os.pathsep + _os.environ.get("PATH", "")
+except Exception:
+    pass  # OCP not yet installed — will fail later with clear message
+
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import QApplication, QSplashScreen
+
+from cfmesh_autogui.gui.main_window import MainWindow
+from cfmesh_autogui.gui.theme import (
+    apply_theme, set_theme_mode, current_mode, current_request,
+)
+from cfmesh_autogui.gui.design_tokens import APP_NAME, APP_VERSION
+from cfmesh_autogui.gui.branding import (
+    make_splash_pixmap, apply_app_icon, make_app_icon,
+)
+
+
+def _init_i18n(app):
+    from pathlib import Path
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+    locale = QLocale(QLocale.Italian)
+    translator = QTranslator()
+    paths = [
+        Path(__file__).resolve().parent.parent / "locale" / "it" / "LC_MESSAGES",
+        Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)),
+    ]
+    for p in paths:
+        if translator.load(locale, "cfmesh_autogui", ".", str(p)):
+            app.installTranslator(translator)
+            break
+
+
+def _load_plugins(app):
+    from pathlib import Path
+    import importlib.util
+    import sys as _sys
+
+    # project root = app.py / src / cfmesh_autogui / .. = src/../.. = project root
+    project_root = Path(__file__).resolve().parent.parent.parent
+    plugins_dir = project_root / "plugins"
+    if not plugins_dir.is_dir():
+        return
+
+    logger = logging.getLogger(__name__)
+    _sys.path.insert(0, str(project_root))
+    from plugins.plugin_base import Plugin
+
+    for f in sorted(plugins_dir.glob("*.py")):
+        if f.name.startswith("_") or f.name == "plugin_base.py":
+            continue
+        mod_name = f"plugins.{f.stem}"
+        try:
+            spec = importlib.util.spec_from_file_location(mod_name, f)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            for attr_name in dir(mod):
+                cls = getattr(mod, attr_name)
+                if isinstance(cls, type) and issubclass(cls, Plugin) and cls is not Plugin:
+                    instance = cls()
+                    instance.on_install(app)
+                    logger.info("Plugin loaded: %s.%s", mod_name, cls.__name__)
+        except Exception as e:
+            logger.error("Failed to load plugin %s: %s", f.name, e)
+
+
+def main():
+    app = QApplication(_sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName("CFMesh-AutoGUI")
+    app.setOrganizationDomain("cfmesh-autogui.local")
+    _init_i18n(app)
+
+    apply_app_icon(app)
+
+    s = QSettings("cfmesh-autogui", "CFMesh-AutoGUI")
+    saved_mode = s.value("ui/theme_mode", "system")
+    set_theme_mode(saved_mode)
+
+    splash_pix = make_splash_pixmap(dark=current_mode() == "dark")
+    splash = QSplashScreen(splash_pix, Qt.WindowStaysOnTopHint)
+    splash.setWindowIcon(make_app_icon())
+    splash.show()
+    app.processEvents()
+
+    apply_theme(app)
+    logging.getLogger(__name__).info(
+        "Theme: requested=%s resolved=%s", current_request(), current_mode()
+    )
+
+    window = MainWindow()
+    window.show()
+    splash.finish(window)
+    _load_plugins(window)
+    _sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

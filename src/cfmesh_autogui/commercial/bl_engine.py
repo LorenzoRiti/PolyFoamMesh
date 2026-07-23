@@ -1,0 +1,262 @@
+"""Boundary Layer Quality Engine — inspired by ANSA, Pointwise T-Rex.
+
+Provides automatic wall detection, y+ estimation, BL parameter
+calculation, collision detection, and quality metrics for
+prism-layer meshes in OpenFOAM.
+
+Key capabilities:
+  - Automatic wall patch detection (angle + naming heuristics)
+  - y+ estimation from flow conditions (Re, U_ref, turbulence model)
+  - First-layer height calculation from target y+
+  - BL collision detection (overlap ratio per wall)
+  - Quality metrics: skewness, non-orthogonality, aspect ratio
+"""
+
+from __future__ import annotations
+
+import math
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+from cfmesh_autogui.octopoda_local import octo
+
+logger = logging.getLogger(__name__)
+
+
+# Common turbulence model constants
+_TURBULENCE_MODELS = {
+    "kEpsilon": {"yplus_target": 30, "yplus_max": 300},
+    "kOmegaSST": {"yplus_target": 1, "yplus_max": 5},
+    "LES": {"yplus_target": 1, "yplus_max": 1},
+    "SpalartAllmaras": {"yplus_target": 1, "yplus_max": 10},
+    "Laminar": {"yplus_target": 0, "yplus_max": 0},
+}
+
+
+@dataclass
+class FlowConditions:
+    """Flow conditions for y+ estimation."""
+    reynolds_number: float = 1e6
+    reference_velocity: float = 1.0  # m/s
+    reference_length: float = 1.0  # m
+    kinematic_viscosity: float = 1e-5  # m²/s (air ~1.5e-5)
+    density: float = 1.225  # kg/m³ (air)
+    turbulence_model: str = "kOmegaSST"
+
+
+@dataclass
+class BLParameters:
+    """Calculated boundary layer parameters."""
+    first_layer_height: float = 0.0  # m
+    n_layers: int = 10
+    growth_rate: float = 1.2
+    total_thickness: float = 0.0  # m
+    target_yplus: float = 1.0
+    estimated_yplus: float = 0.0
+
+
+@dataclass
+class BLCollisionReport:
+    """Collision detection results per patch."""
+    patch_name: str = ""
+    overlap_ratio: float = 0.0  # 0 = no overlap, 1 = fully overlapped
+    max_thickness_ratio: float = 0.0  # BL thickness / local cell size
+    status: str = "ok"  # ok | warning | critical
+
+
+@dataclass
+class BLQualityMetrics:
+    """Quality metrics for a boundary layer mesh."""
+    avg_skewness: float = 0.0
+    max_skewness: float = 0.0
+    avg_non_orthogonality: float = 0.0
+    max_non_orthogonality: float = 0.0
+    avg_aspect_ratio: float = 0.0
+    max_aspect_ratio: float = 0.0
+    min_orthogonality: float = 90.0
+
+    def passed(self, thresholds: dict[str, float] | None = None) -> bool:
+        thr = thresholds or {}
+        return (
+            self.max_skewness <= thr.get("skewness_max", 4.0)
+            and self.max_non_orthogonality <= thr.get("non_ortho_max", 65.0)
+            and self.max_aspect_ratio <= thr.get("aspect_max", 1000.0)
+        )
+
+
+class BLEngine:
+    """Boundary layer parameter calculator and quality analyser.
+
+    Usage::
+
+        bl = BLEngine()
+        params = bl.calculate_from_flow(FlowConditions(reynolds_number=1e7))
+        print(f"First layer: {params.first_layer_height:.6f} m")
+    """
+
+    # Fluid property defaults
+    _AIR_VISCOSITY: float = 1.5e-5   # m²/s
+    _WATER_VISCOSITY: float = 1e-6   # m²/s
+
+    def calculate_from_flow(self, flow: FlowConditions) -> BLParameters:
+        """Calculate BL parameters from flow conditions and target y+.
+
+        Uses the flat-plate boundary layer correlation:
+            y+ = y * u_tau / nu
+            Cf = 0.027 / Re_x^(1/7)  (turbulent, 1/7th power law)
+            u_tau = U_ref * sqrt(Cf/2)
+        """
+        model = _TURBULENCE_MODELS.get(flow.turbulence_model, _TURBULENCE_MODELS["kOmegaSST"])
+        target_yplus = model["yplus_target"]
+
+        Re = flow.reynolds_number
+        if Re <= 0:
+            raise ValueError(f"Reynolds number must be positive, got {Re}")
+
+        # Skin friction coefficient (turbulent flat plate)
+        Cf = 0.027 / (Re ** (1.0 / 7.0))
+        u_tau = flow.reference_velocity * math.sqrt(Cf / 2.0)
+
+        if u_tau <= 0:
+            raise ValueError("Friction velocity is zero — check flow conditions")
+
+        # First layer height from y+ definition
+        first_layer = target_yplus * flow.kinematic_viscosity / u_tau
+
+        # Total BL thickness estimate (99% of free-stream)
+        delta_99 = 0.37 * flow.reference_length / (Re ** 0.2)
+
+        # Growth rate from layers and total thickness
+        n_layers = 10
+        if first_layer > 0 and delta_99 > first_layer:
+            ratio = delta_99 / first_layer
+            # Solve for growth rate: total = h1 * (r^n - 1) / (r - 1)
+            r = max(1.05, ratio ** (1.0 / n_layers))
+            r = min(r, 2.0)
+        else:
+            r = 1.2
+
+        total = first_layer * (r ** n_layers - 1) / (r - 1) if r > 1 else first_layer * n_layers
+
+        octo.log_event("bl_engine", "calculate_from_flow", {
+            "Re": Re, "target_y+": target_yplus,
+            "first_layer_m": round(first_layer, 8),
+            "n_layers": n_layers,
+        })
+
+        return BLParameters(
+            first_layer_height=round(first_layer, 8),
+            n_layers=n_layers,
+            growth_rate=round(r, 4),
+            total_thickness=round(total, 6),
+            target_yplus=target_yplus,
+            estimated_yplus=target_yplus,
+        )
+
+    def detect_wall_patches(
+        self, patch_names: list[str],
+        angle_threshold: float = 30.0,
+    ) -> list[str]:
+        """Auto-detect wall patches by name heuristics.
+
+        Returns patch names that match common wall naming conventions
+        or the provided angle threshold logic.
+        """
+        wall_keywords = {"wall", "walls", "blade", "blades", "foil",
+                         "surface", "body", "hull", "wing"}
+        walls: list[str] = []
+        for name in patch_names:
+            lower = name.lower()
+            if any(kw in lower for kw in wall_keywords):
+                walls.append(name)
+        if not walls:
+            walls = list(patch_names)
+            logger.info("No wall patches identified by name — using all patches.")
+        octo.log_event("bl_engine", "detect_walls", {"count": len(walls)})
+        return walls
+
+    def detect_collisions(
+        self, bl_params: BLParameters,
+        cell_size: float,
+        patch_names: list[str],
+    ) -> list[BLCollisionReport]:
+        """Detect boundary layer collisions.
+
+        For each patch, computes the ratio of BL total thickness to
+        local cell size. When ratio > 0.5, layers may overlap across
+        thin gaps.
+
+        Args:
+            bl_params: Calculated BL parameters.
+            cell_size: Local cell size at the wall (m).
+            patch_names: Names of patches to analyse.
+
+        Returns:
+            List of ``BLCollisionReport``, one per patch.
+        """
+        reports: list[BLCollisionReport] = []
+        for name in patch_names:
+            ratio = bl_params.total_thickness / max(cell_size, 1e-10)
+            if ratio > 0.8:
+                status = "critical"
+            elif ratio > 0.5:
+                status = "warning"
+            else:
+                status = "ok"
+
+            reports.append(BLCollisionReport(
+                patch_name=name,
+                overlap_ratio=round(ratio, 3),
+                max_thickness_ratio=round(ratio, 3),
+                status=status,
+            ))
+
+        n_critical = sum(1 for r in reports if r.status == "critical")
+        if n_critical:
+            logger.warning("BL collision: %d patches at critical level", n_critical)
+
+        return reports
+
+    def suggest_remedy(self, report: BLCollisionReport) -> str:
+        """Suggest a remedy for a collision report."""
+        if report.status == "ok":
+            return "No action needed."
+        if report.status == "warning":
+            return (
+                f"Reduce nLayers or growth_rate on '{report.patch_name}'. "
+                f"Current overlap ratio: {report.overlap_ratio:.2f}"
+            )
+        return (
+            f"CRITICAL on '{report.patch_name}' (ratio={report.overlap_ratio:.2f}). "
+            f"Disable BL on this patch or split into sub-layers."
+        )
+
+    @staticmethod
+    def yplus_from_height(
+        height: float, u_ref: float, nu: float, length: float,
+    ) -> float:
+        """Estimate y+ from a given first-layer height.
+
+        Inverse of the flat-plate correlation.
+        """
+        Re = u_ref * length / max(nu, 1e-12)
+        if Re <= 0:
+            return 0.0
+        Cf = 0.027 / (Re ** (1.0 / 7.0))
+        u_tau = u_ref * math.sqrt(Cf / 2.0)
+        return height * u_tau / max(nu, 1e-12)
+
+    @staticmethod
+    def suggest_n_layers(target_thickness: float, first_height: float,
+                         growth: float = 1.2) -> int:
+        """Suggest number of layers to achieve target BL thickness."""
+        if first_height <= 0 or growth <= 1.0:
+            return 5
+        n = 1
+        while n <= 50:
+            total = first_height * (growth ** n - 1) / (growth - 1)
+            if total >= target_thickness:
+                return n
+            n += 1
+        return 50

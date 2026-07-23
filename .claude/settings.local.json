@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"/c/Users/Davide Valoroso/cfmesh-autogui\")",
+      "Bash(find \"/c/Users/Davide Valoroso/cfmesh-autogui/src\" -type f | head -100)"
+    ]
+  }
+}
