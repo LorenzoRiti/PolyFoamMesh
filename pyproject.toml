@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfmesh-autogui"
+version = "2.0.1"
+description = "Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh"
+authors = [{name = "Davide Valoroso"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "PySide6>=6.7.0",
+    "pyvista>=0.44.0",
+    "pyvistaqt>=0.11.0",
+    "cadquery>=2.5.0",
+    "trimesh>=4.5.0",
+    "numpy>=1.26.0",
+    "gmsh>=4.13.0",
+    "meshio>=5.3.0",
+    "reportlab>=4.2.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+    "sphinx-autodoc-typehints>=2.0",
+]
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+cfmesh-autogui = "cfmesh_autogui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]

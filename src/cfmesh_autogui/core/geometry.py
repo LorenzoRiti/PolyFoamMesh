@@ -1,0 +1,808 @@
+from __future__ import annotations
+
+import logging
+import re
+from typing import TypedDict
+import numpy as np
+import cadquery as cq
+import trimesh
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class AnalysisResult(TypedDict):  # ✅ F-016
+    p5: float
+    p10: float
+    p25: float
+    p50: float
+    p75: float
+    n_samples: int
+    bbox: tuple[float, float, float]
+
+
+# ------------------------------------------------------------------
+# Geometry creation / loading
+# ------------------------------------------------------------------
+def create_test_cylinder(radius: float = 1.0, height: float = 2.0) -> cq.Workplane:
+    return cq.Workplane("XY").circle(radius).extrude(height)
+
+
+def load_step(filepath: Path | str) -> cq.Shape:
+    filepath = Path(filepath)
+    try:
+        shape = cq.importers.importStep(str(filepath))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to import STEP file '{filepath}'. "
+            "The file may be corrupted or in an unsupported format."
+        ) from exc
+    if isinstance(shape, cq.Workplane):
+        return shape.val()
+    return shape
+
+
+# Bug 1 fix: STL loader with multi-solid support.
+_SOLID_RE = re.compile(r"\bsolid\s+(\S+)", re.IGNORECASE)
+_ENDSOLID_RE = re.compile(r"\bendsolid\b", re.IGNORECASE)
+
+
+def _stl_solid_names(text: str) -> list[str]:
+    """Extract solid names from an ASCII STL file.
+
+    Falls back to a single ['unnamed'] entry if the file is binary STL
+    (trimesh will handle that path).
+    """
+    names = _SOLID_RE.findall(text)
+    if names:
+        return names
+    return ["unnamed"]
+
+
+def load_stl(filepath: Path | str) -> list[trimesh.Trimesh]:
+    """Load an STL file as a list of trimesh meshes (one per solid).
+
+    ASCII STL: split on `solid NAME` / `endsolid NAME` blocks so each
+    named solid becomes its own patch (preserves multi-body geometry).
+    Binary STL: trimesh loads it as a single mesh; we still wrap it as
+    a one-element list with the patch name derived from the filename stem.
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"STL file not found: {filepath}")
+
+    # Sniff format: ASCII STL starts with "solid " on the first non-empty line
+    # AND contains "facet normal" within the first 4 KB.
+    try:
+        head = filepath.read_text(encoding="ascii", errors="replace")[:4096].lower()
+    except OSError as exc:
+        raise RuntimeError(f"Failed to read STL '{filepath}': {exc}") from exc
+
+    is_ascii = "facet normal" in head
+
+    if not is_ascii:
+        # Binary STL: trimesh handles it
+        scene = trimesh.load_mesh(str(filepath), force="mesh")
+        if isinstance(scene, trimesh.Scene):
+            meshes = list(scene.geometry.values())
+        else:
+            meshes = [scene]
+        stem = filepath.stem
+        for m in meshes:
+            m.metadata["name"] = stem
+        return meshes
+
+    # ASCII STL: read full text and split on solid blocks
+    text = filepath.read_text(encoding="ascii", errors="replace")
+    blocks: list[tuple[str, str]] = []
+    current_name: str | None = None
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        m_solid = _SOLID_RE.match(stripped)
+        if m_solid:
+            if current_name is not None and current_lines:
+                blocks.append((current_name, "\n".join(current_lines)))
+            current_name = m_solid.group(1)
+            current_lines = [line]
+        elif _ENDSOLID_RE.match(stripped):
+            if current_lines:
+                current_lines.append(line)
+            if current_name is not None:
+                blocks.append((current_name, "\n".join(current_lines or [])))
+                current_name = None
+                current_lines = []
+        else:
+            if current_name is not None:
+                current_lines.append(line)
+
+    if current_name is not None and current_lines:
+        blocks.append((current_name, "\n".join(current_lines)))
+
+    import tempfile
+    import os
+
+    meshes_out: list[trimesh.Trimesh] = []
+    for name, body in blocks:
+        # Write each solid to a temp .stl and load via trimesh.
+        # This is the most reliable path: trimesh handles ASCII STL
+        # with `solid NAME` headers via a real file context.
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".stl", prefix="cfm_stl_")
+            try:
+                with os.fdopen(fd, "w", encoding="ascii") as fh:
+                    fh.write(body)
+                mesh = trimesh.load_mesh(tmp_path, force="mesh")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+        except Exception as exc:
+            logger.warning("Failed to parse solid '%s' in %s: %s", name, filepath, exc)
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            continue
+        if not isinstance(mesh, trimesh.Trimesh):
+            continue
+        if len(mesh.faces) == 0:
+            logger.warning("Solid '%s' in %s is empty, skipping.", name, filepath)
+            continue
+        mesh.metadata["name"] = name
+        meshes_out.append(mesh)
+
+    if not meshes_out:
+        raise RuntimeError(
+            f"STL file '{filepath}' contains no valid geometry."
+        )
+    return meshes_out
+
+
+# ------------------------------------------------------------------
+# Bounding-box helpers
+# ------------------------------------------------------------------
+def compute_bbox_dim(meshes: list[trimesh.Trimesh]) -> float:
+    """Return the maximum dimension of the geometry bounding box."""
+    if not meshes:
+        return 1.0
+    bbox_min = np.array([np.inf, np.inf, np.inf])
+    bbox_max = np.array([-np.inf, -np.inf, -np.inf])
+    for mesh in meshes:
+        bbox_min = np.minimum(bbox_min, mesh.vertices.min(axis=0))
+        bbox_max = np.maximum(bbox_max, mesh.vertices.max(axis=0))
+    dim = float(np.max(bbox_max - bbox_min))
+    return max(dim, 0.001)
+
+
+# V1.1: return full (dx, dy, dz) for UI domain display
+def compute_bbox_full(meshes: list[trimesh.Trimesh]) -> tuple[float, float, float]:
+    """Return (dx, dy, dz) of the geometry bounding box."""
+    if not meshes:
+        return 0.0, 0.0, 0.0
+    bbox_min = np.array([np.inf, np.inf, np.inf])
+    bbox_max = np.array([-np.inf, -np.inf, -np.inf])
+    for mesh in meshes:
+        bbox_min = np.minimum(bbox_min, mesh.vertices.min(axis=0))
+        bbox_max = np.maximum(bbox_max, mesh.vertices.max(axis=0))
+    return tuple(float(x) for x in bbox_max - bbox_min)
+
+
+# V1.1 + post-review: feature-aware cell-size suggestion.
+# Old algorithm used a single bbox-based rule (bbox/20, bbox/100) that failed
+# for geometries with multi-scale features: long thin tubes got mesh cells
+# that were larger than the tube diameter; sharp constrictions got cells
+# larger than the constriction itself. The new algorithm samples the surface
+# and measures the LOCAL thickness at N points, then derives cell sizes that
+# respect both the small features and the overall domain scale.
+
+_DETAIL_PRESETS = {
+    # Each preset uses a percentile of the local-thickness distribution
+    # as the basis for s_max. Key insight: for a thin tube, the
+    # "thinnest feature" is the TUBE DIAMETER (which sits at the
+    # lower percentiles of the thickness distribution). The max cell
+    # must be small enough to put at least 2-4 cells across that
+    # feature, so:
+    #
+    #   s_max = p_X * (multiplier)
+    #   s_min = p_Y / (divisor)
+    #
+    # Where p_X is the percentile used for max-cell sizing and p_Y
+    # for min-cell sizing. Multipliers are SMALL (<= 2) so the
+    # resulting cell actually fits inside the feature it's resolving.
+    # very_coarse/very_fine extend the same progression to match the 5-level
+    # GUI slider ("Molto Grossolana".."Molto Fine") — without these, the
+    # two extreme slider positions fell back silently to "medium" (the
+    # dict lookup default), making them look broken/no-op in the UI.
+    "very_coarse": {"max_mult": 2.5,  "min_div": 1.2, "samples": 64,  "p_max": "p50", "p_min": "p10"},
+    "coarse":      {"max_mult": 2.0,  "min_div": 1.5, "samples": 96,  "p_max": "p25", "p_min": "p5"},
+    "medium":      {"max_mult": 1.5,  "min_div": 2.0, "samples": 192, "p_max": "p10", "p_min": "p5"},
+    "fine":        {"max_mult": 1.0,  "min_div": 3.0, "samples": 384, "p_max": "p5",  "p_min": "p5"},
+    "very_fine":   {"max_mult": 0.75, "min_div": 4.0, "samples": 768, "p_max": "p5",  "p_min": "p5"},
+}
+
+
+def analyze_local_thickness(
+    meshes: list[trimesh.Trimesh],
+    samples: int = 192,
+    seed: int = 0xC0FFEE,
+) -> AnalysisResult:  # ✅ F-016
+    """Per-patch thickness sampling, then aggregated.
+
+    Algorithm:
+      1. For each patch, allocate samples proportional to area (with
+         a floor so small patches are never starved).
+      2. Sample thickness within each patch.
+      3. Aggregate per-patch percentiles using a stratified rule:
+           p_global[k] = sum over patches of (area_patch / area_total) * p_patch[k]
+         This way, a small-area constriction (with small p10) actually
+         pulls down the global p10 — even if its sample count is small.
+
+    Why this matters: cfMesh real cases often have one big patch (e.g.
+    a tube wall) and one small patch (e.g. a constriction). With a
+    naive global percentiles, the constriction's small values get
+    drowned in the tube's large values.
+    """
+    if not meshes:
+        return _empty_analysis((0.0, 0.0, 0.0))
+
+    all_verts = np.vstack([np.asarray(m.vertices) for m in meshes])
+    bbox = all_verts.max(axis=0) - all_verts.min(axis=0)
+    bbox_max = float(max(bbox))
+
+    areas = np.asarray([float(m.area) for m in meshes])
+    total_area = float(areas.sum())
+    if total_area <= 0:
+        return _empty_analysis(bbox)
+
+    # Proportional allocation with a per-patch floor.
+    min_per_patch = max(16, samples // 4)
+    raw_alloc = areas / total_area * samples
+    alloc = np.maximum(raw_alloc.astype(int), min_per_patch)
+
+    # Per-patch percentiles
+    per_patch_percentiles: list[tuple[np.ndarray, float]] = []  # (percentiles, weight)
+    total_n = 0
+    for mesh, n in zip(meshes, alloc):
+        n = max(int(n), 16)
+        thicknesses = _sample_thickness_one_mesh(mesh, n, bbox_max, seed)
+        if not thicknesses:
+            continue
+        arr = np.asarray(thicknesses)
+        pcts = np.percentile(arr, [5, 10, 25, 50, 75])
+        per_patch_percentiles.append((pcts, float(mesh.area)))
+        total_n += len(thicknesses)
+
+    if not per_patch_percentiles:
+        return _empty_analysis(bbox)
+
+    # Weighted average of per-patch percentiles (weight = patch area).
+    # For percentile values that should be MINIMIZED (p5, p10) we take
+    # the minimum across patches — so a single small patch with small
+    # thickness wins. For p25/p50/p75 we take the weighted average.
+    all_pcts = np.stack([p[0] for p in per_patch_percentiles], axis=0)  # (n_patches, 5)
+    weights = np.asarray([p[1] for p in per_patch_percentiles])
+    w = weights / weights.sum()
+
+    # min-strategy for low percentiles (small features matter most)
+    p5  = float(all_pcts[:, 0].min())
+    p10 = float(all_pcts[:, 1].min())
+    # weighted average for the rest
+    p25 = float((all_pcts[:, 2] * w).sum())
+    p50 = float((all_pcts[:, 3] * w).sum())
+    p75 = float((all_pcts[:, 4] * w).sum())
+
+    return {
+        "p5": p5,
+        "p10": p10,
+        "p25": p25,
+        "p50": p50,
+        "p75": p75,
+        "n_samples": total_n,
+        "bbox": (float(bbox[0]), float(bbox[1]), float(bbox[2])),
+    }
+
+
+def _empty_analysis(bbox) -> AnalysisResult:  # ✅ F-016
+    return {
+        "p5": 0.0, "p10": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0,
+        "n_samples": 0,
+        "bbox": (float(bbox[0]), float(bbox[1]), float(bbox[2])),
+    }
+
+
+def _sample_thickness_one_mesh(
+    mesh: trimesh.Trimesh,
+    n_samples: int,
+    bbox_max: float,
+    seed: int,
+) -> list[float]:
+    """Sample *n_samples* points on *mesh* and measure local thickness."""
+    if n_samples <= 0 or mesh.area <= 0 or len(mesh.faces) == 0:
+        return []
+    try:
+        pts, face_idx = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
+    except Exception:
+        return []
+    if len(pts) == 0:
+        return []
+    normals = mesh.face_normals[face_idx]
+    ray_origins = np.asarray(pts, dtype=np.float64)
+    ray_dirs = np.asarray(normals, dtype=np.float64)
+    thicknesses: list[float] = []
+    for origin, direction in zip(ray_origins, ray_dirs):
+        d = direction / (np.linalg.norm(direction) + 1e-12)
+        d_fwd = 0.0
+        d_bwd = 0.0
+        try:
+            res = mesh.ray.intersects_location(
+                ray_origins=[origin], ray_directions=[d]
+            )
+            if res and len(res[0]) > 0:
+                locs = np.asarray(res[0])
+                d_fwd = float(np.linalg.norm(locs - origin, axis=1).max())
+        except Exception:
+            pass
+        try:
+            res = mesh.ray.intersects_location(
+                ray_origins=[origin], ray_directions=[-d]
+            )
+            if res and len(res[0]) > 0:
+                locs = np.asarray(res[0])
+                d_bwd = float(np.linalg.norm(locs - origin, axis=1).max())
+        except Exception:
+            pass
+        t = max(d_fwd, d_bwd)
+        if 0.0 < t < bbox_max * 2:
+            thicknesses.append(t)
+    return thicknesses
+
+
+def compute_patch_cell_sizes(
+    meshes: list[trimesh.Trimesh],
+    detail: str = "medium",
+    seed: int = 0xC0FFEE,
+) -> tuple[dict[str, float], float | None, float | None]:
+    """Compute per-patch cell sizes + boundary refinement parameters.
+
+    For each mesh patch, samples its local thickness and derives a cell
+    size that resolves it. Returns:
+      - patch_cell_sizes: {name: cell_size} — only for patches whose
+        suggested size is SMALLER than the global max.
+      - boundary_cell_size: suggested cell size near walls (None if
+        boundary refinement not needed).
+      - boundary_refinement_thickness: distance (m) for boundary
+        refinement (None if not needed).
+    """
+    if not meshes:
+        return {}, None, None
+
+    preset = _DETAIL_PRESETS.get(detail, _DETAIL_PRESETS["medium"])
+    all_verts = np.vstack([np.asarray(m.vertices) for m in meshes])
+    bbox = all_verts.max(axis=0) - all_verts.min(axis=0)
+    bbox_max = float(max(bbox))
+
+    patch_sizes: dict[str, float] = {}
+    has_wall = False
+    for mesh in meshes:
+        name = mesh.metadata.get("name", "patch")
+        n_samples = max(preset["samples"] // len(meshes), 8)
+        thicknesses = _sample_thickness_one_mesh(mesh, n_samples, bbox_max, seed)
+        if not thicknesses:
+            continue
+        p_local = np.percentile(np.asarray(thicknesses), [10, 5])
+        p10 = float(p_local[0])
+        p5 = float(p_local[1])
+        if p10 <= 0:
+            continue
+        # Suggested cell size = resolve the thinnest 10% of this patch
+        # with at least max_mult cells across it.
+        cell_size = min(p10 * preset["max_mult"], bbox_max / 8.0)
+        cell_size = max(cell_size, 0.001)
+        patch_sizes[name] = round(max(cell_size, 0.0005), 6)
+
+    # Boundary refinement: the thinnest feature across all patches,
+    # used to set boundaryCellSize and boundaryCellSizeRefinementThickness.
+    all_thicknesses: list[float] = []
+    for mesh in meshes:
+        ts = _sample_thickness_one_mesh(
+            mesh,
+            n_samples=max(len(mesh.faces) // 20, 16),
+            bbox_max=bbox_max,
+            seed=seed,
+        )
+        all_thicknesses.extend(ts)
+    if all_thicknesses:
+        p10 = float(np.percentile(np.asarray(all_thicknesses), 10))
+        bc_size = round(min(p10 / 2.0, bbox_max / 16.0), 6)
+        bc_size = max(bc_size, 0.0005)
+        bc_thick = round(p10 * 0.8, 6)
+        boundary_cell_size = bc_size
+        boundary_refinement_thickness = bc_thick if bc_thick > 0.001 else None
+    else:
+        boundary_cell_size = None
+        boundary_refinement_thickness = None
+
+    return patch_sizes, boundary_cell_size, boundary_refinement_thickness
+
+
+def suggest_cell_sizes(
+    meshes: list[trimesh.Trimesh] | None = None,
+    detail: str = "medium",
+    bbox_max_dim: float | None = None,
+) -> tuple[float, float]:
+    """Feature-aware cell size suggestion.
+
+    Args:
+        meshes: list of trimesh patches. If provided, used to sample local
+            thickness and pick cell sizes that respect small features.
+            If None, falls back to the old bbox-based algorithm.
+        detail: 'coarse' | 'medium' | 'fine' — controls how aggressively
+            the algorithm resolves small features.
+        bbox_max_dim: explicit bbox max (required if meshes is None).
+
+    Returns:
+        (max_cell_size, min_cell_size) in metres.
+    """
+    preset = _DETAIL_PRESETS.get(detail, _DETAIL_PRESETS["medium"])
+
+    if meshes is None:
+        if bbox_max_dim is None or bbox_max_dim <= 0.0:
+            return 0.05, 0.01
+        s_max = round(bbox_max_dim / 20.0, 6)
+        s_min = round(bbox_max_dim / 100.0, 6)
+        return max(s_max, 0.001), max(s_min, 0.0001)
+
+    analysis = analyze_local_thickness(meshes, samples=preset["samples"])
+    bbox_max = max(analysis["bbox"]) if analysis["bbox"] else 0.0
+    if bbox_max <= 0.0:
+        return 0.05, 0.01
+
+    # If sampling failed, fall back to bbox
+    if analysis["n_samples"] == 0:
+        s_max = round(bbox_max / 20.0, 6)
+        s_min = round(bbox_max / 100.0, 6)
+        return max(s_max, 0.001), max(s_min, 0.0001)
+
+    # Use the chosen percentile of the local-thickness distribution
+    # for the "max cell" and a lower percentile for the "min cell".
+    # Multipliers from the preset scale how aggressive the suggestion is.
+    p_max = analysis[preset["p_max"]]
+    p_min = analysis[preset["p_min"]]
+
+    s_max = p_max * preset["max_mult"]
+    s_min = p_min / preset["min_div"]
+
+    # Clamp s_max: never larger than bbox/8 (so a single long domain
+    # doesn't blow up the cell count). The percentile-based ratio above
+    # keeps s_min < s_max for typical multi-scale geometries, but for
+    # blocky/compact shapes (thickness ~ bbox size) the bbox/8 clamp can
+    # pull s_max below the still-unclamped s_min — so s_min must be
+    # re-clamped relative to the FINAL s_max, or the UI ends up with
+    # min > max (e.g. a simple cube triggers this on every detail level).
+    s_max = min(s_max, bbox_max / 8.0)
+    s_max = max(s_max, 0.001)
+    s_min = max(s_min, 0.0001)
+    s_min = min(s_min, s_max / 2.0)
+
+    return (
+        round(max(s_max, 0.001), 6),
+        round(max(s_min, 0.0001), 6),
+    )
+
+
+# V1.1: ------------------------------------------------------------------
+# Unit conversion & scaling helpers for CAD import
+# ------------------------------------------------------------------
+_UNIT_SCALE = {
+    "m": 1.0,
+    "mm": 0.001,
+    "cm": 0.01,
+    "inch": 0.0254,
+    "in": 0.0254,
+    "ft": 0.3048,
+}
+
+
+def unit_to_scale(unit: str) -> float:
+    """Convert a CAD unit string to a scale factor (CAD unit → metres)."""
+    return _UNIT_SCALE.get(unit.lower(), 1.0)
+
+
+def scale_meshes(meshes: list[trimesh.Trimesh], factor: float) -> list[trimesh.Trimesh]:
+    """Multiply all vertex coordinates in-place by *factor*. Returns the input list."""
+    if abs(factor - 1.0) < 1e-9:
+        return meshes
+    for mesh in meshes:
+        mesh.vertices *= factor
+    return meshes
+
+
+# FIX: safeguard — prevent cartesianMesh smoothing-loop by clamping cell sizes
+def validate_cell_sizes(
+    bbox_max_dim: float,
+    max_cell: float,
+    min_cell: float,
+) -> tuple[float, float, list[str]]:
+    """Clamp cell sizes relative to the bounding box to avoid degenerate meshes.
+
+    Returns (safe_max, safe_min, warnings).
+    Raises ValueError if clamping produces non-positive values.
+    """
+    warnings: list[str] = []
+
+    safe_max = max_cell
+    if safe_max > bbox_max_dim / 2.0:
+        safe_max = bbox_max_dim / 2.0
+        warnings.append(
+            f"maxCellSize clamped from {max_cell:.4f} to {safe_max:.4f} "
+            f"(bbox max dim = {bbox_max_dim:.4f})"
+        )
+        logger.warning(warnings[-1])
+
+    safe_min = min_cell
+    if safe_min > safe_max / 2.0:
+        safe_min = safe_max / 2.0
+        warnings.append(
+            f"minCellSize clamped from {min_cell:.4f} to {safe_min:.4f} "
+            f"(max/2 = {safe_max / 2.0:.4f})"
+        )
+        logger.warning(warnings[-1])
+
+    # V1.1: warn when cells are too coarse to resolve geometric features
+    if safe_max > bbox_max_dim / 10.0:
+        warnings.append(
+            f"maxCellSize ({safe_max:.4f}) > bbox/10 ({bbox_max_dim / 10.0:.4f}). "
+            "Cells are very coarse — small features or holes in the geometry may be degraded."
+        )
+        logger.warning(warnings[-1])
+
+    if safe_min <= 0.0 or safe_max <= 0.0:
+        raise ValueError(
+            f"Invalid cell sizes after clamping: max={safe_max}, min={safe_min}. "
+            "Check geometry scale."
+        )
+
+    return safe_max, safe_min, warnings
+
+
+# V1.1: pre-mesh cell count estimation (F1)
+def compute_volume(meshes: list[trimesh.Trimesh]) -> float:
+    """Return the summed volume of all patch meshes.
+
+    trimesh may emit warnings for non-watertight meshes; those are logged
+    at debug level and skipped. The result is clamped to >= 0.
+    """
+    total = 0.0
+    for mesh in meshes:
+        try:
+            total += float(mesh.volume)
+        except Exception as exc:
+            logger.debug("Volume computation failed for a patch: %s", exc)
+    if not np.isfinite(total) or total < 0.0:
+        logger.warning("Computed volume was non-finite (%r); falling back to 0.", total)
+        return 0.0
+    return total
+
+
+def estimate_cell_count(
+    volume: float, max_cell: float, min_cell: float,
+) -> tuple[int, int, int]:
+    """Estimate the final cell count before meshing.
+
+    Returns (low, nominal, high) with a +/-40%% margin around the nominal
+    estimate based on the average cell size. A floor of 100 is enforced
+    on all three values.
+    """
+    avg_cell = (max_cell + min_cell) / 2.0
+    if avg_cell <= 0.0:
+        logger.warning(
+            "estimate_cell_count: non-positive avg cell (%.6f); using floor.", avg_cell
+        )
+        return 100, 100, 100
+    if volume <= 0.0:
+        logger.info("estimate_cell_count: zero/negative volume; returning floor.")
+        return 100, 100, 100
+    n_est = max(100, int(volume / (avg_cell ** 3)))
+    margin = int(n_est * 0.4)
+    return max(100, n_est - margin), n_est, n_est + margin
+
+
+# ------------------------------------------------------------------
+# Face classification
+# ------------------------------------------------------------------
+def _face_normal(face: cq.Face) -> np.ndarray:
+    v = face.normalAt()
+    return np.array([v.x, v.y, v.z])
+
+
+def _axis_from_str(axis: str) -> int:
+    return {"X": 0, "Y": 1, "Z": 2}[axis.upper()]
+
+
+def _classify_by_axis(
+    faces: list[cq.Face],
+    axis_idx: int,
+    tol: float,
+    shape: cq.Shape,
+) -> tuple[list[cq.Face], list[cq.Face], list[cq.Face]]:
+    coords = [f.Center().toTuple()[axis_idx] for f in faces]
+    c_min = min(coords)
+    c_max = max(coords)
+    h_scale = height_scale(shape)
+
+    inlet_faces: list[cq.Face] = []
+    outlet_faces: list[cq.Face] = []
+    wall_faces: list[cq.Face] = []
+
+    for f in faces:
+        center = f.Center()
+        center_arr = np.array([center.x, center.y, center.z])
+        if f.geomType() == "PLANE":
+            normal = _face_normal(f)
+            normal_mag = np.linalg.norm(normal)
+            if normal_mag < 1e-9:
+                wall_faces.append(f)
+                continue
+            normal /= normal_mag
+            component = normal[axis_idx]
+            if abs(abs(component) - 1.0) < tol:
+                if component < 0 and abs(center_arr[axis_idx] - c_min) < tol * h_scale:
+                    inlet_faces.append(f)
+                elif component > 0 and abs(center_arr[axis_idx] - c_max) < tol * h_scale:
+                    outlet_faces.append(f)
+                else:
+                    wall_faces.append(f)
+            else:
+                wall_faces.append(f)
+        else:
+            wall_faces.append(f)
+
+    return inlet_faces, outlet_faces, wall_faces
+
+
+def classify_faces_auto(
+    shape: cq.Shape,
+    inlet_axis: str = "Z",
+    tol: float = 0.01,
+) -> list[tuple[str, list[cq.Face]]]:
+    faces = list(shape.Faces())
+    if len(faces) <= 1:
+        return [("wall", faces)]
+
+    axis_idx = _axis_from_str(inlet_axis)
+    inlet_faces, outlet_faces, wall_faces = _classify_by_axis(faces, axis_idx, tol, shape)
+
+    if not inlet_faces and not outlet_faces:
+        for alt_axis in ("X", "Y", "Z"):
+            if alt_axis.upper() == inlet_axis.upper():
+                continue
+            alt_idx = _axis_from_str(alt_axis)
+            inlet_faces, outlet_faces, wall_faces = _classify_by_axis(faces, alt_idx, tol, shape)
+            if inlet_faces or outlet_faces:
+                break
+
+    result: list[tuple[str, list[cq.Face]]] = []
+    if inlet_faces:
+        result.append(("inlet", inlet_faces))
+    if outlet_faces:
+        result.append(("outlet", outlet_faces))
+    if wall_faces:
+        result.append(("wall", wall_faces))
+    if not result:
+        result.append(("wall", faces))
+    return result
+
+
+def classify_faces(
+    shape: cq.Shape,
+    inlet_axis: str = "Z",
+    strategy: str = "auto",
+    custom_tags: dict[int, str] | None = None,
+) -> list[tuple[str, list[cq.Face]]]:
+    if strategy == "auto":
+        return classify_faces_auto(shape, inlet_axis)
+    if strategy == "custom" and custom_tags:
+        result: dict[str, list[cq.Face]] = {}
+        for idx, f in enumerate(shape.Faces()):
+            name = custom_tags.get(idx, "wall")
+            result.setdefault(name, []).append(f)
+        return list(result.items())
+    return [("wall", list(shape.Faces()))]
+
+
+def height_scale(shape: cq.Shape) -> float:
+    bbox = shape.BoundingBox()
+    return max(bbox.zlen, 1.0)
+
+
+# ------------------------------------------------------------------
+# Tessellation
+# ------------------------------------------------------------------
+def tessellate_patches(
+    patches: list[tuple[str, list[cq.Face]]],
+    tolerance: float = 0.01,
+    angle_tolerance: float = 0.1,
+) -> list[trimesh.Trimesh]:
+    meshes: list[trimesh.Trimesh] = []
+    total = len(patches)
+    failures = 0
+
+    for name, faces in patches:
+        if not faces:
+            failures += 1
+            logger.warning("Tessellation skipped for patch '%s': no faces assigned.", name)
+            continue
+        try:
+            compound = cq.Compound.makeCompound(faces)
+            verts, tris = compound.tessellate(tolerance, angle_tolerance)
+            if len(tris) == 0:
+                failures += 1
+                logger.warning(
+                    "Tessellation for patch '%s' produced 0 triangles (%d faces, tol=%.4f).",
+                    name, len(faces), tolerance,
+                )
+                continue
+            verts_np = np.array([(v.x, v.y, v.z) for v in verts], dtype=np.float64)
+            tris_np = np.array(tris, dtype=np.int32)
+            mesh = trimesh.Trimesh(vertices=verts_np, faces=tris_np, process=False)
+            mesh.metadata["name"] = name
+            meshes.append(mesh)
+        except Exception as exc:
+            failures += 1
+            logger.warning(
+                "Tessellation failed for patch '%s' (%d faces): %s",
+                name, len(faces), exc,
+            )
+
+    if meshes and failures > 0:
+        logger.warning(
+            "Tessellation: %d/%d patches succeeded, %d failed.",
+            len(meshes), total, failures,
+        )
+
+    if not meshes:
+        raise RuntimeError(
+            "Tessellation failed for all patches. "
+            "The CAD geometry may be too complex or contain invalid faces."
+        )
+
+    if failures > total / 2:
+        raise RuntimeError(
+            f"Tessellation failed for {failures}/{total} patches (>50%%). "
+            "The CAD geometry likely contains invalid or degenerate faces. "
+            "Try simplifying the geometry or adjusting the tessellation tolerance."
+        )
+
+    return meshes
+
+
+def load_and_tessellate(
+    filepath: Path | str,
+    tolerance: float = 0.01,
+    angle_tolerance: float = 0.1,
+) -> list[trimesh.Trimesh]:
+    shape = load_step(filepath)
+    patches = classify_faces(shape)
+    return tessellate_patches(patches, tolerance, angle_tolerance)
+
+
+# Bug 1 fix: single-entry-point geometry loader used by the GUI.
+# Picks STEP or STL based on file extension, then returns trimesh meshes
+# ready for tessellation / scaling / export.
+def load_geometry(filepath: Path | str) -> list[trimesh.Trimesh]:
+    """Load STEP or STL, returning a list of trimesh meshes (one per patch/solid).
+
+    STEP → classify_faces → tessellate_patches (existing flow).
+    STL  → load_stl (multi-solid aware, ASCII or binary).
+    """
+    filepath = Path(filepath)
+    suffix = filepath.suffix.lower()
+    if suffix in (".step", ".stp"):
+        shape = load_step(filepath)
+        patches = classify_faces(shape)
+        return tessellate_patches(patches)
+    if suffix == ".stl":
+        return load_stl(filepath)
+    raise ValueError(
+        f"Unsupported geometry format: '{suffix}'. "
+        "Supported: .step, .stp, .stl"
+    )
