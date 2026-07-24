@@ -268,15 +268,30 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
         surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
         logger.info("  surface file: %s (FMS=%s)", surface_file, bool(fms))
 
+        # Compute physics-based BL parameters via BLEngine
+        try:
+            from cfmesh_autogui.commercial.bl_engine import BLEngine, FlowConditions
+            bl_engine = BLEngine()
+            flow = FlowConditions.from_velocity(
+                reference_velocity=1.0,
+                reference_length=bbox_dim,
+                turbulence_model="kOmegaSST",
+            )
+            blp = bl_engine.calculate_from_flow(flow, growth_rate=1.2)
+            n_layers = blp.n_layers
+            thickness_ratio = blp.growth_rate
+        except Exception:
+            n_layers = 5
+            thickness_ratio = 1.2
+
         write_meshdict(
             case_dir,
             max_cell_size=max_cell,
             min_cell_size=min_cell,
             surface_file=surface_file,
             bl_params={
-                "nLayers": 5,
-                "thicknessRatio": 0.3,
-                "expansionRatio": 1.2,
+                "nLayers": n_layers,
+                "thicknessRatio": thickness_ratio,
                 "wallPatches": ["wall"],
             },
         )

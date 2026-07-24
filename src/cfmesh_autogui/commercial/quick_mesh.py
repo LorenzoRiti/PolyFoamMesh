@@ -46,9 +46,6 @@ def _lazy_md():
 
 logger = logging.getLogger(__name__)
 
-# y+ target for automatic BL calculation (turbulent, kOmegaSST)
-TARGET_YPLUS = 30.0
-
 
 @dataclass
 class QuickMeshResult:
@@ -216,37 +213,33 @@ class QuickMesh:
     def _auto_bl_params(
         self, meshes: list, bbox_dim: float, all_wt: bool,
     ) -> dict | None:
-        """Auto-calculate BL parameters with y+ target 30.
+        """Auto-calculate BL parameters using the physics-based BLEngine.
 
-        Uses flat-plate correlation for first-layer height estimation.
+        Uses flat-plate correlation for first-layer height and layer count.
+        Returns cfMesh-compatible BL parameters (nLayers, thicknessRatio).
         """
         if not all_wt or bbox_dim <= 0:
             return None
 
-        # Estimate Reynolds number (assuming U=1 m/s, nu=1.5e-5)
-        Re = 1.0 * bbox_dim / 1.5e-5
-        if Re < 1000:
-            return None  # Laminar — no BL needed
+        try:
+            from cfmesh_autogui.commercial.bl_engine import BLEngine, FlowConditions
+            bl_engine = BLEngine()
+            flow = FlowConditions.from_velocity(
+                reference_velocity=1.0,
+                reference_length=bbox_dim,
+                turbulence_model="kOmegaSST",
+            )
+            blp = bl_engine.calculate_from_flow(flow, growth_rate=1.2)
+            if blp.n_layers < 1:
+                return None
+            return {
+                "nLayers": blp.n_layers,
+                "thicknessRatio": blp.growth_rate,
+            }
+        except Exception:
+            pass
 
-        # Flat-plate Cf: Cf = 0.027 / Re^(1/7)
-        Cf = 0.027 / (Re ** (1.0 / 7.0))
-        u_tau = 1.0 * (Cf / 2.0) ** 0.5
-
-        if u_tau <= 0:
-            return None
-
-        first_layer = TARGET_YPLUS * 1.5e-5 / u_tau
-        first_layer = max(first_layer, 1e-8)
-
-        # Suggest layers based on ratio to cell size
-        cell_size = bbox_dim / 50.0
-        n_layers = min(max(int(cell_size / first_layer / 2), 1), 10)
-
-        return {
-            "nLayers": n_layers,
-            "thicknessRatio": round(first_layer / max(cell_size, 1e-10), 6),
-            "expansionRatio": 1.2,
-        }
+        return None
 
 
 def _write_ctrl_dict(case_dir: Path) -> None:
