@@ -156,7 +156,7 @@ class QuickMesh:
             # 7. Export surface and write meshDict
             _lazy_stl().export_surface_file(meshes, case_dir)
             # 7a. Generate FMS for feature-edge capture (best-effort)
-            fms = generate_fms(case_dir, angle=30.0)
+            fms = generate_fms(case_dir, angle=60.0)
             surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
             if fms:
                 logger.info("QuickMesh: using FMS for feature-edge capture")

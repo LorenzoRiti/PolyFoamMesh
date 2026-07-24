@@ -792,7 +792,7 @@ def parse_checkmesh_output(text: str) -> MeshQualityReport:
 
 def generate_fms(
     case_dir: Path | str,
-    angle: float = 30.0,
+    angle: float = 60.0,
     timeout: int = 60,
 ) -> Path | None:
     """Run surfaceFeatureEdges to produce an .fms file from the surface STL.
@@ -832,11 +832,32 @@ def generate_fms(
             capture_output=True, text=True, timeout=timeout,
         )
         if r.returncode == 0 and fms_path.exists():
+            # Check if the FMS contains actual feature vertices.
+            # An FMS with 0 feature vertices (only the patch header) does not
+            # help and may degrade quality on curved surfaces (external_aero).
+            try:
+                fms_text = fms_path.read_text(encoding="ascii", errors="replace")
+                # Format: first non-header line is patch count, second is
+                # vertex count. If vertex count >= 3 there are real features.
+                lines = [l.strip() for l in fms_text.splitlines() if l.strip()]
+                if len(lines) >= 2:
+                    try:
+                        n_verts = int(lines[1])
+                        if n_verts < 3:
+                            logger.info(
+                                "generate_fms: %s has %d feature vertices "
+                                "(< 3), skipping FMS",
+                                fms_path, n_verts,
+                            )
+                            return None
+                    except (ValueError, IndexError):
+                        pass
+            except OSError:
+                pass
             logger.info("generate_fms: created %s (angle=%.1f°)", fms_path, angle)
             return fms_path
         logger.warning(
-            "generate_fms: surfaceFeatureEdges rc=%d — try with a "
-            "case path that contains no spaces", r.returncode,
+            "generate_fms: surfaceFeatureEdges rc=%d", r.returncode,
         )
         return None
     except subprocess.TimeoutExpired:

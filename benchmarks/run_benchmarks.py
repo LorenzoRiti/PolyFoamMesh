@@ -264,7 +264,7 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
         stl_out = export_surface_file(meshes, case_dir)
         logger.info("  surface written: %s", stl_out)
 
-        fms = generate_fms(case_dir, angle=30.0)
+        fms = generate_fms(case_dir, angle=60.0)
         surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
         logger.info("  surface file: %s (FMS=%s)", surface_file, bool(fms))
 
