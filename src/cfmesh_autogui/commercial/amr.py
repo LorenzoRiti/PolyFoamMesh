@@ -1,15 +1,21 @@
 """Adaptive Mesh Refinement (AMR) — gradient-based cell refinement.
 
-Wraps OpenFOAM's ``refineMesh`` and ``dynamicRefineFvMesh`` utilities
-to provide solution-based mesh adaptation on existing meshes.
+Offline, static-case refinement built on OpenFOAM's ``refineMesh``,
+``postProcess``, and ``topoSet`` utilities: refines an existing meshed case
+based on a field's gradient, remapping solution fields onto the refined
+mesh in between iterations.
+
+This is refinement only — OpenFOAM's standalone ``refineMesh`` utility has
+no coarsening/unrefine capability (that requires solver-integrated
+``dynamicRefineFvMesh``, a fundamentally different run-time architecture
+from this module's refine-a-static-case design), so cells are never removed.
 
 Pipeline:
-  1. Read OpenFOAM field data (U, p, nut) from an existing case
-  2. Compute refinement field (gradient magnitude, curvature, error)
-  3. Mark cells for refinement/coarsening based on thresholds
-  4. Execute refineMesh with 2:1 hanging-node constraint
-  5. Map solution fields from old to new mesh
-  6. Loop: refine → solve → check error (max N iterations)
+  1. Compute mag(grad(field)) via postProcess on the existing field data
+  2. Select cells above the gradient threshold into a cellSet via topoSet
+  3. Execute refineMesh -overwrite (2:1 hanging-node constraint)
+  4. Remap field values onto the refined mesh via refineMesh's own cellMap
+  5. Loop until no more cells exceed the threshold, or max_cells is reached
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ class AMRParams:
     max_cells: int = 2_000_000      # Maximum cell count
     max_iterations: int = 5         # Max refine→solve cycles
     refine_interval: int = 1        # Refinement interval in time-steps
-    unrefine_coeff: float = 0.1     # Coarsen where gradient < threshold * this
+    unrefine_coeff: float = 0.1     # Unused: standalone refineMesh cannot coarsen (see module docstring)
     n_buffer_layers: int = 1        # Buffer layers around refined cells
 
 
@@ -172,100 +178,155 @@ class AMREngine:
     # ------------------------------------------------------------------
     # Internal steps
     # ------------------------------------------------------------------
+    _REFINE_SET_NAME = "amrRefineCells"
+
     def _count_cells(self) -> int:
         """Count cells from polyMesh/owner."""
         if not self._case_dir:
             return 0
-        owner = self._case_dir / "constant" / "polyMesh" / "owner"
-        if not owner.exists():
-            return 0
-        try:
-            text = owner.read_text(encoding="ascii", errors="replace")
-            return max(0, len(text.strip().splitlines()) - 2)
-        except Exception:
-            return 0
+        from cfmesh_autogui.core.boundary_reader import count_cells
+        return count_cells(self._case_dir)
 
-    def _compute_refinement_field(self) -> Path:
-        """Compute the gradient-based refinement field.
+    def _run_postprocess(self, func: str) -> None:
+        """Run `postProcess -func <func>` at time 0, raising on failure."""
+        case_dir = self._case_dir
+        linux_case = self._of_config._quoted_linux_path(case_dir)
+        env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
+        cmd = self._of_config._build_wsl_cmd(
+            f"source {env_q} 2>/dev/null; cd {linux_case} && "
+            f"postProcess -func '{func}' -time 0 2>&1 | tail -10"
+        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"postProcess -func '{func}' failed:\n{(result.stdout + result.stderr)[-400:]}"
+            )
 
-        Uses OpenFOAM's ``fieldAverage`` or a custom ``computeRefinement``
-        utility to produce a volScalarField with refinement criteria.
+    def _compute_refinement_field(self) -> str:
+        """Compute mag(grad(field)) as a real scalar field via postProcess,
+        so topoSet's fieldToCell has an actual per-cell value to threshold.
+
+        This used to write a bespoke refineMeshDict with a `field`/
+        `gradientThreshold` entry that OpenFOAM's `refineMesh` utility does
+        not read at all — refineMesh only understands a `set` entry naming
+        a pre-existing cellSet (verified against its source: it does
+        `refineDict.get<word>("set")`, i.e. a single cellSet name, not the
+        dict block `set {};` previously written here). The actual pipeline
+        needs the field computed AND a cellSet selected from it; both are
+        implemented now, split across this method and _mark_cells().
+
+        Verified live: a single `postProcess -func 'mag(grad(U))'` call
+        fails ("Field grad(U) not found") — grad(field) must be computed
+        and written to disk in its own separate postProcess invocation
+        first; mag() can then read it from disk in a second call.
 
         Returns:
-            Path to the refinement field file.
+            The name of the computed scalar field, e.g. ``"mag(grad(U))"``.
         """
         if not self._case_dir:
             raise RuntimeError("No case directory")
-        case_dir = self._case_dir
         field_name = self._params.field
+        self._run_postprocess(f"grad({field_name})")
+        self._run_postprocess(f"mag(grad({field_name}))")
+        return f"mag(grad({field_name}))"
 
-        # Write refinement field dictionary
-        system_dir = case_dir / "system"
-        system_dir.mkdir(parents=True, exist_ok=True)
+    def _mark_cells(self, refine_field: str) -> tuple[int, int]:
+        """Select cells above the gradient threshold into a real cellSet.
 
-        ref_dict = system_dir / "refineMeshDict"
-        ref_dict.write_text(
-            "FoamFile { version 2.0; format ascii; class dictionary; "
-            "object refineMeshDict; }\n"
-            f"\nfield {field_name};\n"
-            f"gradientThreshold {self._params.gradient_threshold};\n"
-            f"unrefineCoeff {self._params.unrefine_coeff};\n"
-            f"nBufferLayers {self._params.n_buffer_layers};\n"
-            f"maxCells {self._params.max_cells};\n"
-            "set {};\n",
-            encoding="ascii",
-        )
+        Uses topoSet's `fieldToCell` source (verified against real
+        OpenFOAM 2512) to build an actual cellSet from the computed scalar
+        field, rather than the previous `refineMesh -dry-run` call — that
+        flag does not exist on `refineMesh` at all (confirmed via
+        `refineMesh -help`: "Invalid option: -dry-run"), so every call
+        silently failed and _mark_cells always returned (0, 0), reporting
+        "AMR converged — no cells to refine" regardless of the actual mesh.
 
-        return ref_dict
-
-    def _mark_cells(self, _refine_field: Path) -> tuple[int, int]:
-        """Analyse the refinement field and mark cells.
-
-        Uses OpenFOAM's refineMesh in dry-run mode to determine
-        how many cells would be refined/unrefined.
+        OpenFOAM's refineMesh only refines; there is no standalone
+        unrefine/coarsen utility (that requires solver-integrated
+        dynamicRefineFvMesh, a fundamentally different architecture from
+        this module's offline refine-a-static-case design), so
+        n_to_unrefine is always 0 — this is a real limitation, not a bug to
+        silently paper over.
 
         Returns:
-            ``(n_to_refine, n_to_unrefine)``
+            ``(n_to_refine, 0)``
         """
         if not self._case_dir:
             return 0, 0
         case_dir = self._case_dir
+        system_dir = case_dir / "system"
+        system_dir.mkdir(parents=True, exist_ok=True)
+
+        (system_dir / "topoSetDict").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; "
+            "object topoSetDict; }\n"
+            "actions\n(\n"
+            "    {\n"
+            f"        name        {self._REFINE_SET_NAME};\n"
+            "        type        cellSet;\n"
+            "        action      new;\n"
+            "        source      fieldToCell;\n"
+            f'        field       "{refine_field}";\n'
+            f"        min         {self._params.gradient_threshold};\n"
+            "        max         1e30;\n"
+            "    }\n);\n",
+            encoding="ascii",
+        )
+
         linux_case = self._of_config._quoted_linux_path(case_dir)
         env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
-
         cmd = self._of_config._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"refineMesh -dry-run -dict system/refineMeshDict 2>&1 | tail -10"
+            f"topoSet -time 0 2>&1 | tail -10"
         )
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             output = result.stdout + result.stderr
-
-            # Parse refinement count from output
-            n_refine = _parse_refine_count(output, "cells to refine")
-            n_unrefine = _parse_refine_count(output, "cells to unrefine")
-
-            logger.debug(
-                "Refine markers: refine=%d unrefine=%d",
-                n_refine, n_unrefine,
-            )
-            return n_refine, n_unrefine
+            m = re.search(rf"{re.escape(self._REFINE_SET_NAME)}\s+now size\s+(\d+)", output)
+            n_refine = int(m.group(1)) if m else 0
+            logger.debug("Refine markers: refine=%d", n_refine)
+            return n_refine, 0
         except Exception as exc:
             logger.warning("Marker computation failed: %s", exc)
             return 0, 0
 
     def _execute_refinement(self) -> None:
-        """Run refineMesh to perform the actual refinement."""
+        """Run refineMesh to perform the actual refinement.
+
+        `set` must be the cellSet's NAME (a word), not a dict block — the
+        previous `set {};` was rejected by refineMesh's own dictionary
+        parsing (`refineDict.get<word>("set")`). Also adds `-overwrite`:
+        without it, refineMesh writes the refined mesh to a new time
+        directory instead of constant/polyMesh, so cell counts read
+        afterwards would silently reflect the pre-refinement mesh.
+        """
         if not self._case_dir:
             return
         case_dir = self._case_dir
+        system_dir = case_dir / "system"
+
+        (system_dir / "refineMeshDict").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; "
+            "object refineMeshDict; }\n"
+            f"\nset {self._REFINE_SET_NAME};\n"
+            "coordinateSystem global;\n"
+            "globalCoeffs\n{\n"
+            "    tan1 (1 0 0);\n"
+            "    tan2 (0 1 0);\n"
+            "}\n"
+            "directions (tan1 tan2 normal);\n"
+            "useHexTopology  yes;\n"
+            "geometricCut    no;\n"
+            "writeMesh       no;\n",
+            encoding="ascii",
+        )
+
         linux_case = self._of_config._quoted_linux_path(case_dir)
         env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
-
         cmd = self._of_config._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"refineMesh -dict system/refineMeshDict 2>&1 | tail -10"
+            f"refineMesh -dict system/refineMeshDict -overwrite 2>&1 | tail -15"
         )
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -276,29 +337,44 @@ class AMREngine:
         logger.info("refineMesh executed OK")
 
     def _map_solution(self) -> None:
-        """Map solution fields from old mesh to new mesh.
+        """Remap field values from the pre-refinement mesh onto the refined one.
 
-        Uses OpenFOAM's ``mapFields`` utility to interpolate fields
-        from the previous mesh to the newly refined one.
+        refineMesh -overwrite only changes mesh topology; it does not touch
+        field files at all, and OpenFOAM's own `mapFields` utility maps
+        between two DIFFERENT case directories (`mapFields <sourceCase>`) —
+        it has no way to map a case onto its own in-place refinement, since
+        source and target would be identical. refineMesh does write
+        `<time>/polyMesh/cellMap`, a plain labelList giving each new cell's
+        parent old-cell index (verified live) — use that directly: every
+        new cell inherits its parent's field value. This only handles the
+        common `nonuniform List<scalar/vector>` internalField format;
+        anything else (uniform fields need no remapping at all; unsupported
+        formats are left untouched with a warning) is intentionally
+        conservative rather than guessing.
         """
         if not self._case_dir:
             return
         case_dir = self._case_dir
-        linux_case = self._of_config._quoted_linux_path(case_dir)
-        env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
-
-        # mapFields requires the old mesh location
-        cmd = self._of_config._build_wsl_cmd(
-            f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"mapFields . -sourceTime 0 -mapMethod cellVolumeWeight 2>&1 | tail -5"
-        )
+        cell_map_path = case_dir / "0" / "polyMesh" / "cellMap"
+        if not cell_map_path.exists():
+            logger.warning("mapFields: no cellMap found at %s — fields left unmapped", cell_map_path)
+            return
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                logger.warning("mapFields warning (exit %d)", result.returncode)
+            from cfmesh_autogui.core.boundary_reader import read_label_list
+            cell_map = read_label_list(cell_map_path)
         except Exception as exc:
-            logger.warning("mapFields failed: %s", exc)
+            logger.warning("mapFields: could not read cellMap: %s", exc)
+            return
+
+        time0_dir = case_dir / "0"
+        for field_path in time0_dir.iterdir():
+            if not field_path.is_file() or field_path.name.startswith("polyMesh"):
+                continue
+            try:
+                _remap_internal_field(field_path, cell_map)
+            except Exception as exc:
+                logger.warning("mapFields: could not remap %s: %s", field_path.name, exc)
 
     def export_report(self, path: Path | str) -> None:
         """Export the AMR result as JSON."""
@@ -316,13 +392,53 @@ class AMREngine:
         logger.info("AMR report exported: %s", path)
 
 
-def _parse_refine_count(output: str, label: str) -> int:
-    """Extract a count from refineMesh output.
-
-    Looks for lines like: ``N cells to refine`` or ``N cells marked``.
+def _remap_internal_field(field_path: Path, cell_map: list[int]) -> None:
+    """Remap a field's `nonuniform List<scalar|vector>` internalField using
+    *cell_map* (new-cell-index -> old-cell-index), so each new cell inherits
+    its parent cell's value. `uniform` internalFields need no remapping (a
+    single value applies regardless of cell count) and are left untouched.
     """
-    pattern = re.compile(rf"(\d+)\s+{label}", re.IGNORECASE)
-    match = pattern.search(output)
-    if match:
-        return int(match.group(1))
-    return 0
+    text = field_path.read_text(encoding="ascii", errors="replace")
+
+    m = re.search(r"internalField\s+nonuniform\s+List<(scalar|vector)>\s*\n?\s*(\d+)\s*\n\s*\(", text)
+    if not m:
+        return  # uniform, or a type this remapper doesn't handle
+
+    field_type = m.group(1)
+    old_count = int(m.group(2))
+    open_idx = m.end() - 1
+    depth = 0
+    close_idx = None
+    for i in range(open_idx, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = i
+                break
+    if close_idx is None:
+        return
+    body = text[open_idx + 1:close_idx]
+
+    if field_type == "scalar":
+        old_values = [tok.strip() for tok in body.split() if tok.strip()]
+    else:
+        old_values = [f"({v.strip()})" for v in re.findall(r"\(([^)]*)\)", body)]
+
+    if len(old_values) != old_count:
+        return  # file doesn't match its own declared count; don't guess
+
+    new_values = [old_values[old_idx] for old_idx in cell_map]
+    new_body = "\n".join(new_values)
+    new_text = (
+        text[:open_idx + 1] + "\n" + new_body + "\n" + text[close_idx:]
+    )
+    # Update the declared count too.
+    new_text = re.sub(
+        r"(internalField\s+nonuniform\s+List<(?:scalar|vector)>\s*\n?\s*)\d+",
+        rf"\g<1>{len(new_values)}",
+        new_text,
+        count=1,
+    )
+    field_path.write_text(new_text, encoding="ascii")

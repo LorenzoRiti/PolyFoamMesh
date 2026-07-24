@@ -100,7 +100,7 @@ def _read_of_list_count(path: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _read_of_scalar_list(path: Path) -> list[int]:
+def read_label_list(path: Path) -> list[int]:
     """Return the integer values of a flat OpenFOAM scalar labelList file
     (owner, neighbour: one plain integer per line, no nested parens)."""
     text = path.read_text(encoding="ascii", errors="replace")
@@ -151,10 +151,10 @@ def count_cells(case_dir: Path | str) -> int:
         return int(m.group(1))
 
     try:
-        indices = _read_of_scalar_list(owner)
+        indices = read_label_list(owner)
         neighbour = poly_dir / "neighbour"
         if neighbour.exists():
-            indices += _read_of_scalar_list(neighbour)
+            indices += read_label_list(neighbour)
         return (max(indices) + 1) if indices else 0
     except Exception:
         return 0
