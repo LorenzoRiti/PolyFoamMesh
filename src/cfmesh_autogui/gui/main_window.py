@@ -1581,21 +1581,25 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Mesh", "Generate a mesh first.")
             return
 
-        poly_dir = self._case_dir / "constant" / "polyMesh"
-        required_poly = ["points", "faces", "owner", "neighbour", "boundary"]
-        missing_poly = [f for f in required_poly if not (poly_dir / f).exists()]
-        required_zero = ["p", "U"]
-        missing_zero = [f for f in required_zero if not (self._case_dir / "0" / f).exists()]
-        required_system = ["controlDict", "fvSchemes", "fvSolution"]
-        missing_system = [f for f in required_system if not (self._case_dir / "system" / f).exists()]
+        from cfmesh_autogui.core.baramflow_export import validate_case, export_case
 
-        missing = missing_poly + missing_zero + missing_system
-        if missing:
+        # Validate completeness AND mesh/field consistency up front, so the user
+        # learns about a case BaramFlow can't open here, not after shipping it.
+        validation = validate_case(self._case_dir)
+        if not validation.ok:
+            detail = ""
+            if validation.missing_files:
+                detail += "Missing files:\n" + "\n".join(
+                    f"  • {m}" for m in validation.missing_files
+                ) + "\n"
+            if validation.issues:
+                detail += "Consistency problems:\n" + "\n".join(
+                    f"  • {i}" for i in validation.issues
+                )
             QMessageBox.warning(
-                self, "Incomplete Case",
-                "The case is missing files BaramFlow needs to open it:\n"
-                + "\n".join(f"  • {m}" for m in missing)
-                + "\n\nGenerate the mesh (and let quality checks complete) first.",
+                self, "Case Not Ready",
+                "This case is not ready to open in BaramFlow:\n\n" + detail
+                + "\n\nGenerate the mesh and let the case setup complete first.",
             )
             return
 
@@ -1606,8 +1610,8 @@ class MainWindow(QMainWindow):
         if not dest_parent:
             return
 
-        dest = Path(dest_parent) / self._case_dir.name
-        if dest.resolve() == self._case_dir.resolve():
+        dest = Path(dest_parent).resolve() / self._case_dir.name
+        if dest == Path(self._case_dir).resolve():
             QMessageBox.warning(
                 self, "Invalid Destination",
                 "Choose a different folder than the current case directory.",
@@ -1622,12 +1626,14 @@ class MainWindow(QMainWindow):
                 return
 
         try:
-            import shutil
-            shutil.copytree(self._case_dir, dest, dirs_exist_ok=True)
-            self._log.append_log(f"{Tag.EXPORT} BaramFlow case exported: {dest}")
+            out = export_case(self._case_dir, dest_parent)
+            self._log.append_log(
+                f"{Tag.EXPORT} BaramFlow case exported: {out} "
+                f"({len(validation.patches)} patches)"
+            )
             QMessageBox.information(
                 self, "Export Complete",
-                f"Case exported to:\n{dest}\n\nOpen this folder directly in BaramFlow.",
+                f"Case exported to:\n{out}\n\nOpen this folder directly in BaramFlow.",
             )
         except Exception as e:
             logger.error("BaramFlow export failed: %s", e)
