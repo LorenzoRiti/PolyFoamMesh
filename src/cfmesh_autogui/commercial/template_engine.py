@@ -306,16 +306,36 @@ class TemplateEngine:
             TurbulenceModel, SchemePreset,
         )
 
-        # Write meshDict
+        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
+        # firstLayerThickness = absolute metres (same bug found and fixed
+        # elsewhere this session in watertight.py/fault_tolerant.py/
+        # mesh_engine.py/optimizer.py — "thicknessRatio": 0.005 here is a
+        # first-layer FRACTION, not a growth ratio; passed straight through
+        # it gets clamped to a default and the first-layer size is dropped).
+        # Also missing patch_names — without renameBoundary, every
+        # inlet/outlet/wall patch reverts to cfMesh's default `wall` type.
+        # By the time a template is applied, this case already has a real
+        # mesh from an earlier pipeline step, so read its actual patch names
+        # rather than needing fresh geometry.
+        patch_names: list[str] | None = None
+        try:
+            from cfmesh_autogui.core.boundary_reader import parse_boundary
+            boundary_path = case_dir / "constant" / "polyMesh" / "boundary"
+            if boundary_path.exists():
+                patch_names = [p.name for p in parse_boundary(boundary_path)]
+        except Exception as exc:
+            logger.debug("apply_template: could not read existing patch names: %s", exc)
+
         write_meshdict(
             case_dir,
             max_cell_size=template.max_cell_ratio,
             min_cell_size=template.min_cell_ratio,
             bl_params={
                 "nLayers": template.bl_n_layers,
-                "thicknessRatio": 0.005,
-                "expansionRatio": 1.2,
+                "thicknessRatio": 1.2,
+                "firstLayerThickness": 0.005 * template.max_cell_ratio,
             } if template.bl_enabled else None,
+            patch_names=patch_names,
         )
         files_written.append("system/meshDict")
 

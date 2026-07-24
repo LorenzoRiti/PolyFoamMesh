@@ -157,6 +157,40 @@ def test_builtin_templates_have_categories():
         assert t.metadata.category, f"Template '{t.metadata.name}' missing category"
 
 
+def test_apply_template_meshdict_uses_real_bl_contract_and_patch_names(tmp_path):
+    """apply_template()'s write_meshdict call used the pre-fix BL contract
+    (thicknessRatio as a first-layer FRACTION, no firstLayerThickness) and
+    never passed patch_names — same silent-failure pattern found and fixed
+    elsewhere this session: BL first-layer size dropped, and any inlet/outlet
+    patch on a case already meshed by an earlier pipeline step (which is
+    always true by the time a template is applied) reverts to cfMesh's
+    default `wall` type on this rewrite."""
+    case_dir = tmp_path / "case"
+    poly_dir = case_dir / "constant" / "polyMesh"
+    poly_dir.mkdir(parents=True)
+    (poly_dir / "boundary").write_text(
+        "FoamFile { version 2.0; format ascii; class polyBoundaryMesh; object boundary; }\n"
+        "2\n(\n"
+        "    inlet\n    {\n        type patch;\n        nFaces 4;\n        startFace 0;\n    }\n"
+        "    wall\n    {\n        type wall;\n        nFaces 8;\n        startFace 4;\n    }\n"
+        ")\n",
+        encoding="ascii",
+    )
+
+    te = TemplateEngine()
+    t = te.get_template("Internal Flow")
+    assert t is not None and t.bl_enabled
+
+    te.apply_template(t, case_dir)
+
+    content = (case_dir / "system" / "meshDict").read_text()
+    assert "renameBoundary" in content
+    assert "inlet" in content
+    assert "thicknessRatio          1.2;" in content
+    assert "expansionRatio" not in content
+    assert "maxFirstLayerThickness" in content
+
+
 if __name__ == "__main__":
     import os, shutil
     test_template_metadata_defaults()
