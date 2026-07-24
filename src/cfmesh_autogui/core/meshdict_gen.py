@@ -69,7 +69,7 @@ def build_meshdict_lines(
         'FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }',
         "",
         "keepCellsIntersectingBoundary 1;",
-        "allowDisconnected 1;",
+        "allowDisconnected 0;",
         "maxNumIterations 15;",
         "",
         f'surfaceFile "{surface_file}";',
