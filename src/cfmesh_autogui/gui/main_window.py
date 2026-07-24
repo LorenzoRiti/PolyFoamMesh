@@ -41,7 +41,7 @@ from cfmesh_autogui.core.stl_writer import export_surface_file
 from cfmesh_autogui.core.meshdict_gen import write_meshdict
 from cfmesh_autogui.core.openfoam_runner import (
     RetryRunner, CheckMeshWorker, PolyDualWorker, QualityFixWorker,
-    analyze_error, ErrorType,
+    ParallelMeshWorker, analyze_error, ErrorType,
 )
 from cfmesh_autogui.core.feature_detector import FeatureDetector
 from cfmesh_autogui.core.boundary_reader import parse_boundary
@@ -1165,11 +1165,7 @@ class MainWindow(QMainWindow):
             encoding="ascii",
         )
 
-        self._log.append_log(f"{Tag.MESHING} Running cartesianMesh...")
         self._status.showMessage("Meshing...")
-
-        self._runner.cell_count_relay.connect(self._on_cell_count_found)
-        self._runner.progress_update.connect(self._on_progress_update)
 
         def guarded_finished(exit_code, output, attempts):
             if my_id != self._run_id:
@@ -1179,6 +1175,20 @@ class MainWindow(QMainWindow):
             self._on_meshing_finished(exit_code, output, attempts)
 
         self._params.set_meshing_state(True)
+
+        parallel_enabled, n_cores = self._params.get_parallel_params()
+        if parallel_enabled and n_cores >= 2:
+            self._log.append_log(
+                f"{Tag.MESHING} Running cartesianMesh across {n_cores} cores..."
+            )
+            self._run_parallel_mesh(
+                safe_max, safe_min, n_cores, guarded_finished,
+            )
+            return
+
+        self._log.append_log(f"{Tag.MESHING} Running cartesianMesh...")
+        self._runner.cell_count_relay.connect(self._on_cell_count_found)
+        self._runner.progress_update.connect(self._on_progress_update)
 
         self._runner.run(
             self._case_dir,
@@ -1190,6 +1200,44 @@ class MainWindow(QMainWindow):
             min_cell=safe_min,
             patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
         )
+
+    def _run_parallel_mesh(
+        self, max_cell: float, min_cell: float, n_cores: int, guarded_finished,
+    ) -> None:
+        """Run cartesianMesh across n_cores MPI ranks via ParallelMeshEngine,
+        on a background QThread so the GUI stays responsive (the engine's
+        run() is a long synchronous/blocking call).
+
+        Reuses _on_meshing_finished() for the follow-up (boundary parsing,
+        case setup, quality check) via the same (exit_code, output, attempts)
+        contract the serial RetryRunner path uses — parallel vs. serial only
+        differs in how constant/polyMesh got there.
+        """
+        if getattr(self, "_parallel_thread", None) and self._parallel_thread.isRunning():
+            self._parallel_thread.quit()
+            self._parallel_thread.wait(3000)
+
+        self._parallel_thread = QThread()
+        self._parallel_worker = ParallelMeshWorker(
+            self._case_dir, self._of_config,
+            max_cell=max_cell, min_cell=min_cell, n_cores=n_cores,
+            patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+        )
+        self._parallel_worker.moveToThread(self._parallel_thread)
+        self._parallel_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+
+        def on_finished(result):
+            guarded_finished(0, "", 1)
+
+        def on_failed(msg: str):
+            guarded_finished(1, msg, 1)
+
+        self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
+        self._parallel_worker.finished.connect(self._parallel_thread.quit, Qt.QueuedConnection)
+        self._parallel_worker.failed.connect(on_failed, Qt.QueuedConnection)
+        self._parallel_worker.failed.connect(self._parallel_thread.quit, Qt.QueuedConnection)
+        self._parallel_thread.started.connect(self._parallel_worker.run)
+        self._parallel_thread.start()
 
     def _make_temp_geometry_for_gmsh(self) -> str | None:
         import os as _os
