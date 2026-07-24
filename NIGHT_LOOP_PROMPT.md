@@ -96,24 +96,81 @@ are done and verified:
 - Viewer: Measure, Select Patch, Section Cut all repaired
 - "Volume Mesh" view now shows real internal cells via `foamToVTK` (was boundary-only)
 - BaramFlow case-folder export added under File → Export Mesh
+- **Patch types**: cfMesh types every patch `wall` unless a `renameBoundary` block
+  says otherwise. It was never emitted, so inlets/outlets came out as `wall` —
+  geometrically fine, physically unusable (no flow can enter a wall). `meshDict`
+  now emits `renameBoundary`; verified `inlet/outlet → type patch` in the output.
+- **Boundary layers were collapsing**: cfMesh's `thicknessRatio` is the layer-to-layer
+  GROWTH ratio (~1.1–1.3) and the first layer is absolute via `maxFirstLayerThickness`.
+  There is **no `expansionRatio` key** — cfMesh ignores it. The code was emitting
+  `thicknessRatio 0.005` (the first-layer *fraction*) plus an ignored `expansionRatio`,
+  i.e. telling cfMesh each layer should be 0.005× the previous one. Now mapped
+  correctly, plus `optimiseLayer`/`untangleLayers`; verified cfMesh logs
+  "Starting creating layer cells".
+- `main_window.py` auto-fix retry called `write_meshdict(patch_sizes=...)` — not a
+  real parameter (`TypeError`), and dropped the user's cell sizes. Fixed.
+- **checkMesh parsing was broken against real v2512 output**: non-orthogonality uses
+  `Max: ... average: ...` (colon), skewness/aspect carry no average at all, and
+  `Min volume = 6.3e-06.` ends in a period. The regexes required `average = ` with
+  `re.DOTALL`, so non-ortho/skew/aspect silently parsed as **0** (a perfect mesh,
+  always) and min-volume raised `ValueError`. Fixed and pinned by
+  `tests/test_checkmesh_parsing.py` against verbatim real output.
+- `core/geometry.check_watertight()` added — reusable pre-flight refusal of leaky
+  geometry (the benchmark's negative case depends on it).
+
+### Open finding, not yet fixed
+A plain sphere tessellates **non-watertight** (`tessellate_patches` on
+`cq.Workplane("XY").sphere(0.5)` → 8002 faces, `is_watertight False`). Any closed
+curved body will therefore be falsely reported leaky and refused. Worth a proper
+fix — it currently forces the `external_aero` benchmark to use a cylindrical body.
+
+### Verified cfMesh reference — real key names
+Confirmed against a working third-party meshDict and cfMesh's own behaviour.
+**`expansionRatio` is not a cfMesh key.** The boundary-layer keys that exist:
+
+```
+boundaryLayers {
+  patchBoundaryLayers {
+    "wall.*" {
+      nLayers 2; optimiseLayer 1; untangleLayers 1;
+      thicknessRatio 1.15;              // layer-to-layer GROWTH ratio
+      maxFirstLayerThickness 0.0001;    // ABSOLUTE, in metres
+    }
+  }
+  optimisationParameters {
+    nSmoothNormals 1; maxNumIterations 5; featureSizeFactor 0.3;
+    reCalculateNormals 2; relThicknessTol 0.1;
+  }
+}
+renameBoundary {                        // without this EVERY patch becomes `wall`
+  defaultName wall; defaultType wall;
+  newPatchNames { "inlet.*" { newName inlet; type patch; } ... }
+}
+```
+
+**Local prior art worth reading** — there is a full open-source OpenFOAM GUI
+already on this machine, inside WSL:
+`/home/lorenzoriti/SplashFOAM/` (`Source/Splash.py`, `Meshing/system/meshDict`).
+It drives cfMesh for the same purpose. Read it before designing anything new.
 
 ### What is genuinely still missing (I verified each of these)
-The current `meshDict` writer (`core/meshdict_gen.py`) emits **only**:
-`keepCellsIntersectingBoundary`, `allowDisconnected`, `maxNumIterations`,
-`surfaceFile`, `maxCellSize`, `minCellSize`, `patchCellSize`, `boundaryCellSize`,
-`boundaryCellSizeRefinementThickness`, and one single `boundaryLayers` block.
-
-It does **not** use, anywhere in the codebase:
+The `meshDict` writer (`core/meshdict_gen.py`) still does **not** use, anywhere:
 - **FMS / feature edges** — no `surfaceFeatureEdges`, no `.fms`, no `edgeMeshRefinement`
 - `objectRefinements` (box / sphere / cone / line local refinement)
 - `surfaceMeshRefinement`
 - per-patch boundary-layer control (one regex, same params for every wall)
+- `optimisationParameters` (BL smoothing/untangling controls — see block above)
 - any threading / multi-core setting
-- `optimiseLayer`, `nGrowLayers`, `maxFirstLayerThickness`
 
 There is **no benchmark suite** and **no objective measurement of mesh quality**.
 That is the single biggest gap: right now nobody — including you — can tell whether
 a change made meshes better or worse.
+
+**Known-good reference point** (measured after the fixes above, use as your first
+baseline): test cylinder, `maxCellSize 0.25 / minCellSize 0.125`, 3 BL layers →
+`checkMesh` reports **Mesh OK**, 7694 cells, max non-orthogonality 61.5
+(avg 15.0), max skewness 0.66, max aspect ratio 39.6. Case left at
+`C:\cfmesh_cases\verify_fix` for comparison.
 
 ---
 
@@ -148,9 +205,68 @@ Make this measurable before you optimise anything.
 
 ---
 
-## 5. P0 — Build the measuring stick FIRST
+## 5. P0 — The measuring stick now EXISTS — use it
 
-**Do this before any algorithm work.** Without it you are guessing.
+`benchmarks/run_benchmarks.py` works and is the authority on whether a change
+helped. Run it before and after every algorithmic change:
+
+```
+<python> benchmarks/run_benchmarks.py
+```
+
+**Current baseline (measured, 6/6 passing):**
+
+| case | cells | nonOrtho | skew | aspect | note |
+|---|---|---|---|---|---|
+| pipe | 4328 | 23.4 | 0.54 | 4 | |
+| pipe_constriction | 4144 | 41.6 | 1.11 | 4 | throat resolved (min cell 0.03 vs 0.05) |
+| box_obstacle | 7776 | 18.5 | 0.66 | 4 | |
+| external_aero | 2720 | 15.2 | 0.58 | 3 | |
+| thin_gap | 3327032 | 46.5 | 1.07 | 4 | 90 s — see lead 1 |
+| non_watertight | — | — | — | — | correctly rejected |
+
+**FIXED since the first baseline — multi-scale sizing was blind.** `pipe` and
+`pipe_constriction` used to produce the *identical* 608 cells. Two causes, both
+now fixed and pinned by `tests/test_sizing_resolves_features.py`:
+`_sample_thickness_one_mesh` took the FARTHEST ray hit (`.max()`) in both
+directions, measuring model extent rather than local wall-to-wall distance (every
+sample collapsed to one value); and min-cell came from the p5/p10 percentile,
+which by construction cannot see a feature covering ~3% of the surface area. Now
+the nearest hit is used and min-cell comes from p1, with higher sample counts.
+Result: 608 → 12888 cells on the constricted case, quality still within gates.
+
+**Remaining leads:**
+
+1. **`thin_gap` costs 3.3M cells / 90 s — this is the case for local refinement.**
+   The geometry has been fixed (it was a solid slab despite its name; it is now a
+   real 1 mm passage between two plates cut out of a 0.1 m domain) and both sizing
+   functions now separate bulk scale (p50) from thinnest feature (p1). What is
+   left is architectural: cfMesh's octree is **isotropic**, and `patchCellSize`
+   applies to a whole patch, so "refine only inside the gap" cannot currently be
+   expressed — on a single-patch geometry any local requirement becomes global.
+   3.3M may well be the honest cost of resolving a 1 mm gap in a 0.1 m domain this
+   way. **The real fix is `objectRefinements`** (§7.4): detect *where* the thin
+   region is and emit a refinement box around it. That needs
+   `analyze_local_thickness` to keep sample POSITIONS, which it currently throws
+   away — it returns percentiles only. Start there.
+2. The constricted case's non-orthogonality rose 16 → 42 as it got refined. Still
+   well inside the gates, but watch it when refining further.
+3. ~~No pre-run guard on cell count~~ — done. `MainWindow._confirm_large_mesh`
+   asks before starting above 2M cells or 5 min estimated, and names the cell
+   sizes driving the cost. Pinned by `tests/test_large_mesh_guard.py`.
+
+Bugs already fixed in the harness (do not reintroduce): case dirs were created
+under `tempfile.mkdtemp()`, i.e. under `C:\Users\Davide Valoroso\...`; the space
+broke the WSL command (`cd: too many arguments`) so **all 6 cases failed in
+~0.3s**. Work dirs now live under `C:/cfmesh_bench` and paths are `shlex.quote`d.
+`checkMesh` also needs `system/fvSchemes` + `fvSolution` or it exits 1 and every
+case reports 0 cells. And `success` came from `MeshQualityReport.passed`, which
+ignores non-orthogonality/skewness — the harness reported PASS on a mesh
+violating a hard gate until the gates were made decisive.
+
+### Still to build here
+- `compare.py` exists but has not been exercised against two real runs — verify it.
+- No local VTK-based quality path yet (fast iteration without WSL).
 
 Create `benchmarks/` with:
 
@@ -241,9 +357,29 @@ rounded — meaning much of the current sizing precision is illusory.
   transitions. Find the practical limit empirically with the benchmark.
 
 ### 7.3 Boundary layers that a solver can actually use
-Current BL support is one regex block with the same parameters for every wall, and
-no physics behind the numbers.
-- Implement a **y+ calculator** — this is exactly what Fluent/Star ship:
+
+**The y+ physics already exists and is now correct** — `commercial/bl_engine.py`
+(`BLEngine.calculate_from_flow`). Two bugs in it were fixed and pinned by
+`tests/test_bl_physics.py`: `FlowConditions.reynolds_number` is a plain field
+defaulting to 1e6, so passing velocity/length silently kept the wrong Re (use the
+new `FlowConditions.from_velocity()`); and the solver pinned `n_layers=10` and
+solved for the growth rate, letting it reach 2.0 — each layer nearly doubling.
+The rate is now fixed in [1.05, 1.5] and the layer count is derived. Verified
+behaviour: y+=1 (kOmegaSST) → y1=3.4e-5 m, 28 layers; y+=30 (kEpsilon) →
+y1=1.0e-3 m, 10 layers; total thickness matches 0.37·L/Re^0.2.
+
+**Now wired to the GUI** (`tests/test_bl_gui_wiring.py` pins the whole chain).
+The Boundary Layers group takes velocity, fluid and wall treatment, and
+"Calcola strati dalla fisica (y+)" derives nLayers / first-layer thickness /
+growth ratio, reporting Re and the y+ target back to the user. Widget ranges had
+to be widened (nLayers was capped at 10, the thickness fraction floored at 0.001)
+— both silently truncated what the physics asked for on wall-resolved cases.
+
+**Still open here:** Quick Mesh does not use it (it still applies whatever is in
+the panel); no per-patch BL (one regex, same parameters for every wall); the
+`optimisationParameters` block is still not emitted.
+
+- Reference for the correlation now implemented:
   ```
   Re    = U·L/ν
   Cf    ≈ 0.026·Re^(-1/7)          (verify correlation choice)

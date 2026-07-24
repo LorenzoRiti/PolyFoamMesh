@@ -40,6 +40,14 @@ class OFConfig:
         return True, ""
 
     def wsl_linux_case_path(self, case_dir: Path | str) -> str:
+        raw = str(case_dir)
+        # Already a POSIX path (e.g. the OpenFOAM env script at
+        # /usr/lib/openfoam/...): leave it alone. Running it through the
+        # Windows->WSL translation turned it into /mnt/c/usr/lib/... , which
+        # does not exist — `source` then failed silently behind 2>/dev/null and
+        # every OpenFOAM command came back "command not found" (rc=127).
+        if raw.startswith("/"):
+            return raw.replace("'", "'\\''")
         case_dir = Path(case_dir).resolve()
         drive = case_dir.drive[0].lower()
         rel = str(case_dir).split(":", 1)[1].replace("\\", "/")

@@ -204,13 +204,17 @@ class ParamsPanel(QWidget):
 
         bl_form = QFormLayout()
         self._bl_n_layers = QSpinBox()
-        self._bl_n_layers.setRange(1, 10)
+        # Wall-resolved meshes (y+~1) legitimately need 30+ layers; the old
+        # 1..10 cap silently truncated whatever the physics asked for.
+        self._bl_n_layers.setRange(1, 40)
         self._bl_n_layers.setValue(3)
         bl_form.addRow("nLayers:", self._bl_n_layers)
         self._bl_thick = QDoubleSpinBox()
-        self._bl_thick.setRange(0.001, 1.0)
+        # First layer as a fraction of max cell size. y+~1 gives fractions of
+        # order 1e-4, far below the old 0.001 floor.
+        self._bl_thick.setRange(1e-6, 1.0)
         self._bl_thick.setValue(0.005)
-        self._bl_thick.setDecimals(4)
+        self._bl_thick.setDecimals(6)
         bl_form.addRow("Thickness Ratio:", self._bl_thick)
         self._bl_exp = QDoubleSpinBox()
         self._bl_exp.setRange(1.0, 2.0)
@@ -219,6 +223,46 @@ class ParamsPanel(QWidget):
         bl_form.addRow("Expansion Ratio:", self._bl_exp)
         self._bl_apply_all = QCheckBox("Apply BL to all patches")
         bl_form.addRow(self._bl_apply_all)
+
+        # Physical inputs: the layer parameters above are derived from these
+        # rather than guessed, which is how commercial meshers do it.
+        self._bl_velocity = QDoubleSpinBox()
+        self._bl_velocity.setRange(0.001, 1000.0)
+        self._bl_velocity.setValue(10.0)
+        self._bl_velocity.setDecimals(3)
+        self._bl_velocity.setSuffix(" m/s")
+        self._bl_velocity.setToolTip("Velocità caratteristica del flusso (free-stream o media).")
+        bl_form.addRow("Velocity:", self._bl_velocity)
+
+        self._bl_fluid = QComboBox()
+        self._bl_fluid.addItems(["Air (20°C)", "Water (20°C)"])
+        self._bl_fluid.setToolTip("Determina la viscosità cinematica usata per il numero di Reynolds.")
+        bl_form.addRow("Fluid:", self._bl_fluid)
+
+        self._bl_wall_treatment = QComboBox()
+        self._bl_wall_treatment.addItems([
+            "Wall functions (y+ ≈ 30)",
+            "Wall-resolved (y+ ≈ 1)",
+        ])
+        self._bl_wall_treatment.setToolTip(
+            "Wall functions: meno celle, adatto a k-epsilon.\n"
+            "Wall-resolved: primo strato molto sottile, richiesto da k-omega SST e LES."
+        )
+        bl_form.addRow("Wall treatment:", self._bl_wall_treatment)
+
+        self._btn_bl_auto = QPushButton("Calcola strati dalla fisica (y+)")
+        self._btn_bl_auto.setToolTip(
+            "Deriva nLayers, spessore del primo strato e rapporto di crescita da "
+            "Reynolds e dal target y+, invece di indovinarli."
+        )
+        self._btn_bl_auto.clicked.connect(self._on_bl_auto_compute)
+        bl_form.addRow(self._btn_bl_auto)
+
+        self._bl_info = QLabel("")
+        self._bl_info.setWordWrap(True)
+        self._bl_info.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        bl_form.addRow(self._bl_info)
+
         self._bl_form_widget = QWidget()
         self._bl_form_widget.setLayout(bl_form)
         self._bl_form_widget.setVisible(False)
@@ -314,6 +358,78 @@ class ParamsPanel(QWidget):
 
     def _on_bl_toggled(self, checked: bool):
         self._bl_form_widget.setVisible(checked)
+
+    # Kinematic viscosity at 20 °C, m²/s.
+    _FLUID_NU = {"Air (20°C)": 1.5e-5, "Water (20°C)": 1.0e-6}
+
+    def _on_bl_auto_compute(self):
+        """Derive boundary-layer parameters from flow physics.
+
+        Replaces hand-guessed layer counts with the standard flat-plate
+        correlation (Cf -> u_tau -> y1 from the y+ target, layer count from the
+        99% BL thickness) — the same calculation commercial meshers expose as a
+        "y+ calculator".
+        """
+        if not self._suggest_meshes:
+            QMessageBox.information(
+                self, "No Geometry",
+                "Carica prima una geometria: serve la lunghezza caratteristica.",
+            )
+            return
+
+        from cfmesh_autogui.commercial.bl_engine import BLEngine, FlowConditions
+        from cfmesh_autogui.core.geometry import compute_bbox_dim
+
+        length = compute_bbox_dim(self._suggest_meshes)
+        velocity = self._bl_velocity.value()
+        nu = self._FLUID_NU.get(self._bl_fluid.currentText(), 1.5e-5)
+        resolved = "resolved" in self._bl_wall_treatment.currentText().lower()
+        model = "kOmegaSST" if resolved else "kEpsilon"
+
+        try:
+            flow = FlowConditions.from_velocity(
+                reference_velocity=velocity,
+                reference_length=length,
+                kinematic_viscosity=nu,
+                turbulence_model=model,
+            )
+            params = BLEngine().calculate_from_flow(flow)
+        except Exception as e:
+            logger.exception("Boundary-layer physics calculation failed")
+            QMessageBox.warning(self, "Calcolo non riuscito", str(e))
+            return
+
+        # meshDict takes the first layer as a fraction of the max cell size.
+        max_cell = max(self._max_cell.value(), 1e-9)
+        fraction = params.first_layer_height / max_cell
+        clamped = min(max(fraction, self._bl_thick.minimum()), self._bl_thick.maximum())
+
+        self._bl_n_layers.setValue(
+            min(max(params.n_layers, self._bl_n_layers.minimum()),
+                self._bl_n_layers.maximum())
+        )
+        self._bl_thick.setValue(clamped)
+        self._bl_exp.setValue(
+            min(max(params.growth_rate, self._bl_exp.minimum()), self._bl_exp.maximum())
+        )
+
+        note = ""
+        if params.n_layers > self._bl_n_layers.maximum():
+            note = (
+                f"  ⚠ La fisica richiede {params.n_layers} strati, "
+                f"limitati a {self._bl_n_layers.maximum()}."
+            )
+        if abs(clamped - fraction) > 1e-12:
+            note += "  ⚠ Primo strato limitato dal range del campo."
+
+        msg = (
+            f"Re={flow.reynolds_number:.3g} · y+ target={params.target_yplus} · "
+            f"primo strato={params.first_layer_height:.3g} m · "
+            f"{params.n_layers} strati · crescita {params.growth_rate:.2f} · "
+            f"spessore totale={params.total_thickness:.4g} m (L={length:.3g} m){note}"
+        )
+        self._bl_info.setText(msg)
+        self.suggestion_completed.emit(f"[bl] {msg}")
 
     def _on_suggest_sizes(self):
         if not self._suggest_meshes:

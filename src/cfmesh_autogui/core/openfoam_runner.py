@@ -702,21 +702,40 @@ class MeshQualityReport:
 _CHECK_CELLS_RE = re.compile(r"cells:\s+(\d+)", re.IGNORECASE)
 _CHECK_FACES_RE = re.compile(r"faces:\s+(\d+)", re.IGNORECASE)
 _CHECK_POINTS_RE = re.compile(r"points:\s+(\d+)", re.IGNORECASE)
+# A float that does NOT swallow a trailing sentence period. checkMesh writes
+# "Min volume = 6.30328e-06. Max volume = ..." and a `[\d.eE+-]+` class ate the
+# final '.', so float() raised ValueError on real output.
+_F = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+
+# Real OpenFOAM v2512 phrasing differs from the older form these regexes were
+# written against, and the metrics don't always carry an average:
+#   "Mesh non-orthogonality Max: 61.5453 average: 15.0436"   (colon form)
+#   "Max skewness = 0.657556 OK."                            (no average)
+#   "Max aspect ratio = 39.5564 OK."                         (no average)
+# Requiring "average = " with re.DOTALL meant these silently never matched, so
+# quality was reported as 0/perfect regardless of the real mesh. Accept both
+# spellings, make the average optional, and stay within one line ([^\n]) so a
+# missing average can't drag the match onto an unrelated later line.
 _CHECK_NONORTHO_RE = re.compile(
-    r"Max non-orthogonality = ([\d.]+).*?average = ([\d.]+)", re.DOTALL
+    rf"(?:Mesh non-orthogonality\s+Max:|Max non-orthogonality\s*=)\s*({_F})"
+    rf"(?:[^\n]*?average\s*[:=]\s*({_F}))?",
+    re.IGNORECASE,
 )
 _CHECK_SKEW_RE = re.compile(
-    r"Max skewness = ([\d.]+).*?average = ([\d.]+)", re.DOTALL
+    rf"Max skewness\s*[:=]\s*({_F})(?:[^\n]*?average\s*[:=]\s*({_F}))?",
+    re.IGNORECASE,
 )
 _CHECK_ASPECT_RE = re.compile(
-    r"Max aspect ratio = ([\d.]+).*?average = ([\d.]+)", re.DOTALL
+    rf"Max aspect ratio\s*[:=]\s*({_F})(?:[^\n]*?average\s*[:=]\s*({_F}))?",
+    re.IGNORECASE,
 )
 _CHECK_NEGVOL_RE = re.compile(
-    r"There are (\d+) cells.*?negative volume", re.IGNORECASE
+    rf"There are\s+(\d+)\s+cells[^\n]*?negative volume"
+    rf"|Writing\s+(\d+)\s+cells with negative volume",
+    re.IGNORECASE,
 )
-_CHECK_MINVOL_RE = re.compile(
-    r"Min volume = (-?[\d.eE+-]+)", re.IGNORECASE
-)
+_CHECK_MINVOL_RE = re.compile(rf"Min volume\s*=\s*({_F})", re.IGNORECASE)
+_CHECK_MESH_OK_RE = re.compile(r"^\s*Mesh OK\.", re.IGNORECASE | re.MULTILINE)
 _CHECK_FATAL_RE = re.compile(
     r"FOAM FATAL|FATAL ERROR|--> FOAM FATAL", re.IGNORECASE
 )
@@ -740,12 +759,14 @@ def parse_checkmesh_output(text: str) -> MeshQualityReport:
     m = _CHECK_NONORTHO_RE.search(text)
     if m:
         r.max_non_ortho = float(m.group(1))
-        r.avg_non_ortho = float(m.group(2))
+        if m.group(2) is not None:
+            r.avg_non_ortho = float(m.group(2))
 
     m = _CHECK_SKEW_RE.search(text)
     if m:
         r.max_skewness = float(m.group(1))
-        r.avg_skewness = float(m.group(2))
+        if m.group(2) is not None:
+            r.avg_skewness = float(m.group(2))
 
     m = _CHECK_ASPECT_RE.search(text)
     if m:
@@ -753,7 +774,7 @@ def parse_checkmesh_output(text: str) -> MeshQualityReport:
 
     m = _CHECK_NEGVOL_RE.search(text)
     if m:
-        r.neg_cells = int(m.group(1))
+        r.neg_cells = int(m.group(1) or m.group(2))
 
     m = _CHECK_MINVOL_RE.search(text)
     if m:

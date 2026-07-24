@@ -35,7 +35,12 @@ def test_basic_no_bl():
 
 
 def test_with_bl():
-    lines = build_meshdict_lines(bl_params={
+    """cfMesh's `thicknessRatio` is the layer GROWTH ratio and the first layer
+    is absolute via `maxFirstLayerThickness`; there is no `expansionRatio` key
+    (cfMesh ignores it). This test previously asserted the opposite, which is
+    why boundary layers collapsed: cfMesh was told each layer should be 0.005x
+    the previous one."""
+    lines = build_meshdict_lines(max_cell=0.1, bl_params={
         "nLayers": 3,
         "thicknessRatio": 0.005,
         "expansionRatio": 1.2,
@@ -44,10 +49,14 @@ def test_with_bl():
     content = "\n".join(lines)
     assert "boundaryLayers" in content
     assert "patchBoundaryLayers" in content
-    assert "nLayers           3" in content
-    assert "thicknessRatio   0.005" in content
-    assert "expansionRatio   1.2" in content
-    print("PASS: boundary layers block present (v2512 patchBoundaryLayers format)")
+    assert "nLayers                 3" in content
+    # growth ratio goes to thicknessRatio, not to an ignored expansionRatio
+    assert "thicknessRatio          1.2" in content
+    assert "expansionRatio" not in content
+    # 0.005 (fraction) x 0.1 (max cell) = 5e-4 absolute first layer
+    assert "maxFirstLayerThickness  0.0005" in content
+    assert "optimiseLayer" in content
+    print("PASS: boundary layers use real cfMesh semantics")
 
 
 def test_with_patches():
@@ -82,8 +91,9 @@ def test_write_with_bl():
             },
         )
         content = out.read_text()
-        assert "nLayers           5" in content
-        assert "thicknessRatio   0.01" in content
+        assert "nLayers                 5" in content
+        assert "thicknessRatio          1.3" in content
+        assert "maxFirstLayerThickness  0.001" in content
     print("PASS: write with BL")
 
 

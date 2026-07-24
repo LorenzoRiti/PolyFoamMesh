@@ -18,6 +18,25 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def infer_patch_type(patch_name: str) -> str:
+    """Map a patch name to the OpenFOAM boundary type cfMesh should assign.
+
+    cfMesh types EVERY patch as `wall` unless a renameBoundary block says
+    otherwise. A patch typed `wall` cannot carry an inlet/outlet boundary
+    condition — the solver (and BaramFlow) treat it as a solid surface — so
+    without this the generated mesh is geometrically fine but physically
+    unusable.
+    """
+    n = patch_name.lower()
+    if "inlet" in n or "outlet" in n or "opening" in n or "farfield" in n:
+        return "patch"
+    if "symmetry" in n:
+        return "symmetryPlane"
+    if "empty" in n:
+        return "empty"
+    return "wall"
+
+
 def build_meshdict_lines(
     max_cell: float = 0.05,
     min_cell: float = 0.01,
@@ -26,6 +45,8 @@ def build_meshdict_lines(
     boundary_refinement_thickness: float | None = None,
     surface_file: str = "constant/triSurface/surface.stl",
     bl_params: dict | None = None,
+    patch_names: list[str] | None = None,
+    patch_types: dict[str, str] | None = None,
 ) -> list[str]:
     """Build meshDict content for cfMesh v2512.
 
@@ -85,19 +106,57 @@ def build_meshdict_lines(
         # v2512 syntax: boundaryLayers > patchBoundaryLayers > regex > { ... }
         # The regex matches one or more patch names with "|" alternation.
         regex = "|".join(wall_patches)
+
+        # cfMesh's `thicknessRatio` IS the layer-to-layer growth ratio (~1.1-1.3),
+        # and the first layer is set in ABSOLUTE units by `maxFirstLayerThickness`.
+        # There is no `expansionRatio` key — cfMesh silently ignores it. This code
+        # used to emit `thicknessRatio <first-layer fraction>` (e.g. 0.005) plus an
+        # ignored `expansionRatio`, i.e. it told cfMesh each layer should be 0.005x
+        # the previous one, collapsing the layers to nothing.
+        growth = float(bl_params.get("expansionRatio", 1.2))
+        first_layer_fraction = float(bl_params.get("thicknessRatio", 0.005))
+        first_layer_abs = first_layer_fraction * float(max_cell)
+
         lines.append("boundaryLayers")
         lines.append("{")
         lines.append("    patchBoundaryLayers")
         lines.append("    {")
         lines.append(f'        "{regex}"')
         lines.append("        {")
-        lines.append(f"            nLayers           {bl_params['nLayers']};")
-        lines.append(f"            thicknessRatio   {bl_params['thicknessRatio']};")
-        lines.append(f"            expansionRatio   {bl_params['expansionRatio']};")
+        lines.append(f"            nLayers                 {bl_params['nLayers']};")
+        lines.append(f"            thicknessRatio          {growth};")
+        lines.append(f"            maxFirstLayerThickness  {first_layer_abs:.8g};")
+        lines.append("            optimiseLayer           1;")
+        lines.append("            untangleLayers          1;")
         lines.append("        }")
         lines.append("    }")
         lines.append("}")
         lines.append("")
+
+    # renameBoundary: without this cfMesh types every patch as `wall`, so an
+    # inlet/outlet cannot take a flow boundary condition downstream.
+    names = list(patch_names or [])
+    if patch_types:
+        names = list(dict.fromkeys(names + list(patch_types)))
+    if names:
+        resolved = {n: (patch_types or {}).get(n) or infer_patch_type(n) for n in names}
+        non_default = {n: t for n, t in resolved.items() if t != "wall"}
+        if non_default:
+            lines.append("renameBoundary")
+            lines.append("{")
+            lines.append("    defaultName     wall;")
+            lines.append("    defaultType     wall;")
+            lines.append("    newPatchNames")
+            lines.append("    {")
+            for name, ptype in non_default.items():
+                lines.append(f'        "{name}"')
+                lines.append("        {")
+                lines.append(f"            newName     {name};")
+                lines.append(f"            type        {ptype};")
+                lines.append("        }")
+            lines.append("    }")
+            lines.append("}")
+            lines.append("")
 
     return lines
 
@@ -111,6 +170,8 @@ def write_meshdict(
     boundary_refinement_thickness: float | None = None,
     surface_file: str = "constant/triSurface/surface.stl",
     bl_params: dict | None = None,
+    patch_names: list[str] | None = None,
+    patch_types: dict[str, str] | None = None,
 ) -> Path:
     case_dir = Path(case_dir)
     system_dir = case_dir / "system"
@@ -124,6 +185,8 @@ def write_meshdict(
         boundary_refinement_thickness=boundary_refinement_thickness,
         surface_file=surface_file,
         bl_params=bl_params,
+        patch_names=patch_names,
+        patch_types=patch_types,
     )
 
     if bl_params:

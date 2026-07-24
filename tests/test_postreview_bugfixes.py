@@ -144,19 +144,27 @@ def test_no_bl_block_when_bl_params_is_none():
     print("PASS: no BL block when bl_params is None")
 
 
-def test_bl_block_uses_thicknessRatio_and_expansionRatio():
-    """User values must reach the meshDict verbatim."""
+def test_bl_block_maps_user_values_to_cfmesh_keys():
+    """User BL values must reach the meshDict under the keys cfMesh actually reads.
+
+    Passing them through verbatim (what this test used to assert) was the bug:
+    cfMesh's `thicknessRatio` is the layer-to-layer GROWTH ratio, so feeding it
+    the first-layer fraction (0.42) collapsed the layers, while the real growth
+    ratio was emitted as `expansionRatio` — a key cfMesh silently ignores.
+    """
     bl = {
         "nLayers": 5,
         "thicknessRatio": 0.42,
         "expansionRatio": 1.5,
         "wallPatches": ["wall"],
     }
-    content = "\n".join(build_meshdict_lines(bl_params=bl))
-    assert "0.42" in content
-    assert "1.5" in content
-    assert "nLayers           5" in content or "nLayers 5" in content
-    print("PASS: BL user values flow through to meshDict")
+    content = "\n".join(build_meshdict_lines(max_cell=0.05, bl_params=bl))
+    assert "thicknessRatio          1.5" in content
+    assert "expansionRatio" not in content
+    # first-layer fraction becomes an absolute thickness: 0.42 * 0.05
+    assert "maxFirstLayerThickness  0.021" in content
+    assert "nLayers                 5" in content
+    print("PASS: BL user values map onto real cfMesh keys")
 
 
 # ------------------------------------------------------------------
