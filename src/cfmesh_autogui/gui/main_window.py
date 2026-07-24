@@ -132,8 +132,11 @@ class MainWindow(QMainWindow):
         fm.addAction("Create Test Cylinder", self._on_test_cylinder)
         fm.addSeparator()
         export_menu = fm.addMenu("Export Mesh")
-        export_menu.addAction("CGNS (.cgns)...", lambda: self._on_export_mesh("cgns"))
         export_menu.addAction("VTU (.vtu)...", lambda: self._on_export_mesh("vtu"))
+        export_menu.addAction("CGNS (.cgns)...", lambda: self._on_export_mesh("cgns"))
+        export_menu.addAction("SU2 (.su2)...", lambda: self._on_export_mesh("su2"))
+        export_menu.addAction("GMSH (.msh)...", lambda: self._on_export_mesh("gmsh"))
+        export_menu.addAction("Abaqus (.inp)...", lambda: self._on_export_mesh("abaqus"))
         export_menu.addSeparator()
         export_menu.addAction("BaramFlow Case Folder...", self._on_export_baramflow)
         export_menu.addAction("PDF Quality Report...", self._on_export_pdf)
@@ -1567,14 +1570,20 @@ class MainWindow(QMainWindow):
             return
 
     def _on_export_mesh(self, fmt: str):
-        # meshio (5.3.5, as shipped) has no OpenFOAM *reader* — only a
-        # writer — so `meshio.read(poly_dir, file_format="openfoam")`
-        # always raised ReadError and this export silently never worked
-        # for anyone. Fixed by using OpenFOAM's own `foamToVTK` (a native
-        # WSL utility, always present) to get a real VTU, then — for CGNS —
-        # re-reading that VTU with meshio (which DOES support VTU) and
-        # writing CGNS from it. `-no-fields` keeps this purely a mesh
-        # export, independent of whether the case's field files are valid.
+        """Export the mesh via foamToVTK -> PyVista -> (triangulate) -> meshio.
+
+        meshio (5.3.5, as shipped) has no OpenFOAM *reader*, so reading the
+        case directly always raised ReadError — this export never worked at
+        all. Separately, cfMesh's octree produces polyhedral cells at
+        refinement transitions, and meshio's own VTU reader refuses mixed
+        polyhedra + standard cells — so even routing through a plain VTU
+        re-read fails on realistic (non-toy) geometry, not just simple boxes.
+        `core.mesh_export.export_mesh` fixes both: PyVista (built on VTK, not
+        meshio) reads any OpenFOAM/cfMesh cell type natively, and non-VTU
+        formats triangulate every cell to tetrahedra first — verified against
+        a real mesh with mixed hexahedron+polyhedron cells for every format
+        below.
+        """
         if not self._case_dir:
             QMessageBox.warning(self, "No Mesh", "Generate a mesh first.")
             return
@@ -1582,57 +1591,21 @@ class MainWindow(QMainWindow):
         if not poly_dir.exists():
             QMessageBox.warning(self, "No Mesh", "polyMesh directory not found.")
             return
+
+        from cfmesh_autogui.core.mesh_export import EXPORT_FORMATS
+        ext, _meshio_fmt, desc = EXPORT_FORMATS[fmt]
         path, _ = QFileDialog.getSaveFileName(
-            self, f"Export Mesh as .{fmt}",
-            str(self._case_dir / f"mesh.{fmt}"),
-            f"{fmt.upper()} (*.{fmt})",
+            self, f"Export Mesh as {ext}",
+            str(self._case_dir / f"mesh{ext}"),
+            f"{desc} (*{ext})",
         )
         if not path:
             return
         try:
-            import subprocess
-            import shlex
-            linux_case = self._of_config._quoted_linux_path(self._case_dir)
-            env_quoted = shlex.quote(self._of_config.env_script)
-            vtk_subdir = "VTK_export"
-            cmd = self._of_config._build_wsl_cmd(
-                f"source {env_quoted} 2>/dev/null; cd {linux_case} && "
-                f"foamToVTK -constant -noZero -no-fields -overwrite -name {vtk_subdir}"
-            )
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"foamToVTK failed:\n{(result.stderr or result.stdout)[-500:]}"
-                )
-            matches = list((self._case_dir / vtk_subdir).glob("*_0/internal.vtu"))
-            if not matches:
-                raise RuntimeError(
-                    "foamToVTK ran but produced no internal.vtu — "
-                    "check that the mesh was generated successfully."
-                )
-            vtu_path = matches[0]
-
-            if fmt == "vtu":
-                import shutil as _shutil
-                _shutil.copyfile(vtu_path, path)
-            else:
-                import meshio
-                try:
-                    m = meshio.read(str(vtu_path))
-                except ValueError as ve:
-                    if "polyhedra" in str(ve).lower():
-                        raise RuntimeError(
-                            "This mesh contains polyhedral cells (typical cfMesh/"
-                            "cartesianMesh output), which meshio cannot convert to "
-                            "CGNS. Export as VTU instead (fully supported), or use "
-                            "GMSH Direct meshing (tet/hex only) if a CGNS export is "
-                            "required."
-                        ) from ve
-                    raise
-                meshio.write(path, m)
-
-            self._log.append_log(f"{Tag.EXPORT} Mesh exported ({fmt.upper()}): {path}")
-            QMessageBox.information(self, "Export Complete", f"Mesh exported to:\n{path}")
+            from cfmesh_autogui.core.mesh_export import export_mesh
+            out = export_mesh(self._case_dir, fmt, path, of_config=self._of_config)
+            self._log.append_log(f"{Tag.EXPORT} Mesh exported ({fmt.upper()}): {out}")
+            QMessageBox.information(self, "Export Complete", f"Mesh exported to:\n{out}")
         except Exception as e:
             logger.error("Export failed: %s", e)
             QMessageBox.critical(self, "Export Error", str(e))
