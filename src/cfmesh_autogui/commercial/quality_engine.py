@@ -312,32 +312,48 @@ class QualityEngine:
         thr = THRESHOLDS
 
         if metrics.max_skewness > thr["skewness_max"]:
+            # Skewness: first try relaxing cell sizes (proportional to severity).
+            # If BL is active, also consider reducing layers.
+            severity = (metrics.max_skewness - thr["skewness_max"]) / thr["skewness_max"]
+            relax_factor = 1.0 + min(severity * 0.5, 0.5)
             fixes.append(AutoFixAction(
                 action="relax",
                 target_metric="skewness",
                 current_value=metrics.max_skewness,
-                detail="Increase maxCell, decrease minCell by 20%",
+                detail=f"Increase maxCell by {relax_factor:.0%}, decrease minCell by {relax_factor*0.5:.0%}",
             ))
+
         if metrics.max_non_orthogonality > thr["non_ortho_max"]:
+            # Non-orthogonality: reduce BL layers first (preserves mesh near other walls),
+            # only disable BL entirely as a second step if it recurs.
             fixes.append(AutoFixAction(
-                action="disable_bl",
+                action="reduce_bl",
                 target_metric="non_orthogonality",
                 current_value=metrics.max_non_orthogonality,
-                detail="Disable boundary layers and regenerate",
+                detail="Halve BL nLayers and thicknessRatio",
             ))
+
         if metrics.neg_cells > thr["neg_vol_max"]:
+            negatives = metrics.neg_cells
+            if negatives <= 10:
+                factor = 1.3
+            else:
+                factor = 1.5 + min(negatives * 0.01, 1.0)
             fixes.append(AutoFixAction(
                 action="remesh",
                 target_metric="neg_vol",
-                current_value=float(metrics.neg_cells),
-                detail="Regenerate with coarser cells",
+                current_value=float(negatives),
+                detail=f"Coarsen cells by {factor:.0%}",
             ))
+
         if metrics.max_aspect_ratio > thr["aspect_ratio_max"]:
+            severity = (metrics.max_aspect_ratio - thr["aspect_ratio_max"]) / thr["aspect_ratio_max"]
+            reduction = 0.7 - min(severity * 0.1, 0.2)
             fixes.append(AutoFixAction(
                 action="split",
                 target_metric="aspect_ratio",
                 current_value=metrics.max_aspect_ratio,
-                detail="Reduce maxCellSize by 30%",
+                detail=f"Reduce maxCellSize by {(1 - reduction):.0%}",
             ))
         return fixes
 
@@ -351,28 +367,43 @@ class QualityEngine:
         text = meshdict_path.read_text(encoding="ascii", errors="replace")
 
         if fix.action == "relax":
-            text = self._relax_cell_sizes(text)
+            text = self._relax_cell_sizes(text, factor=1.2)
+        elif fix.action == "reduce_bl":
+            text = self._reduce_boundary_layers(text)
         elif fix.action == "disable_bl":
             text = self._disable_boundary_layers(text)
         elif fix.action == "remesh":
-            text = self._coarsen_mesh(text)
+            text = self._coarsen_mesh(text, factor=1.5)
         elif fix.action == "split":
-            text = self._reduce_max_cell(text)
+            text = self._reduce_max_cell(text, factor=0.7)
 
         meshdict_path.write_text(text, encoding="ascii")
         logger.info("Applied fix: %s on %s", fix.action, fix.target_metric)
 
     @staticmethod
-    def _relax_cell_sizes(text: str) -> str:
-        """Increase maxCell by 20%, decrease minCell by 20%."""
+    def _relax_cell_sizes(text: str, factor: float = 1.2) -> str:
+        """Increase maxCell by *factor*, decrease minCell by *factor*^-1."""
         def _relax_max(m: re.Match) -> str:
-            val = float(m.group(1)) * 1.2
+            val = float(m.group(1)) * factor
             return f"maxCellSize {val:.6f};"
         def _relax_min(m: re.Match) -> str:
-            val = float(m.group(1)) * 0.8
+            val = float(m.group(1)) / factor
             return f"minCellSize {val:.6f};"
         text = re.sub(r"maxCellSize\s+([\d.]+);", _relax_max, text)
         text = re.sub(r"minCellSize\s+([\d.]+);", _relax_min, text)
+        return text
+
+    @staticmethod
+    def _reduce_boundary_layers(text: str) -> str:
+        """Halve BL nLayers and thicknessRatio to ease non-orthogonality."""
+        def _halve_layers(m: re.Match) -> str:
+            val = max(int(float(m.group(1)) // 2), 1)
+            return f"            nLayers                 {val};"
+        def _halve_growth(m: re.Match) -> str:
+            val = max(float(m.group(1)) * 0.5, 1.01)
+            return f"            thicknessRatio          {val:.4f};"
+        text = re.sub(r"nLayers\s+(\d+);", _halve_layers, text)
+        text = re.sub(r"thicknessRatio\s+([\d.]+);", _halve_growth, text)
         return text
 
     @staticmethod
@@ -381,18 +412,18 @@ class QualityEngine:
         return re.sub(r"\nboundaryLayers\s*\{[^}]*\}", "", text, flags=re.DOTALL)
 
     @staticmethod
-    def _coarsen_mesh(text: str) -> str:
-        """Increase both cell sizes by 50%."""
-        text = re.sub(r"maxCellSize\s+([\d.]+);", lambda m: f"maxCellSize {float(m.group(1))*1.5:.6f};", text)
-        text = re.sub(r"minCellSize\s+([\d.]+);", lambda m: f"minCellSize {float(m.group(1))*1.5:.6f};", text)
+    def _coarsen_mesh(text: str, factor: float = 1.5) -> str:
+        """Increase both cell sizes by *factor*."""
+        text = re.sub(r"maxCellSize\s+([\d.]+);", lambda m, f=factor: f"maxCellSize {float(m.group(1))*f:.6f};", text)
+        text = re.sub(r"minCellSize\s+([\d.]+);", lambda m, f=factor: f"minCellSize {float(m.group(1))*f:.6f};", text)
         return text
 
     @staticmethod
-    def _reduce_max_cell(text: str) -> str:
-        """Reduce maxCell by 30%."""
+    def _reduce_max_cell(text: str, factor: float = 0.7) -> str:
+        """Reduce maxCell by *factor*."""
         return re.sub(
             r"maxCellSize\s+([\d.]+);",
-            lambda m: f"maxCellSize {float(m.group(1))*0.7:.6f};",
+            lambda m, f=factor: f"maxCellSize {float(m.group(1))*f:.6f};",
             text,
         )
 
