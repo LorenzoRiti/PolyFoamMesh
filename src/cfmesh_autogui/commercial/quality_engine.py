@@ -177,6 +177,14 @@ class QualityEngine:
                     f"({fix.current_value:.2f})"
                 )
 
+            # _apply_fix only rewrites meshDict text; without re-running
+            # cartesianMesh, analyse() below would just re-check the same
+            # unchanged mesh on every iteration (same bug found and fixed in
+            # commercial/optimizer.py's MeshOptimizer.optimize()).
+            if not self._run_cartesian_mesh(case_dir):
+                report.warnings.append(f"Iteration {i + 1}: cartesianMesh failed")
+                break
+
             # Re-analyse after fix
             report = self.analyse(case_dir)
             if report.passed:
@@ -188,6 +196,25 @@ class QualityEngine:
             "fixes": len(report.fixes_applied),
         })
         return report
+
+    def _run_cartesian_mesh(self, case_dir: Path) -> bool:
+        """Run cartesianMesh synchronously so the fix loop actually re-meshes."""
+        import subprocess
+        from cfmesh_autogui.config import OFConfig
+
+        try:
+            cmd = OFConfig().build_command(Path(case_dir))
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            logger.warning("cartesianMesh timed out for %s", case_dir)
+            return False
+        except FileNotFoundError:
+            logger.warning("WSL not found for cartesianMesh")
+            return False
+        except Exception as exc:
+            logger.warning("cartesianMesh failed: %s", exc)
+            return False
 
     # ------------------------------------------------------------------
     # checkMesh parsing
