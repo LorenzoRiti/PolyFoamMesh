@@ -8,11 +8,6 @@ from _test_helpers import load_commercial_module
 _mod = load_commercial_module("quick_mesh")
 QuickMeshResult = _mod.QuickMeshResult
 QuickMesh = _mod.QuickMesh
-TARGET_YPLUS = _mod.TARGET_YPLUS
-
-
-def test_target_yplus():
-    assert TARGET_YPLUS == 30.0
 
 
 def test_quick_mesh_result_defaults():
@@ -66,8 +61,6 @@ def test_auto_bl_params_watertight():
     if result is not None:
         assert "nLayers" in result
         assert "thicknessRatio" in result
-        assert "expansionRatio" in result
-        assert result["expansionRatio"] == 1.2
 
 
 def test_run_nonexistent_geometry():

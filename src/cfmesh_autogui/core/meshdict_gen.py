@@ -123,11 +123,13 @@ def build_meshdict_lines(
         lines.append("    {")
         lines.append(f'        "{regex}"')
         lines.append("        {")
-        lines.append(f"            nLayers                 {bl_params['nLayers']};")
-        lines.append(f"            thicknessRatio          {growth};")
-        lines.append(f"            maxFirstLayerThickness  {first_layer_abs:.8g};")
-        lines.append("            optimiseLayer           1;")
-        lines.append("            untangleLayers          1;")
+        lines.append(f"            nLayers           {bl_params['nLayers']};")
+        # thicknessRatio in cfMesh is the ratio between successive
+        # layers (growth/expansion rate), NOT the first-layer fraction
+        # of the cell size. A value of 1.2 means each layer is 1.2x
+        # the previous layer's thickness.
+        tr = bl_params.get("thicknessRatio", 1.2)
+        lines.append(f"            thicknessRatio   {tr};")
         lines.append("        }")
         lines.append("    }")
         lines.append("}")

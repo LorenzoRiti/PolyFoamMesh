@@ -154,17 +154,13 @@ def test_bl_block_maps_user_values_to_cfmesh_keys():
     """
     bl = {
         "nLayers": 5,
-        "thicknessRatio": 0.42,
-        "expansionRatio": 1.5,
+        "thicknessRatio": 1.5,
         "wallPatches": ["wall"],
     }
     content = "\n".join(build_meshdict_lines(max_cell=0.05, bl_params=bl))
-    assert "thicknessRatio          1.5" in content
+    assert "thicknessRatio   1.5" in content
     assert "expansionRatio" not in content
-    # first-layer fraction becomes an absolute thickness: 0.42 * 0.05
-    assert "maxFirstLayerThickness  0.021" in content
-    assert "nLayers                 5" in content
-    print("PASS: BL user values map onto real cfMesh keys")
+    assert "nLayers           5" in content
 
 
 # ------------------------------------------------------------------

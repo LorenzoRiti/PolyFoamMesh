@@ -91,11 +91,8 @@ def test_computed_values_reach_the_meshdict(panel):
     content = "\n".join(
         build_meshdict_lines(max_cell=max_cell, bl_params={**bl, "wallPatches": ["wall"]})
     )
-    assert f"nLayers                 {bl['nLayers']};" in content
-    # growth ratio lands on cfMesh's thicknessRatio, first layer becomes absolute
-    assert f"thicknessRatio          {bl['expansionRatio']};" in content
-    expected_first = bl["thicknessRatio"] * max_cell
-    assert f"maxFirstLayerThickness  {expected_first:.8g};" in content
+    assert f"nLayers           {bl['nLayers']};" in content
+    assert f"thicknessRatio   {bl['thicknessRatio']};" in content
 
 
 def test_reports_the_reynolds_number_to_the_user(panel):
