@@ -46,6 +46,7 @@ from cfmesh_autogui.core.openfoam_runner import (
 from cfmesh_autogui.core.feature_detector import FeatureDetector
 from cfmesh_autogui.core.boundary_reader import parse_boundary
 from cfmesh_autogui.core.case_setup import setup_case
+from cfmesh_autogui.core.workflow import MeshingWorkflow, Step, Status
 from cfmesh_autogui.gui.quality_panel import QualityPanel
 from cfmesh_autogui.gui.viewer_widget import ViewerWidget
 from cfmesh_autogui.gui.params_panel import ParamsPanel
@@ -289,9 +290,67 @@ class MainWindow(QMainWindow):
         for k in ["geometry", "mesh", "advanced", "generate", "quality"]:
             tree.addTopLevelItem(self._wf_items[k])
 
-        dock.setWidget(tree)
+        # Guided-workflow brain + a live "what to do next" hint. The hint is the
+        # heart of "senza impazzimenti": the user always sees the single next
+        # action, and never has to guess which button is safe to press.
+        self._workflow = MeshingWorkflow()
+        self._wf_hint = QLabel()
+        self._wf_hint.setWordWrap(True)
+        self._wf_hint.setStyleSheet("padding: 6px 8px; font-size: 11px;")
+        self._wf_hint.setMinimumWidth(180)
+
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        v.addWidget(tree)
+        v.addWidget(QLabel("Next step:"))
+        v.addWidget(self._wf_hint)
+        v.addStretch()
+
+        dock.setWidget(container)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
         self._wf_dock = dock
+        self._refresh_workflow()
+
+    # Map workflow steps to the existing tree items and statuses to icons.
+    _WF_STEP_ITEMS = {
+        Step.GEOMETRY: "geometry",
+        Step.SIZING: "mesh",
+        Step.BOUNDARY_LAYERS: "advanced",
+        Step.GENERATE: "generate",
+        Step.QUALITY: "quality",
+    }
+    _WF_STATUS_ICON = {
+        Status.LOCKED: "🔒",
+        Status.READY: "▶",
+        Status.DONE: "✓",
+        Status.WARNING: "⚠",
+    }
+
+    def _refresh_workflow(self, **flags) -> None:
+        """Update the workflow model from *flags* and repaint the dock.
+
+        Kept defensive: any missing widget just means the dock isn't built yet.
+        """
+        wf = getattr(self, "_workflow", None)
+        if wf is None:
+            return
+        for key, value in flags.items():
+            if hasattr(wf, key):
+                setattr(wf, key, value)
+
+        for step, item_key in self._WF_STEP_ITEMS.items():
+            item = getattr(self, "_wf_items", {}).get(item_key)
+            if item is None:
+                continue
+            icon = self._WF_STATUS_ICON.get(wf.status_of(step), "○")
+            label = item.text(0)[3:] if len(item.text(0)) > 3 else item.text(0)
+            item.setText(0, f"{icon}  {label}")
+
+        if getattr(self, "_wf_hint", None) is not None:
+            done, total = wf.progress()
+            self._wf_hint.setText(f"[{done}/{total}]  {wf.next_action()}")
 
     def _on_workflow_item_clicked(self, item: QTreeWidgetItem, col: int):
         stage = item.data(0, Qt.UserRole).get("stage", "")
@@ -447,6 +506,8 @@ class MainWindow(QMainWindow):
         logger.info("Domain bbox: %.4f x %.4f x %.4f", dx, dy, dz)
         self._log.append_log(f"{Tag.GEOM} Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m")
 
+        # Geometry loaded and auto-sized; the watertight result is set inside.
+        self._refresh_workflow(geometry_loaded=True, sizing_ready=True)
         self._check_watertight(self._meshes)
 
     def _prepare_surface_with_features(self) -> str:
@@ -525,10 +586,13 @@ class MainWindow(QMainWindow):
             combined.merge_vertices()
             if combined.is_watertight:
                 self._log.append_log(f"{Tag.GEOM} Watertight check: OK (closed volume).")
+                self._refresh_workflow(watertight=True)
                 return
         except Exception as exc:
             logger.debug("Watertight check skipped: %s", exc)
             return
+
+        self._refresh_workflow(watertight=False)
 
         try:
             import trimesh.grouping as _grouping
@@ -727,6 +791,9 @@ class MainWindow(QMainWindow):
         self._run_id += 1
         if self._runner.is_running:
             self._runner.terminate()
+        # Back to a blank workflow — the hint returns to "load a geometry".
+        self._workflow = MeshingWorkflow()
+        self._refresh_workflow()
         self._meshes = []
         self._unscaled_meshes = []
         self._original_shape = None
@@ -1324,6 +1391,7 @@ class MainWindow(QMainWindow):
 
         self._set_workflow_stage("generate", "done")
         self._set_workflow_stage("quality", "active")
+        self._refresh_workflow(mesh_generated=True)
         logger.info("cartesianMesh OK (attempt %d).", attempts)
         octo.log_event("main_window", "meshing_ok",
             f"attempt={attempts} case_dir={self._case_dir}")
@@ -1387,6 +1455,7 @@ class MainWindow(QMainWindow):
             self._quality.clear_report()
             return
         self._quality.show_report(payload)
+        self._refresh_workflow(quality_passed=bool(report.passed))
         if report.passed:
             self._set_workflow_stage("quality", "done")
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
@@ -1627,6 +1696,7 @@ class MainWindow(QMainWindow):
 
         try:
             out = export_case(self._case_dir, dest_parent)
+            self._refresh_workflow(exported=True)
             self._log.append_log(
                 f"{Tag.EXPORT} BaramFlow case exported: {out} "
                 f"({len(validation.patches)} patches)"
