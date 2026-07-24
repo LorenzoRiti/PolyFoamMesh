@@ -70,11 +70,21 @@ def test_bl_fraction_as_thickness_ratio_does_not_collapse_layers():
 
 
 def test_with_patches():
+    """Each patchCellSize entry must be a SUB-DICTIONARY containing
+    `cellSize`, not a flat scalar (`"wall" 0.02;`) — cfMesh's
+    checkMeshDict::updatePatchCellSize() reads patchCellSize/<patch>/
+    cellSize and crashes with "FOAM FATAL ERROR: Attempt to return
+    primitive entry ... as a sub-dictionary" on the flat form. Verified
+    live against real OpenFOAM 2512: this crashed cartesianMesh on every
+    single run that set a per-patch cell size — including the app's own
+    default "Generate Mesh" path on the built-in test cylinder."""
+    import re
     lines = build_meshdict_lines(patch_cell_size={"wall": 0.02, "inlet": 0.01})
     content = "\n".join(lines)
-    assert '"wall" 0.02' in content
-    assert '"inlet" 0.01' in content
-    print("PASS: patch cell sizes present")
+    assert '"wall" 0.02' not in content
+    assert re.search(r'"wall"\s*\{\s*cellSize\s+0\.02;\s*\}', content)
+    assert re.search(r'"inlet"\s*\{\s*cellSize\s+0\.01;\s*\}', content)
+    print("PASS: patch cell sizes are real sub-dictionaries")
 
 
 def test_write_meshdict():
