@@ -84,7 +84,6 @@ def test_quality_target_draft():
 
 
 if __name__ == "__main__":
-    test_target_yplus()
     test_quick_mesh_result_defaults()
     test_quick_mesh_result_with_data()
     test_quick_mesh_init()

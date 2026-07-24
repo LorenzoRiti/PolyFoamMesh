@@ -35,18 +35,38 @@ def test_basic_no_bl():
 
 
 def test_with_bl():
+    import re
     lines = build_meshdict_lines(max_cell=0.1, bl_params={
         "nLayers": 3,
-        "thicknessRatio": 1.2,
+        "thicknessRatio": 1.2,             # growth ratio
+        "firstLayerThickness": 5e-4,       # absolute metres
         "wallPatches": ["wall"],
     })
     content = "\n".join(lines)
     assert "boundaryLayers" in content
     assert "patchBoundaryLayers" in content
-    assert "nLayers           3" in content
-    assert "thicknessRatio   1.2" in content
+    assert re.search(r"nLayers\s+3;", content)
+    # thicknessRatio must be the GROWTH ratio, not a fraction
+    assert re.search(r"thicknessRatio\s+1\.2;", content)
+    # the absolute first layer must actually be emitted, or the y+ target the
+    # app computes is silently discarded by cfMesh
+    assert re.search(r"maxFirstLayerThickness\s+0\.0005;", content)
+    assert "optimiseLayer" in content
     assert "expansionRatio" not in content
     print("PASS: boundary layers use real cfMesh semantics")
+
+
+def test_bl_fraction_as_thickness_ratio_does_not_collapse_layers():
+    """Guard against the regression: a first-layer fraction (<=1) passed as
+    thicknessRatio must NOT reach cfMesh as a sub-1 growth ratio (which
+    collapses the layers). It is clamped to a valid growth ratio instead."""
+    import re
+    lines = build_meshdict_lines(max_cell=0.1, bl_params={
+        "nLayers": 3, "thicknessRatio": 0.005, "wallPatches": ["wall"],
+    })
+    content = "\n".join(lines)
+    m = re.search(r"thicknessRatio\s+([\d.]+);", content)
+    assert m and float(m.group(1)) > 1.0, "growth ratio must stay > 1"
 
 
 def test_with_patches():
@@ -80,8 +100,9 @@ def test_write_with_bl():
             },
         )
         content = out.read_text()
-        assert "nLayers           5" in content
-        assert "thicknessRatio   1.3" in content
+        import re
+        assert re.search(r"nLayers\s+5;", content)
+        assert re.search(r"thicknessRatio\s+1\.3;", content)
     print("PASS: write with BL")
 
 

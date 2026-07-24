@@ -215,7 +215,11 @@ class ParamsPanel(QWidget):
         self._bl_thick.setRange(1e-6, 1.0)
         self._bl_thick.setValue(0.005)
         self._bl_thick.setDecimals(6)
-        bl_form.addRow("Thickness Ratio:", self._bl_thick)
+        self._bl_thick.setToolTip(
+            "First-layer thickness as a fraction of the max cell size. "
+            "Use 'Calcola strati dalla fisica (y+)' to derive it."
+        )
+        bl_form.addRow("First Layer (× cell):", self._bl_thick)
         self._bl_exp = QDoubleSpinBox()
         self._bl_exp.setRange(1.0, 2.0)
         self._bl_exp.setValue(1.2)
@@ -517,10 +521,14 @@ class ParamsPanel(QWidget):
     def get_bl_params(self) -> dict | None:
         if not self._bl_checkbox.isChecked():
             return None
+        # Contract: thicknessRatio = growth ratio, firstLayerThickness = metres.
+        # The "First Layer" field is a FRACTION of the max cell size, so convert
+        # it to an absolute thickness here — sending the fraction as
+        # thicknessRatio (the old behaviour) made cfMesh collapse the layers.
         return {
             "nLayers": self._bl_n_layers.value(),
-            "thicknessRatio": self._bl_thick.value(),
-            "expansionRatio": self._bl_exp.value(),
+            "thicknessRatio": self._bl_exp.value(),
+            "firstLayerThickness": self._bl_thick.value() * self._max_cell.value(),
         }
 
     def get_bl_apply_all(self) -> bool:

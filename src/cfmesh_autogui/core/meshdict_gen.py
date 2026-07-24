@@ -107,15 +107,27 @@ def build_meshdict_lines(
         # The regex matches one or more patch names with "|" alternation.
         regex = "|".join(wall_patches)
 
-        # cfMesh's `thicknessRatio` IS the layer-to-layer growth ratio (~1.1-1.3),
-        # and the first layer is set in ABSOLUTE units by `maxFirstLayerThickness`.
-        # There is no `expansionRatio` key — cfMesh silently ignores it. This code
-        # used to emit `thicknessRatio <first-layer fraction>` (e.g. 0.005) plus an
-        # ignored `expansionRatio`, i.e. it told cfMesh each layer should be 0.005x
-        # the previous one, collapsing the layers to nothing.
-        growth = float(bl_params.get("expansionRatio", 1.2))
-        first_layer_fraction = float(bl_params.get("thicknessRatio", 0.005))
-        first_layer_abs = first_layer_fraction * float(max_cell)
+        # BL contract (unambiguous, so callers can't disagree):
+        #   thicknessRatio      -> cfMesh's layer-to-layer GROWTH ratio (>1)
+        #   firstLayerThickness -> ABSOLUTE first-layer height in metres
+        # cfMesh has no `expansionRatio` key (it silently ignores it), and its
+        # `thicknessRatio` is the growth ratio, NOT a first-layer fraction.
+        # Accept the legacy `expansionRatio` as a growth fallback, and guard
+        # against a fraction (<=1) being passed as the growth ratio — that used
+        # to collapse the layers to nothing.
+        growth = float(
+            bl_params.get("thicknessRatio")
+            or bl_params.get("expansionRatio")
+            or 1.2
+        )
+        if growth <= 1.0:
+            logger.warning(
+                "BL growth ratio %.4g <= 1 (a first-layer fraction was likely "
+                "passed as thicknessRatio); using 1.2.", growth,
+            )
+            growth = 1.2
+
+        first_layer_abs = bl_params.get("firstLayerThickness")
 
         lines.append("boundaryLayers")
         lines.append("{")
@@ -123,13 +135,14 @@ def build_meshdict_lines(
         lines.append("    {")
         lines.append(f'        "{regex}"')
         lines.append("        {")
-        lines.append(f"            nLayers           {bl_params['nLayers']};")
-        # thicknessRatio in cfMesh is the ratio between successive
-        # layers (growth/expansion rate), NOT the first-layer fraction
-        # of the cell size. A value of 1.2 means each layer is 1.2x
-        # the previous layer's thickness.
-        tr = bl_params.get("thicknessRatio", 1.2)
-        lines.append(f"            thicknessRatio   {tr};")
+        lines.append(f"            nLayers                 {bl_params['nLayers']};")
+        lines.append(f"            thicknessRatio          {growth};")
+        if first_layer_abs:
+            # Without this, cfMesh sizes the first layer itself and the y+
+            # target the app computed is never actually applied to the mesh.
+            lines.append(f"            maxFirstLayerThickness  {float(first_layer_abs):.8g};")
+        lines.append("            optimiseLayer           1;")
+        lines.append("            untangleLayers          1;")
         lines.append("        }")
         lines.append("    }")
         lines.append("}")
