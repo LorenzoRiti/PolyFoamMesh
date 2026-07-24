@@ -538,8 +538,6 @@ class ParamsPanel(QWidget):
             analysis = analyze_local_thickness(self._suggest_meshes)
             s_max, s_min = suggest_cell_sizes(self._suggest_meshes, detail=detail)
         except Exception as e:
-            # A silent failure here (uncaught exception in a Qt slot) looks
-            # exactly like the button doing nothing — surface it instead.
             logger.exception("Auto-suggest cell sizes failed")
             QMessageBox.warning(self, "Auto-Suggest Failed", str(e))
             return

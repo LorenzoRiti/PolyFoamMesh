@@ -279,7 +279,7 @@ def _write_points(poly_dir: Path, points: np.ndarray) -> None:
         lines.append(f"    ({p[0]:.10e} {p[1]:.10e} {p[2]:.10e})")
     lines.append(")")
     (poly_dir / "points").write_text(
-        _of_header("primitiveEntry") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("vectorField") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 
