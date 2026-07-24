@@ -161,38 +161,41 @@ class MeshExporter:
         return MeshExporter._count_cells(case_dir)
 
     @staticmethod
-    def _export_cgns(case_dir: Path, output: Path) -> int:
-        """CGNS export via OpenFOAM's foamToCGMSToCGNS or meshio."""
-        import subprocess
-        from cfmesh_autogui.config import OFConfig
-        cfg = OFConfig()
-        linux_case = cfg._quoted_linux_path(case_dir)
-        env_q = cfg._quoted_linux_path(cfg.env_script)
+    def _export_via_core(case_dir: Path, output: Path, core_fmt: str) -> int:
+        """Delegate to core.mesh_export, the verified export path.
 
-        cmd = cfg._build_wsl_cmd(
-            f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"foamToCGNS -constant 2>&1 | tail -5"
-        )
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(f"foamToCGNS failed: {result.stderr[-200:]}")
+        This module used to hand-parse polyMesh/faces and hand it to meshio
+        as if faces WERE cells — faces list point connectivity, not cell
+        connectivity, so that produced the wrong topology entirely (and,
+        separately, called a nonexistent `foamToCGNS` OpenFOAM utility for
+        CGNS). core.mesh_export.export_mesh() is the actual working path,
+        already used by the GUI's Export Mesh menu: foamToVTK -> PyVista
+        (handles cfMesh's polyhedral cells, unlike meshio) -> triangulate ->
+        meshio for the target format.
+        """
+        from cfmesh_autogui.core.mesh_export import export_mesh
+        export_mesh(case_dir, core_fmt, output)
         return MeshExporter._count_cells(case_dir)
 
     @staticmethod
-    def _export_vtu(case_dir: Path, output: Path) -> int:
-        """VTU export via meshio."""
-        import meshio
-        poly_dir = case_dir / "constant" / "polyMesh"
-        points_path = poly_dir / "points"
-        if not points_path.exists():
-            raise FileNotFoundError(f"polyMesh/points not found in {case_dir}")
+    def _export_cgns(case_dir: Path, output: Path) -> int:
+        return MeshExporter._export_via_core(case_dir, output, "cgns")
 
-        pts = _read_of_points(points_path)
-        cells_data = _read_of_faces(poly_dir / "faces")
-        points = meshio.PointCloud(pts)
-        cells = [("polyhedron", cells_data)] if cells_data else []
-        meshio.write(str(output), meshio.Mesh(points, cells))
-        return len(cells_data) if cells_data else 0
+    @staticmethod
+    def _export_vtu(case_dir: Path, output: Path) -> int:
+        return MeshExporter._export_via_core(case_dir, output, "vtu")
+
+    @staticmethod
+    def _export_su2(case_dir: Path, output: Path) -> int:
+        return MeshExporter._export_via_core(case_dir, output, "su2")
+
+    @staticmethod
+    def _export_gmsh_msh(case_dir: Path, output: Path) -> int:
+        return MeshExporter._export_via_core(case_dir, output, "gmsh")
+
+    @staticmethod
+    def _export_abaqus_inp(case_dir: Path, output: Path) -> int:
+        return MeshExporter._export_via_core(case_dir, output, "abaqus")
 
     @staticmethod
     def _export_stl(case_dir: Path, output: Path) -> int:
@@ -207,63 +210,3 @@ class MeshExporter:
             export_multisolid_stl(meshes, output)
             return sum(len(m.faces) for m in meshes)
         raise FileNotFoundError(f"Surface STL not found: {stl_path}")
-
-
-def _read_of_outer_list_body(text: str) -> str | None:
-    """Extract the body of the top-level OpenFOAM "<count>\\n(...)" list.
-
-    A naive non-greedy `\\(.*?\\)` regex stops at the FIRST closing paren —
-    wrong for points/faces files, where each entry is itself wrapped in
-    parens (e.g. "(0.1 0.2 0.3)"), so it would return only the first entry.
-    Track bracket depth instead to find the list's true matching close.
-    """
-    import re
-    list_start = re.search(r"\d+\s*\n?\s*\(", text)
-    if not list_start:
-        return None
-    open_idx = list_start.end() - 1
-    depth = 0
-    for i in range(open_idx, len(text)):
-        if text[i] == "(":
-            depth += 1
-        elif text[i] == ")":
-            depth -= 1
-            if depth == 0:
-                return text[open_idx + 1:i]
-    return None
-
-
-def _read_of_points(path: Path) -> list[list[float]]:
-    import re
-    text = path.read_text(encoding="ascii", errors="replace")
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    text = re.sub(r"//[^\n]*", "", text)
-    body = _read_of_outer_list_body(text)
-    if body is None:
-        return []
-    pts: list[list[float]] = []
-    for line in body.strip().split("\n"):
-        parts = line.strip().strip("()").split()
-        if len(parts) >= 3:
-            try:
-                pts.append([float(parts[0]), float(parts[1]), float(parts[2])])
-            except ValueError:
-                pass
-    return pts
-
-
-def _read_of_faces(path: Path) -> list[list[int]]:
-    import re
-    text = path.read_text(encoding="ascii", errors="replace")
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    text = re.sub(r"//[^\n]*", "", text)
-    body = _read_of_outer_list_body(text)
-    if body is None:
-        return []
-    faces: list[list[int]] = []
-    entry_re = re.compile(r"(\d+)\s*\(([^)]*)\)")
-    for m in entry_re.finditer(body):
-        idx = [int(x) for x in m.group(2).split() if x.strip()]
-        if len(idx) >= 3:
-            faces.append(idx)
-    return faces
