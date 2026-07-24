@@ -207,11 +207,27 @@ class FaultTolerantWorkflow:
 
         export_surface_file(self._meshes, self._case_dir)
 
+        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
+        # firstLayerThickness = absolute metres. set_boundary_layers() stores
+        # the caller's "thickness_ratio" as a first-layer FRACTION of the max
+        # cell size and a separate "expansionRatio" for the real growth ratio
+        # — the opposite of what write_meshdict expects (same bug found and
+        # fixed in commercial/watertight.py). Passed straight through, a
+        # sub-1 "growth ratio" gets clamped to a default and no absolute first
+        # layer is ever emitted, silently discarding the caller's BL settings.
+        mesh_bl_params = None
+        if self._bl_params:
+            first_layer_fraction = self._bl_params.get("thicknessRatio", 0.005)
+            mesh_bl_params = dict(self._bl_params)
+            mesh_bl_params["thicknessRatio"] = self._bl_params.get("expansionRatio", 1.2)
+            mesh_bl_params["firstLayerThickness"] = first_layer_fraction * self._max_cell
+
         write_meshdict(
             self._case_dir,
             max_cell_size=self._max_cell,
             min_cell_size=self._min_cell,
-            bl_params=self._bl_params,
+            bl_params=mesh_bl_params,
+            patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)],
         )
 
         # Write controlDict

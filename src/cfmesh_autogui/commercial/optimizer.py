@@ -144,6 +144,26 @@ class MeshOptimizer:
         self._of_config = of_config or OFConfig()
         self._report = QualityReport()
 
+    @staticmethod
+    def _passes_quality(report, thr: dict) -> bool:
+        """Whether *report* meets THIS optimiser's quality thresholds.
+
+        `MeshQualityReport.passed` only rules out fatal errors and negative-
+        volume cells — it says nothing about skewness/non-orthogonality/aspect
+        ratio. Both the "already passes, no fix needed" entry check and the
+        per-iteration convergence check used `.passed` directly, so this
+        auto-fix engine reported success immediately for ANY mesh without a
+        fatal error, no matter how bad its skewness/non-ortho/aspect ratio
+        actually were — it could never fix the exact defects it exists to fix.
+        """
+        if not report.passed:
+            return False
+        return (
+            report.max_skewness <= thr["skewness_max"]
+            and report.max_non_ortho <= thr["non_ortho_max"]
+            and report.max_aspect_ratio <= thr["aspect_ratio_max"]
+        )
+
     def optimize(
         self,
         case_dir: Path | str,
@@ -181,7 +201,7 @@ class MeshOptimizer:
         self._report.initial = QualitySnapshot.from_report(initial_report, 0)
         self._report.history.append(self._report.initial)
 
-        if initial_report.passed:
+        if self._passes_quality(initial_report, thr):
             self._report.final = self._report.initial
             self._report.converged = True
             self._report.iterations = 0
@@ -198,8 +218,28 @@ class MeshOptimizer:
         # 2. Fix loop
         current_max = 0.05
         current_min = 0.01
-        bl_params: dict | None = {"nLayers": 3, "thicknessRatio": 0.005, "expansionRatio": 1.2}
+        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
+        # firstLayerThickness = absolute metres (same bug found and fixed in
+        # watertight.py/fault_tolerant.py/mesh_engine.py — a first-layer
+        # fraction passed as "thicknessRatio" gets clamped to a default growth
+        # ratio and silently drops the first-layer size entirely).
+        bl_params: dict | None = {
+            "nLayers": 3, "thicknessRatio": 1.2, "firstLayerThickness": 0.005 * current_max,
+        }
         bl_disabled = False
+
+        # Patches typed via renameBoundary or every inlet/outlet reverts to
+        # cfMesh's default `wall` on the meshDict rewrites below. The mesh
+        # already exists in case_dir (checkMesh just ran on it), so read its
+        # real patch names rather than needing fresh geometry.
+        patch_names: list[str] | None = None
+        try:
+            from cfmesh_autogui.core.boundary_reader import parse_boundary
+            boundary_path = case_dir / "constant" / "polyMesh" / "boundary"
+            if boundary_path.exists():
+                patch_names = [p.name for p in parse_boundary(boundary_path)]
+        except Exception as exc:
+            logger.debug("Optimiser: could not read existing patch names: %s", exc)
 
         for iteration in range(1, max_iterations + 1):
             if on_step:
@@ -236,13 +276,19 @@ class MeshOptimizer:
                     max_cell_size=current_max,
                     min_cell_size=current_min,
                     bl_params=bl_params,
+                    patch_names=patch_names,
                 )
             except Exception as exc:
                 logger.warning("Optimiser: meshDict rewrite failed: %s", exc)
                 continue
 
-            # Re-run meshing
-            self._runner = _lazy_runner().RetryRunner(self._of_config)
+            # Re-run meshing. This used to create a RetryRunner and never call
+            # .run() on it — the loop rewrote meshDict with relaxed parameters
+            # but then re-checked the SAME unchanged mesh every iteration,
+            # so it could never actually converge or improve anything.
+            if not self._run_cartesian_mesh(case_dir):
+                logger.warning("Optimiser: cartesianMesh failed at iteration %d", iteration)
+                continue
 
             # Re-evaluate
             new_report = self._run_checkmesh(case_dir)
@@ -252,7 +298,7 @@ class MeshOptimizer:
             snapshot = QualitySnapshot.from_report(new_report, iteration)
             self._report.history.append(snapshot)
 
-            if new_report.passed:
+            if self._passes_quality(new_report, thr):
                 self._report.final = snapshot
                 self._report.converged = True
                 self._report.iterations = iteration
@@ -276,6 +322,28 @@ class MeshOptimizer:
 
         octo.log_event("optimizer", "not_converged", {"iterations": self._report.iterations})
         return self._report
+
+    def _run_cartesian_mesh(self, case_dir: Path) -> bool:
+        """Run cartesianMesh synchronously so the fix loop actually re-meshes.
+
+        Mirrors _run_checkmesh's synchronous style rather than RetryRunner
+        (async, QThread-based — a poor fit for this iterate-and-recheck loop).
+        """
+        import subprocess
+
+        try:
+            cmd = self._of_config.build_command(case_dir)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            logger.warning("cartesianMesh timed out for %s", case_dir)
+            return False
+        except FileNotFoundError:
+            logger.warning("WSL not found for cartesianMesh")
+            return False
+        except Exception as exc:
+            logger.warning("cartesianMesh failed: %s", exc)
+            return False
 
     def _run_checkmesh(self, case_dir: Path) -> Any | None:
         """Run checkMesh synchronously and parse result."""

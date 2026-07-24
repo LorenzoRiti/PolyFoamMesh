@@ -272,17 +272,33 @@ class MeshEngine:
         min_cell = self._params.min_cell * cell_mult
         safe_max, safe_min, _ = _validate_sizes(bbox_dim, max_cell, min_cell)
 
+        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
+        # firstLayerThickness = absolute metres (same bug found and fixed in
+        # commercial/watertight.py and fault_tolerant.py — passing a 0.005
+        # first-layer fraction as "thicknessRatio" gets clamped to a default
+        # growth ratio and silently drops the first-layer size entirely).
         bl_params = {
             "nLayers": self._params.bl_n_layers,
-            "thicknessRatio": 0.005,
-            "expansionRatio": 1.2,
+            "thicknessRatio": 1.2,
+            "firstLayerThickness": 0.005 * safe_max,
         } if self._params.bl_enabled else None
 
-        write_meshdict(case_dir, safe_max, safe_min, bl_params=bl_params)
+        patch_names = (
+            [m.metadata.get("name", f"patch_{i}") for i, m in enumerate(meshes)]
+            if meshes else None
+        )
+
+        write_meshdict(case_dir, safe_max, safe_min, bl_params=bl_params, patch_names=patch_names)
         _write_control_dict(case_dir)
 
         runner = RetryRunner(self._of_config)
-        runner.run(case_dir=case_dir, bl_params=bl_params)
+        # max_cell/min_cell must match what was actually written above, or a
+        # BL-failure fallback retry would regenerate meshDict with
+        # RetryRunner's unrelated defaults (0.05/0.01) instead of these sizes.
+        runner.run(
+            case_dir=case_dir, bl_params=bl_params, patch_names=patch_names,
+            max_cell=safe_max, min_cell=safe_min,
+        )
         logger.info("CartesianHex: OK (max=%s min=%s)", safe_max, safe_min)
 
     def _run_polyhedral(self, case_dir: Path) -> None:
