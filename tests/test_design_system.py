@@ -35,9 +35,10 @@ from cfmesh_autogui.gui import about_dialog
 # ---------------------------------------------------------------------------
 # Token module integrity
 # ---------------------------------------------------------------------------
-def test_primary_brand_color_is_engineer_blue():
-    assert design_tokens.PRIMARY_600 == "#2563eb"
-    print("PASS: primary brand is engineer blue #2563eb")
+def test_primary_brand_color_is_brand_clay():
+    assert design_tokens.PRIMARY_600 == design_tokens.BRAND_CLAY_DARK
+    assert design_tokens.PRIMARY_500 == design_tokens.BRAND_CLAY
+    print("PASS: primary brand is clay")
 
 
 def test_secondary_is_violet():

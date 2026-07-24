@@ -9,13 +9,14 @@ from __future__ import annotations
 from cfmesh_autogui.gui.design_tokens import (
     SUCCESS, SUCCESS_LIGHT, WARNING, WARNING_LIGHT,
     ERROR, ERROR_LIGHT, NEUTRAL_500, NEUTRAL_400,
-    FONT_SIZE_MD, FONT_SIZE_SM,
+    FONT_SIZE_MD, FONT_SIZE_SM, PRIMARY_600,
 )
 
 # Legacy aliases (kept for backward compat — prefer design_tokens.*)
 COLOR_TEXT_DIM = NEUTRAL_500
 COLOR_TEXT_DISABLED = NEUTRAL_400
-COLOR_ACCENT = "#2563eb"  # primary-600, brand accent
+COLOR_ACCENT = PRIMARY_600  # brand accent — was a hardcoded blue that had
+                            # drifted out of sync with design_tokens.PRIMARY_600
 COLOR_DANGER = "#dc2626"  # semantic error
 COLOR_BG_DIM = NEUTRAL_500  # legacy alias used in quality_panel.py
 
