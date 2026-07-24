@@ -9,7 +9,7 @@ import trimesh  # ✅ F-017
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox, QSpinBox,
     QPushButton, QListWidget, QLabel, QGroupBox, QMessageBox, QCheckBox,
-    QComboBox, QScrollArea, QTabWidget, QHBoxLayout, QSlider,
+    QComboBox, QScrollArea, QTabWidget, QHBoxLayout, QSlider, QFrame,
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QUndoCommand, QUndoStack
@@ -80,7 +80,17 @@ class ParamsPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         self._tabs = QTabWidget()
-        outer.addWidget(self._tabs)
+
+        # Wrap in a scroll area so shrinking the side panel (dragging the
+        # main window's horizontal splitter) makes the panel scrollable
+        # instead of squeezing/clipping every group box and control onto
+        # top of each other with no way to reach the ones pushed off-screen.
+        scroll = QScrollArea()
+        scroll.setWidget(self._tabs)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
 
         geom_tab = QWidget()
         geom_layout = QVBoxLayout(geom_tab)
