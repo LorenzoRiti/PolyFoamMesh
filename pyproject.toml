@@ -49,6 +49,8 @@ api = [
 
 [project.scripts]
 cfmesh-autogui = "cfmesh_autogui.app:main"
+cfmesh-autogui-mesh = "cfmesh_autogui.commercial.one_click_run:main_cli"
+cfmesh-autogui-batch = "cfmesh_autogui.commercial.batch_mesh:main_cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
