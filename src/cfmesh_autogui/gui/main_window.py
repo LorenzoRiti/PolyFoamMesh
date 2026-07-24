@@ -1179,6 +1179,7 @@ class MainWindow(QMainWindow):
             bl_params=bl_params,
             max_cell=safe_max,
             min_cell=safe_min,
+            patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
         )
 
     def _make_temp_geometry_for_gmsh(self) -> str | None:
@@ -1295,6 +1296,7 @@ class MainWindow(QMainWindow):
             bl_params=bl_params,
             max_cell=safe_max,
             min_cell=safe_min,
+            patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
         )
 
     def _on_run_meshing_gmsh_direct(self, step_path: str):

@@ -421,6 +421,7 @@ class RetryRunner(QObject):
         self._max_cell: float = 0.05
         self._min_cell: float = 0.01
         self._patch_cell_size: dict[str, float] | None = None
+        self._patch_names: list[str] | None = None
 
     @property
     def is_running(self) -> bool:
@@ -444,6 +445,7 @@ class RetryRunner(QObject):
         max_cell: float = 0.05,
         min_cell: float = 0.01,
         patch_cell_size: dict[str, float] | None = None,
+        patch_names: list[str] | None = None,
     ):
         self._attempt = 0
         self._case_dir = Path(case_dir).resolve()
@@ -455,6 +457,7 @@ class RetryRunner(QObject):
         self._max_cell = max_cell
         self._min_cell = min_cell
         self._patch_cell_size = patch_cell_size
+        self._patch_names = patch_names
         self._do_attempt()
 
     # ------------------------------------------------------------------
@@ -520,13 +523,22 @@ class RetryRunner(QObject):
         self._thread.start()
 
     def _regenerate_meshdict_without_bl(self):
-        """Regenerate meshDict without boundary layers."""
+        """Regenerate meshDict without boundary layers.
+
+        Was missing `patch_names=`, so `renameBoundary` never got emitted here
+        — every inlet/outlet/wall patch silently reverted to cfMesh's default
+        `wall` type on this fallback. Since this is the SAME RetryRunner the
+        main "Generate Mesh" path uses (not just an unwired workflow), any real
+        case whose boundary layers fail — common on complex or thin geometry —
+        would silently lose correct patch typing on the automatic retry.
+        """
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
         write_meshdict(
             self._case_dir,
             max_cell_size=self._max_cell,
             min_cell_size=self._min_cell,
             patch_cell_size=self._patch_cell_size,
+            patch_names=self._patch_names,
         )
         logger.info("Regenerated meshDict without boundary layers.")
 
