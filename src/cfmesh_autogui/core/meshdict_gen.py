@@ -114,10 +114,22 @@ def build_meshdict_lines(
     ]
 
     if patch_cell_size:
+        # Each patch entry must be a SUB-DICTIONARY containing `cellSize`,
+        # not a flat scalar — cfMesh's checkMeshDict::updatePatchCellSize()
+        # reads patchCellSize/<patch>/cellSize. Writing `"wall" 0.25;`
+        # (a flat primitive entry) crashes cartesianMesh on every real run
+        # with per-patch sizing: "FOAM FATAL ERROR: Attempt to return
+        # primitive entry ITstream ... as a sub-dictionary" — verified live
+        # against real OpenFOAM 2512 (the error, and the fix, both
+        # confirmed: `cellSize` is the exact key name compiled into
+        # libmeshLibrary.so's updatePatchCellSize/patchRefinement symbols).
         lines.append("patchCellSize")
         lines.append("{")
         for name, size in patch_cell_size.items():
-            lines.append(f'    "{name}" {size};')
+            lines.append(f'    "{name}"')
+            lines.append("    {")
+            lines.append(f"        cellSize {size};")
+            lines.append("    }")
         lines.append("}")
         lines.append("")
 
