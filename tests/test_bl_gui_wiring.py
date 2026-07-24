@@ -80,19 +80,27 @@ def test_widget_ranges_do_not_truncate_the_physics(panel):
 
 
 def test_computed_values_reach_the_meshdict(panel):
+    import re
+
     panel._bl_checkbox.setChecked(True)
-    panel._bl_wall_treatment.setCurrentIndex(1)
+    panel._bl_wall_treatment.setCurrentIndex(1)  # wall-resolved (y+ ~1)
     panel._on_bl_auto_compute()
 
     bl = panel.get_bl_params()
     assert bl["nLayers"] == panel._bl_n_layers.value()
+    # thicknessRatio must be a real growth ratio (>1), not the first-layer
+    # fraction — sending the fraction here is what collapsed the layers.
+    assert bl["thicknessRatio"] > 1.0
+    assert bl["firstLayerThickness"] > 0
 
     max_cell = 0.25
     content = "\n".join(
         build_meshdict_lines(max_cell=max_cell, bl_params={**bl, "wallPatches": ["wall"]})
     )
-    assert f"nLayers           {bl['nLayers']};" in content
-    assert f"thicknessRatio   {bl['thicknessRatio']};" in content
+    assert re.search(rf"nLayers\s+{bl['nLayers']};", content)
+    assert re.search(rf"thicknessRatio\s+{re.escape(str(bl['thicknessRatio']))};", content)
+    # the y+-derived first layer must actually be written to the meshDict
+    assert "maxFirstLayerThickness" in content
 
 
 def test_reports_the_reynolds_number_to_the_user(panel):

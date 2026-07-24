@@ -152,15 +152,18 @@ def test_bl_block_maps_user_values_to_cfmesh_keys():
     the first-layer fraction (0.42) collapsed the layers, while the real growth
     ratio was emitted as `expansionRatio` — a key cfMesh silently ignores.
     """
+    import re
     bl = {
         "nLayers": 5,
         "thicknessRatio": 1.5,
+        "firstLayerThickness": 1e-4,
         "wallPatches": ["wall"],
     }
     content = "\n".join(build_meshdict_lines(max_cell=0.05, bl_params=bl))
-    assert "thicknessRatio   1.5" in content
+    assert re.search(r"thicknessRatio\s+1\.5;", content)
     assert "expansionRatio" not in content
-    assert "nLayers           5" in content
+    assert re.search(r"nLayers\s+5;", content)
+    assert re.search(r"maxFirstLayerThickness\s+0\.0001;", content)
 
 
 # ------------------------------------------------------------------

@@ -235,6 +235,9 @@ class QuickMesh:
             return {
                 "nLayers": blp.n_layers,
                 "thicknessRatio": blp.growth_rate,
+                # Absolute first-layer height for the target y+; without this
+                # cfMesh picks its own and the y+ target is never met.
+                "firstLayerThickness": blp.first_layer_height,
             }
         except Exception:
             pass
