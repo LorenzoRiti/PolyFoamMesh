@@ -161,7 +161,6 @@ def test_splash_pixmap_dark_variant():
     pix_dark = branding.make_splash_pixmap(480, 240, dark=True)
     # They should differ (different backgrounds). Compare pixel by pixel
     # at the center to make sure the dark variant is genuinely different.
-    from PySide6.QtGui import QImage
     img_light = pix_light.toImage()
     img_dark = pix_dark.toImage()
     px_light = img_light.pixelColor(240, 120)
@@ -286,7 +285,7 @@ def test_no_hardcoded_hex_in_main_window_widgets():
             # tokens, should be moved to design_tokens.
             offenders.append(f"{py.name}: '{m.group(0)}'")
     assert not offenders, (
-        f"Hardcoded hex colors found in widget code (move to design_tokens.py): "
+        "Hardcoded hex colors found in widget code (move to design_tokens.py): "
         + "\n".join(offenders[:10])
     )
     print("PASS: no hardcoded hex colors in widget code")

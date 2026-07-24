@@ -16,7 +16,6 @@ Pipeline:
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -142,7 +141,6 @@ class FaultTolerantWorkflow:
         if not path.exists():
             raise FileNotFoundError(f"Geometry file not found: {path}")
 
-        import trimesh
         from cfmesh_autogui.core.stl_writer import heal_mesh
 
         ext = path.suffix.lower()

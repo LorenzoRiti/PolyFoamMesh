@@ -20,7 +20,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from cfmesh_autogui.core.validation import validate_geometry_path
 from cfmesh_autogui.core.openfoam_runner import generate_fms
@@ -120,7 +119,7 @@ class QuickMesh:
             all_wt = n_wt == len(meshes)
 
             from cfmesh_autogui.commercial.mesh_engine import (
-                MeshEngine, MeshEngineParams, MeshingAlgorithm,
+                MeshEngine, MeshEngineParams,
             )
 
             engine = MeshEngine()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+
 
 import pytest
 from PySide6.QtWidgets import QApplication, QWizard

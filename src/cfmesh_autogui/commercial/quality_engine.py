@@ -343,7 +343,6 @@ class QualityEngine:
 
     def _apply_fix(self, fix: AutoFixAction, case_dir: Path) -> None:
         """Apply a single auto-fix action to the case."""
-        import json
         meshdict_path = case_dir / "system" / "meshDict"
         if not meshdict_path.exists():
             logger.warning("meshDict not found at %s", meshdict_path)

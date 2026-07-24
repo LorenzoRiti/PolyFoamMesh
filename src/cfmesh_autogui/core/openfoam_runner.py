@@ -733,8 +733,8 @@ _CHECK_ASPECT_RE = re.compile(
     re.IGNORECASE,
 )
 _CHECK_NEGVOL_RE = re.compile(
-    rf"There are\s+(\d+)\s+cells[^\n]*?negative volume"
-    rf"|Writing\s+(\d+)\s+cells with negative volume",
+    r"There are\s+(\d+)\s+cells[^\n]*?negative volume"
+    r"|Writing\s+(\d+)\s+cells with negative volume",
     re.IGNORECASE,
 )
 _CHECK_MINVOL_RE = re.compile(rf"Min volume\s*=\s*({_F})", re.IGNORECASE)
@@ -967,7 +967,6 @@ class PolyDualWorker(QObject):
                 text=True,
                 timeout=180,
             )
-            full = result.stdout + "\n" + result.stderr
             if result.returncode == 0:
                 self.log_line.emit("[polyDualMesh] Conversion OK")
                 self.finished.emit(self._case_dir)

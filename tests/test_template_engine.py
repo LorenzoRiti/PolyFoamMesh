@@ -1,6 +1,6 @@
 """Tests for template engine."""
 from __future__ import annotations
-import sys, json, os, tempfile
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _test_helpers import load_commercial_module
@@ -126,8 +126,8 @@ def test_delete_user_template():
 
 
 def test_apply_template_creates_files():
-    import shutil
-    tmp = Path(tempfile.mkdtemp(dir=os.environ.get("TEMP", "/tmp")))
+    import os as _os, shutil, tempfile as _tf
+    tmp = Path(_tf.mkdtemp(dir=_os.environ.get("TEMP", "/tmp")))
     te = TemplateEngine()
     t = te.get_template("Internal Flow")
     assert t is not None

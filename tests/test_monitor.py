@@ -179,10 +179,10 @@ def test_monitor_convergence_history():
 
 
 def test_monitor_export_json():
+    import os as _os, json
     m = QualityMonitor()
     m.ingest_checkmesh(CHECKMESH_OUTPUT_OK)
-    import os, json
-    out = Path(os.environ.get("TEMP", "/tmp")) / "test_quality_monitor.json"
+    out = Path(_os.environ.get("TEMP", "/tmp")) / "test_quality_monitor.json"
     m.export_json(out)
     data = json.loads(Path(out).read_text())
     assert "summary" in data
@@ -197,7 +197,6 @@ def test_monitor_custom_thresholds():
 
 
 if __name__ == "__main__":
-    import json, os
     test_quality_metric_defaults()
     test_quality_metric_status_pass()
     test_quality_metric_status_warn()

@@ -1,6 +1,7 @@
 """Tests for the quality engine."""
 from __future__ import annotations
-import sys, os, json
+import json
+import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _test_helpers import load_commercial_module
@@ -165,11 +166,11 @@ def test_reduce_max_cell():
 
 
 def test_export_json():
-    import tempfile
+    import tempfile as _tf
     qe = QualityEngine()
     m = QualityMetrics(cells=5000, max_skewness=2.3)
     r = QualityReport(metrics=m, passed=True)
-    out = Path(tempfile.gettempdir()) / "test_quality_report.json"
+    out = Path(_tf.gettempdir()) / "test_quality_report.json"
     qe.export_json(r, out)
     data = json.loads(out.read_text())
     assert data["metrics"]["cells"] == 5000
@@ -178,7 +179,6 @@ def test_export_json():
 
 
 if __name__ == "__main__":
-    import tempfile
     test_thresholds()
     test_quality_metrics_defaults()
     test_quality_metrics_passed()

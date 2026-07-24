@@ -182,7 +182,7 @@ class Journal:
             "",
             "",
             "def main():",
-            f'    wf = WatertightWorkflow()',
+            '    wf = WatertightWorkflow()',
         ]
 
         if target_geometry:
@@ -210,9 +210,9 @@ class Journal:
             elif action == "set_detail":
                 lines.append(f'    wf.set_detail("{params.get("level", "medium")}")')
             elif action == "run_mesh":
-                lines.append(f'    result = wf.run()')
-                lines.append(f'    print(f"Mesh: {{result.cell_count}} cells, '
-                             f'success={{result.success}}")')
+                lines.append('    result = wf.run()')
+                lines.append('    print(f"Mesh: {result.cell_count} cells, '
+                             'success={result.success}")')
             else:
                 # Generic fallback
                 params_str = ", ".join(

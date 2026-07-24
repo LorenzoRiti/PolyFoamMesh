@@ -64,7 +64,7 @@ def test_pipeline_run_nonexistent():
 
 def test_pipeline_detect_unit():
     gp = GeometryPipeline()
-    import numpy as np, trimesh
+    import trimesh
 
     # Small mesh -> mm
     small = trimesh.creation.box(extents=[0.005, 0.005, 0.005])
@@ -88,7 +88,7 @@ def test_unit_scales():
 
 def test_import_stl_multisolid():
     gp = GeometryPipeline()
-    import numpy as np, trimesh, tempfile, os
+    import trimesh, tempfile, os
 
     # Create a multi-solid STL
     box1 = trimesh.creation.box(extents=[1, 1, 1])

@@ -68,9 +68,12 @@ class OFConfig:
         env_quoted = shlex.quote(self.env_script)
         bin_quoted = shlex.quote(self.cartesian_mesh_bin)
 
+        import os as _os
+        n_threads = _os.cpu_count() or 4
         env_cmd = (
             f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
+            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
             f"cd {linux_case} && {bin_quoted}"
         )
         if extra_args:
@@ -81,9 +84,12 @@ class OFConfig:
         case_dir = Path(case_dir).resolve()
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
+        import os as _os
+        n_threads = _os.cpu_count() or 4
         cmd = (
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
+            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
             f"cd {linux_case} && checkMesh"
         )
         return self._build_wsl_cmd(cmd)
@@ -92,9 +98,12 @@ class OFConfig:
         case_dir = Path(case_dir).resolve()
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
+        import os as _os
+        n_threads = _os.cpu_count() or 4
         cmd = (
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
+            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
             f"cd {linux_case}; "
             f"polyDualMesh -constant 2>&1 | tail -20"
         )

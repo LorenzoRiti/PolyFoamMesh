@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-import sys
-
 import pytest
 
 from cfmesh_autogui.core.feature_detector import (
