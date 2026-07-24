@@ -549,9 +549,16 @@ def suggest_cell_sizes(
     s_min = max(s_min, 0.0001)
     s_min = min(s_min, s_max / 2.0)
 
+    # Snap both sizes to the cfMesh octree level grid so they are not
+    # silently rounded by cartesianMesh. The max cell snaps to a coarser
+    # level (larger size), the min cell to a finer level (smaller size).
+    s_max_snapped, _ = snap_to_octree_level(s_max, bbox_max)
+    s_min_snapped, _ = snap_to_octree_level(s_min, bbox_max)
+    s_min_snapped = min(s_min_snapped, s_max_snapped / 2.0)
+
     return (
-        round(max(s_max, 0.001), 6),
-        round(max(s_min, 0.0001), 6),
+        round(max(s_max_snapped, 0.001), 6),
+        round(max(s_min_snapped, 0.0001), 6),
     )
 
 
@@ -613,7 +620,6 @@ def validate_cell_sizes(
         )
         logger.warning(warnings[-1])
 
-    # V1.1: warn when cells are too coarse to resolve geometric features
     if safe_max > bbox_max_dim / 10.0:
         warnings.append(
             f"maxCellSize ({safe_max:.4f}) > bbox/10 ({bbox_max_dim / 10.0:.4f}). "
@@ -628,6 +634,39 @@ def validate_cell_sizes(
         )
 
     return safe_max, safe_min, warnings
+
+
+def snap_to_octree_level(
+    cell_size: float,
+    bbox_dim: float,
+    ratio_max: float = 1.5,
+) -> tuple[float, int]:
+    """Snap a cell size to the nearest cfMesh octree level.
+
+    cfMesh uses an octree where the root box covers the geometry with some
+    padding.  Cell sizes are ``root_size / 2^k`` for integer k.  A size that
+    is not exactly ``root_size / 2^k`` is silently rounded to the nearest
+    valid level, so the requested size is not what the user gets.
+
+    This function estimates the root box size as ``bbox_dim * ratio_max``
+    (empirical default 1.5) and returns the closest valid size and its
+    octree level.
+
+    Args:
+        cell_size: Desired cell size in metres.
+        bbox_dim: Maximum bounding-box dimension of the geometry.
+        ratio_max: Factor to estimate root box size (empirical, default 1.5
+            based on cfMesh v2512 behaviour).
+
+    Returns:
+        ``(effective_size, level)`` where ``effective_size`` is the size
+        that cfMesh actually uses, and ``level`` is the octree level (>= 1).
+    """
+    root_est = max(bbox_dim * ratio_max, 1e-6)
+    level_f = np.log2(root_est / max(cell_size, 1e-12))
+    level = max(int(round(level_f)), 1)
+    snapped = root_est / (2 ** level)
+    return round(snapped, 6), level
 
 
 # V1.1: pre-mesh cell count estimation (F1)
