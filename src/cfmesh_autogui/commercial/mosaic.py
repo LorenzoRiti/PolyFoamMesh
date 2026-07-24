@@ -155,26 +155,18 @@ class MosaicEngine:
         logger.info("polyDualMesh conversion OK")
 
     def _count_cells(self, stage: str = "hex") -> int:
-        """Count cells in the polyMesh by parsing the owner file."""
+        """Count cells in the polyMesh.
+
+        *stage* is unused: both "hex" (pre-conversion) and "poly"
+        (post-conversion) read the same constant/polyMesh/owner, since
+        polyDualMesh -constant overwrites it in place — run() calls this
+        before and after _step_poly_conversion() to get each stage's real
+        count from the file as it stood at that point in time.
+        """
         if not self._case_dir:
             return 0
-        if stage == "hex" or self._params.preserve_original:
-            poly_dir = self._case_dir / "constant" / "polyMesh"
-            owner_file = poly_dir / "owner"
-        else:
-            poly_dir = self._case_dir / "constant" / "polyMesh"
-            owner_file = poly_dir / "owner"
-
-        if not owner_file.exists():
-            logger.warning("owner file not found at %s", owner_file)
-            return 0
-
-        try:
-            lines = owner_file.read_text(encoding="ascii", errors="replace").strip().splitlines()
-            return max(0, len(lines) - 2)
-        except Exception as exc:
-            logger.warning("Failed to count cells: %s", exc)
-            return 0
+        from cfmesh_autogui.core.boundary_reader import count_cells
+        return count_cells(self._case_dir)
 
     def _estimate_volume_ratio(self) -> float:
         """Estimate the cell volume ratio at the hex→poly transition.

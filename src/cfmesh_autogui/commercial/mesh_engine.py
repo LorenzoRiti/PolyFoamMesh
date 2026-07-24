@@ -386,13 +386,8 @@ class MeshEngine:
     # Helpers
     # ------------------------------------------------------------------
     def _count_cells(self, case_dir: Path) -> int:
-        owner = case_dir / "constant" / "polyMesh" / "owner"
-        if not owner.exists():
-            return 0
-        try:
-            return max(0, len(owner.read_text(encoding="ascii", errors="replace").splitlines()) - 2)
-        except Exception:
-            return 0
+        from cfmesh_autogui.core.boundary_reader import count_cells
+        return count_cells(case_dir)
 
 
 def _validate_sizes(bbox_dim: float, max_cell: float, min_cell: float) -> tuple[float, float, list[str]]:

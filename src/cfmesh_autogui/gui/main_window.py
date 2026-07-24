@@ -1348,9 +1348,12 @@ class MainWindow(QMainWindow):
                 f"[gmsh] polyMesh: {poly_dir}"
             )
             try:
-                n_points = len((poly_dir / "points").read_text().splitlines()) - 2
-                n_faces = len((poly_dir / "faces").read_text().splitlines()) - 2
-                n_cells = len((poly_dir / "owner").read_text().splitlines()) - 2
+                from cfmesh_autogui.core.boundary_reader import (
+                    count_cells, count_faces, count_points,
+                )
+                n_points = count_points(self._case_dir)
+                n_faces = count_faces(self._case_dir)
+                n_cells = count_cells(self._case_dir)
                 self._log.append_log(
                     f"[gmsh] Stats: {n_points:,} points, {n_faces:,} faces, "
                     f"{n_cells:,} cells"

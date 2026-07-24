@@ -80,3 +80,103 @@ def _extract_word(text: str, key: str) -> str:
 def _extract_int(text: str, key: str) -> int:
     m = re.search(rf"{key}\s+(\d+)\s*;", text)
     return int(m.group(1)) if m else 0
+
+
+def _read_of_list_count(path: Path) -> int:
+    """Return the declared entry count of a top-level OpenFOAM ascii list
+    file (points, faces, owner, ...): the bare integer that precedes the
+    list's opening paren, e.g. the "N" in "N\\n(\\n...\\n)".
+
+    Not the same as counting lines — the FoamFile header block varies in
+    length (comment banner, arch/note lines, etc.), so `len(lines) - k` for
+    any fixed k silently returns the wrong count.
+    """
+    text = path.read_text(encoding="ascii", errors="replace")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", "", text)
+    header_end = text.find("}")  # end of the FoamFile {...} block
+    body = text[header_end + 1:] if header_end != -1 else text
+    m = re.search(r"(\d+)\s*\n\s*\(", body)
+    return int(m.group(1)) if m else 0
+
+
+def _read_of_scalar_list(path: Path) -> list[int]:
+    """Return the integer values of a flat OpenFOAM scalar labelList file
+    (owner, neighbour: one plain integer per line, no nested parens)."""
+    text = path.read_text(encoding="ascii", errors="replace")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", "", text)
+    header_end = text.find("}")
+    body = text[header_end + 1:] if header_end != -1 else text
+    m = re.search(r"\d+\s*\n\s*\(", body)
+    if not m:
+        return []
+    start = m.end()
+    end = body.find(")", start)
+    if end == -1:
+        return []
+    return [int(tok) for tok in body[start:end].split()]
+
+
+def count_cells(case_dir: Path | str) -> int:
+    """Return the real cell count from constant/polyMesh.
+
+    The owner file lists one entry per FACE (which cell owns it), so its
+    line count is a face-count proxy, not a cell count — for a typical hex
+    mesh nFaces is roughly 3x nCells, so `len(lines) - 2` (used, before this
+    fix, in mesh_engine.py/exporter.py/mosaic.py/amr.py and the GUI's own
+    status bar) silently reported the wrong number on every real mesh, not
+    just an off-by-a-few undercount.
+
+    cfMesh's cartesianMesh writes the real counts into the owner file's own
+    FoamFile header comment (`note "nPoints:X nCells:Y nFaces:Z ..."`), but
+    other mesh-writing utilities (verified: polyDualMesh's polyhedral
+    conversion) don't include that note at all. When it's absent, fall back
+    to the actual OpenFOAM definition of cell count: cell indices are 0-based
+    and contiguous, so the highest index referenced across owner+neighbour,
+    plus 1, is nCells — verified against checkMesh's own reported cell count
+    on real cfMesh/polyDualMesh output.
+    """
+    poly_dir = Path(case_dir) / "constant" / "polyMesh"
+    owner = poly_dir / "owner"
+    if not owner.exists():
+        return 0
+    try:
+        text = owner.read_text(encoding="ascii", errors="replace")
+    except Exception:
+        return 0
+
+    m = re.search(r"nCells:\s*(\d+)", text)
+    if m:
+        return int(m.group(1))
+
+    try:
+        indices = _read_of_scalar_list(owner)
+        neighbour = poly_dir / "neighbour"
+        if neighbour.exists():
+            indices += _read_of_scalar_list(neighbour)
+        return (max(indices) + 1) if indices else 0
+    except Exception:
+        return 0
+
+
+def count_points(case_dir: Path | str) -> int:
+    """Return the real point count from constant/polyMesh/points."""
+    path = Path(case_dir) / "constant" / "polyMesh" / "points"
+    if not path.exists():
+        return 0
+    try:
+        return _read_of_list_count(path)
+    except Exception:
+        return 0
+
+
+def count_faces(case_dir: Path | str) -> int:
+    """Return the real face count from constant/polyMesh/faces."""
+    path = Path(case_dir) / "constant" / "polyMesh" / "faces"
+    if not path.exists():
+        return 0
+    try:
+        return _read_of_list_count(path)
+    except Exception:
+        return 0
