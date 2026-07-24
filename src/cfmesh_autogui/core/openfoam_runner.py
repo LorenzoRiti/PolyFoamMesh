@@ -1066,37 +1066,48 @@ class QualityFixWorker(QObject):
             f"Applying fix #{self._fix_attempts}..."
         )
 
-        # Auto-fix: relax cell sizes or disable BL
+        # Auto-fix: use QualityEngine's targeted fix strategies
         try:
-            from cfmesh_autogui.core.meshdict_gen import write_meshdict
+            from cfmesh_autogui.commercial.quality_engine import QualityEngine, QualityMetrics
 
-            current_max = self._kwargs.get("max_cell", 0.05)
-            current_min = self._kwargs.get("min_cell", 0.01)
-            new_min = current_min * 0.7
-            new_max = current_max * 1.2
+            qe = QualityEngine()
+            qm = QualityMetrics(
+                max_skewness=report.max_skewness,
+                max_non_orthogonality=report.max_non_ortho,
+                max_aspect_ratio=report.max_aspect_ratio,
+                neg_cells=report.neg_cells,
+                cells=report.cells,
+            )
+            fixes = qe._decide_fixes(qm)
 
-            bl_params = self._kwargs.get("bl_params")
-            if report.max_skewness > 4 and bl_params:
-                bl_params = None
+            if not fixes:
+                self.log_line.emit("[quality-fix] No applicable fix strategy.")
+                self.failed.emit("No fix strategy for current quality failure")
+                return
+
+            applied_text = self._case_dir / "system" / "meshDict"
+            if not applied_text.exists():
+                self.failed.emit("meshDict not found")
+                return
+
+            text = applied_text.read_text(encoding="ascii")
+            for fix in fixes:
+                if fix.action == "relax":
+                    text = QualityEngine._relax_cell_sizes(text, factor=1.2)
+                elif fix.action == "reduce_bl":
+                    text = QualityEngine._reduce_boundary_layers(text)
+                elif fix.action == "disable_bl":
+                    text = QualityEngine._disable_boundary_layers(text)
+                elif fix.action == "remesh":
+                    text = QualityEngine._coarsen_mesh(text, factor=1.3)
+                elif fix.action == "split":
+                    text = QualityEngine._reduce_max_cell(text, factor=0.7)
                 self.log_line.emit(
-                    "[quality-fix] Disabling BL due to high skewness."
+                    f"[quality-fix] {fix.action}: {fix.detail}"
                 )
 
-            write_meshdict(
-                self._case_dir,
-                max_cell_size=new_max,
-                min_cell_size=new_min,
-                patch_cell_size=self._kwargs.get("patch_cell_size"),
-                boundary_cell_size=self._kwargs.get("boundary_cell_size"),
-                boundary_refinement_thickness=self._kwargs.get(
-                    "boundary_refinement_thickness"
-                ),
-                bl_params=bl_params,
-            )
-            self.log_line.emit(
-                f"[quality-fix] meshDict updated: max={new_max:.4f} min={new_min:.4f}"
-            )
-            self._kwargs["bl_params"] = bl_params
+            applied_text.write_text(text, encoding="ascii")
+            self.log_line.emit(f"[quality-fix] meshDict updated ({len(fixes)} fix(es))")
             self._do_meshing_step()
         except Exception as e:
             self.log_line.emit(f"[quality-fix] Fix failed: {e}")

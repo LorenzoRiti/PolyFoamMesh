@@ -129,7 +129,7 @@ def test_decide_fixes_non_ortho():
     qe = QualityEngine()
     m = QualityMetrics(max_skewness=0.5, max_non_orthogonality=80, max_aspect_ratio=500)
     fixes = qe._decide_fixes(m)
-    assert any(f.action == "disable_bl" for f in fixes)
+    assert any(f.action == "reduce_bl" for f in fixes)
 
 
 def test_decide_fixes_neg_vol():
@@ -150,7 +150,14 @@ def test_relax_cell_sizes():
     text = "maxCellSize 0.05;\nminCellSize 0.01;\n"
     result = QualityEngine._relax_cell_sizes(text)
     assert "0.060000" in result  # 0.05 * 1.2
-    assert "0.008000" in result  # 0.01 * 0.8
+    assert "0.008333" in result  # 0.01 / 1.2
+
+
+def test_reduce_boundary_layers():
+    text = "maxCellSize 0.05;\nboundaryLayers\n{\n    nLayers 20;\n    thicknessRatio 1.2;\n}\n"
+    result = QualityEngine._reduce_boundary_layers(text)
+    assert "nLayers                 10;" in result
+    assert "thicknessRatio          1.0100;" in result
 
 
 def test_disable_boundary_layers():
