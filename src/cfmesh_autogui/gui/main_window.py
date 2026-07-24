@@ -488,6 +488,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Tessellation Error", str(e))
             return
 
+        self._heal_geometry(self._meshes)
+
         self._unscaled_meshes = [m.copy() for m in self._meshes]
 
         scale = self._params.get_scale_factor()
@@ -573,6 +575,38 @@ class MainWindow(QMainWindow):
             QMessageBox.No,
         )
         return reply == QMessageBox.Yes
+
+    def _heal_geometry(self, meshes: list[trimesh.Trimesh]) -> None:
+        """Repair small CAD defects right after loading, before anything else
+        looks at the geometry.
+
+        Degenerate-face removal / hole-filling / vertex-merging already ran
+        automatically before every STL export (`stl_writer.heal_mesh`), but
+        only at export time and only to a DEBUG-level log line the user never
+        sees. That meant the watertight check and cell-size sizing upstream
+        both ran on the RAW mesh: a CAD file with a couple of small holes
+        healing would have fixed anyway got flagged "not watertight" here —
+        a false alarm, exactly the kind of confusion this app should prevent.
+        Healing here first means every later step sees the same (repaired)
+        geometry the mesher will actually use; the export-time heal becomes a
+        no-op repeat on an already-healed mesh (idempotent, so no regression).
+        """
+        try:
+            from cfmesh_autogui.commercial.cad_healer import CADHealer
+            reports = CADHealer().heal_meshes(meshes)
+        except Exception as exc:
+            logger.debug("CAD healing skipped: %s", exc)
+            return
+
+        total_ops = sum(len(r.operations) for r in reports)
+        if total_ops == 0:
+            return
+        for mesh, report in zip(meshes, reports):
+            name = mesh.metadata.get("name", "?")
+            if report.operations:
+                self._log.append_log(
+                    f"{Tag.GEOM} Healed '{name}': {', '.join(report.operations)}"
+                )
 
     def _check_watertight(self, meshes: list[trimesh.Trimesh]) -> None:
         """Warn early if the assembled patches don't form a closed volume.
