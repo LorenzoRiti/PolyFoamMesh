@@ -127,3 +127,27 @@ def test_export_every_format_on_a_mesh_with_mixed_cell_types(meshed_case, fmt):
 def test_unknown_format_raises_a_clear_error(meshed_case):
     with pytest.raises(ValueError, match="Unknown export format"):
         export_mesh(meshed_case, "not_a_real_format", WORK_ROOT / "x.xyz")
+
+
+@pytest.mark.parametrize("fmt", ["cgns", "vtu", "su2", "gmsh_msh", "abaqus_inp"])
+def test_commercial_exporter_delegates_to_core_mesh_export(meshed_case, fmt):
+    """commercial/exporter.py used to hand-parse polyMesh/faces and pass the
+    result to meshio as if faces WERE cells (faces list point connectivity,
+    not cell connectivity — wrong topology entirely), and its CGNS handler
+    shelled out to a nonexistent `foamToCGNS` utility. It now delegates to
+    core.mesh_export.export_mesh(), the same verified path the GUI's Export
+    Mesh menu uses. Confirmed here on a realistic mesh with mixed
+    polyhedra/hexahedra, not just a trivial single-cell-type box."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _test_helpers import load_commercial_module
+
+    mod = load_commercial_module("exporter")
+    ex = mod.MeshExporter()
+    ext = mod.EXPORT_FORMATS[fmt]["ext"]
+    out = WORK_ROOT / f"commercial_export_{fmt}{ext}"
+    result = ex.export(meshed_case, fmt=fmt, output_path=out)
+
+    assert result.success, result.error
+    assert result.cell_count > 0
+    assert result.file_size_bytes > 0
+    assert Path(result.output_path).is_file()
