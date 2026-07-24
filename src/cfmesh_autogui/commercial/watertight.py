@@ -428,18 +428,68 @@ class WatertightWorkflow:
             bbox_dim, self._max_cell, self._min_cell,
         )
 
-        self._runner = _lazy_runner().RetryRunner(self._of_config)
-        self._runner.run(
-            case_dir=self._case_dir,
+        # RetryRunner is QObject/QThread-based: .run() starts a background
+        # thread and its completion signal is delivered via a
+        # QueuedConnection, which requires a running Qt event loop on the
+        # thread that owns the RetryRunner object. WatertightWorkflow has no
+        # such loop when called synchronously (verified live: batch_mesh.py's
+        # _process_single() calls wf.run() directly, no QApplication exists
+        # anywhere in that path) — a polling wait for the callback here just
+        # spins until its own timeout, every time, regardless of whether
+        # meshing actually succeeded (confirmed: hung past 120s on a trivial
+        # 1m test box that meshes in ~1s standalone). Same root cause and fix
+        # as mesh_engine.py/optimizer.py/quality_engine.py earlier this
+        # session: run cartesianMesh as a direct, synchronous subprocess
+        # instead of going through RetryRunner at all.
+        patch_names = [m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)]
+        write_meshdict = _lazy_meshdict().write_meshdict
+        write_meshdict(
+            self._case_dir, safe_max, safe_min,
             bl_params=self._bl_params,
-            max_cell=safe_max,
-            min_cell=safe_min,
             patch_cell_size=getattr(self, '_patch_sizes', None),
-            patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)],
+            patch_names=patch_names,
         )
+        if not self._run_cartesian_mesh_sync():
+            if self._bl_params:
+                logger.warning("Volume mesh failed with boundary layers, retrying without BL")
+                write_meshdict(
+                    self._case_dir, safe_max, safe_min,
+                    patch_cell_size=getattr(self, '_patch_sizes', None),
+                    patch_names=patch_names,
+                )
+                if not self._run_cartesian_mesh_sync():
+                    raise RuntimeError("Volume mesh failed (with and without boundary layers)")
+            else:
+                raise RuntimeError("Volume mesh failed")
+
+    def _run_cartesian_mesh_sync(self) -> bool:
+        """Run cartesianMesh synchronously and wait for it to actually finish."""
+        import subprocess
+
+        try:
+            cmd = self._of_config.build_command(self._case_dir)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            logger.warning("cartesianMesh timed out for %s", self._case_dir)
+            return False
+        except FileNotFoundError:
+            logger.warning("WSL not found for cartesianMesh")
+            return False
 
     def _step_quality(self) -> None:
-        """Run checkMesh and parse the quality report."""
+        """Run checkMesh and parse the quality report.
+
+        Used to run checkMesh via CheckMeshWorker on a QThread, blocking on a
+        local QEventLoop for its finished/failed signal. That requires a
+        QApplication instance to actually exist — verified live: called from
+        a plain script (no QApplication constructed anywhere, exactly
+        batch_mesh.py's _process_single() -> wf.run() path), this hung
+        indefinitely instead of raising or timing out. Runs checkMesh as a
+        direct synchronous subprocess instead, mirroring
+        CheckMeshWorker.run()'s own logic without the QThread/event-loop
+        indirection this method never needed in the first place.
+        """
         if not self._case_dir:
             return
 
@@ -448,40 +498,27 @@ class WatertightWorkflow:
             self._result.warnings.append("polyMesh/points not found — quality check skipped.")
             return
 
-        from PySide6.QtCore import QEventLoop, QTimer
-        loop = QEventLoop()
-        report_holder: list["MeshQualityReport"] = []
+        import subprocess
+        from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output
 
-        def on_finished(report: "MeshQualityReport") -> None:
-            report_holder.append(report)
-            loop.quit()
+        cmd = self._of_config.build_check_mesh_cmd(self._case_dir)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            full = result.stdout + "\n" + result.stderr
+        except subprocess.TimeoutExpired:
+            self._result.warnings.append("checkMesh timed out after 120s")
+            return
+        except FileNotFoundError:
+            self._result.warnings.append("checkMesh failed: WSL not found")
+            return
+        except Exception as exc:
+            self._result.warnings.append(f"checkMesh failed: {exc}")
+            return
 
-        def on_failed(msg: str) -> None:
-            self._result.warnings.append(f"checkMesh failed: {msg}")
-            loop.quit()
-
-        runner_mod = _lazy_runner()
-        worker = runner_mod.CheckMeshWorker(self._case_dir, self._of_config)
-        worker.finished.connect(on_finished)
-        worker.failed.connect(on_failed)
-
-        from PySide6.QtCore import QThread
-        thread = QThread()
-        worker.moveToThread(thread)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.started.connect(worker.run)
-        thread.start()
-
-        # Timeout after 120 s
-        QTimer.singleShot(120000, loop.quit)
-        loop.exec()
-
-        if report_holder:
-            report = report_holder[0]
-            self._result.quality = report
-            self._result.cell_count = report.cells
-            logger.info("Quality: %s", report.status)
+        report = parse_checkmesh_output(full)
+        self._result.quality = report
+        self._result.cell_count = report.cells
+        logger.info("Quality: %s", report.status)
 
     def _step_export(self) -> None:
         """Export quality report as JSON."""

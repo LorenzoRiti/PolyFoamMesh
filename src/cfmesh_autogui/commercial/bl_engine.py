@@ -167,7 +167,7 @@ class BLEngine:
         # meshers and solvers expect and leaves a violent size jump where the
         # layers meet the bulk mesh.
         r = min(max(growth_rate, 1.05), 1.5)
-        if first_layer > 0 and delta_99 > first_layer:
+        if first_layer > 0 and delta_99 > first_layer and r > 1.0:
             # total = h1 * (r^n - 1) / (r - 1)  ->  solve for n
             n_layers = int(
                 math.ceil(math.log1p(delta_99 * (r - 1.0) / first_layer) / math.log(r))

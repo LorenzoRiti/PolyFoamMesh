@@ -99,3 +99,40 @@ def test_boundary_layer_step_also_types_patches(workflow):
     workflow._step_boundary_layer()
     content = _meshdict_text(workflow)
     assert "renameBoundary" in content
+
+
+def test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop(workflow, monkeypatch):
+    """_step_volume_mesh() and _step_quality() used to run cartesianMesh/
+    checkMesh via QThread + a Qt signal (QueuedConnection for the runner,
+    a local QEventLoop for checkMesh) that only ever gets pumped by a
+    running QApplication event loop. Called the way batch_mesh.py's
+    _process_single() actually calls WatertightWorkflow.run() — a plain
+    synchronous call, no QApplication.exec() running anywhere — both hung
+    indefinitely (verified live: >120s with no progress on a trivial 1m
+    box that meshes in ~4s standalone). Both must now run cartesianMesh/
+    checkMesh as direct synchronous subprocess calls instead.
+    """
+    calls = {"cartesian_mesh": 0, "checkmesh": 0}
+
+    def fake_run(cmd, **kwargs):
+        if "checkMesh" in " ".join(cmd) if isinstance(cmd, list) else str(cmd):
+            calls["checkmesh"] += 1
+        else:
+            calls["cartesian_mesh"] += 1
+        # Minimal polyMesh so the "poly_points exists" gate in
+        # _step_quality() passes and it actually reaches the subprocess call.
+        poly = workflow._case_dir / "constant" / "polyMesh"
+        poly.mkdir(parents=True, exist_ok=True)
+        (poly / "points").write_text("0\n(\n)\n")
+        return type("R", (), {"returncode": 0, "stdout": "cells: 10\n", "stderr": ""})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    workflow._step_sizing()
+    workflow._step_boundary_layer()
+    workflow._step_volume_mesh()
+    assert calls["cartesian_mesh"] == 1
+
+    workflow._step_quality()
+    assert calls["checkmesh"] == 1
+    assert workflow._result.quality is not None

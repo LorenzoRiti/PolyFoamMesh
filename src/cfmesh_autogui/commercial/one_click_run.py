@@ -143,7 +143,7 @@ class FullAutoPipeline:
             self._result.steps_completed.append(self.STEP_BC)
 
             # Step 5: Solver setup (via template)
-            solver_files = self._step_solver(case_dir, solver_template)
+            solver_files = self._step_solver(case_dir, solver_template, geo_info.bbox_max)
             if solver_files:
                 self._result.solver = solver_template
             self._result.steps_completed.append(self.STEP_SOLVER)
@@ -223,8 +223,14 @@ class FullAutoPipeline:
             logger.info("BC: %d patches, %d auto-detected", len(patches), changed)
         return patches
 
-    def _step_solver(self, case_dir: str, template_name: str):
-        """Step 5: Apply solver template."""
+    def _step_solver(self, case_dir: str, template_name: str, bbox_dim: float = 0.0):
+        """Step 5: Apply solver template.
+
+        template.max_cell_ratio/min_cell_ratio are fractions of the bbox, not
+        absolute meters — apply_template() needs bbox_dim to convert them
+        correctly; without it, a ratio like 0.05 gets written straight into
+        meshDict as 0.05 METRES regardless of the actual geometry's size.
+        """
         from cfmesh_autogui.commercial.template_engine import TemplateEngine
         te = TemplateEngine()
         tpl = te.get_template(template_name)
@@ -233,7 +239,7 @@ class FullAutoPipeline:
             tpl = te.get_template("Internal Flow")
             if tpl is None:
                 return []
-        files = te.apply_template(tpl, case_dir)
+        files = te.apply_template(tpl, case_dir, bbox_dim=bbox_dim)
         logger.info("Solver: %s (%d files)", tpl.metadata.solver, len(files))
         return files
 

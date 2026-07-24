@@ -167,7 +167,7 @@ class ParallelMeshEngine:
             f"\nnumberOfSubdomains {self._params.n_cores};\n"
             f"\nmethod          {self._params.method};\n"
             f"\n{self._params.method}Coeffs {{\n"
-            f"    preservesPatches ({preserve});\n"
+            f"    preservePatches ({preserve});\n"
             f"}}\n"
         )
         (system_dir / "decomposeParDict").write_text(content, encoding="ascii")

@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from cfmesh_autogui.core.openfoam_runner import MeshQualityReport
@@ -169,7 +169,7 @@ class MeshOptimizer:
         case_dir: Path | str,
         max_iterations: int = 5,
         thresholds: dict[str, float] | None = None,
-        on_step: callable | None = None,
+        on_step: Callable | None = None,
     ) -> QualityReport:
         """Run the optimiser loop.
 
