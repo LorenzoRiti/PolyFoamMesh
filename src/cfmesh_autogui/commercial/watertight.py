@@ -342,6 +342,7 @@ class WatertightWorkflow:
             boundary_cell_size=getattr(self, '_boundary_cell_size', None),
             boundary_refinement_thickness=getattr(self, '_boundary_thickness', None),
             bl_params=self._bl_params,
+            patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)],
         )
 
         # Write controlDict
@@ -390,12 +391,26 @@ class WatertightWorkflow:
             bbox_dim, self._max_cell, self._min_cell,
         )
 
+        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
+        # firstLayerThickness = absolute metres. set_boundary_layers() stores
+        # the caller's "thickness_ratio" as a first-layer FRACTION of the max
+        # cell size (its docstring/param name predates the current contract)
+        # and a separate "expansionRatio" for the real growth ratio — the
+        # opposite of what write_meshdict expects. Passed straight through, a
+        # sub-1 "growth ratio" gets clamped to a default and no absolute first
+        # layer is ever emitted, silently discarding the caller's BL settings.
+        mesh_bl_params = dict(self._bl_params)
+        first_layer_fraction = self._bl_params.get("thicknessRatio", 0.005)
+        mesh_bl_params["thicknessRatio"] = self._bl_params.get("expansionRatio", 1.2)
+        mesh_bl_params["firstLayerThickness"] = first_layer_fraction * safe_max
+
         _lazy_meshdict().write_meshdict(
             self._case_dir, safe_max, safe_min,
             patch_cell_size=getattr(self, '_patch_sizes', None),
             boundary_cell_size=getattr(self, '_boundary_cell_size', None),
             boundary_refinement_thickness=getattr(self, '_boundary_thickness', None),
-            bl_params=self._bl_params,
+            bl_params=mesh_bl_params,
+            patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)],
         )
         logger.info("BL applied to %d patches.", len(wall_patches))
 
@@ -420,6 +435,7 @@ class WatertightWorkflow:
             max_cell=safe_max,
             min_cell=safe_min,
             patch_cell_size=getattr(self, '_patch_sizes', None),
+            patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)],
         )
 
     def _step_quality(self) -> None:
