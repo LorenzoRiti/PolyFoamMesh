@@ -35,9 +35,9 @@
       "dryRun": false,
       "multi": false,
       "batch": 0,
-      "runCount": 1,
+      "runCount": 2,
       "failureCount": 0,
-      "lastRunAt": 1784846655790,
+      "lastRunAt": 1784871935256,
       "lastCompactAt": 0,
       "lastCompactRunCount": 0,
       "watchSnapshot": {},
@@ -50,7 +50,8 @@
         "providerID": "deepseek",
         "modelID": "deepseek-v4-flash"
       },
-      "activeRecoveryMs": 45000
+      "activeRecoveryMs": 45000,
+      "lastFinishedAt": 1784872100663
     }
   ]
 }
