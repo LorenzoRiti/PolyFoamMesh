@@ -106,6 +106,39 @@ def _run_check_mesh(case_dir: Path) -> tuple[int, str, float]:
     return rc, out, elapsed
 
 
+def _vtk_quality_check(case_dir: Path, main_logger) -> dict | None:
+    """Run foamToVTK then compute quality via pyvista.
+
+    Returns dict with vtk quality metrics or None on failure.
+    This is a fast local check (no WSL needed after foamToVTK completes).
+    """
+    try:
+        import pyvista
+    except ImportError:
+        return None
+
+    linux = _to_wsl_path(case_dir)
+    vtk_ok, _ = _wsl_of_run(f"cd {linux} && foamToVTK -constant 2>&1", timeout=60)
+    if vtk_ok != 0:
+        return None
+
+    try:
+        from benchmarks.vtk_quality import vtk_quality_metrics
+        report = vtk_quality_metrics(case_dir)
+        if report is None:
+            return None
+        return {
+            "vtk_cells": report.cells,
+            "vtk_skew_max": round(report.skew_max, 4),
+            "vtk_aspect_max": round(report.aspect_ratio_max, 4),
+            "vtk_jacobian_min": round(report.scaled_jacobian_min, 4),
+            "vtk_min_angle": round(report.min_angle_min, 2),
+            "vtk_max_angle": round(report.max_angle_max, 2),
+        }
+    except Exception:
+        return None
+
+
 def _make_case_dir(parent: Path, geometry_name: str) -> Path:
     case = parent / f"bench_{geometry_name}"
     if case.exists():
@@ -167,6 +200,7 @@ def _make_result(
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
     is_negative_case: bool = False,
+    vtk_quality: dict | None = None,
 ) -> dict:
     now = datetime.datetime.now().isoformat(timespec="seconds")
     w = warnings or []
@@ -209,6 +243,7 @@ def _make_result(
         "failed_gates": [k for k, v in gates.items() if not v],
         "warnings": w,
         "errors": e,
+        "vtk_quality": vtk_quality,
     }
 
 
@@ -346,6 +381,20 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
             report.neg_cells, report.min_volume,
         )
 
+        # VTK quality check (best-effort, local via pyvista)
+        vtk_data = _vtk_quality_check(case_dir, logger)
+        if vtk_data:
+            logger.info(
+                "  VTK: skew=%.4f  aspect=%.2f  jacobian=%.4f  angles=[%.1f, %.1f]",
+                vtk_data.get("vtk_skew_max", 0),
+                vtk_data.get("vtk_aspect_max", 0),
+                vtk_data.get("vtk_jacobian_min", 0),
+                vtk_data.get("vtk_min_angle", 0),
+                vtk_data.get("vtk_max_angle", 0),
+            )
+        else:
+            logger.info("  VTK quality: skipped (pyvista/WSL not available)")
+
         return _make_result(
             geometry=name,
             success=report.passed,
@@ -358,6 +407,7 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
             neg_cells=report.neg_cells,
             min_volume=report.min_volume,
             warnings=warnings,
+            vtk_quality=vtk_data,
         )
 
     except Exception as exc:
