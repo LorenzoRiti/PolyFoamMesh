@@ -1,16 +1,26 @@
-"""Parallel meshing engine using MPI + OpenFOAM domain decomposition.
+"""Parallel meshing engine using MPI + cartesianMesh's own -parallel mode.
 
-Inspired by cfMesh parallel and OpenFOAM decomposePar.
-Orchestrates geometry decomposition, parallel cartesianMesh,
-and subdomain stitch across N MPI ranks.
+Runs cartesianMesh across N MPI ranks and reconstructs the result — real
+wall-clock speedup on multi-core machines, verified live (a case that takes
+~7s serial completed in ~18s of wall time across 4 ranks doing ~52s of
+combined CPU work).
+
+This is NOT decomposePar-based domain decomposition: decomposePar splits an
+EXISTING mesh/fields for parallel SOLVING, and requires a mesh to already
+exist — at this point in the pipeline there is no mesh yet, since generating
+one is the whole point. cartesianMesh's own `-parallel` flag does the
+geometry-based decomposition internally; it only needs each processorN/
+directory to exist with its own copy of the case's system/ and constant/
+input files (confirmed live: without them, cartesianMesh -parallel fails
+with "cannot open case directory processorN").
 
 Pipeline:
-  1. Check MPI availability and core count
-  2. Geometry decomposition (scotch/metis hierarchical)
-  3. Parallel cartesianMesh on each subdomain
-  4. Collect subdomain meshes
-  5. Stitch subdomain interfaces
-  6. Quality check on assembled mesh
+  1. Write decomposeParDict (cartesianMesh -parallel reads
+     numberOfSubdomains from it)
+  2. Create processorN/ directories, each with system/ + constant/ copied in
+  3. mpirun -np N cartesianMesh -parallel
+  4. reconstructParMesh -constant to merge the per-rank meshes back into
+     constant/polyMesh
 """
 
 from __future__ import annotations
@@ -53,7 +63,7 @@ class ParallelMeshResult:
 
 
 class ParallelMeshEngine:
-    """Parallel meshing engine using MPI + OpenFOAM decomposePar.
+    """Parallel meshing engine using MPI + cartesianMesh's own -parallel mode.
 
     Usage::
 
@@ -72,6 +82,7 @@ class ParallelMeshEngine:
         self._params = DecomposeParams()
         self._max_cell: float = 0.05
         self._min_cell: float = 0.01
+        self._patch_names: list[str] | None = None
         self._result = ParallelMeshResult()
 
     def setup_case(
@@ -109,14 +120,19 @@ class ParallelMeshEngine:
         self._max_cell = max_cell
         self._min_cell = min_cell
 
+    def set_patch_names(self, patch_names: list[str] | None) -> None:
+        """Patch names for renameBoundary — without these, every patch
+        reverts to cfMesh's default `wall` type (same bug class fixed
+        across write_meshdict() callers elsewhere this session)."""
+        self._patch_names = patch_names
+
     def run(self) -> ParallelMeshResult:
         """Execute the parallel meshing workflow.
 
         Steps:
-          1. Decompose geometry with decomposePar
-          2. Run cartesianMesh in parallel on all subdomains
-          3. Reconstruct with reconstructParMesh
-          4. Quality check on assembled mesh
+          1. Create processorN/ directories (system/ + constant/ per rank)
+          2. Run cartesianMesh -parallel across n_cores MPI ranks
+          3. Reconstruct with reconstructParMesh into constant/polyMesh
         """
         start = datetime.now()
         self._result = ParallelMeshResult(n_cores=self._params.n_cores)
@@ -130,10 +146,15 @@ class ParallelMeshEngine:
             if not self._case_dir:
                 raise RuntimeError("No case directory. Call setup_case() first.")
 
+            self._write_meshdict()
             self._write_decompose_par_dict()
-            self._step_decompose()
+            self._step_create_processor_dirs()
             self._step_parallel_mesh()
             self._step_reconstruct()
+
+            from cfmesh_autogui.core.boundary_reader import count_cells
+            self._result.cell_count = count_cells(self._case_dir)
+
             self._result.success = True
             octo.log_event("parallel_mesh", "workflow_complete", {
                 "cell_count": self._result.cell_count,
@@ -150,6 +171,27 @@ class ParallelMeshEngine:
     # ------------------------------------------------------------------
     # Internal steps
     # ------------------------------------------------------------------
+    def _write_meshdict(self) -> None:
+        """Write system/meshDict from set_cell_sizes()'s values.
+
+        This class used to validate and store cell sizes via
+        set_cell_sizes() but never actually wrote them into a meshDict at
+        all — every call ran cartesianMesh -parallel against whatever (or
+        no) meshDict happened to already be on disk. Verified live: on a
+        case with no pre-existing meshDict, run() silently "succeeded" in
+        ~1s with 0 cells produced.
+        """
+        if not self._case_dir:
+            return
+        from cfmesh_autogui.core.meshdict_gen import write_meshdict
+        write_meshdict(
+            self._case_dir, self._max_cell, self._min_cell,
+            patch_names=self._patch_names,
+        )
+        logger.info(
+            "meshDict written: max=%s min=%s", self._max_cell, self._min_cell,
+        )
+
     def _write_decompose_par_dict(self) -> None:
         """Write system/decomposeParDict with the selected method."""
         if not self._case_dir:
@@ -176,34 +218,59 @@ class ParallelMeshEngine:
             self._params.n_cores, self._params.method,
         )
 
-    def _step_decompose(self) -> None:
-        """Run decomposePar to split the geometry/STL into subdomains."""
+    def _step_create_processor_dirs(self) -> None:
+        """Create processorN/ directories for parallel MESH GENERATION.
+
+        This used to run `decomposePar -force` here — wrong tool for the
+        job. decomposePar decomposes an EXISTING mesh/fields for parallel
+        SOLVING; at this point in the pipeline there is no mesh yet (that's
+        the whole point of running cartesianMesh next), so it always failed:
+        "FOAM FATAL ERROR: Cannot find file 'points' in directory 'polyMesh'"
+        — confirmed live against real OpenFOAM 2512.
+
+        cartesianMesh's own `-parallel` mode does the geometry-based domain
+        decomposition internally; the only prerequisite (also verified
+        live — cartesianMesh -parallel fails with "cannot open case
+        directory processorN" without this) is that each processorN/
+        directory exists with its own copy of system/ and constant/
+        (controlDict, meshDict, decomposeParDict, triSurface/*) — the same
+        input files a serial run would read from the case root, just
+        replicated per rank.
+        """
         if not self._case_dir:
             return
-        case_dir = self._case_dir
-        linux_case = self._of_config._quoted_linux_path(case_dir)
-        env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
+        import shutil
 
-        cmd = self._of_config._build_wsl_cmd(
-            f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"decomposePar -force 2>&1 | tail -5"
-        )
-        logger.info("Running decomposePar...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"decomposePar failed (exit {result.returncode}):\n{result.stderr}"
-            )
-        logger.info("decomposePar OK")
+        for i in range(self._params.n_cores):
+            proc_dir = self._case_dir / f"processor{i}"
+            if proc_dir.exists():
+                shutil.rmtree(proc_dir)
+            proc_dir.mkdir(parents=True)
+            shutil.copytree(self._case_dir / "system", proc_dir / "system")
+            shutil.copytree(self._case_dir / "constant", proc_dir / "constant")
+        logger.info("Created %d processor directories", self._params.n_cores)
 
     def _step_parallel_mesh(self) -> None:
         """Run cartesianMesh in parallel via MPI on all subdomains."""
         if not self._case_dir:
             return
+        import shlex
+
         case_dir = self._case_dir
         linux_case = self._of_config._quoted_linux_path(case_dir)
         env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
-        bin_q = self._of_config._quoted_linux_path(self._of_config.cartesian_mesh_bin)
+        # _quoted_linux_path() is for FILE PATHS — it treats any string not
+        # starting with "/" as a relative Windows path and resolves it
+        # against the current working directory. cartesian_mesh_bin is a
+        # plain command name ("cartesianMesh"), not a path: this silently
+        # turned it into a bogus absolute path
+        # (".../cfmesh-autogui/cartesianMesh"), so every mpirun invocation
+        # tried to exec a file that doesn't exist — verified live: "success"
+        # reported in <1s with 0 cells produced, no exception raised because
+        # the nonzero exit code fell through the "partial mesh" tolerance
+        # path. config.py's own build_command() already does this correctly
+        # with a plain shlex.quote(); matching that here.
+        bin_q = shlex.quote(self._of_config.cartesian_mesh_bin)
         n = self._params.n_cores
 
         # MPI command: mpirun -np N cartesianMesh -parallel
@@ -213,14 +280,6 @@ class ParallelMeshEngine:
         )
         logger.info("Parallel mesh on %d cores...", n)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
-
-        # Capture cell count from output
-        import re
-        cell_match = re.search(r"(\d+)\s+cells", result.stdout)
-        if cell_match:
-            self._result.cell_count = int(cell_match.group(1))
-            self._result.cell_count_per_rank = [self._result.cell_count // n] * n
-            logger.info("Parallel mesh: ~%d cells total", self._result.cell_count)
 
         if result.returncode == 0:
             logger.info("Parallel meshing OK")
@@ -258,9 +317,12 @@ class ParallelMeshEngine:
         linux_case = self._of_config._quoted_linux_path(case_dir)
         env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
 
+        # -merge is not a real reconstructParMesh option (confirmed via
+        # `reconstructParMesh -help-full`: "Invalid option: -merge") — it
+        # always failed before even attempting reconstruction.
         cmd = self._of_config._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"reconstructParMesh -constant -merge 2>&1 | tail -10"
+            f"reconstructParMesh -constant 2>&1 | tail -10"
         )
         logger.info("Reconstructing parallel mesh...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
