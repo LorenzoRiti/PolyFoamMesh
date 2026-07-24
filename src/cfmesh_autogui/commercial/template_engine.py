@@ -277,6 +277,7 @@ class TemplateEngine:
         self, template: TemplatePreset | str,
         case_dir: Path | str,
         geometry_path: str = "",
+        bbox_dim: float | None = None,
     ) -> list[str]:
         """Apply a template preset to a case directory.
 
@@ -326,14 +327,22 @@ class TemplateEngine:
         except Exception as exc:
             logger.debug("apply_template: could not read existing patch names: %s", exc)
 
+        # Convert ratio → absolute meters using bbox, or use ratio as-is
+        # if bbox is unavailable (legacy behavior, assumes metric geometry)
+        if bbox_dim and bbox_dim > 0:
+            max_abs = max(template.max_cell_ratio * bbox_dim, 0.001)
+            min_abs = max(template.min_cell_ratio * bbox_dim, 0.0001)
+        else:
+            max_abs = template.max_cell_ratio
+            min_abs = template.min_cell_ratio
         write_meshdict(
             case_dir,
-            max_cell_size=template.max_cell_ratio,
-            min_cell_size=template.min_cell_ratio,
+            max_cell_size=max_abs,
+            min_cell_size=min_abs,
             bl_params={
                 "nLayers": template.bl_n_layers,
                 "thicknessRatio": 1.2,
-                "firstLayerThickness": 0.005 * template.max_cell_ratio,
+                "firstLayerThickness": 0.005 * max_abs,
             } if template.bl_enabled else None,
             patch_names=patch_names,
         )

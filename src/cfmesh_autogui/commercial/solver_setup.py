@@ -407,7 +407,8 @@ class SolverSetup:
         from cfmesh_autogui.commercial.bc_editor import BCEditor, PatchInfo
         try:
             return BCEditor().read_boundary(case_dir)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Could not read case patches: %s — using fallback defaults", exc)
             return [
                 PatchInfo(name=n, orig_name=n, bc_type=n)
                 for n in ("inlet", "outlet", "wall", "symmetry")

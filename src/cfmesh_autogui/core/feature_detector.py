@@ -160,27 +160,15 @@ class FeatureDetector:
         except Exception as e:
             logger.debug("Sharp edge detection skipped: %s", e)
 
-        # Thin gap detection via mesh sampling
+        # Gap detection: placeholder — real implementation requires
+        # proximity queries via GMSH's `mesh.getClosestPoint` on each
+        # surface pair. For now an empty list avoids corrupting cell
+        # sizes with dummy data (each dummy GapRegion with width 0.001
+        # would force minCell ≤ 0.0002 regardless of actual geometry).
         try:
-            gmsh.model.mesh.generate(2)
-            nn = 3
-            sampling = min(nn, gmsh.model.getMaxNodeTag())
-            if sampling > 0:
-                for _ in range(sampling):
-                    feature_map.gap_regions.append(
-                        GapRegion(
-                            center=(0.0, 0.0, 0.0),
-                            gap_width=0.001,
-                            normal=(0.0, 0.0, 1.0),
-                        )
-                    )
-        except Exception as e:
-            logger.debug("Gap detection skipped: %s", e)
-        finally:
-            try:
-                gmsh.model.mesh.clear()
-            except Exception:
-                pass
+            gmsh.model.mesh.clear()
+        except Exception:
+            pass
 
         bbox_min, bbox_max = gmsh.model.getBoundingBox(-1)
         bbox_dim = max(bbox_max[i] - bbox_min[i] for i in range(3))

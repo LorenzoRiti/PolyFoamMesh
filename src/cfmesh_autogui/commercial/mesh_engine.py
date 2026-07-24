@@ -269,7 +269,9 @@ class MeshEngine:
         cell_mult = self._params.cell_size_multiplier
         max_cell = self._params.max_cell * cell_mult
         min_cell = self._params.min_cell * cell_mult
-        safe_max, safe_min, _ = _validate_sizes(bbox_dim, max_cell, min_cell)
+        safe_max, safe_min, size_warns = _validate_sizes(bbox_dim, max_cell, min_cell)
+        for w in size_warns:
+            logger.info("Cell size adjusted: %s", w)
 
         # meshDict's BL contract: thicknessRatio = growth ratio (>1),
         # firstLayerThickness = absolute metres (same bug found and fixed in
@@ -393,11 +395,17 @@ class MeshEngine:
 def _validate_sizes(bbox_dim: float, max_cell: float, min_cell: float) -> tuple[float, float, list[str]]:
     from cfmesh_autogui.core.validation import validate_cell_size as _vc
     r = _vc(max_cell, min_cell, bbox_dim)
+    warns = list(r.warnings) if hasattr(r, 'warnings') else []
     safe_max = min(max_cell, bbox_dim / 2.0) if bbox_dim > 0 else max_cell
     safe_min = min(min_cell, safe_max / 2.0)
+    if safe_max < max_cell:
+        warns.append(f"max_cell clamped from {max_cell:.4f} to {safe_max:.4f} (bbox/2)")
+    if safe_min < min_cell:
+        warns.append(f"min_cell clamped from {min_cell:.4f} to {safe_min:.4f} (max/2)")
     safe_max = max(safe_max, 0.001)
+    if safe_max != max_cell and safe_max == 0.001:
+        warns.append("max_cell clamped to floor 0.001")
     safe_min = max(safe_min, 0.0001)
-    warns = r.warnings if hasattr(r, 'warnings') else []
     return safe_max, safe_min, warns
 
 

@@ -243,12 +243,15 @@ class QualityMonitor:
             except (ValueError, IndexError):
                 continue
 
-        # Fallback: if no per-cell data, use the average as a proxy
+        # Fallback: if no per-cell data, use the max as a proxy
+        n_fallback = min(self._cell_count, 1000)
         if not result["skewness"]:
             avg_sk = self._metrics.get("max_skewness", QualityMetric()).value
-            result["skewness"] = [avg_sk] * min(self._cell_count, 1000)
+            result["skewness"] = [avg_sk] * n_fallback
             avg_no = self._metrics.get("max_non_orthogonality", QualityMetric()).value
-            result["non_orthogonality"] = [avg_no] * min(self._cell_count, 1000)
+            result["non_orthogonality"] = [avg_no] * n_fallback
+            avg_ar = self._metrics.get("max_aspect_ratio", QualityMetric()).value
+            result["aspect_ratio"] = [avg_ar] * n_fallback
 
         return result
 

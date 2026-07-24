@@ -16,7 +16,7 @@ cad_healer      — CAD defeaturing, hole-filling, stitch, simplify.
 from __future__ import annotations
 
 from cfmesh_autogui.commercial.watertight import WatertightWorkflow, WorkflowStep
-from cfmesh_autogui.commercial.optimizer import MeshOptimizer, QualityReport
+from cfmesh_autogui.commercial.optimizer import MeshOptimizer
 from cfmesh_autogui.commercial.cad_healer import CADHealer, HealReport
 from cfmesh_autogui.commercial.fault_tolerant import (
     FaultTolerantWorkflow, FaultTolerantParams, FaultTolerantResult,

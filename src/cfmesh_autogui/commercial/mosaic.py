@@ -15,6 +15,7 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 # Maximum acceptable volume ratio at hex→poly transition
 MAX_VOLUME_RATIO = 10.0
+
+# Regex per OpenFOAM float (scientific notation support)
+_OF_FLOAT_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 
 @dataclass
@@ -147,7 +151,6 @@ class MosaicEngine:
             )
 
         # Parse output for statistics
-        import re
         cells_match = re.search(r"(\d+)\s+cells", result.stdout)
         if cells_match:
             self._result.poly_cells = int(cells_match.group(1))
@@ -183,9 +186,8 @@ class MosaicEngine:
         # Check for checkMesh log with volume statistics
         log = self._case_dir / "log.checkMesh"
         if log.exists():
-            import re
             text = log.read_text(encoding="utf-8", errors="replace")
-            m = re.search(r"Min volume = ([\d.eE+-]+).*?Max volume = ([\d.eE+-]+)", text, re.DOTALL)
+            m = re.search(rf"Min volume = ({_OF_FLOAT_RE.pattern}).*?Max volume = ({_OF_FLOAT_RE.pattern})", text, re.DOTALL)
             if m:
                 min_v = abs(float(m.group(1)))
                 max_v = abs(float(m.group(2)))

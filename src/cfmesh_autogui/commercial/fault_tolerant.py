@@ -264,12 +264,12 @@ def _load_stl_fault_tolerant(path: Path, merge_tol: float = 0.0001) -> list:
         m.metadata.setdefault("name", getattr(m, "name", path.stem))
         try:
             m.merge_vertices(merge_tol)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("merge_vertices failed for '%s': %s", m.metadata.get("name", "?"), exc)
         try:
             mask = m.nondegenerate_faces()
             m.update_faces(mask)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("nondegenerate_faces/update_faces failed for '%s': %s", m.metadata.get("name", "?"), exc)
 
     return meshes

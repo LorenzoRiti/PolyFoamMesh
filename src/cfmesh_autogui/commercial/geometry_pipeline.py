@@ -250,10 +250,10 @@ class GeometryPipeline:
         return meshes
 
     def _import_iges(self, path: Path) -> list:
-        """Import IGES via cadquery."""
+        """Import IGES via cadquery (importIges)."""
         import cadquery as cq
         from cfmesh_autogui.core.geometry import classify_faces, tessellate_patches
-        shape = cq.importers.importStep(str(path))  # cadquery reads IGES too
+        shape = cq.importers.importIges(str(path))
         shape = shape.val() if isinstance(shape, cq.Workplane) else shape
         patches = classify_faces(shape)
         return tessellate_patches(patches)
@@ -290,6 +290,7 @@ class GeometryPipeline:
         ops: list[str] = []
 
         for mesh in meshes:
+            mesh_name = mesh.metadata.get("name", "?")
             try:
                 areas = mesh.area_faces
                 sliver_mask = areas > self.MIN_SLIVER_AREA
@@ -298,8 +299,8 @@ class GeometryPipeline:
                     mesh.update_faces(sliver_mask)
                     total_slivers += n_slivers
                     ops.append(f"removed {n_slivers} sliver faces")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Sliver removal failed for patch '%s': %s", mesh_name, exc)
 
             # Fill holes
             try:
@@ -309,8 +310,8 @@ class GeometryPipeline:
                 if filled > 0:
                     total_holes += filled
                     ops.append(f"filled {filled} holes")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("fill_holes failed for patch '%s': %s", mesh_name, exc)
 
             # Standard healing
             heal_mesh(mesh)
