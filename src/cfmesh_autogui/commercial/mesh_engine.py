@@ -23,7 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from cfmesh_autogui.core.validation import validate_cell_size, validate_case_dir
+from cfmesh_autogui.core.validation import validate_case_dir
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -326,9 +326,7 @@ class MeshEngine:
     # ------------------------------------------------------------------
     def _check_quality(self, case_dir: Path) -> dict[str, Any]:
         """Run checkMesh and return quality metrics."""
-        from cfmesh_autogui.core.openfoam_runner import (
-            CheckMeshWorker, parse_checkmesh_output,
-        )
+        from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output
         import subprocess
 
         try:

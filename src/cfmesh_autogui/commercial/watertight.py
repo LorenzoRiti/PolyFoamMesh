@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from cfmesh_autogui.core.openfoam_runner import MeshQualityReport, RetryRunner
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 from cfmesh_autogui.config import OFConfig
 from cfmesh_autogui.core.validation import (
     validate_cell_size, validate_bl_params,
-    validate_geometry_path, validate_case_dir, sanitise_patch_name,
+    validate_geometry_path, validate_case_dir,
     ValidationResult,
 )
 from cfmesh_autogui.octopoda_local import octo

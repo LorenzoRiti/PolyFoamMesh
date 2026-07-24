@@ -303,7 +303,7 @@ class TemplateEngine:
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
         from cfmesh_autogui.commercial.solver_setup import (
             SolverSetup, SolverConfig, SolverType,
-            TurbulenceModel, SchemePreset, MaterialProperties,
+            TurbulenceModel, SchemePreset,
         )
 
         # Write meshDict

@@ -17,8 +17,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -370,7 +369,6 @@ class BCEditor:
         poly_dir.mkdir(parents=True, exist_ok=True)
         path = poly_dir / "boundary"
 
-        total_faces = sum(p.n_faces for p in patches)
         lines = [
             "FoamFile { version 2.0; format ascii; class polyBoundaryMesh; object boundary; }",
             "",

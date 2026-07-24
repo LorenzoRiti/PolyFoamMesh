@@ -1,4 +1,4 @@
-import json, sys
+import json
 
 plan = {
     "metagpt_arch_v2": {

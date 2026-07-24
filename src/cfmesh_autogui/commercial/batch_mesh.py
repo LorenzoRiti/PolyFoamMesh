@@ -15,16 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from cfmesh_autogui.config import OFConfig
-from cfmesh_autogui.core.validation import validate_geometry_path, validate_cell_size
+from cfmesh_autogui.core.validation import validate_geometry_path
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -252,16 +249,6 @@ def main_cli() -> None:
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-
-    config = BatchConfig(
-        geometry_dir=args.geometry_dir,
-        output_dir=args.output_dir,
-        pattern=args.pattern,
-        max_cell=args.max_cell,
-        min_cell=args.min_cell,
-        bl_enabled=args.bl,
-        bl_n_layers=args.bl_layers,
     )
 
     bm = BatchMesher()

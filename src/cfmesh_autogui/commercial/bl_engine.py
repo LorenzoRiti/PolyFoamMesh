@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import math
 import logging
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from cfmesh_autogui.octopoda_local import octo
 

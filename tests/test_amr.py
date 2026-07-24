@@ -1,6 +1,8 @@
 """Tests for the AMR module."""
 from __future__ import annotations
 
+import json
+import os as _os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -63,10 +65,9 @@ def test_parse_refine_count():
 
 
 def test_export_report():
-    import os, json
     e = AMREngine()
     e._result = AMRResult(success=True, initial_cells=1000, final_cells=5000, iterations=3)
-    out = Path(os.environ.get("TEMP", "/tmp")) / "test_amr_report.json"
+    out = Path(_os.environ.get("TEMP", "/tmp")) / "test_amr_report.json"
     e.export_report(out)
     data = json.loads(out.read_text())
     assert data["success"]
@@ -75,7 +76,6 @@ def test_export_report():
 
 
 if __name__ == "__main__":
-    import os, json
     test_amr_params_defaults()
     test_amr_params_custom()
     test_amr_result_defaults()

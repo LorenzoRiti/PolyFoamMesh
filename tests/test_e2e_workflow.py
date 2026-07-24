@@ -118,7 +118,7 @@ runTimeModifiable true;
         f"(stuck/unresponsive WSL2 subprocess?). Last log lines:\n"
         + "\n".join(logs[-10:])
     )
-    assert finished_data["code"] == 0, f"Meshing failed:\n" + "\n".join(logs[-10:])
+    assert finished_data["code"] == 0, "Meshing failed:\n" + "\n".join(logs[-10:])
     print(f"   cartesianMesh completed ({len(logs)} log lines)")
 
     print("[6/7] Setting up case files...")

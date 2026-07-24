@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -182,7 +181,6 @@ class GeometryPipeline:
         self, path: Path, fmt: str, unit: str,
     ) -> tuple[list, GeometryInfo]:
         """Load geometry and return (meshes, info)."""
-        import trimesh
 
         if fmt in ("step", "stp"):
             meshes = self._import_step(path)
@@ -284,7 +282,6 @@ class GeometryPipeline:
     # ------------------------------------------------------------------
     def _heal_meshes(self, meshes: list) -> HealReport:
         """Apply healing to all meshes."""
-        import trimesh
         from cfmesh_autogui.core.stl_writer import heal_mesh
 
         total_orig = sum(len(m.faces) for m in meshes)
@@ -293,9 +290,6 @@ class GeometryPipeline:
         ops: list[str] = []
 
         for mesh in meshes:
-            before = len(mesh.faces)
-
-            # Remove sliver faces (area < threshold)
             try:
                 areas = mesh.area_faces
                 sliver_mask = areas > self.MIN_SLIVER_AREA

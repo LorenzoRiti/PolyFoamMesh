@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -80,14 +79,14 @@ def test_journal_context_manager():
 
 
 def test_journal_save_load():
-    import os, tempfile
+    import os as _os
     j = Journal()
     j.start_recording()
     j.record("set_cell_sizes", max_cell=0.05, min_cell=0.01)
     j.record("run_mesh")
     j.stop_recording()
 
-    tmp = Path(os.environ.get("TEMP", "/tmp")) / "test_journal.json"
+    tmp = Path(_os.environ.get("TEMP", "/tmp")) / "test_journal.json"
     j.save(tmp)
     assert tmp.exists()
 
@@ -153,7 +152,6 @@ def test_journal_player_play_no_geometry():
 
 
 if __name__ == "__main__":
-    import os
     test_journal_entry_defaults()
     test_journal_entry_with_data()
     test_journal_entry_to_dict()

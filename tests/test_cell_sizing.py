@@ -19,7 +19,6 @@ try:
 except Exception:
     pass
 
-import numpy as np
 import trimesh
 
 from cfmesh_autogui.core.geometry import (

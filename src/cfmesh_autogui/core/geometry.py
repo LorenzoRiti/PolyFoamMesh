@@ -196,40 +196,11 @@ def compute_bbox_full(meshes: list[trimesh.Trimesh]) -> tuple[float, float, floa
 # respect both the small features and the overall domain scale.
 
 _DETAIL_PRESETS = {
-    # Each preset uses a percentile of the local-thickness distribution
-    # as the basis for s_max. Key insight: for a thin tube, the
-    # "thinnest feature" is the TUBE DIAMETER (which sits at the
-    # lower percentiles of the thickness distribution). The max cell
-    # must be small enough to put at least 2-4 cells across that
-    # feature, so:
-    #
-    #   s_max = p_X * (multiplier)
-    #   s_min = p_Y / (divisor)
-    #
-    # Where p_X is the percentile used for max-cell sizing and p_Y
-    # for min-cell sizing. Multipliers are SMALL (<= 2) so the
-    # resulting cell actually fits inside the feature it's resolving.
-    # very_coarse/very_fine extend the same progression to match the 5-level
-    # GUI slider ("Molto Grossolana".."Molto Fine") — without these, the
-    # two extreme slider positions fell back silently to "medium" (the
-    # dict lookup default), making them look broken/no-op in the UI.
-    # p_min drives the SMALLEST cell, so it must come from the thinnest feature.
-    # A feature that matters is usually small in area by definition — a 0.06 m
-    # throat in a 0.2 m rod covered ~3% of the surface, so p5/p10 never moved off
-    # the bulk value and the constriction was invisible to sizing. p1 (a robust
-    # minimum, less noise-prone than a single raw min) does see it. Sample counts
-    # are raised accordingly: p1 needs enough samples to be meaningful.
-    # p_max sizes the BULK, so it reads the area-weighted p50; p_min resolves the
-    # thinnest feature, so it reads p1 (a min-across-patches statistic). Mixing
-    # the two caused runaway refinement: p10 is aggregated with min-across-patches,
-    # i.e. it is a thin-feature statistic, so using it for the bulk let a 1 mm gap
-    # dictate the cell size of a whole 0.1 m domain (2.5M cells). Detail level now
-    # controls bulk fineness through max_mult alone.
-    "very_coarse": {"max_mult": 1.0,  "min_div": 1.2, "samples": 256,  "p_max": "p50", "p_min": "p5"},
-    "coarse":      {"max_mult": 0.7,  "min_div": 1.5, "samples": 384,  "p_max": "p50", "p_min": "p1"},
-    "medium":      {"max_mult": 0.5,  "min_div": 2.0, "samples": 768,  "p_max": "p50", "p_min": "p1"},
-    "fine":        {"max_mult": 0.3,  "min_div": 3.0, "samples": 1536, "p_max": "p50", "p_min": "p1"},
-    "very_fine":   {"max_mult": 0.2,  "min_div": 4.0, "samples": 3072, "p_max": "p50", "p_min": "p1"},
+    "very_coarse": {"max_mult": 1.0,  "min_div": 1.2, "samples": 256,  "p_max": "p50", "p_min": "p5",  "cells_per_curvature": 4},
+    "coarse":      {"max_mult": 0.7,  "min_div": 1.5, "samples": 384,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 6},
+    "medium":      {"max_mult": 0.5,  "min_div": 2.0, "samples": 768,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 8},
+    "fine":        {"max_mult": 0.3,  "min_div": 3.0, "samples": 1536, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 12},
+    "very_fine":   {"max_mult": 0.2,  "min_div": 4.0, "samples": 3072, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 16},
 }
 
 
@@ -418,6 +389,56 @@ def check_watertight(meshes: list[trimesh.Trimesh]) -> tuple[bool, int, str]:
     )
 
 
+# ------------------------------------------------------------------
+# Curvature-aware cell sizing
+# ------------------------------------------------------------------
+def compute_curvature_sizing(
+    meshes: list[trimesh.Trimesh],
+    cells_per_curvature: float = 8,
+    bbox_max: float = 1.0,
+) -> float | None:
+    """Estimate cell size needed to resolve surface curvature.
+
+    Uses face adjacency dihedral angles to detect curved regions (1-30°)
+    and derives a cell size that puts ``cells_per_curvature`` cells across
+    the minimum radius of curvature. Returns ``None`` when no curved
+    surfaces are detected (shape is entirely flat-faceted).
+    """
+    if not meshes:
+        return None
+
+    min_curvature_cell = float("inf")
+    has_curvature = False
+
+    for mesh in meshes:
+        if len(mesh.faces) == 0:
+            continue
+        adj_angles = np.asarray(mesh.face_adjacency_angles, dtype=np.float64)
+        curved_mask = (adj_angles > np.radians(1)) & (adj_angles < np.radians(30))
+        curved_angles = adj_angles[curved_mask]
+
+        if len(curved_angles) == 0:
+            continue
+
+        has_curvature = True
+        mean_angle = float(curved_angles.mean())
+
+        edges = np.asarray(mesh.face_adjacency_edges, dtype=np.int64)[curved_mask]
+        edge_verts = np.asarray(mesh.vertices, dtype=np.float64)[edges]
+        edge_lengths = np.linalg.norm(edge_verts[:, 0, :] - edge_verts[:, 1, :], axis=1)
+        mean_edge = float(edge_lengths.mean())
+
+        if mean_angle > 1e-6:
+            radius = mean_edge / (2.0 * np.sin(mean_angle / 2.0))
+            curvature_cell = radius / cells_per_curvature
+            min_curvature_cell = min(min_curvature_cell, curvature_cell)
+
+    if not has_curvature:
+        return None
+
+    return min(min_curvature_cell, bbox_max / 4.0)
+
+
 def compute_patch_cell_sizes(
     meshes: list[trimesh.Trimesh],
     detail: str = "medium",
@@ -443,7 +464,6 @@ def compute_patch_cell_sizes(
     bbox_max = float(max(bbox))
 
     patch_sizes: dict[str, float] = {}
-    has_wall = False
     for mesh in meshes:
         name = mesh.metadata.get("name", "patch")
         n_samples = max(preset["samples"] // len(meshes), 8)
@@ -536,6 +556,15 @@ def suggest_cell_sizes(
 
     s_max = p_max * preset["max_mult"]
     s_min = p_min / preset["min_div"]
+
+    # Curvature-aware sizing: if the surface has tight curvature,
+    # cap s_max to ensure enough cells per curvature radius.
+    curvature_cell = compute_curvature_sizing(
+        meshes, cells_per_curvature=preset.get("cells_per_curvature", 8),
+        bbox_max=bbox_max,
+    )
+    if curvature_cell is not None:
+        s_max = min(s_max, curvature_cell)
 
     # Clamp s_max: never larger than bbox/8 (so a single long domain
     # doesn't blow up the cell count). The percentile-based ratio above

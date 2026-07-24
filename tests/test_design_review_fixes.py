@@ -1,6 +1,5 @@
 """Tests for the design-review fixes (no Qt/PyVista required)."""
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -16,7 +15,7 @@ except Exception:
 from cfmesh_autogui.gui.log_tags import Tag
 from cfmesh_autogui.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
 from cfmesh_autogui.gui.style import (
-    COLOR_PASS, COLOR_WARN, COLOR_FAIL, status_pill, metric_label,
+    COLOR_PASS, COLOR_WARN, status_pill, metric_label,
 )
 from cfmesh_autogui.gui.quality_panel import _load_thresholds, DEFAULT_THRESHOLDS
 

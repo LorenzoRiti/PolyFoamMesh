@@ -109,10 +109,10 @@ def test_wait_offline():
 
 
 def test_download_result_offline():
-    import tempfile, os
+    import os as _os
     cm = CloudMesher()
     job = MeshJob(id="offline-test", status=JobStatus.COMPLETED)
-    tmp = Path(os.environ.get("TEMP", "/tmp"))
+    tmp = Path(_os.environ.get("TEMP", "/tmp"))
     result = cm.download_result(job, tmp)
     assert result.exists()
     data = json.loads(result.read_text())

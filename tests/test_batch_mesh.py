@@ -110,7 +110,7 @@ def test_batch_mesher_configure():
 
 
 def test_batch_report_export():
-    import tempfile, os
+    import os as _os
     r = BatchReport(total=5, succeeded=3, failed=2, wall_time_s=60.0)
     r.entries = [
         BatchEntry(geometry_path="a.step", status="done", cell_count=1000),
@@ -118,7 +118,7 @@ def test_batch_report_export():
     ]
     bm = BatchMesher()
     bm._report = r
-    out = Path(os.environ.get("TEMP", "/tmp")) / "test_batch_report.json"
+    out = Path(_os.environ.get("TEMP", "/tmp")) / "test_batch_report.json"
     bm.export_report(out)
     data = Path(out).read_text()
     assert '"succeeded": 3' in data

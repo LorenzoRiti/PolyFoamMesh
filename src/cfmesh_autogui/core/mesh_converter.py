@@ -128,8 +128,6 @@ def msh_to_of_polymesh(
                 phys_tags_seen.add(tag)
             cell_counter += 1
 
-    n_total_cells = cell_counter
-
     # ------------------------------------------------------------------
     # Phase 2: Extract faces from 3D cells
     # ------------------------------------------------------------------

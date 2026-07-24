@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import time
+
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 try:
     from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
     from fastapi.responses import FileResponse, JSONResponse
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel
     _HAS_FASTAPI = True
 except ImportError:
     _HAS_FASTAPI = False

@@ -37,6 +37,39 @@ def infer_patch_type(patch_name: str) -> str:
     return "wall"
 
 
+def build_object_refinements(
+    high_curvature_regions: list[dict] | None = None,
+) -> list[str]:
+    """Build ``objectRefinements`` block for cfMesh meshDict.
+
+    Each high-curvature region is a dict with:
+      - centre (tuple[float,float,float])
+      - radius (float) — half-diagonal of the refinement box
+      - cell_size (float) — target cell size inside the box
+
+    Emits box-shaped refinement regions.  Returns empty list when nothing
+    to refine.
+    """
+    if not high_curvature_regions:
+        return []
+
+    lines = ["objectRefinements", "{"]
+    for i, region in enumerate(high_curvature_regions):
+        cx, cy, cz = region["centre"]
+        r = region["radius"]
+        cs = region["cell_size"]
+        lines.append(f"    refinementBox_{i}")
+        lines.append("    {")
+        lines.append("        type    box;")
+        lines.append(f"        min     ({cx - r} {cy - r} {cz - r});")
+        lines.append(f"        max     ({cx + r} {cy + r} {cz + r});")
+        lines.append(f"        cellSize {cs};")
+        lines.append("    }")
+    lines.append("}")
+    lines.append("")
+    return lines
+
+
 def build_meshdict_lines(
     max_cell: float = 0.05,
     min_cell: float = 0.01,
@@ -47,6 +80,7 @@ def build_meshdict_lines(
     bl_params: dict | None = None,
     patch_names: list[str] | None = None,
     patch_types: dict[str, str] | None = None,
+    object_refinements: list[dict] | None = None,
 ) -> list[str]:
     """Build meshDict content for cfMesh v2512.
 
@@ -64,6 +98,8 @@ def build_meshdict_lines(
         surface_file: path to the surface STL.
         bl_params: dict with keys nLayers, thicknessRatio, expansionRatio,
             wallPatches (list of patch names). If None, no boundary layers.
+        object_refinements: list of dicts with keys centre, radius, cell_size
+            for local refinement boxes. If None or empty, no local refinement.
     """
     lines: list[str] = [
         'FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }',
@@ -148,6 +184,12 @@ def build_meshdict_lines(
         lines.append("}")
         lines.append("")
 
+    # objectRefinements: local refinement boxes around high-curvature regions
+    # or small features.  cfMesh refines cells inside these boxes to the
+    # specified cellSize, giving local resolution without global cell inflation.
+    if object_refinements:
+        lines.extend(build_object_refinements(object_refinements))
+
     # renameBoundary: without this cfMesh types every patch as `wall`, so an
     # inlet/outlet cannot take a flow boundary condition downstream.
     names = list(patch_names or [])
@@ -187,6 +229,7 @@ def write_meshdict(
     bl_params: dict | None = None,
     patch_names: list[str] | None = None,
     patch_types: dict[str, str] | None = None,
+    object_refinements: list[dict] | None = None,
 ) -> Path:
     case_dir = Path(case_dir)
     system_dir = case_dir / "system"
@@ -202,6 +245,7 @@ def write_meshdict(
         bl_params=bl_params,
         patch_names=patch_names,
         patch_types=patch_types,
+        object_refinements=object_refinements,
     )
 
     if bl_params:

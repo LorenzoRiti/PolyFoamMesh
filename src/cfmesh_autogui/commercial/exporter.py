@@ -15,9 +15,8 @@ Supported formats:
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -169,7 +168,6 @@ class MeshExporter:
         cfg = OFConfig()
         linux_case = cfg._quoted_linux_path(case_dir)
         env_q = cfg._quoted_linux_path(cfg.env_script)
-        out_linux = cfg._quoted_linux_path(output)
 
         cmd = cfg._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; cd {linux_case} && "
