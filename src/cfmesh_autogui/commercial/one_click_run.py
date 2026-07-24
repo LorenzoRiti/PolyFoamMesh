@@ -258,10 +258,78 @@ class FullAutoPipeline:
             "solver": self._result.solver,
             "wall_time_s": self._result.wall_time_s,
         }
-        report_path.write_text(json.dumps(data, indent=2, default=str))
+        report_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
-        # Also write a simple status file
+        # Also write a simple status file. summary() contains emoji, which
+        # crashes under Windows' default cp1252 file encoding.
         status_path = Path(case_dir) / "full_auto_status.txt"
-        status_path.write_text(self._result.summary() + "\n")
+        status_path.write_text(self._result.summary() + "\n", encoding="utf-8")
 
         return [str(report_path), str(status_path)]
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+def main_cli() -> None:
+    """Headless CLI entry point: single geometry file to complete case.
+
+    Usage::
+
+        python -m cfmesh_autogui.commercial.one_click_run model.step \\
+            --quality high --solver-template "Internal Flow"
+    """
+    import argparse
+    import sys
+
+    # summary() embeds emoji (see FullAutoResult.summary above); Windows'
+    # console defaults to cp1252, which can't encode them and crashes print().
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+    parser = argparse.ArgumentParser(
+        description="CFMesh-AutoGUI Full Auto (headless): geometry file to "
+                     "complete OpenFOAM case, one command.",
+    )
+    parser.add_argument("geometry", help="Path to geometry file (.step/.stp/.stl)")
+    parser.add_argument("--output-dir", default=None, help="Output case directory")
+    parser.add_argument("--quality", choices=["draft", "medium", "high"],
+                         default="medium", help="Quality target (default: medium)")
+    parser.add_argument("--solver-template", default="Internal Flow",
+                         help="Solver template name (default: Internal Flow)")
+    parser.add_argument("--no-auto-bc", action="store_true",
+                         help="Disable automatic boundary condition detection")
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
+    pipeline = FullAutoPipeline()
+    result = pipeline.run(
+        args.geometry,
+        output_dir=args.output_dir,
+        quality_target=args.quality,
+        solver_template=args.solver_template,
+        auto_bc=not args.no_auto_bc,
+    )
+
+    print(f"\n{result.summary()}")
+    print(f"Case: {result.case_dir}")
+    if result.report_files:
+        print(f"Report: {result.report_files[0]}")
+    if result.warnings:
+        for w in result.warnings:
+            print(f"Warning: {w}")
+
+    if not result.success:
+        for err in result.errors:
+            print(f"Error: {err}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main_cli()

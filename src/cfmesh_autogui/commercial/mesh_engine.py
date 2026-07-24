@@ -257,7 +257,6 @@ class MeshEngine:
         """Run cfMesh cartesianMesh via WSL2."""
         from cfmesh_autogui.core.stl_writer import export_surface_file
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
-        from cfmesh_autogui.core.openfoam_runner import RetryRunner
 
         if meshes:
             export_surface_file(meshes, case_dir)
@@ -291,15 +290,39 @@ class MeshEngine:
         write_meshdict(case_dir, safe_max, safe_min, bl_params=bl_params, patch_names=patch_names)
         _write_control_dict(case_dir)
 
-        runner = RetryRunner(self._of_config)
-        # max_cell/min_cell must match what was actually written above, or a
-        # BL-failure fallback retry would regenerate meshDict with
-        # RetryRunner's unrelated defaults (0.05/0.01) instead of these sizes.
-        runner.run(
-            case_dir=case_dir, bl_params=bl_params, patch_names=patch_names,
-            max_cell=safe_max, min_cell=safe_min,
-        )
+        # RetryRunner is QObject/QThread-based: .run() starts a background
+        # thread and returns immediately, delivering completion via a
+        # QueuedConnection signal that needs a running Qt event loop to ever
+        # fire. Calling it here and immediately continuing to
+        # _run_polyhedral()/_check_quality()/_count_cells() raced the actual
+        # meshing every time — those steps ran against a polyMesh that was
+        # still being written (or didn't exist yet), silently producing a
+        # "successful" 0-cell mesh. run() cartesianMesh synchronously instead,
+        # with the same BL-failure fallback RetryRunner offered.
+        if not self._run_cartesian_mesh_sync(case_dir):
+            if bl_params:
+                logger.warning("CartesianHex: failed with boundary layers, retrying without BL")
+                write_meshdict(case_dir, safe_max, safe_min, bl_params=None, patch_names=patch_names)
+                if not self._run_cartesian_mesh_sync(case_dir):
+                    raise RuntimeError("cartesianMesh failed (with and without boundary layers)")
+            else:
+                raise RuntimeError("cartesianMesh failed")
         logger.info("CartesianHex: OK (max=%s min=%s)", safe_max, safe_min)
+
+    def _run_cartesian_mesh_sync(self, case_dir: Path) -> bool:
+        """Run cartesianMesh synchronously and wait for it to actually finish."""
+        import subprocess
+
+        try:
+            cmd = self._of_config.build_command(case_dir)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            logger.warning("cartesianMesh timed out for %s", case_dir)
+            return False
+        except FileNotFoundError:
+            logger.warning("WSL not found for cartesianMesh")
+            return False
 
     def _run_polyhedral(self, case_dir: Path) -> None:
         """Convert hex mesh to polyhedral via polyDualMesh."""
