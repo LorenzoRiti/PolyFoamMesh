@@ -147,6 +147,62 @@ def test_transport_properties():
     assert "1.000000e-06" in content
 
 
+_BOUNDARY_SINGLE_BOX_PATCH = """FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       polyBoundaryMesh;
+    location    "constant/polyMesh";
+    object      boundary;
+}
+1
+(
+    box
+    {
+        type wall;
+        nFaces 12;
+        startFace 0;
+    }
+)
+"""
+
+
+def test_write_fields_uses_real_mesh_patches_not_hardcoded_names():
+    """_write_fields() used to hardcode boundaryField blocks for exactly
+    inlet/outlet/wall/symmetry regardless of the mesh's real patch names.
+    A single auto-named patch (e.g. "box", the common case for a bare
+    STL/STEP import) got NO boundary condition at all in any field — verified
+    live via baramflow_export.validate_case(), which reported "no boundary
+    condition for patch(es) box" for every field until this fix. Confirmed
+    the exported case validates and passes end-to-end after the fix."""
+    case_dir = Path(tempfile.mkdtemp())
+    poly = case_dir / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    (poly / "boundary").write_text(_BOUNDARY_SINGLE_BOX_PATCH, encoding="ascii")
+
+    ss = SolverSetup()
+    ss.configure(SolverConfig(solver=SolverType.SIMPLE_FOAM, turbulence=TurbulenceModel.K_OMEGA_SST))
+    ss.write_all(case_dir)
+
+    for field in ("U", "p", "k", "omega", "epsilon", "nut"):
+        content = (case_dir / "0" / field).read_text()
+        assert "box" in content, f"0/{field} missing a boundaryField entry for the real patch 'box'"
+        assert "inlet" not in content and "outlet" not in content and "symmetry" not in content
+
+
+def test_write_fields_falls_back_to_legacy_patches_without_a_mesh():
+    """Writing solver config files ahead of meshing (no constant/polyMesh yet)
+    must keep working exactly as before — inlet/outlet/wall/symmetry."""
+    case_dir = Path(tempfile.mkdtemp())
+    ss = SolverSetup()
+    ss.configure(SolverConfig())
+    ss.write_all(case_dir)
+
+    content = (case_dir / "0" / "U").read_text()
+    for name in ("inlet", "outlet", "wall", "symmetry"):
+        assert name in content
+
+
 if __name__ == "__main__":
     import shutil
     test_solver_type_enum()

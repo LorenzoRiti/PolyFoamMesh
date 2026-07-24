@@ -357,121 +357,79 @@ class SolverSetup:
     # ------------------------------------------------------------------
     # 0/ fields
     # ------------------------------------------------------------------
+    # (name, class, dimensions, internalField)
+    _FIELD_SPECS = (
+        ("U", "volVectorField", "[0 1 -1 0 0 0 0]", "uniform (1 0 0)"),
+        ("p", "volScalarField", "[0 2 -2 0 0 0 0]", "uniform 0"),
+        ("k", "volScalarField", "[0 2 -2 0 0 0 0]", "uniform 0.06"),
+        ("omega", "volScalarField", "[0 0 -1 0 0 0 0]", "uniform 10"),
+        ("epsilon", "volScalarField", "[0 2 -3 0 0 0 0]", "uniform 0.5"),
+        ("nut", "volScalarField", "[0 2 -1 0 0 0 0]", "uniform 0"),
+    )
+
     def _write_fields(self, case_dir: Path) -> None:
-        """Write initial condition fields (U, p, k, omega, etc.)"""
+        """Write initial condition fields (U, p, k, omega, etc.)
+
+        Used to hardcode boundaryField blocks for exactly four patch names
+        ("inlet"/"outlet"/"wall"/"symmetry") regardless of what the mesh's
+        real patches are actually called. Any case whose patches are named
+        anything else (e.g. a single auto-named "box" patch — the common
+        case for a bare STL/STEP import) got NO boundary condition entry at
+        all for its real patches: OpenFOAM (and BaramFlow, which opens
+        native cases directly) then refuses to run with a "cannot find
+        patchField entry" error. Verified live via
+        baramflow_export.validate_case() on a real meshed case: it reported
+        "no boundary condition for patch(es) box" for every field.
+
+        Now reads the case's ACTUAL patches (same source BCEditor.
+        read_boundary() uses) and writes a boundaryField entry for each one,
+        classified by name the same way BCEditor does — reusing its
+        BC_PRESETS rather than duplicating the same per-field defaults a
+        second time (they were already identical).
+        """
         dir_0 = case_dir / "0"
         dir_0.mkdir(parents=True, exist_ok=True)
 
-        fields = {
-            "U": self._field_U,
-            "p": self._field_p,
-            "k": self._field_k,
-            "omega": self._field_omega,
-            "epsilon": self._field_epsilon,
-            "nut": self._field_nut,
-        }
+        patches = self._read_case_patches(case_dir)
 
-        for name, fn in fields.items():
-            path = dir_0 / name
-            path.write_text(fn(), encoding="ascii")
+        for name, cls, dims, internal in self._FIELD_SPECS:
+            content = self._render_field(name, cls, dims, internal, patches)
+            (dir_0 / name).write_text(content, encoding="ascii")
             self.files_written.append(f"0/{name}")
 
-    def _boundary_header(self) -> str:
-        return (
-            "dimensions [0 2 -2 0 0 0 0];\n"
-            "internalField uniform 0;\n"
-            "boundaryField\n"
-            "{\n"
-            '    inlet    { type fixedValue; value uniform $internalField; }\n'
-            '    outlet   { type zeroGradient; }\n'
-            '    wall     { type fixedValue; value uniform 0; }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
+    def _read_case_patches(self, case_dir: Path) -> list:
+        """Real patches from the case's mesh, classified by name.
 
-    def _field_U(self) -> str:
-        return (
-            "FoamFile { version 2.0; format ascii; class volVectorField; object U; }\n"
-            "dimensions [0 1 -1 0 0 0 0];\n"
-            "internalField uniform (1 0 0);\n"
-            "boundaryField\n"
-            "{\n"
-            '    inlet    { type fixedValue; value uniform (1 0 0); }\n'
-            '    outlet   { type zeroGradient; }\n'
-            '    wall     { type fixedValue; value uniform (0 0 0); }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
+        Falls back to the legacy inlet/outlet/wall/symmetry set when no
+        mesh exists yet (e.g. writing solver files ahead of meshing), so
+        behaviour is unchanged for that case.
+        """
+        from cfmesh_autogui.commercial.bc_editor import BCEditor, PatchInfo
+        try:
+            return BCEditor().read_boundary(case_dir)
+        except Exception:
+            return [
+                PatchInfo(name=n, orig_name=n, bc_type=n)
+                for n in ("inlet", "outlet", "wall", "symmetry")
+            ]
 
-    def _field_p(self) -> str:
-        return (
-            "FoamFile { version 2.0; format ascii; class volScalarField; object p; }\n"
-            "dimensions [0 2 -2 0 0 0 0];\n"
-            "internalField uniform 0;\n"
-            "boundaryField\n"
-            "{\n"
-            '    inlet    { type zeroGradient; }\n'
-            '    outlet   { type fixedValue; value uniform 0; }\n'
-            '    wall     { type zeroGradient; }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
-
-    def _field_k(self) -> str:
-        k_val = 0.06  # Moderate turbulence ~5%
-        return (
-            "FoamFile { version 2.0; format ascii; class volScalarField; object k; }\n"
-            "dimensions [0 2 -2 0 0 0 0];\n"
-            f"internalField uniform {k_val};\n"
-            "boundaryField\n"
-            "{\n"
-            f'    inlet    {{ type fixedValue; value uniform {k_val}; }}\n'
-            '    outlet   { type zeroGradient; }\n'
-            '    wall     { type kqRWallFunction; value uniform 0; }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
-
-    def _field_omega(self) -> str:
-        omega_val = 10.0  # ~ k^0.5 / (0.09^0.25 * L)
-        return (
-            "FoamFile { version 2.0; format ascii; class volScalarField; object omega; }\n"
-            "dimensions [0 0 -1 0 0 0 0];\n"
-            f"internalField uniform {omega_val};\n"
-            "boundaryField\n"
-            "{\n"
-            f'    inlet    {{ type fixedValue; value uniform {omega_val}; }}\n'
-            '    outlet   { type zeroGradient; }\n'
-            '    wall     { type omegaWallFunction; value uniform 1; }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
-
-    def _field_epsilon(self) -> str:
-        eps_val = 0.5  # ~ Cmu^0.75 * k^1.5 / L
-        return (
-            "FoamFile { version 2.0; format ascii; class volScalarField; object epsilon; }\n"
-            "dimensions [0 2 -3 0 0 0 0];\n"
-            f"internalField uniform {eps_val};\n"
-            "boundaryField\n"
-            "{\n"
-            f'    inlet    {{ type fixedValue; value uniform {eps_val}; }}\n'
-            '    outlet   { type zeroGradient; }\n'
-            '    wall     { type epsilonWallFunction; value uniform 0.1; }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
-
-    def _field_nut(self) -> str:
-        return (
-            "FoamFile { version 2.0; format ascii; class volScalarField; object nut; }\n"
-            "dimensions [0 2 -1 0 0 0 0];\n"
-            "internalField uniform 0;\n"
-            "boundaryField\n"
-            "{\n"
-            '    inlet    { type calculated; value uniform 0; }\n'
-            '    outlet   { type calculated; value uniform 0; }\n'
-            '    wall     { type nutkWallFunction; value uniform 0; }\n'
-            '    symmetry { type symmetry; }\n'
-            "}\n"
-        )
+    @staticmethod
+    def _render_field(name: str, cls: str, dims: str, internal: str, patches: list) -> str:
+        from cfmesh_autogui.commercial.bc_editor import BC_PRESETS
+        lines = [
+            f"FoamFile {{ version 2.0; format ascii; class {cls}; object {name}; }}",
+            f"dimensions {dims};",
+            f"internalField {internal};",
+            "boundaryField",
+            "{",
+        ]
+        for p in patches:
+            preset = BC_PRESETS.get(p.bc_type, BC_PRESETS["wall"])
+            field_cfg = preset.get(name, {"type": "zeroGradient"})
+            lines.append(f"    {p.name}")
+            lines.append("    {")
+            for key, val in field_cfg.items():
+                lines.append(f"        {key} {val};")
+            lines.append("    }")
+        lines.append("}")
+        return "\n".join(lines) + "\n"
