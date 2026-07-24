@@ -29,9 +29,12 @@ ORANGE_400 = "#f08c4a"
 FLUENT_DARK = "#2d2d2d"
 FLUENT_DARKER = "#1a1a1a"
 FLUENT_RIBBON = "#3c3c3c"
-# ANSYS Mechanical blue accent
-ANSYS_BLUE = "#0078d7"
-ANSYS_BLUE_LIGHT = "#4a9bdb"
+# Brand accent — Anthropic clay/terracotta (replaces the former ANSYS-blue
+# accent everywhere it was used as the app's primary/selected color).
+ANTHROPIC_CLAY = "#d97757"
+ANTHROPIC_CLAY_LIGHT = "#e2916f"
+ANTHROPIC_CLAY_DARK = "#b85c3e"
+ANTHROPIC_CLAY_TINT = "#fbede6"  # very light bg tint for hover/selected rows
 # Graphics background (dark)
 GRAPHICS_BG = "#1a1a2e"
 GRAPHICS_BG_LIGHT = "#f4f4f4"
@@ -44,7 +47,7 @@ CELL_BORDER = "#e0e0e0"
 RIBBON_BG = "#3c3c3c"
 RIBBON_TEXT = "#ffffff"
 RIBBON_HOVER = "#505050"
-RIBBON_SELECTED = "#0078d7"
+RIBBON_SELECTED = ANTHROPIC_CLAY
 # Status indicators (ANSYS Workbench style)
 STATUS_READY = "#27ae60"       # green check
 STATUS_ATTENTION = "#f39c12"  # yellow triangle
@@ -54,18 +57,18 @@ STATUS_PENDING = "#95a5a6"    # gray
 
 # Color: brand palettes
 # ---------------------------------------------------------------------------
-# Primary (engineer blue)
-PRIMARY_50  = "#eff6ff"
-PRIMARY_100 = "#dbeafe"
-PRIMARY_200 = "#bfdbfe"
-PRIMARY_300 = "#93c5fd"
-PRIMARY_400 = "#60a5fa"
-PRIMARY_500 = "#3b82f6"
-PRIMARY_600 = "#2563eb"
-PRIMARY_700 = "#1d4ed8"
-PRIMARY_800 = "#1e40af"
-PRIMARY_900 = "#1e3a8a"
-PRIMARY_950 = "#172554"
+# Primary (Anthropic clay/terracotta)
+PRIMARY_50  = "#fdf3ef"
+PRIMARY_100 = "#fbe4da"
+PRIMARY_200 = "#f6c7b0"
+PRIMARY_300 = "#eea283"
+PRIMARY_400 = ANTHROPIC_CLAY_LIGHT   # "#e2916f"
+PRIMARY_500 = ANTHROPIC_CLAY         # "#d97757"
+PRIMARY_600 = ANTHROPIC_CLAY_DARK    # "#b85c3e"
+PRIMARY_700 = "#a34a30"
+PRIMARY_800 = "#833a27"
+PRIMARY_900 = "#5f2a1e"
+PRIMARY_950 = "#3d1a13"
 
 # Secondary (accent violet)
 SECONDARY_50  = "#f5f3ff"

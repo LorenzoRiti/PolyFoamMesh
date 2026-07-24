@@ -54,7 +54,7 @@ from cfmesh_autogui.gui.log_panel import LogPanel
 from cfmesh_autogui.gui.style import COLOR_TEXT_DISABLED
 from cfmesh_autogui.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
 from cfmesh_autogui.gui.log_tags import Tag
-from cfmesh_autogui.gui.design_tokens import ORANGE_500, ORANGE_600, ORANGE_400, ANSYS_BLUE, APP_VERSION
+from cfmesh_autogui.gui.design_tokens import ORANGE_500, ORANGE_600, ORANGE_400, APP_VERSION
 from cfmesh_autogui.octopoda_local import octo
 from cfmesh_autogui.gui.settings_migration import AppSettings
 
@@ -271,8 +271,7 @@ class MainWindow(QMainWindow):
         tree.setRootIsDecorated(False)
         tree.setAnimated(True)
         tree.setFrameShape(QFrame.NoFrame)
-        tree.setMinimumWidth(180)
-        tree.setMaximumWidth(220)
+        tree.setMinimumWidth(160)
         tree.itemClicked.connect(self._on_workflow_item_clicked)
         self._workflow_tree = tree
 
@@ -384,12 +383,17 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         h_splitter = QSplitter(Qt.Horizontal)
+        # Without this, dragging a pane's edge past its content's natural
+        # size snaps it to fully collapsed instead of stopping at a sane
+        # minimum — the most common cause of a splitter feeling "broken".
+        h_splitter.setChildrenCollapsible(False)
 
         self._viewer = ViewerWidget()
         self._viewer.face_picked.connect(self._on_face_picked)
         h_splitter.addWidget(self._viewer)
 
         right = QWidget()
+        right.setMinimumWidth(260)
         rl = QVBoxLayout(right)
         rl.setContentsMargins(4, 4, 4, 4)
 
@@ -414,7 +418,9 @@ class MainWindow(QMainWindow):
         self._quality.fix_requested.connect(self._on_auto_fix_quality)
 
         self._log = LogPanel()
+        self._log.setMinimumHeight(60)
         log_holder = QWidget()
+        log_holder.setMinimumHeight(100)
         log_layout = QVBoxLayout(log_holder)
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(0)
@@ -422,6 +428,9 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self._log, 1)
 
         v_splitter = QSplitter(Qt.Vertical)
+        # See h_splitter above: without this the console pane can snap shut
+        # instead of resizing smoothly when dragged near its minimum.
+        v_splitter.setChildrenCollapsible(False)
         v_splitter.addWidget(h_splitter)
         v_splitter.addWidget(log_holder)
         v_splitter.setStretchFactor(0, 4)
