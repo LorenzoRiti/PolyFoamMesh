@@ -147,6 +147,35 @@ class ParamsPanel(QWidget):
         mesh_tab = QWidget()
         mesh_layout = QVBoxLayout(mesh_tab)
 
+        # Case templates: pick a starting point (Internal Flow, External Aero,
+        # CHT, ...) instead of guessing detail level / BL / cell-size ratios
+        # from scratch. Only reads template metadata (name/description/detail/
+        # BL/cell-size RATIOS) — deliberately does NOT call TemplateEngine's own
+        # case-writing path, which passes those ratios straight through as
+        # absolute cell sizes and predates the current BL contract; scaling by
+        # the loaded geometry and going through the normal meshing pipeline
+        # here keeps every fix already made (BL keys, patch typing, ...) intact.
+        template_group = QGroupBox("Case Template")
+        template_layout = QHBoxLayout(template_group)
+        self._template_combo = QComboBox()
+        self._template_combo.setToolTip(
+            "Preimposta livello di dettaglio, strati limite e rapporto "
+            "dimensione celle per un tipo di caso comune."
+        )
+        try:
+            from cfmesh_autogui.commercial.template_engine import TemplateEngine
+            self._templates = TemplateEngine().list_templates()
+        except Exception:
+            self._templates = []
+        for t in self._templates:
+            self._template_combo.addItem(t.metadata.name)
+        template_layout.addWidget(self._template_combo)
+        btn_apply_template = QPushButton("Apply")
+        btn_apply_template.clicked.connect(self._on_apply_template)
+        template_layout.addWidget(btn_apply_template)
+        mesh_layout.addWidget(template_group)
+        self._bbox_dim = 1.0
+
         mesh_group = QGroupBox("Cell Sizes")
         mesh_form = QFormLayout(mesh_group)
         self._max_cell = QDoubleSpinBox()
@@ -366,6 +395,45 @@ class ParamsPanel(QWidget):
     # Kinematic viscosity at 20 °C, m²/s.
     _FLUID_NU = {"Air (20°C)": 1.5e-5, "Water (20°C)": 1.0e-6}
 
+    def _on_apply_template(self):
+        """Apply a case-template PRESET (detail, BL, cell-size ratio).
+
+        Deliberately only reads TemplatePreset metadata and never calls
+        TemplateEngine.apply_template() itself — that method writes meshDict
+        directly from the template's *ratios* as if they were absolute cell
+        sizes (wrong for any geometry but the one it was tuned on) and predates
+        the current boundary-layer key contract. Scaling the ratios by the
+        loaded geometry's bounding box here, and setting the same widgets the
+        user would set by hand, means the template goes through the normal
+        (already-correct) meshing pipeline.
+        """
+        idx = self._template_combo.currentIndex()
+        if idx < 0 or idx >= len(self._templates):
+            return
+        t = self._templates[idx]
+
+        detail_to_slider = {v: k for k, v in self._DETAIL_MAP.items()}
+        self._detail_slider.setValue(detail_to_slider.get(t.detail, 2))
+
+        self._bl_checkbox.setChecked(bool(t.bl_enabled))
+        if t.bl_enabled:
+            self._bl_n_layers.setValue(
+                min(max(t.bl_n_layers, self._bl_n_layers.minimum()),
+                    self._bl_n_layers.maximum())
+            )
+
+        max_cell = t.max_cell_ratio * self._bbox_dim
+        min_cell = t.min_cell_ratio * self._bbox_dim
+        self._max_cell.setValue(max_cell)
+        self._min_cell.setValue(min_cell)
+
+        note = "" if self._bbox_dim != 1.0 else " (load a geometry for a real cell size)"
+        self.suggestion_completed.emit(
+            f"[template] {t.metadata.name}: {t.metadata.description} — "
+            f"detail={t.detail} BL={'on' if t.bl_enabled else 'off'} "
+            f"(n={t.bl_n_layers}) max={max_cell:.4g}m min={min_cell:.4g}m{note}"
+        )
+
     def _on_bl_auto_compute(self):
         """Derive boundary-layer parameters from flow physics.
 
@@ -475,6 +543,7 @@ class ParamsPanel(QWidget):
 
     def set_bbox(self, dx: float, dy: float, dz: float):
         self._domain_label.setText(f"Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m")
+        self._bbox_dim = max(dx, dy, dz, 1e-6)
 
     def set_suggest_meshes(self, meshes: list) -> None:
         self._suggest_meshes = list(meshes) if meshes else []
