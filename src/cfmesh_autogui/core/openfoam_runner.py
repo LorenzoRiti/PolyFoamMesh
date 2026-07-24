@@ -32,6 +32,7 @@ __all__ = [
     "MeshWorker", "RetryRunner",
     "MeshQualityReport", "parse_checkmesh_output",
     "CheckMeshWorker", "PolyDualWorker", "QualityFixWorker",
+    "generate_fms",
 ]
 
 try:
@@ -44,6 +45,8 @@ except ImportError:
 
 from cfmesh_autogui.config import OFConfig
 from cfmesh_autogui.octopoda_local import octo
+
+OF_BASHRC = "/usr/lib/openfoam/openfoam2512/etc/bashrc"
 
 
 
@@ -781,6 +784,77 @@ def parse_checkmesh_output(text: str) -> MeshQualityReport:
         r.min_volume = float(m.group(1))
 
     return r
+
+
+# ------------------------------------------------------------------
+# FMS (Feature Mesh Surface) generation via surfaceFeatureEdges
+# ------------------------------------------------------------------
+
+def generate_fms(
+    case_dir: Path | str,
+    angle: float = 30.0,
+    timeout: int = 60,
+) -> Path | None:
+    """Run surfaceFeatureEdges to produce an .fms file from the surface STL.
+
+    Wraps the WSL2 call to ``surfaceFeatureEdges -angle <angle>``,
+    run from within the case directory so that output paths are relative
+    and OpenFOAM can find its config files.
+
+    The FMS file is written to ``constant/triSurface/surface.fms``.
+
+    Args:
+        case_dir: OpenFOAM case directory (must contain
+            ``constant/triSurface/surface.stl``).
+        angle: Feature angle threshold in degrees (default 30).
+        timeout: Max wall-clock seconds for the WSL call.
+
+    Returns:
+        Path to the generated ``.fms`` file, or ``None`` on failure.
+    """
+    case_dir = Path(case_dir).resolve()
+    stl_path = case_dir / "constant" / "triSurface" / "surface.stl"
+    fms_path = case_dir / "constant" / "triSurface" / "surface.fms"
+    if not stl_path.exists():
+        logger.warning("generate_fms: %s not found", stl_path)
+        return None
+
+    linux = _to_wsl_path_wsl(case_dir)
+    in_stl = "constant/triSurface/surface.stl"
+    out_fms = "constant/triSurface/surface.fms"
+    cmd = (
+        f"cd {linux} && "
+        f"surfaceFeatureEdges -angle {angle} {in_stl} {out_fms} 2>&1"
+    )
+    try:
+        r = subprocess.run(
+            ["wsl.exe", "-e", "bash", "-lc", f". {OF_BASHRC} && {cmd}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode == 0 and fms_path.exists():
+            logger.info("generate_fms: created %s (angle=%.1f°)", fms_path, angle)
+            return fms_path
+        logger.warning(
+            "generate_fms: surfaceFeatureEdges rc=%d — try with a "
+            "case path that contains no spaces", r.returncode,
+        )
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("generate_fms: timed out (%ds)", timeout)
+        return None
+    except FileNotFoundError:
+        logger.warning("generate_fms: WSL not found")
+        return None
+
+
+def _to_wsl_path_wsl(win_path: Path) -> str:
+    """Convert a Windows absolute path to a shell-quoted WSL2 /mnt/ path."""
+    win = win_path.resolve()
+    drive = win.drive[0].lower()
+    rel = str(win).split(":", 1)[1].replace("\\", "/")
+    raw = f"/mnt/{drive}{rel}"
+    import shlex
+    return shlex.quote(raw)
 
 
 # ------------------------------------------------------------------

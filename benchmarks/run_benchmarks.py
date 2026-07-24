@@ -37,7 +37,7 @@ from cfmesh_autogui.core.geometry import (
     validate_cell_sizes,
 )
 from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output
+from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output, generate_fms
 from cfmesh_autogui.core.stl_writer import export_surface_file
 
 logging.basicConfig(
@@ -264,10 +264,15 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
         stl_out = export_surface_file(meshes, case_dir)
         logger.info("  surface written: %s", stl_out)
 
+        fms = generate_fms(case_dir, angle=30.0)
+        surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
+        logger.info("  surface file: %s (FMS=%s)", surface_file, bool(fms))
+
         write_meshdict(
             case_dir,
             max_cell_size=max_cell,
             min_cell_size=min_cell,
+            surface_file=surface_file,
             bl_params={
                 "nLayers": 5,
                 "thicknessRatio": 0.3,
