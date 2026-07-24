@@ -257,7 +257,7 @@ class QualityEngine:
         match = re.search(r"Max aspect ratio = ([\d.]+)", raw)
         if match: m.max_aspect_ratio = float(match.group(1))
 
-        match = re.search(r"Min volume = (-?[\d.eE+-]+)", raw)
+        match = re.search(rf"Min volume = ({QualityEngine._OF_FLOAT})", raw)
         if match: m.min_volume = float(match.group(1))
 
         match = re.search(r"There are (\d+).*?negative volume", raw, re.IGNORECASE)
@@ -290,8 +290,9 @@ class QualityEngine:
         }
 
         cell_pattern = re.compile(
-            r"Cell\s+(\d+):\s+skewness\s+([\d.]+).*?"
-            r"non-ortho\s+([\d.]+).*?aspect\s+([\d.]+)", re.IGNORECASE,
+            rf"Cell\s+(\d+):\s+skewness\s+({QualityEngine._OF_FLOAT}).*?"
+            rf"non-ortho\s+({QualityEngine._OF_FLOAT}).*?"
+            rf"aspect\s+({QualityEngine._OF_FLOAT})", re.IGNORECASE,
         )
         for m in cell_pattern.finditer(raw):
             try:
@@ -407,6 +408,8 @@ class QualityEngine:
         meshdict_path.write_text(text, encoding="ascii")
         logger.info("Applied fix: %s on %s", fix.action, fix.target_metric)
 
+    _OF_FLOAT = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+
     @staticmethod
     def _relax_cell_sizes(text: str, factor: float = 1.2) -> str:
         """Increase maxCell by *factor*, decrease minCell by *factor*^-1."""
@@ -416,8 +419,8 @@ class QualityEngine:
         def _relax_min(m: re.Match) -> str:
             val = float(m.group(1)) / factor
             return f"minCellSize {val:.6f};"
-        text = re.sub(r"maxCellSize\s+([\d.]+);", _relax_max, text)
-        text = re.sub(r"minCellSize\s+([\d.]+);", _relax_min, text)
+        text = re.sub(rf"maxCellSize\s+({QualityEngine._OF_FLOAT});", _relax_max, text)
+        text = re.sub(rf"minCellSize\s+({QualityEngine._OF_FLOAT});", _relax_min, text)
         return text
 
     @staticmethod
@@ -430,7 +433,7 @@ class QualityEngine:
             val = max(float(m.group(1)) * 0.5, 1.01)
             return f"            thicknessRatio          {val:.4f};"
         text = re.sub(r"nLayers\s+(\d+);", _halve_layers, text)
-        text = re.sub(r"thicknessRatio\s+([\d.]+);", _halve_growth, text)
+        text = re.sub(rf"thicknessRatio\s+({QualityEngine._OF_FLOAT});", _halve_growth, text)
         return text
 
     @staticmethod
@@ -441,15 +444,15 @@ class QualityEngine:
     @staticmethod
     def _coarsen_mesh(text: str, factor: float = 1.5) -> str:
         """Increase both cell sizes by *factor*."""
-        text = re.sub(r"maxCellSize\s+([\d.]+);", lambda m, f=factor: f"maxCellSize {float(m.group(1))*f:.6f};", text)
-        text = re.sub(r"minCellSize\s+([\d.]+);", lambda m, f=factor: f"minCellSize {float(m.group(1))*f:.6f};", text)
+        text = re.sub(rf"maxCellSize\s+({QualityEngine._OF_FLOAT});", lambda m, f=factor: f"maxCellSize {float(m.group(1))*f:.6f};", text)
+        text = re.sub(rf"minCellSize\s+({QualityEngine._OF_FLOAT});", lambda m, f=factor: f"minCellSize {float(m.group(1))*f:.6f};", text)
         return text
 
     @staticmethod
     def _reduce_max_cell(text: str, factor: float = 0.7) -> str:
         """Reduce maxCell by *factor*."""
         return re.sub(
-            r"maxCellSize\s+([\d.]+);",
+            rf"maxCellSize\s+({QualityEngine._OF_FLOAT});",
             lambda m, f=factor: f"maxCellSize {float(m.group(1))*f:.6f};",
             text,
         )

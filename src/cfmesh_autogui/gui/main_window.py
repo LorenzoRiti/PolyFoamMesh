@@ -356,7 +356,7 @@ class MainWindow(QMainWindow):
 
     def _on_workflow_item_clicked(self, item: QTreeWidgetItem, col: int):
         stage = item.data(0, Qt.UserRole).get("stage", "")
-        tab_map = {"geometry": 0, "mesh_settings": 0, "advanced": 2, "quality_check": 3}
+        tab_map = {"geometry": 0, "mesh_settings": 1, "advanced": 2, "generate_mesh": 1, "quality_check": 3}
         idx = tab_map.get(stage, 0)
         self._params.set_current_tab(idx)
         ribbon_tab = {"geometry": "home", "mesh_settings": "mesh", "advanced": "advanced", "quality_check": "quality"}.get(stage, "home")
@@ -1222,6 +1222,8 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_run_meshing_gmsh_hybrid(self, geom_path: str):
+        self._run_id += 1
+        my_id = self._run_id
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = Path.home() / "cfmesh_cases"
         if " " in str(root):
@@ -1296,6 +1298,9 @@ class MainWindow(QMainWindow):
         self._runner.progress_update.connect(self._on_progress_update)
 
         def guarded_finished(exit_code, output, attempts):
+            if my_id != self._run_id:
+                logger.debug("Stale gmsh_hybrid callback ignored")
+                return
             self._on_meshing_finished(exit_code, output, attempts)
 
         self._runner.run(
@@ -1305,7 +1310,7 @@ class MainWindow(QMainWindow):
             bl_params=bl_params,
             max_cell=safe_max,
             min_cell=safe_min,
-            patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+            patch_names=names,
         )
 
     def _on_run_meshing_gmsh_direct(self, step_path: str):
@@ -1550,6 +1555,9 @@ class MainWindow(QMainWindow):
     def _launch_polydual(self) -> None:
         if not self._case_dir:
             return
+        if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
+            self._polydual_thread.quit()
+            self._polydual_thread.wait(3000)
         self._log.append_log("[poly] Converting hex \u2192 polyhedral mesh (polyDualMesh)...")
         self._status.showMessage("Polyhedral conversion...")
         t = QThread()
