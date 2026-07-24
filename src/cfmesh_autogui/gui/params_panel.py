@@ -175,6 +175,8 @@ class ParamsPanel(QWidget):
         template_layout.addWidget(btn_apply_template)
         mesh_layout.addWidget(template_group)
         self._bbox_dim = 1.0
+        self._applied_template_solver: str | None = None
+        self._applied_template_turbulence: str | None = None
 
         mesh_group = QGroupBox("Cell Sizes")
         mesh_form = QFormLayout(mesh_group)
@@ -427,12 +429,25 @@ class ParamsPanel(QWidget):
         self._max_cell.setValue(max_cell)
         self._min_cell.setValue(min_cell)
 
+        # Remembered so main_window can carry the solver/turbulence choice
+        # into setup_case() once meshing finishes.
+        self._applied_template_solver = t.metadata.solver
+        self._applied_template_turbulence = t.metadata.turbulence
+
         note = "" if self._bbox_dim != 1.0 else " (load a geometry for a real cell size)"
         self.suggestion_completed.emit(
             f"[template] {t.metadata.name}: {t.metadata.description} — "
             f"detail={t.detail} BL={'on' if t.bl_enabled else 'off'} "
             f"(n={t.bl_n_layers}) max={max_cell:.4g}m min={min_cell:.4g}m{note}"
         )
+
+    def get_template_solver_turbulence(self) -> tuple[str, str] | None:
+        """(solver, turbulence_model) from the last applied template, or None."""
+        solver = getattr(self, "_applied_template_solver", None)
+        turb = getattr(self, "_applied_template_turbulence", None)
+        if solver is None or turb is None:
+            return None
+        return solver, turb
 
     def _on_bl_auto_compute(self):
         """Derive boundary-layer parameters from flow physics.
