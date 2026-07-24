@@ -330,6 +330,8 @@ class GeometryPipeline:
     # ------------------------------------------------------------------
     def _extract_features(self, meshes: list) -> FeatureReport:
         """Extract sharp edges, curvature, and gap regions."""
+        import trimesh
+
         sharp_edges = 0
         curv_radius = float("inf")
         gap_count = 0
@@ -365,10 +367,18 @@ class GeometryPipeline:
             except Exception:
                 pass
 
-            # Gap detection (non-watertight boundary edges)
+            # Gap detection (non-watertight boundary edges). face_adjacency_edges
+            # holds vertex-index pairs, not a boolean mask — `~` on it produced
+            # garbage indices, always caught by the except below, so this
+            # silently reported zero gaps for every non-watertight mesh.
+            # Boundary edges are edges that appear only once (not shared by
+            # two faces).
             if not mesh.is_watertight:
                 try:
-                    boundary_edges = mesh.edges[~mesh.face_adjacency_edges]
+                    boundary_idx = trimesh.grouping.group_rows(
+                        mesh.edges_sorted, require_count=1,
+                    )
+                    boundary_edges = mesh.edges[boundary_idx]
                     if len(boundary_edges) > 0:
                         verts = mesh.vertices
                         gap_lens = np.linalg.norm(
