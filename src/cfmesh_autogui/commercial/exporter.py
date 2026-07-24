@@ -137,14 +137,8 @@ class MeshExporter:
     @staticmethod
     def _count_cells(case_dir: Path) -> int:
         """Count cells from the polyMesh/owner file."""
-        owner = case_dir / "constant" / "polyMesh" / "owner"
-        if not owner.exists():
-            return 0
-        try:
-            lines = owner.read_text(encoding="ascii", errors="replace").splitlines()
-            return max(0, len(lines) - 2)
-        except Exception:
-            return 0
+        from cfmesh_autogui.core.boundary_reader import count_cells
+        return count_cells(case_dir)
 
     @staticmethod
     def _export_openfoam(case_dir: Path, output: Path) -> int:

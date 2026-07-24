@@ -188,31 +188,21 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
 
 
 def read_openfoam_mesh_stats(case_dir: Path) -> dict:
-    """Read mesh statistics from an OpenFOAM polyMesh directory."""
-    poly_dir = case_dir / "constant" / "polyMesh"
-    stats = {"points": 0, "faces": 0, "cells": 0}
-    try:
-        points_path = poly_dir / "points"
-        if points_path.exists():
-            text = points_path.read_text(encoding="ascii", errors="replace")
-            stats["points"] = max(0, len(text.strip().splitlines()) - 2)
-    except Exception:
-        pass
-    try:
-        faces_path = poly_dir / "faces"
-        if faces_path.exists():
-            text = faces_path.read_text(encoding="ascii", errors="replace")
-            stats["faces"] = max(0, len(text.strip().splitlines()) - 2)
-    except Exception:
-        pass
-    try:
-        owner_path = poly_dir / "owner"
-        if owner_path.exists():
-            text = owner_path.read_text(encoding="ascii", errors="replace")
-            stats["cells"] = max(0, len(text.strip().splitlines()) - 2)
-    except Exception:
-        pass
-    return stats
+    """Read mesh statistics from an OpenFOAM polyMesh directory.
+
+    Used to have `len(lines) - 2` on each file as a count proxy — but the
+    FoamFile header block is variable-length (comment banner, arch/note
+    lines, etc.), so that silently showed the wrong points/faces/cells
+    counts in the viewer's stats label on every real mesh. Verified against
+    a real cfMesh mesh: reported values didn't match the mesh's own
+    self-reported nPoints/nCells/nFaces at all.
+    """
+    from cfmesh_autogui.core.boundary_reader import count_cells, count_faces, count_points
+    return {
+        "points": count_points(case_dir),
+        "faces": count_faces(case_dir),
+        "cells": count_cells(case_dir),
+    }
 
 
 def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] | None:
