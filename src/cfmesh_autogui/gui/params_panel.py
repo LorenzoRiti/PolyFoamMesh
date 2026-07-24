@@ -319,11 +319,17 @@ class ParamsPanel(QWidget):
         mesher_layout = QVBoxLayout(mesher_group)
         self._mesher_combo = QComboBox()
         self._mesher_combo.addItems([
+            "Automatic (recommended)",
             "cfMesh (hexa-dominant + WSL2)",
             "GMSH hybrid (surface + cfMesh volume)",
             "GMSH direct (tetra + prism, no WSL)",
         ])
-        self._mesher_combo.setCurrentText("cfMesh (hexa-dominant + WSL2)")
+        self._mesher_combo.setToolTip(
+            "Automatic uses cfMesh (best quality) when OpenFOAM/WSL2 is "
+            "available, and falls back to GMSH direct (no WSL needed) "
+            "otherwise — no need to know which one your setup supports."
+        )
+        self._mesher_combo.setCurrentText("Automatic (recommended)")
         mesher_layout.addWidget(self._mesher_combo)
         self._mesher_combo.currentTextChanged.connect(self._on_mesher_changed)
         mesh_layout.addWidget(mesher_group)
@@ -662,6 +668,8 @@ class ParamsPanel(QWidget):
 
     def get_mesher_type(self) -> str:
         text = self._mesher_combo.currentText()
+        if "Automatic" in text:
+            return "auto"
         if "hybrid" in text:
             return "gmsh_hybrid"
         if "direct" in text:

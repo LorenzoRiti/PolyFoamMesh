@@ -891,6 +891,24 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"{Tag.RESET} State cleared.")
         self._status.showMessage("Ready")
 
+    def _resolve_auto_mesher(self) -> str:
+        """"Automatic" mode: pick the best available mesher instead of
+        making the user understand cfMesh vs. GMSH hybrid vs. GMSH direct.
+
+        cfMesh (hex-dominant via WSL2/cartesianMesh) is the highest-quality
+        option when it's available (ALGORITHM_INFO's own quality_rank=1);
+        GMSH direct (pure tetra+prism, no WSL needed) is the fallback when
+        it isn't — so the app always produces a mesh instead of stopping
+        with "OpenFOAM Not Found" and leaving the user to figure out there's
+        a manual dropdown they need to switch.
+        """
+        try:
+            if self._of_config.validate():
+                return "cfmesh"
+        except Exception as exc:
+            logger.debug("Automatic mesher: WSL check failed: %s", exc)
+        return "gmsh_direct"
+
     def _on_run_meshing(self):
         if not self._meshes:
             QMessageBox.warning(
@@ -912,6 +930,9 @@ class MainWindow(QMainWindow):
             return
 
         mesher_type = self._params.get_mesher_type()
+        if mesher_type == "auto":
+            mesher_type = self._resolve_auto_mesher()
+            self._log.append_log(f"{Tag.CASE} Automatic: using {mesher_type}.")
         octo.log_event("main_window", "run_meshing_start",
             f"run_id={my_id} mesher={mesher_type}")
         if mesher_type != "cfmesh":
