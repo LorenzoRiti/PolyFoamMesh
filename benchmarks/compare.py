@@ -52,7 +52,7 @@ class _C:
 
 
 def _status_icon(status: bool) -> str:
-    return "✅" if status else "❌"
+    return "[OK]" if status else "[FAIL]"
 
 
 # ---------------------------------------------------------------------------
@@ -123,13 +123,13 @@ def _print_geom_table(
     regressions = 0
 
     print()
-    print(f"{_C.bold()}{_C.cyan()}{'─' * 78}{_C.reset()}")
+    print(f"{_C.bold()}{_C.cyan()}{'-' * 78}{_C.reset()}")
     print(f"{_C.bold()}Geometry: {geom}{_C.reset()}")
-    print(f"{_C.cyan()}{'─' * 78}{_C.reset()}")
+    print(f"{_C.cyan()}{'-' * 78}{_C.reset()}")
 
     header = f"  {'Metric':<22s} {'Baseline':>12s} {'New':>12s} {'Delta':>18s}  {'Status':>8s}"
     print(header)
-    print(f"  {'─' * 22} {'─' * 12} {'─' * 12} {'─' * 18}  {'─' * 8}")
+    print(f"  {'-' * 22} {'-' * 12} {'-' * 12} {'-' * 18}  {'-' * 8}")
 
     for key, label, lower_better in METRICS:
         base_val = base_entry.get(key)
@@ -139,7 +139,7 @@ def _print_geom_table(
 
         if b is not None and n is not None:
             if b == n:
-                status = f"{_C.dim()}~{_C.reset()}"
+                status = f"{_C.dim()} ~ {_C.reset()}"
                 summary[key].append("same")
             else:
                 delta = n - b
@@ -152,14 +152,14 @@ def _print_geom_table(
                     status = f"{_C.green()}{_status_icon(True)}{_C.reset()}"
                     summary[key].append("better")
                 else:
-                    status = f"{_C.dim()}~{_C.reset()}"
+                    status = f"{_C.dim()} ~ {_C.reset()}"
                     summary[key].append("same")
         else:
-            status = f"{_C.dim()}—{_C.reset()}"
+            status = f"{_C.dim()} - {_C.reset()}"
             summary[key].append("missing")
 
-        b_str = f"{b:>12}" if b is not None else f"{'—':>12}"
-        n_str = f"{n:>12}" if n is not None else f"{'—':>12}"
+        b_str = f"{b:>12}" if b is not None else f"{' -':>12}"
+        n_str = f"{n:>12}" if n is not None else f"{' -':>12}"
         delta_str = _fmt_delta(b, n)
 
         print(f"  {label:<22s} {b_str} {n_str} {delta_str:>18s}  {status:>8s}")
@@ -169,21 +169,21 @@ def _print_geom_table(
     new_gates = new_entry.get("hard_gates", {}) or {}
     all_gate_keys = sorted(set(base_gates.keys()) | set(new_gates.keys()))
     if all_gate_keys:
-        print(f"  {'─' * 22} {'─' * 12} {'─' * 12} {'─' * 18}  {'─' * 8}")
+        print(f"  {'-' * 22} {'-' * 12} {'-' * 12} {'-' * 18}  {'-' * 8}")
         for gate in all_gate_keys:
             bv = base_gates.get(gate)
             nv = new_gates.get(gate)
-            b_str = f"{'PASS' if bv else 'FAIL':>12}" if bv is not None else f"{'—':>12}"
-            n_str = f"{'PASS' if nv else 'FAIL':>12}" if nv is not None else f"{'—':>12}"
+            b_str = f"{'PASS' if bv else 'FAIL':>12}" if bv is not None else f"{' -':>12}"
+            n_str = f"{'PASS' if nv else 'FAIL':>12}" if nv is not None else f"{' -':>12}"
             if bv is True and nv is False:
                 msg = f"{_C.red()}{_status_icon(False)} REGRESSION{_C.reset()}"
                 regressions = 1
             elif bv is False and nv is True:
                 msg = f"{_C.green()}{_status_icon(True)} FIXED{_C.reset()}"
             elif bv == nv:
-                msg = f"{_C.dim()}~{_C.reset()}"
+                msg = f"{_C.dim()} ~ {_C.reset()}"
             else:
-                msg = f"{_C.dim()}—{_C.reset()}"
+                msg = f"{_C.dim()} - {_C.reset()}"
             print(f"  {gate:<22s} {b_str} {n_str} {'':>18s}  {msg:>8s}")
 
     return regressions
@@ -202,12 +202,12 @@ def _print_summary(
     total_regressions: int,
 ):
     print()
-    print(f"{_C.bold()}{_C.cyan()}{'═' * 78}{_C.reset()}")
+    print(f"{_C.bold()}{_C.cyan()}{'=' * 78}{_C.reset()}")
     print(f"{_C.bold()}OVERALL SUMMARY{_C.reset()}")
-    print(f"{_C.cyan()}{'═' * 78}{_C.reset()}")
+    print(f"{_C.cyan()}{'=' * 78}{_C.reset()}")
     print(f"  Geometries in baseline: {total}")
     print(f"  Geometries in new:      {len(matched) + len(missing_new)}")
-    print(f"  Matched:                {matched}")
+    print(f"  Matched:                {len(matched)}")
     if missing_base:
         print(f"  {_C.yellow()}In baseline only:{_C.reset()} {', '.join(missing_base)}")
     if missing_new:
@@ -216,7 +216,7 @@ def _print_summary(
     print()
     header = f"  {'Metric':<22s} {'Better':>8s} {'Worse':>8s} {'Same':>8s} {'Missing':>8s}"
     print(header)
-    print(f"  {'─' * 22} {'─' * 8} {'─' * 8} {'─' * 8} {'─' * 8}")
+    print(f"  {'-' * 22} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}")
     for key, label, lower_better in METRICS:
         counts = summary.get(key, [])
         better = sum(1 for c in counts if c == "better")
@@ -262,14 +262,14 @@ def main() -> int:
 
     # Warn about unmatched geometries
     for geom in missing_base:
-        print(f"\n  {_C.yellow()}⚠  '{geom}' missing from baseline (present in new only){_C.reset()}")
+        print(f"\n  {_C.yellow()}WARNING: '{geom}' missing from baseline (present in new only){_C.reset()}")
     for geom in missing_new:
-        print(f"\n  {_C.yellow()}⚠  '{geom}' missing from new (present in baseline only){_C.reset()}")
+        print(f"\n  {_C.yellow()}WARNING: '{geom}' missing from new (present in baseline only){_C.reset()}")
 
     _print_summary(
         summary=summary,
         total=len(base_results),
-        matched=len(matched_geoms),
+        matched=matched_geoms,
         missing_base=missing_base,
         missing_new=missing_new,
         total_regressions=total_regressions,

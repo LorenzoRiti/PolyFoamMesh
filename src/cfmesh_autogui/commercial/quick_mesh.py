@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cfmesh_autogui.core.validation import validate_geometry_path
+from cfmesh_autogui.core.openfoam_runner import generate_fms
 from cfmesh_autogui.octopoda_local import octo
 
 # Lazy imports (avoid OCP DLL chain)
@@ -154,7 +155,15 @@ class QuickMesh:
 
             # 7. Export surface and write meshDict
             _lazy_stl().export_surface_file(meshes, case_dir)
-            _lazy_md().write_meshdict(case_dir, s_max, s_min, bl_params=bl_params)
+            # 7a. Generate FMS for feature-edge capture (best-effort)
+            fms = generate_fms(case_dir, angle=30.0)
+            surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
+            if fms:
+                logger.info("QuickMesh: using FMS for feature-edge capture")
+            _lazy_md().write_meshdict(
+                case_dir, s_max, s_min, bl_params=bl_params,
+                surface_file=surface_file,
+            )
             _write_ctrl_dict(case_dir)
 
             # 8. Run meshing via engine
