@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import trimesh  # ✅ F-017
@@ -336,9 +337,26 @@ class ParamsPanel(QWidget):
         self._poly_check = QCheckBox("Convert to polyhedral mesh")
         adv_layout.addWidget(self._poly_check)
 
-        self._parallel_check = QCheckBox("Parallel meshing (future)")
-        self._parallel_check.setEnabled(False)
-        adv_layout.addWidget(self._parallel_check)
+        parallel_row = QHBoxLayout()
+        self._parallel_check = QCheckBox("Parallel meshing (multi-core)")
+        self._parallel_check.setToolTip(
+            "Runs cartesianMesh across multiple CPU cores via MPI "
+            "(cartesianMesh -parallel) and reconstructs the result. "
+            "Worth it above a few hundred thousand cells; the "
+            "decompose/reconstruct overhead can outweigh the benefit on "
+            "small meshes."
+        )
+        self._parallel_check.toggled.connect(
+            lambda on: self._parallel_cores.setEnabled(on)
+        )
+        parallel_row.addWidget(self._parallel_check)
+        self._parallel_cores = QSpinBox()
+        self._parallel_cores.setRange(2, max(2, (os.cpu_count() or 4)))
+        self._parallel_cores.setValue(min(4, max(2, (os.cpu_count() or 4))))
+        self._parallel_cores.setSuffix(" cores")
+        self._parallel_cores.setEnabled(False)
+        parallel_row.addWidget(self._parallel_cores)
+        adv_layout.addLayout(parallel_row)
 
         adv_layout.addStretch()
         self._tabs.addTab(adv_tab, "Advanced")
@@ -653,6 +671,10 @@ class ParamsPanel(QWidget):
     def set_poly_enabled(self, enabled: bool) -> None:
         self._poly_check.setEnabled(enabled)
 
+    def get_parallel_params(self) -> tuple[bool, int]:
+        """(enabled, n_cores) for MPI-parallel cartesianMesh."""
+        return self._parallel_check.isChecked(), self._parallel_cores.value()
+
     def get_max_cell(self) -> float:
         return self._max_cell.value()
 
@@ -690,6 +712,8 @@ class ParamsPanel(QWidget):
         self._bl_checkbox.setEnabled(enabled)
         self._unit_selector.setEnabled(enabled)
         self._mesher_combo.setEnabled(enabled)
+        self._parallel_check.setEnabled(enabled)
+        self._parallel_cores.setEnabled(enabled and self._parallel_check.isChecked())
 
     def set_meshing_state(self, running: bool):
         if running:
