@@ -449,6 +449,67 @@ class MainWindow(QMainWindow):
 
         self._check_watertight(self._meshes)
 
+    def _prepare_surface_with_features(self) -> str:
+        """Extract sharp edges into an FMS and use it as cfMesh's surfaceFile.
+
+        cfMesh's octree rounds sharp edges off unless it is told where they are.
+        Feeding it an FMS carrying the feature edges makes corners come out
+        crisp — measured on a cube-with-cavity: max skewness 0.66 -> 0.29.
+
+        Falls back to the plain STL if extraction is unavailable: a slightly
+        rounded mesh is better than no mesh.
+        """
+        default = "constant/triSurface/surface.stl"
+        stl_path = self._case_dir / "constant" / "triSurface" / "surface.stl"
+        try:
+            from cfmesh_autogui.core.feature_edges import extract_feature_edges
+
+            fms = extract_feature_edges(stl_path, of_config=self._of_config)
+        except Exception as exc:
+            logger.warning("Feature-edge extraction failed: %s", exc)
+            fms = None
+
+        if fms is None:
+            self._log.append_log(
+                f"{Tag.WARN} Feature edges unavailable — meshing the plain STL "
+                "(sharp corners may be rounded)."
+            )
+            return default
+
+        self._log.append_log(f"{Tag.GEOM} Feature edges extracted -> {fms.name}")
+        return "constant/triSurface/surface.fms"
+
+    # Above either of these, ask before committing the user to a long run.
+    LARGE_MESH_CELLS = 2_000_000
+    LARGE_MESH_SECONDS = 300
+
+    def _confirm_large_mesh(
+        self, est_cells: int, est_seconds: float, max_cell: float, min_cell: float,
+    ) -> bool:
+        """Ask before starting a mesh that will take a long time.
+
+        cartesianMesh gives no progress feedback for minutes at a time, so an
+        accidental fine setting looks like a hang. Surfacing the estimate as a
+        decision — with the knob that actually controls it — is cheaper than
+        letting the user wait and then cancel.
+        """
+        if est_cells < self.LARGE_MESH_CELLS and est_seconds < self.LARGE_MESH_SECONDS:
+            return True
+
+        minutes = est_seconds / 60.0
+        reply = QMessageBox.question(
+            self, "Large Mesh",
+            f"Questa mesh è stimata in ~{est_cells:,} celle "
+            f"(~{minutes:.0f} min).\n\n"
+            f"Dimensioni cella attuali: max={max_cell:.4g} m, min={min_cell:.4g} m.\n"
+            "Aumentare la dimensione minima (o scegliere un livello di dettaglio "
+            "più grossolano) riduce molto il tempo.\n\n"
+            "Procedere comunque?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
     def _check_watertight(self, meshes: list[trimesh.Trimesh]) -> None:
         """Warn early if the assembled patches don't form a closed volume.
 
@@ -791,6 +852,8 @@ class MainWindow(QMainWindow):
             self._params.set_all_enabled(True)
             return
 
+        surface_file = self._prepare_surface_with_features()
+
         bbox_dim = compute_bbox_dim(self._meshes)
         logger.info("Geometry bbox max dim: %.4f", bbox_dim)
 
@@ -873,6 +936,11 @@ class MainWindow(QMainWindow):
         self._params.set_cell_estimate(f"~{est:,} cells (~{time_str}), range {lo:,}-{hi:,}")
         self._log.append_log(f"{Tag.EST} ~{est:,} cells (~{time_str}), range {lo:,}-{hi:,}")
 
+        if not self._confirm_large_mesh(est, est_secs, safe_max, safe_min):
+            self._log.append_log(f"{Tag.CANCELLED} Meshing cancelled before start.")
+            self._params.set_all_enabled(True)
+            return
+
         bl_params = self._params.get_bl_params()
         if bl_params is not None:
             all_names = [
@@ -932,6 +1000,8 @@ class MainWindow(QMainWindow):
                 boundary_cell_size=bc_size,
                 boundary_refinement_thickness=bc_thick,
                 bl_params=bl_params,
+                patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+                surface_file=surface_file,
             )
         except Exception as e:
             logger.error("meshDict failed: %s", e)
@@ -1056,6 +1126,7 @@ class MainWindow(QMainWindow):
                 boundary_cell_size=sizing.suggested_surface_size,
                 boundary_refinement_thickness=sizing.min_curvature_radius * 2,
                 bl_params=bl_params,
+                patch_names=names,
             )
         except Exception as e:
             logger.error("meshDict failed: %s", e)
@@ -1391,10 +1462,13 @@ class MainWindow(QMainWindow):
                     )
                     write_meshdict(
                         self._case_dir,
-                        patch_sizes=ps_r or None,
+                        max_cell_size=p["max_cell_size"],
+                        min_cell_size=p["min_cell_size"],
+                        patch_cell_size=ps_r or None,
                         boundary_cell_size=bc_r,
                         boundary_refinement_thickness=bt_r,
                         bl_params=bl_retry,
+                        patch_names=names,
                     )
                     self._log.append_log(f"{Tag.FIX} Regenerated meshDict.")
                     return True

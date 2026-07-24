@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class AnalysisResult(TypedDict):  # ✅ F-016
+    p1: float
     p5: float
     p10: float
     p25: float
@@ -212,11 +213,23 @@ _DETAIL_PRESETS = {
     # GUI slider ("Molto Grossolana".."Molto Fine") — without these, the
     # two extreme slider positions fell back silently to "medium" (the
     # dict lookup default), making them look broken/no-op in the UI.
-    "very_coarse": {"max_mult": 2.5,  "min_div": 1.2, "samples": 64,  "p_max": "p50", "p_min": "p10"},
-    "coarse":      {"max_mult": 2.0,  "min_div": 1.5, "samples": 96,  "p_max": "p25", "p_min": "p5"},
-    "medium":      {"max_mult": 1.5,  "min_div": 2.0, "samples": 192, "p_max": "p10", "p_min": "p5"},
-    "fine":        {"max_mult": 1.0,  "min_div": 3.0, "samples": 384, "p_max": "p5",  "p_min": "p5"},
-    "very_fine":   {"max_mult": 0.75, "min_div": 4.0, "samples": 768, "p_max": "p5",  "p_min": "p5"},
+    # p_min drives the SMALLEST cell, so it must come from the thinnest feature.
+    # A feature that matters is usually small in area by definition — a 0.06 m
+    # throat in a 0.2 m rod covered ~3% of the surface, so p5/p10 never moved off
+    # the bulk value and the constriction was invisible to sizing. p1 (a robust
+    # minimum, less noise-prone than a single raw min) does see it. Sample counts
+    # are raised accordingly: p1 needs enough samples to be meaningful.
+    # p_max sizes the BULK, so it reads the area-weighted p50; p_min resolves the
+    # thinnest feature, so it reads p1 (a min-across-patches statistic). Mixing
+    # the two caused runaway refinement: p10 is aggregated with min-across-patches,
+    # i.e. it is a thin-feature statistic, so using it for the bulk let a 1 mm gap
+    # dictate the cell size of a whole 0.1 m domain (2.5M cells). Detail level now
+    # controls bulk fineness through max_mult alone.
+    "very_coarse": {"max_mult": 1.0,  "min_div": 1.2, "samples": 256,  "p_max": "p50", "p_min": "p5"},
+    "coarse":      {"max_mult": 0.7,  "min_div": 1.5, "samples": 384,  "p_max": "p50", "p_min": "p1"},
+    "medium":      {"max_mult": 0.5,  "min_div": 2.0, "samples": 768,  "p_max": "p50", "p_min": "p1"},
+    "fine":        {"max_mult": 0.3,  "min_div": 3.0, "samples": 1536, "p_max": "p50", "p_min": "p1"},
+    "very_fine":   {"max_mult": 0.2,  "min_div": 4.0, "samples": 3072, "p_max": "p50", "p_min": "p1"},
 }
 
 
@@ -267,7 +280,7 @@ def analyze_local_thickness(
         if not thicknesses:
             continue
         arr = np.asarray(thicknesses)
-        pcts = np.percentile(arr, [5, 10, 25, 50, 75])
+        pcts = np.percentile(arr, [1, 5, 10, 25, 50, 75])
         per_patch_percentiles.append((pcts, float(mesh.area)))
         total_n += len(thicknesses)
 
@@ -283,14 +296,16 @@ def analyze_local_thickness(
     w = weights / weights.sum()
 
     # min-strategy for low percentiles (small features matter most)
-    p5  = float(all_pcts[:, 0].min())
-    p10 = float(all_pcts[:, 1].min())
+    p1  = float(all_pcts[:, 0].min())
+    p5  = float(all_pcts[:, 1].min())
+    p10 = float(all_pcts[:, 2].min())
     # weighted average for the rest
-    p25 = float((all_pcts[:, 2] * w).sum())
-    p50 = float((all_pcts[:, 3] * w).sum())
-    p75 = float((all_pcts[:, 4] * w).sum())
+    p25 = float((all_pcts[:, 3] * w).sum())
+    p50 = float((all_pcts[:, 4] * w).sum())
+    p75 = float((all_pcts[:, 5] * w).sum())
 
     return {
+        "p1": p1,
         "p5": p5,
         "p10": p10,
         "p25": p25,
@@ -303,7 +318,7 @@ def analyze_local_thickness(
 
 def _empty_analysis(bbox) -> AnalysisResult:  # ✅ F-016
     return {
-        "p5": 0.0, "p10": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0,
+        "p1": 0.0, "p5": 0.0, "p10": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0,
         "n_samples": 0,
         "bbox": (float(bbox[0]), float(bbox[1]), float(bbox[2])),
     }
@@ -327,33 +342,80 @@ def _sample_thickness_one_mesh(
     normals = mesh.face_normals[face_idx]
     ray_origins = np.asarray(pts, dtype=np.float64)
     ray_dirs = np.asarray(normals, dtype=np.float64)
+
+    # Ignore hits essentially at the ray origin (the face we started from).
+    eps = max(bbox_max * 1e-6, 1e-12)
+
+    def _nearest_hit(origin: np.ndarray, direction: np.ndarray) -> float:
+        """Distance to the CLOSEST surface along *direction*, 0.0 if none.
+
+        Local thickness is the distance to the nearest opposing wall. This used
+        to take `.max()` — the FARTHEST intersection along the ray — and then
+        the max of the two directions again, which measures the extent of the
+        whole model instead. Every sample then collapsed to roughly the same
+        number, so the thickness distribution was flat (p5 == p50) and features
+        like a constriction were invisible to the sizing algorithm.
+        """
+        try:
+            res = mesh.ray.intersects_location(
+                ray_origins=[origin], ray_directions=[direction]
+            )
+        except Exception:
+            return 0.0
+        if not res or len(res[0]) == 0:
+            return 0.0
+        d = np.linalg.norm(np.asarray(res[0]) - origin, axis=1)
+        d = d[d > eps]
+        return float(d.min()) if len(d) else 0.0
+
     thicknesses: list[float] = []
     for origin, direction in zip(ray_origins, ray_dirs):
         d = direction / (np.linalg.norm(direction) + 1e-12)
-        d_fwd = 0.0
-        d_bwd = 0.0
-        try:
-            res = mesh.ray.intersects_location(
-                ray_origins=[origin], ray_directions=[d]
-            )
-            if res and len(res[0]) > 0:
-                locs = np.asarray(res[0])
-                d_fwd = float(np.linalg.norm(locs - origin, axis=1).max())
-        except Exception:
-            pass
-        try:
-            res = mesh.ray.intersects_location(
-                ray_origins=[origin], ray_directions=[-d]
-            )
-            if res and len(res[0]) > 0:
-                locs = np.asarray(res[0])
-                d_bwd = float(np.linalg.norm(locs - origin, axis=1).max())
-        except Exception:
-            pass
-        t = max(d_fwd, d_bwd)
+        # Inward (-normal) is the material/fluid side for outward-facing
+        # normals; fall back to +normal when the winding is reversed.
+        t = _nearest_hit(origin, -d) or _nearest_hit(origin, d)
         if 0.0 < t < bbox_max * 2:
             thicknesses.append(t)
     return thicknesses
+
+
+def check_watertight(meshes: list[trimesh.Trimesh]) -> tuple[bool, int, str]:
+    """Pre-flight check: do the patches together bound a closed volume?
+
+    cfMesh needs a closed domain. Handed an open surface it does not fail — it
+    happily produces a small nonsense mesh that leaks into the surroundings, so
+    the user only discovers the problem much later (or never). Catching it here
+    turns a silent bad result into an early, actionable message.
+
+    Returns (is_watertight, n_open_boundary_edges, human_readable_message).
+    """
+    if not meshes:
+        return False, 0, "No geometry loaded."
+    try:
+        combined = trimesh.util.concatenate(meshes)
+        combined.merge_vertices()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Watertight check could not run: %s", exc)
+        return True, 0, "Watertight check skipped (could not combine patches)."
+
+    if combined.is_watertight:
+        return True, 0, "Watertight: geometry bounds a closed volume."
+
+    n_open = 0
+    try:
+        import trimesh.grouping as _grouping
+
+        n_open = len(
+            combined.edges[_grouping.group_rows(combined.edges_sorted, require_count=1)]
+        )
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    return False, n_open, (
+        f"Geometry is not watertight: {n_open} open boundary edges. "
+        "cfMesh needs a fully closed domain — meshing it would leak and produce "
+        "a meaningless mesh. Look for gaps between patches or missing faces."
+    )
 
 
 def compute_patch_cell_sizes(
@@ -388,14 +450,18 @@ def compute_patch_cell_sizes(
         thicknesses = _sample_thickness_one_mesh(mesh, n_samples, bbox_max, seed)
         if not thicknesses:
             continue
-        p_local = np.percentile(np.asarray(thicknesses), [10, 5])
-        p10 = float(p_local[0])
-        p5 = float(p_local[1])
-        if p10 <= 0:
+        p_local = np.percentile(np.asarray(thicknesses), [50, 10])
+        p50 = float(p_local[0])
+        p10 = float(p_local[1])
+        if p50 <= 0:
             continue
-        # Suggested cell size = resolve the thinnest 10% of this patch
-        # with at least max_mult cells across it.
-        cell_size = min(p10 * preset["max_mult"], bbox_max / 8.0)
+        # patchCellSize applies to the WHOLE patch, so it must describe that
+        # patch's typical scale (p50), not its thinnest spot. Sizing it from
+        # p10 meant a single thin feature forced fine cells across the entire
+        # patch — on a one-patch geometry that is the entire domain (a 1 mm gap
+        # in a 0.1 m box drove the mesh to millions of cells). The thin feature
+        # is handled by minCellSize instead.
+        cell_size = min(p50 * preset["max_mult"], bbox_max / 8.0)
         cell_size = max(cell_size, 0.001)
         patch_sizes[name] = round(max(cell_size, 0.0005), 6)
 

@@ -44,6 +44,33 @@ class FlowConditions:
     density: float = 1.225  # kg/m³ (air)
     turbulence_model: str = "kOmegaSST"
 
+    @classmethod
+    def from_velocity(
+        cls,
+        reference_velocity: float,
+        reference_length: float,
+        kinematic_viscosity: float = 1.5e-5,
+        density: float = 1.225,
+        turbulence_model: str = "kOmegaSST",
+    ) -> "FlowConditions":
+        """Build flow conditions with Re DERIVED from U·L/ν.
+
+        `reynolds_number` is a plain field with a 1e6 default, so constructing
+        FlowConditions(reference_velocity=..., reference_length=...) silently
+        keeps that default instead of the Reynolds number those values imply —
+        every downstream quantity (Cf, u_tau, first layer height) is then based
+        on the wrong Re. Use this constructor whenever Re is not known directly.
+        """
+        nu = max(kinematic_viscosity, 1e-12)
+        return cls(
+            reynolds_number=reference_velocity * reference_length / nu,
+            reference_velocity=reference_velocity,
+            reference_length=reference_length,
+            kinematic_viscosity=kinematic_viscosity,
+            density=density,
+            turbulence_model=turbulence_model,
+        )
+
 
 @dataclass
 class BLParameters:
@@ -99,13 +126,21 @@ class BLEngine:
     _AIR_VISCOSITY: float = 1.5e-5   # m²/s
     _WATER_VISCOSITY: float = 1e-6   # m²/s
 
-    def calculate_from_flow(self, flow: FlowConditions) -> BLParameters:
+    def calculate_from_flow(
+        self, flow: FlowConditions, growth_rate: float = 1.2,
+    ) -> BLParameters:
         """Calculate BL parameters from flow conditions and target y+.
 
         Uses the flat-plate boundary layer correlation:
             y+ = y * u_tau / nu
             Cf = 0.027 / Re_x^(1/7)  (turbulent, 1/7th power law)
             u_tau = U_ref * sqrt(Cf/2)
+
+        Args:
+            flow: free-stream conditions; build it with
+                ``FlowConditions.from_velocity`` unless you know Re directly.
+            growth_rate: layer-to-layer expansion, clamped to [1.05, 1.5].
+                The layer COUNT is derived from it and the 99% BL thickness.
         """
         model = _TURBULENCE_MODELS.get(flow.turbulence_model, _TURBULENCE_MODELS["kOmegaSST"])
         target_yplus = model["yplus_target"]
@@ -127,15 +162,20 @@ class BLEngine:
         # Total BL thickness estimate (99% of free-stream)
         delta_99 = 0.37 * flow.reference_length / (Re ** 0.2)
 
-        # Growth rate from layers and total thickness
-        n_layers = 10
+        # Fix the growth rate and solve for the LAYER COUNT, not the other way
+        # round. Pinning n_layers=10 and solving for r let the rate reach 2.0 —
+        # each layer nearly doubling — which is far outside the 1.1-1.3 range
+        # meshers and solvers expect and leaves a violent size jump where the
+        # layers meet the bulk mesh.
+        r = min(max(growth_rate, 1.05), 1.5)
         if first_layer > 0 and delta_99 > first_layer:
-            ratio = delta_99 / first_layer
-            # Solve for growth rate: total = h1 * (r^n - 1) / (r - 1)
-            r = max(1.05, ratio ** (1.0 / n_layers))
-            r = min(r, 2.0)
+            # total = h1 * (r^n - 1) / (r - 1)  ->  solve for n
+            n_layers = int(
+                math.ceil(math.log1p(delta_99 * (r - 1.0) / first_layer) / math.log(r))
+            )
+            n_layers = max(1, min(n_layers, 40))
         else:
-            r = 1.2
+            n_layers = 1
 
         total = first_layer * (r ** n_layers - 1) / (r - 1) if r > 1 else first_layer * n_layers
 
