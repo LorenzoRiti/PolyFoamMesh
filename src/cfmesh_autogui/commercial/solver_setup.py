@@ -323,6 +323,15 @@ class SolverSetup:
                 "    DESModel SpalartAllmarasDDES;\n"
                 "}\n"
             )
+        elif turb == TurbulenceModel.LAMINAR:
+            # "laminar" is not a registered RASModel (verified against
+            # OpenFOAM's TurbulenceModels library — only kEpsilon/kOmegaSST/
+            # SpalartAllmaras/... are). This used to fall into the RAS branch
+            # below, whose `{...}.get(turb, "kOmegaSST")` fallback (LAMINAR
+            # isn't a dict key) silently wrote `RASModel kOmegaSST` — i.e.
+            # requesting laminar flow silently turned turbulence modelling ON.
+            sim_type = "laminar"
+            les_block = ""
         else:
             sim_type = "RAS"
             ras_model = {

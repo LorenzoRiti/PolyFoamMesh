@@ -576,6 +576,36 @@ class MainWindow(QMainWindow):
         )
         return reply == QMessageBox.Yes
 
+    # Solvers whose fvSchemes/fvSolution case_setup.setup_case() actually
+    # writes correctly (a fixed steady-RAS SIMPLE configuration). A template's
+    # turbulence model is always safe to carry through — case_setup handles
+    # every value (kOmegaSST/kEpsilon/laminar) correctly — but its *solver*
+    # (e.g. chtMultiRegionFoam, interFoam, reactingFoam) is not: those need
+    # entirely different scheme/solution dictionaries this function doesn't
+    # generate, so silently swapping in `application` alone would produce an
+    # internally inconsistent case (controlDict says one solver, fvSolution is
+    # tuned for another) — worse than just staying on simpleFoam and saying so.
+    _CASE_SETUP_SUPPORTED_SOLVERS = {"simpleFoam"}
+
+    def _case_setup_kwargs(self) -> dict:
+        """application/turbulence_model to pass to setup_case(), honouring
+        whatever case template the user applied (if any) — never silently."""
+        picked = self._params.get_template_solver_turbulence()
+        if picked is None:
+            return {}
+        solver, turbulence = picked
+        kwargs: dict = {"turbulence_model": turbulence}
+        if solver in self._CASE_SETUP_SUPPORTED_SOLVERS:
+            kwargs["application"] = solver
+        else:
+            self._log.append_log(
+                f"{Tag.WARN} Template solver '{solver}' needs case files this "
+                "version doesn't generate yet — applied turbulence model only "
+                f"({turbulence}); solver/scheme setup for '{solver}' must be "
+                "done manually."
+            )
+        return kwargs
+
     def _heal_geometry(self, meshes: list[trimesh.Trimesh]) -> None:
         """Repair small CAD defects right after loading, before anything else
         looks at the geometry.
@@ -1339,7 +1369,7 @@ class MainWindow(QMainWindow):
         if boundary_path.exists():
             try:
                 patches = parse_boundary(boundary_path)
-                setup_case(self._case_dir, patches)
+                setup_case(self._case_dir, patches, **self._case_setup_kwargs())
                 self._log.append_log("[setup] Case files generated (0/, system/).")
             except Exception as e:
                 logger.error("Case setup failed: %s", e)
@@ -1443,7 +1473,7 @@ class MainWindow(QMainWindow):
                 self._log.append_log(
                     f"{Tag.BOUNDARY} {len(patches)} patches: {[p.name for p in patches]}"
                 )
-                setup_case(self._case_dir, patches)
+                setup_case(self._case_dir, patches, **self._case_setup_kwargs())
                 self._log.append_log(f"{Tag.SETUP} Case files generated (0/, system/).")
             except Exception as e:
                 logger.error("Case setup failed: %s", e)

@@ -96,11 +96,19 @@ def test_control_dict_content():
 
 
 def test_turbulence_properties_laminar():
+    """"laminar" is not a registered RASModel (verified against OpenFOAM's
+    TurbulenceModels library) — `RAS { RASModel laminar; }` fails at solver
+    startup with "Unknown RASModel type". This used to fall through to the RAS
+    branch's dict .get(turb, "kOmegaSST") fallback (LAMINAR isn't a key),
+    silently writing RASModel kOmegaSST — requesting laminar flow silently
+    turned turbulence modelling ON. Must be `simulationType laminar;` with no
+    RAS/LES sub-dictionary at all."""
     ss = SolverSetup()
     ss.configure(SolverConfig(turbulence=TurbulenceModel.LAMINAR))
     content = ss._turbulence_properties()
-    # Laminar still uses RAS simulationType with laminar RASModel
-    assert "simulationType" in content
+    assert "simulationType laminar;" in content
+    assert "RAS" not in content
+    assert "kOmegaSST" not in content
 
 
 def test_turbulence_properties_les():

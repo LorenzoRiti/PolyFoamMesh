@@ -246,7 +246,7 @@ def setup_case(
     )
 
     # ✅ F-024: turbulence model parametrizzabile
-    turb_text = (
+    header = (
         "FoamFile\n"
         "{\n"
         "    version     2.0;\n"
@@ -254,12 +254,22 @@ def setup_case(
         "    class       dictionary;\n"
         "    object      turbulenceProperties;\n"
         "}\n"
-        "simulationType  RAS;\n"
-        "RAS\n"
-        "{\n"
-        "    RASModel        %s;\n"
-        "    turbulence      on;\n"
-        "    printCoeffs     on;\n"
-        "}\n"
-    ) % turbulence_model
+    )
+    if turbulence_model.strip().lower() == "laminar":
+        # "laminar" is not a registered RASModel (verified against OpenFOAM's
+        # TurbulenceModels library — only kEpsilon/kOmegaSST/SpalartAllmaras/...
+        # exist there) — `RAS { RASModel laminar; }` fails at solver startup
+        # with "Unknown RASModel type". No-turbulence case files must set
+        # simulationType directly, with no RAS sub-dictionary at all.
+        turb_text = header + "simulationType  laminar;\n"
+    else:
+        turb_text = header + (
+            "simulationType  RAS;\n"
+            "RAS\n"
+            "{\n"
+            f"    RASModel        {turbulence_model};\n"
+            "    turbulence      on;\n"
+            "    printCoeffs     on;\n"
+            "}\n"
+        )
     (transport_dir / "turbulenceProperties").write_text(turb_text, encoding="ascii")
