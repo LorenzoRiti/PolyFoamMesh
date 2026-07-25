@@ -129,7 +129,6 @@ class MainWindow(QMainWindow):
         fm.addAction("Load Geometry...\tCtrl+O", self._on_load_step)
         self._recent_menu = fm.addMenu("Recent Geometry Files")
         self._refresh_recent_menu()
-        fm.addAction("Create Test Cylinder", self._on_test_cylinder)
         fm.addSeparator()
         export_menu = fm.addMenu("Export Mesh")
         export_menu.addAction("VTU (.vtu)...", lambda: self._on_export_mesh("vtu"))
@@ -179,6 +178,12 @@ class MainWindow(QMainWindow):
 
         tm = self.menuBar().addMenu("&Tools")
         tm.addAction("Launch ParaView", self._on_launch_paraview)
+        tm.addSeparator()
+        # A synthetic geometry generator for trying the app without a real
+        # CAD file — it used to sit in the File menu right next to "Load
+        # Geometry...", which read as a second, competing way to start a
+        # real project rather than what it actually is: a demo/sample.
+        tm.addAction("Load Sample Cylinder (demo geometry)", self._on_test_cylinder)
 
     def _on_theme_change(self, mode: str) -> None:
         from cfmesh_autogui.gui.theme import set_theme_mode, apply_theme
