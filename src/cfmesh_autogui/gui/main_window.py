@@ -41,7 +41,7 @@ from cfmesh_autogui.core.stl_writer import export_surface_file
 from cfmesh_autogui.core.meshdict_gen import write_meshdict
 from cfmesh_autogui.core.openfoam_runner import (
     RetryRunner, CheckMeshWorker, PolyDualWorker, QualityFixWorker,
-    ParallelMeshWorker, analyze_error, ErrorType,
+    ParallelMeshWorker, WslCheckWorker, analyze_error, ErrorType,
 )
 from cfmesh_autogui.core.feature_detector import FeatureDetector
 from cfmesh_autogui.core.boundary_reader import parse_boundary
@@ -979,21 +979,40 @@ class MainWindow(QMainWindow):
         # OFConfig.validate() launches wsl.exe and blocks until it responds.
         # WSL2 auto-shuts-down its VM after a period of inactivity, so the
         # NEXT invocation can trigger a full cold boot (systemd, snap
-        # mounts, network services) taking well over a minute — during
-        # which this call just sits there with the Qt event loop blocked
-        # and the window unresponsive/repainting nothing, indistinguishable
-        # from a crash. Log + force a repaint first so the user sees an
-        # explanation before the freeze instead of silence.
+        # mounts, network services) taking well over a minute. Running that
+        # call directly on the GUI thread used to freeze the whole window
+        # for the entire wait — unresponsive, no repaint, indistinguishable
+        # from a crash (this is almost certainly what "automatic meshing
+        # doesn't work" reports were actually seeing). Run it on a
+        # background QThread instead so the UI stays alive and the status
+        # bar keeps showing feedback while WSL boots.
         self._log.append_log(
             f"{Tag.CASE} Checking OpenFOAM environment (WSL2)... "
             "this can take a minute if WSL just started."
         )
-        QGuiApplication.setOverrideCursor(Qt.WaitCursor)
-        QApplication.processEvents()
-        try:
-            of_available = self._of_config.validate()
-        finally:
-            QGuiApplication.restoreOverrideCursor()
+        self._status.showMessage("Checking OpenFOAM environment (WSL2)...")
+        self._start_wsl_check(my_id)
+
+    def _start_wsl_check(self, my_id: int) -> None:
+        if getattr(self, "_wsl_check_thread", None) and self._wsl_check_thread.isRunning():
+            self._wsl_check_thread.quit()
+            self._wsl_check_thread.wait(3000)
+
+        self._wsl_check_thread = QThread()
+        self._wsl_check_worker = WslCheckWorker(self._of_config)
+        self._wsl_check_worker.moveToThread(self._wsl_check_thread)
+        self._wsl_check_thread.started.connect(self._wsl_check_worker.run)
+        self._wsl_check_worker.finished.connect(
+            lambda ok: self._on_wsl_check_finished(my_id, ok), Qt.QueuedConnection,
+        )
+        self._wsl_check_worker.finished.connect(self._wsl_check_thread.quit, Qt.QueuedConnection)
+        self._wsl_check_worker.finished.connect(self._wsl_check_worker.deleteLater, Qt.QueuedConnection)
+        self._wsl_check_thread.start()
+
+    def _on_wsl_check_finished(self, my_id: int, of_available: bool) -> None:
+        if my_id != self._run_id:
+            logger.debug("Stale WSL-check callback ignored (got %d, current %d).", my_id, self._run_id)
+            return
         if not of_available:
             QMessageBox.warning(
                 self, "OpenFOAM Not Found",
@@ -1002,7 +1021,9 @@ class MainWindow(QMainWindow):
             )
             self._params.set_all_enabled(True)
             return
+        self._continue_run_meshing(my_id)
 
+    def _continue_run_meshing(self, my_id: int) -> None:
         self._log.clear_log()
         self._log.append_log(f"{Tag.CASE} {self._case_dir}")
         self._quality.clear_report()

@@ -32,6 +32,7 @@ __all__ = [
     "MeshWorker", "RetryRunner",
     "MeshQualityReport", "parse_checkmesh_output",
     "CheckMeshWorker", "PolyDualWorker", "QualityFixWorker", "ParallelMeshWorker",
+    "WslCheckWorker",
     "generate_fms",
 ]
 
@@ -1045,6 +1046,28 @@ class ParallelMeshWorker(QObject):
         except Exception as exc:
             self.log_line.emit(f"[parallel] ERROR: {exc}")
             self.failed.emit(str(exc))
+
+
+class WslCheckWorker(QObject):
+    """Runs OFConfig.validate() (blocking wsl.exe call) in a background
+    QThread. WSL2 auto-shuts-down its VM after inactivity, so this can
+    take well over a minute on a cold boot — running it on the GUI
+    thread freezes the whole window with no feedback, indistinguishable
+    from a crash."""
+
+    finished = Signal(bool)
+
+    def __init__(self, of_config: OFConfig, parent=None):
+        super().__init__(parent)
+        self._of_config = of_config
+
+    @Slot()
+    def run(self):
+        try:
+            ok = self._of_config.validate()
+        except Exception:
+            ok = False
+        self.finished.emit(ok)
 
 
 # ------------------------------------------------------------------
