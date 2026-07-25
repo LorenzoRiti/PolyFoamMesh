@@ -67,7 +67,14 @@ def _ensure_gmsh():
         with _GMSH_LOCK:
             if not _GMSH_INITIALIZED:  # double-checked locking
                 import gmsh
-                gmsh.initialize()
+                # interruptible=True (gmsh's default) calls signal.signal(),
+                # which only works on the main thread — this function is
+                # explicitly documented/locked for multi-threaded callers,
+                # and the same call crashed feature_detector.py's worker
+                # thread with "signal only works in main thread of the main
+                # interpreter" when it ran off the main thread (confirmed
+                # live). Skip the signal-handler install entirely.
+                gmsh.initialize(interruptible=False)
                 gmsh.option.setNumber("General.Terminal", 0)
                 _GMSH_INITIALIZED = True
     import gmsh
