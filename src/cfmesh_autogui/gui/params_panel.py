@@ -375,16 +375,18 @@ class ParamsPanel(QWidget):
         qual_layout.addStretch()
         self._tabs.addTab(qual_tab, "Quality")
 
+        # "Quick Mesh" (auto-suggest sizes + run, for a first pass / less
+        # experienced users) lives only in the ribbon now — it used to be
+        # duplicated here as a second button doing the exact same thing,
+        # which read as two competing "run" actions with no clear
+        # distinction. This panel keeps just "Generate Mesh": the
+        # deliberate, tuned-settings action for when you've set your own
+        # cell sizes / boundary layers / mesher choice on this tab.
         btn_layout = QHBoxLayout()
-        self._btn_quick = QPushButton("Quick Mesh")
-        self._btn_quick.setToolTip("Auto-suggest params and run. Shortcut: Ctrl+M")
-        self._btn_quick.clicked.connect(self._on_quick_mesh)
-        btn_layout.addWidget(self._btn_quick)
-
         self._btn_run = QPushButton("Generate Mesh")
         self._btn_run.setMinimumHeight(40)
         self._btn_run.setEnabled(False)
-        self._btn_run.setToolTip("Start meshing. Shortcut: Ctrl+R.")
+        self._btn_run.setToolTip("Start meshing with the settings on this tab. Shortcut: Ctrl+R.")
         self._btn_run.clicked.connect(self._on_run)
         btn_layout.addWidget(self._btn_run)
 
@@ -415,15 +417,6 @@ class ParamsPanel(QWidget):
             "max_cell": self._max_cell.value(),
             "min_cell": self._min_cell.value(),
         })
-
-    def _on_quick_mesh(self):
-        from PySide6.QtCore import QMetaObject, Q_ARG, Qt
-        parent = self.parent()
-        while parent:
-            if hasattr(parent, "_on_quick_mesh"):
-                parent._on_quick_mesh()
-                break
-            parent = parent.parent()
 
     def _on_bl_toggled(self, checked: bool):
         self._bl_form_widget.setVisible(checked)
@@ -714,7 +707,6 @@ class ParamsPanel(QWidget):
         self._btn_reset.setEnabled(enabled)
         self._btn_load.setEnabled(enabled)
         self._btn_suggest.setEnabled(enabled)
-        self._btn_quick.setEnabled(enabled)
         self._max_cell.setEnabled(enabled)
         self._min_cell.setEnabled(enabled)
         self._bl_checkbox.setEnabled(enabled)
