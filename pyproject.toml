@@ -29,6 +29,7 @@ dependencies = [
     "gmsh>=4.13.0",
     "meshio>=5.3.0",
     "reportlab>=4.2.0",
+    "pymeshfix>=0.17.0",
 ]
 
 [project.optional-dependencies]

@@ -704,12 +704,21 @@ class MainWindow(QMainWindow):
                 )
 
     def _check_watertight(self, meshes: list[trimesh.Trimesh]) -> None:
-        """Warn early if the assembled patches don't form a closed volume.
+        """Warn early if the assembled patches don't form a closed volume,
+        and automatically attempt to fix it.
 
         cfMesh/cartesianMesh needs a watertight domain \u2014 running the mesher
         on an open/leaky geometry fails only after minutes of WSL2 work,
         with a cryptic cfMesh error. Checking right after load surfaces the
         problem immediately, before the user commits to a full mesh run.
+
+        The overwhelming majority of "open boundary edges" on a geometry
+        that looks fine are not a real hole \u2014 they're each patch having
+        been tessellated independently, so vertices meant to sit on a
+        shared boundary are a tiny floating-point distance apart. A user
+        seeing only "506 open boundary edges" with no next step has no way
+        to tell that apart from a genuinely broken CAD file, and no tool to
+        do anything about either case. See core/geometry_repair.py.
         """
         if not meshes:
             return
@@ -724,8 +733,6 @@ class MainWindow(QMainWindow):
             logger.debug("Watertight check skipped: %s", exc)
             return
 
-        self._refresh_workflow(watertight=False)
-
         try:
             import trimesh.grouping as _grouping
             boundary_edges = combined.edges[
@@ -737,8 +744,45 @@ class MainWindow(QMainWindow):
 
         self._log.append_log(
             f"{Tag.WARN} Watertight check: geometry has {n_open} open boundary edges. "
-            "cfMesh needs a fully closed domain \u2014 meshing may fail or leak. "
-            "Check for gaps between patches or missing faces before running Generate Mesh."
+            "cfMesh needs a fully closed domain \u2014 attempting automatic repair..."
+        )
+
+        from cfmesh_autogui.core.geometry_repair import attempt_auto_repair
+        bbox_dim = compute_bbox_dim(meshes)
+        try:
+            repaired, reports = attempt_auto_repair(meshes, bbox_dim)
+        except Exception as exc:
+            logger.exception("Auto-repair failed")
+            self._log.append_log(f"{Tag.ERROR} Auto-repair crashed: {exc}")
+            self._refresh_workflow(watertight=False)
+            return
+
+        for report in reports:
+            for op in report.operations:
+                self._log.append_log(f"{Tag.GEOM} [auto-fix/{report.method}] {op}")
+            for warn in report.warnings:
+                self._log.append_log(f"{Tag.WARN} [auto-fix/{report.method}] {warn}")
+
+        final_report = reports[-1]
+        if final_report.watertight_after:
+            self._meshes = repaired
+            self._unscaled_meshes = [m.copy() for m in repaired]
+            self._params.set_patches([m.metadata.get("name", "?") for m in repaired])
+            self._viewer.show_cad(repaired)
+            self._log.append_log(
+                f"{Tag.GEOM} Watertight check: fixed automatically, geometry is now closed."
+            )
+            self._refresh_workflow(watertight=True)
+            return
+
+        self._refresh_workflow(watertight=False)
+        self._log.append_log(
+            f"{Tag.WARN} Automatic repair could not fully close the geometry "
+            f"({final_report.open_edges_after} open edges remain). This usually "
+            "means a real missing face rather than a tessellation gap \u2014 check "
+            "for a patch that doesn't share its full boundary with its "
+            "neighbours in the 3D view, or re-export the CAD model with the "
+            "gaps closed. Meshing may still fail or leak."
         )
 
     @Slot(str)
