@@ -333,6 +333,8 @@ class ParamsPanel(QWidget):
         mesher_layout.addWidget(self._mesher_combo)
         self._mesher_combo.currentTextChanged.connect(self._on_mesher_changed)
         mesh_layout.addWidget(mesher_group)
+        self._bl_group = bl_group
+        self._mesher_group = mesher_group
 
         mesh_layout.addStretch()
         self._tabs.addTab(mesh_tab, "Mesh")
@@ -365,6 +367,7 @@ class ParamsPanel(QWidget):
         adv_layout.addLayout(parallel_row)
 
         adv_layout.addStretch()
+        self._adv_tab = adv_tab
         self._tabs.addTab(adv_tab, "Advanced")
 
         qual_tab = QWidget()
@@ -397,6 +400,25 @@ class ParamsPanel(QWidget):
         self._btn_reset.clicked.connect(self.reset_all.emit)
         btn_reset_layout.addWidget(self._btn_reset)
         outer.addLayout(btn_reset_layout)
+
+        # Default to simple mode: hide the knobs a first-time user doesn't
+        # need yet (boundary layers, mesher choice, parallel/polyhedral).
+        # Cell sizes + detail level + Generate Mesh are enough to get a
+        # working mesh; set_expert_mode(True) reveals the rest for users
+        # who want to tune them.
+        self._expert_mode = False
+        self.set_expert_mode(False)
+
+    def is_expert_mode(self) -> bool:
+        return self._expert_mode
+
+    def set_expert_mode(self, enabled: bool) -> None:
+        self._expert_mode = enabled
+        self._bl_group.setVisible(enabled)
+        self._mesher_group.setVisible(enabled)
+        idx = self._tabs.indexOf(self._adv_tab)
+        if idx >= 0:
+            self._tabs.setTabVisible(idx, enabled)
 
     def _on_max_cell_changed(self, v: float):
         old = self._prev_cell_params["max_cell"]
@@ -740,6 +762,7 @@ class ParamsPanel(QWidget):
         s.setValue("params/min_cell", self._min_cell.value())
         s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
         s.setValue("params/unit", self._unit_selector.currentText())
+        s.setValue("ui/expert_mode", self._expert_mode)
 
     def restore_params(self, s):
         max_cell = s.value("params/max_cell", None)
@@ -754,6 +777,9 @@ class ParamsPanel(QWidget):
         unit = s.value("params/unit", None)
         if unit is not None:
             self._unit_selector.setCurrentText(unit)
+        expert = s.value("ui/expert_mode", None, type=bool)
+        if expert is not None:
+            self.set_expert_mode(bool(expert))
 
     def _on_template_selected(self, text: str):
         if text == "None (manual)":
