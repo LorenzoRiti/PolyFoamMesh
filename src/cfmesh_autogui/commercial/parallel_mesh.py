@@ -151,6 +151,80 @@ class ParallelMeshEngine:
         except Exception as exc:
             logger.debug("Stray-process cleanup skipped: %s", exc)
 
+    def _estimate_per_rank_mb(self) -> int:
+        """Rough per-rank memory estimate: each MPI rank loads and octree-
+        processes the *full* surface independently before discarding
+        non-owned cells, so memory scales with both surface complexity and
+        core count. There's no exact formula for this without actually
+        running it, so this is a deliberately conservative heuristic (20x
+        the on-disk triSurface size, which tends to undershoot rather than
+        overshoot real octree memory use, plus a flat base overhead) rather
+        than a precise prediction — good enough to catch "this will
+        obviously starve WSL2" before committing to it, not a hard guarantee.
+        """
+        base_mb = 200
+        tri_dir = (self._case_dir / "constant" / "triSurface") if self._case_dir else None
+        if not tri_dir or not tri_dir.is_dir():
+            return base_mb
+        total_bytes = sum(f.stat().st_size for f in tri_dir.glob("*") if f.is_file())
+        surface_mb = total_bytes / (1024 * 1024)
+        return int(base_mb + surface_mb * 20)
+
+    def _clamp_cores_to_available_memory(self) -> None:
+        """Query WSL2's currently free memory and reduce n_cores if the
+        requested count would very likely exhaust it — this is the fix for
+        the actual root cause behind repeated "parallel meshing hangs/
+        crashes" reports: each rank redundantly loads the full geometry,
+        WSL2 caps its own memory well below the host's, and running out
+        mid-mesh reads as an indefinite freeze rather than a clean error.
+        Runs *before* committing to a core count rather than discovering
+        the problem 20 minutes into a run.
+        """
+        try:
+            # awk's `$7` through the Windows -> wsl.exe -> bash -lc bridge
+            # is not reliable — confirmed live: even a trivial
+            # `awk '{print $7}'` came back with the whole input line
+            # instead of one field, silently (int() on that line then
+            # raised ValueError, caught below, and the clamp just never
+            # applied — the exact bug this method exists to prevent kept
+            # happening because the safety check itself was silently
+            # broken). Parsing plain `free -m` text in Python sidesteps
+            # the quoting problem entirely.
+            cmd = self._of_config._build_wsl_cmd("free -m")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            available_mb = None
+            for line in result.stdout.splitlines():
+                if line.startswith("Mem:"):
+                    fields = line.split()
+                    # total used free shared buff/cache available
+                    available_mb = int(fields[6])
+                    break
+            if available_mb is None:
+                raise ValueError(f"Could not parse 'free -m' output: {result.stdout!r}")
+        except Exception as exc:
+            logger.warning(
+                "Could not determine WSL2 available memory (%s) — "
+                "leaving core count at %d as requested; if that starves "
+                "WSL2's memory this run may hang.",
+                exc, self._params.n_cores,
+            )
+            return
+
+        per_rank_mb = self._estimate_per_rank_mb()
+        # Leave a 30% safety margin rather than using every last free MB.
+        safe_n = max(self.MIN_CORES, int((available_mb * 0.7) // per_rank_mb))
+        if safe_n < self._params.n_cores:
+            msg = (
+                f"Reduced parallel cores from {self._params.n_cores} to "
+                f"{safe_n}: WSL2 has ~{available_mb} MB available and each "
+                f"rank is estimated at ~{per_rank_mb} MB for this geometry — "
+                f"running the requested count would likely have exhausted "
+                f"WSL2's memory and hung."
+            )
+            logger.warning(msg)
+            self._result.warnings.append(msg)
+            self._params.n_cores = safe_n
+
     def run(self) -> ParallelMeshResult:
         """Execute the parallel meshing workflow.
 
@@ -179,6 +253,8 @@ class ParallelMeshEngine:
             # memory pressure that likely caused the original hang —
             # clean up first.
             self._kill_stray_processes()
+            self._clamp_cores_to_available_memory()
+            self._result.n_cores = self._params.n_cores
 
             self._write_meshdict()
             self._write_decompose_par_dict()
