@@ -35,7 +35,16 @@ except Exception:
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
-from cfmesh_autogui.gui.main_window import MainWindow
+# MainWindow is deliberately NOT imported here at module level. Importing it
+# pulls in cadquery/OCP, trimesh, pyvista, pyvistaqt, and gmsh transitively —
+# measured live: ~4.2s combined on a typical machine, out of ~5.5s total
+# startup. Since this file's top-level imports all run before main() (and
+# therefore before QApplication/the splash screen exist), that entire cost
+# used to happen with literally nothing on screen — no window, no splash,
+# nothing — before everything appeared at once. main() now creates and shows
+# the splash screen FIRST, then imports MainWindow: same total startup time,
+# but the user sees immediate feedback instead of an app that looks frozen
+# or not launched at all for 4+ seconds.
 from cfmesh_autogui.gui.theme import (
     apply_theme, set_theme_mode, current_mode, current_request,
 )
@@ -119,6 +128,10 @@ def main():
     logging.getLogger(__name__).info(
         "Theme: requested=%s resolved=%s", current_request(), current_mode()
     )
+
+    # Deferred until after the splash is visible — see the comment above the
+    # other imports for why.
+    from cfmesh_autogui.gui.main_window import MainWindow
 
     window = MainWindow()
     window.show()
