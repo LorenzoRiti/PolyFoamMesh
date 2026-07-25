@@ -585,10 +585,14 @@ def suggest_cell_sizes(
     s_min_snapped, _ = snap_to_octree_level(s_min, bbox_max)
     s_min_snapped = min(s_min_snapped, s_max_snapped / 2.0)
 
-    return (
-        round(max(s_max_snapped, 0.001), 6),
-        round(max(s_min_snapped, 0.0001), 6),
-    )
+    # Round to 4 decimals with a 49% (not 50%) margin, matching the cell-size
+    # spinboxes' own precision — see validate_cell_sizes() for why: an exact
+    # 50% ratio computed with more precision than the spinbox can display
+    # rounds each side independently on setValue(), and can land the stored
+    # pair just over 50%, hard-blocking meshing with no visible cause.
+    s_max_final = round(max(s_max_snapped, 0.001), 4)
+    s_min_final = round(max(min(s_min_snapped, s_max_final * 0.49), 0.0001), 4)
+    return s_max_final, s_min_final
 
 
 # V1.1: ------------------------------------------------------------------
@@ -648,6 +652,19 @@ def validate_cell_sizes(
             f"(max/2 = {safe_max / 2.0:.4f})"
         )
         logger.warning(warnings[-1])
+
+    # The GUI's cell-size spinboxes round to 4 decimals on setValue() — an
+    # exact 50% ratio computed here can independently round each value to a
+    # slightly different 4-decimal number and land the STORED pair just
+    # over 50%, which then hard-blocks meshing in validate_cell_size()
+    # (verified live: a real user's auto-suggested 0.09375/0.1875 pair,
+    # exactly 50% before rounding, became 0.0938/0.1875 = 50.03% after —
+    # "min_cell exceeds 50% of max_cell", no way to proceed without manually
+    # editing a spinbox). Round to that same precision here and clamp to
+    # 49%, not 50%, so the 0.00005 max rounding error on each side can never
+    # push the stored ratio over the strict check.
+    safe_max = round(safe_max, 4)
+    safe_min = round(min(safe_min, safe_max * 0.49), 4)
 
     if safe_max > bbox_max_dim / 10.0:
         warnings.append(

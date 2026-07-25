@@ -22,8 +22,9 @@ except Exception:
 import trimesh
 
 from cfmesh_autogui.core.geometry import (
-    suggest_cell_sizes, analyze_local_thickness,
+    suggest_cell_sizes, analyze_local_thickness, validate_cell_sizes,
 )
+from cfmesh_autogui.core.validation import validate_cell_size
 
 
 def _make_tube(length: float, radius: float, n_segments: int = 64) -> trimesh.Trimesh:
@@ -269,4 +270,39 @@ def test_fine_detail_for_constricted_tube():
         f"fine s_min={s_min_fine} should be <= {0.04/3:.4f} (3 cells in constriction)"
     )
     print(f"PASS: fine resolves constriction: s_min={s_min_fine:.4f}")
+
+
+def test_validate_cell_sizes_survives_spinbox_rounding():
+    """A user got hard-blocked live: an auto-suggested pair exactly at 50%
+    before rounding (0.09375/0.1875) became 0.0938/0.1875 = 50.03% after the
+    GUI's 4-decimal spinboxes rounded each value independently — "min_cell
+    exceeds 50% of max_cell", no way to proceed without manually editing a
+    spinbox. validate_cell_sizes() must return a pair that stays under 50%
+    even after being rounded to 4 decimals."""
+    safe_max, safe_min, _ = validate_cell_sizes(1.5, 0.1875, 0.09375)
+    assert round(safe_max, 4) == safe_max, "must already be 4-decimal safe"
+    assert round(safe_min, 4) == safe_min, "must already be 4-decimal safe"
+    assert safe_min / safe_max < 0.5, f"ratio {safe_min/safe_max} must stay under 50%"
+
+    result = validate_cell_size(max_cell=safe_max, min_cell=safe_min, bbox_dim=1.5)
+    assert result.valid, result.message
+    print(f"PASS: validate_cell_sizes stays spinbox-rounding-safe: {safe_max}/{safe_min}")
+
+
+def test_suggest_cell_sizes_survives_spinbox_rounding():
+    """Same rounding-margin guarantee, for the auto-suggest path directly
+    (used by the 'Auto-Suggest Cell Sizes' button, not just feature
+    detection's post-hoc clamp)."""
+    tube = _make_tube(length=5.0, radius=0.1)
+    for detail in ("coarse", "medium", "fine"):
+        s_max, s_min = suggest_cell_sizes([tube], detail=detail)
+        assert round(s_max, 4) == s_max
+        assert round(s_min, 4) == s_min
+        assert s_min / s_max < 0.5, (
+            f"detail={detail}: ratio {s_min/s_max} must stay under 50% "
+            "after 4-decimal rounding"
+        )
+        result = validate_cell_size(max_cell=s_max, min_cell=s_min, bbox_dim=1.0)
+        assert result.valid, f"detail={detail}: {result.message}"
+    print("PASS: suggest_cell_sizes stays spinbox-rounding-safe across detail levels")
 

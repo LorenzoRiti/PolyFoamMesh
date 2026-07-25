@@ -1061,10 +1061,31 @@ class MainWindow(QMainWindow):
             bbox_dim=bbox_dim,
         )
         if not validation_result.valid:
-            logger.error("Cell size validation failed: %s", validation_result.message)
-            QMessageBox.critical(self, "Cell Size Error", validation_result.message)
-            self._params.set_all_enabled(True)
-            return
+            # A marginal min/max ratio violation (within ~2%) is almost
+            # always the spinboxes' own 4-decimal rounding on an
+            # auto-suggested value that was safe before rounding — not a
+            # real user mistake. Verified live: a real auto-suggested pair
+            # (0.09375/0.1875, exactly 50% before rounding) became
+            # 0.0938/0.1875 = 50.03% after setValue()'s rounding and hard-
+            # blocked meshing with no visible cause. Auto-correct silently
+            # instead of showing a scary dialog for a rounding artifact;
+            # still hard-block for a genuinely wrong setup (min_cell way
+            # bigger than max_cell).
+            ratio = p["min_cell_size"] / p["max_cell_size"] if p["max_cell_size"] > 0 else 999
+            if ratio <= 0.52:
+                fixed_min = round(p["max_cell_size"] * 0.49, 4)
+                self._log.append_log(
+                    f"{Tag.SAFEGUARD} min_cell {p['min_cell_size']:.4f} was "
+                    f"marginally over 50% of max_cell after rounding — "
+                    f"auto-corrected to {fixed_min:.4f}."
+                )
+                self._params._min_cell.setValue(fixed_min)
+                p = self._params.get_mesh_params()
+            else:
+                logger.error("Cell size validation failed: %s", validation_result.message)
+                QMessageBox.critical(self, "Cell Size Error", validation_result.message)
+                self._params.set_all_enabled(True)
+                return
         for w in validation_result.warnings:
             self._log.append_log(f"{Tag.SAFEGUARD} {w}")
 
