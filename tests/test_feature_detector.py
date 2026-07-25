@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from cfmesh_autogui.core.feature_detector import (
-    FeatureDetector, FeatureMap, SharpEdge, GapRegion,
+    FeatureDetector, FeatureMap, SharpEdge, GapRegion, FeatureDetectWorker,
 )
 
 
@@ -115,3 +115,29 @@ class TestFeatureDetectorIntegration:
         )
         s_min, s_max = detector.suggest_cell_sizes(fm, bbox_dim=10.0)
         assert s_min <= 0.005 * 0.3
+
+
+class TestFeatureDetectWorker:
+    """analyze_step() runs gmsh.model.mesh.generate(2) — a real 2D remesh
+    — which used to run directly on MainWindow's GUI thread and could
+    freeze the whole app for a long time on complex geometry (confirmed
+    live: "Not Responding" for the entire duration). FeatureDetectWorker
+    wraps it for use on a background QThread instead; these tests exercise
+    its signal contract without needing a real STEP file or a live GUI."""
+
+    def test_emits_error_for_missing_file(self, qtbot):
+        worker = FeatureDetectWorker("/nonexistent/path/does_not_exist.step", "medium")
+        results = []
+        worker.finished.connect(lambda fm, err: results.append((fm, err)))
+        worker.run()
+        assert len(results) == 1
+        feature_map, error = results[0]
+        assert feature_map is None
+        assert error is not None
+
+    def test_run_never_raises(self, qtbot):
+        # run() must always emit via the signal, never propagate an
+        # exception — it's meant to execute on a bare QThread with no
+        # surrounding try/except at the call site.
+        worker = FeatureDetectWorker("", "medium")
+        worker.run()  # should not raise
