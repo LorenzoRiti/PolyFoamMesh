@@ -1406,7 +1406,7 @@ class MainWindow(QMainWindow):
                 f"{Tag.MESHING} Running cartesianMesh across {n_cores} cores..."
             )
             self._run_parallel_mesh(
-                safe_max, safe_min, n_cores, guarded_finished,
+                safe_max, safe_min, n_cores, guarded_finished, bl_params,
             )
             return
 
@@ -1427,6 +1427,7 @@ class MainWindow(QMainWindow):
 
     def _run_parallel_mesh(
         self, max_cell: float, min_cell: float, n_cores: int, guarded_finished,
+        bl_params: dict | None = None,
     ) -> None:
         """Run cartesianMesh across n_cores MPI ranks via ParallelMeshEngine,
         on a background QThread so the GUI stays responsive (the engine's
@@ -1436,6 +1437,14 @@ class MainWindow(QMainWindow):
         case setup, quality check) via the same (exit_code, output, attempts)
         contract the serial RetryRunner path uses — parallel vs. serial only
         differs in how constant/polyMesh got there.
+
+        If the parallel attempt itself fails (timeout, WSL2 memory
+        exhaustion, MPI error), automatically falls back to the serial
+        RetryRunner instead of just reporting failure: "parallel meshing"
+        as a feature should mean "faster when it can be, never worse than
+        turning it off" — a user shouldn't lose a working mesh just because
+        the multi-core path hit trouble their geometry/machine couldn't
+        support this time.
         """
         if getattr(self, "_parallel_thread", None) and self._parallel_thread.isRunning():
             self._parallel_thread.quit()
@@ -1454,7 +1463,23 @@ class MainWindow(QMainWindow):
             guarded_finished(0, "", 1)
 
         def on_failed(msg: str):
-            guarded_finished(1, msg, 1)
+            self._log.append_log(
+                f"{Tag.WARN} Parallel meshing failed ({msg}) — "
+                "falling back to single-core meshing for this run."
+            )
+            self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (serial fallback)...")
+            self._runner.cell_count_relay.connect(self._on_cell_count_found)
+            self._runner.progress_update.connect(self._on_progress_update)
+            self._runner.run(
+                self._case_dir,
+                on_log=self._log.append_log,
+                on_finished=guarded_finished,
+                fix_action=self._make_fix_action(),
+                bl_params=bl_params,
+                max_cell=max_cell,
+                min_cell=min_cell,
+                patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+            )
 
         self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
         self._parallel_worker.finished.connect(self._parallel_thread.quit, Qt.QueuedConnection)

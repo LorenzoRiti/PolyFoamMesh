@@ -258,3 +258,86 @@ if __name__ == "__main__":
     test_decompose_params_string_rep()
     test_engine_run_no_case()
     print("ALL PASS")
+
+
+def test_clamp_cores_reduces_when_memory_insufficient(monkeypatch):
+    """awk-based field extraction through the Windows->wsl.exe->bash -lc
+    bridge proved unreliable (confirmed live: even a trivial
+    `awk '{print $7}'` returned the whole input line, not one field), so
+    the clamp parses plain `free -m` text in Python instead. This guards
+    against ever reintroducing that quoting fragility."""
+    import shutil
+    import subprocess as _subprocess
+
+    case = Path("C:/cfmesh_bench/parallel_clamp_test_case_1")
+    shutil.rmtree(case, ignore_errors=True)
+    (case / "system").mkdir(parents=True)
+    (case / "constant" / "triSurface").mkdir(parents=True)
+    (case / "constant" / "triSurface" / "surface.stl").write_bytes(b"x" * (2 * 1024 * 1024))
+
+    pe = ParallelMeshEngine()
+    pe.setup_case(case, n_cores=64)
+
+    class _FakeResult:
+        stdout = (
+            "               total        used        free      shared  buff/cache   available\n"
+            "Mem:           15542         750       13560           3        1432       14794\n"
+            "Swap:           4096           0        4096\n"
+        )
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _FakeResult())
+
+    pe._clamp_cores_to_available_memory()
+
+    assert pe._params.n_cores < 64
+    assert pe._params.n_cores >= pe.MIN_CORES
+    assert len(pe._result.warnings) == 1
+    assert "14794" in pe._result.warnings[0]
+
+
+def test_clamp_cores_leaves_reasonable_request_untouched(monkeypatch):
+    import shutil
+    import subprocess as _subprocess
+
+    case = Path("C:/cfmesh_bench/parallel_clamp_test_case_2")
+    shutil.rmtree(case, ignore_errors=True)
+    (case / "system").mkdir(parents=True)
+    (case / "constant" / "triSurface").mkdir(parents=True)
+
+    pe = ParallelMeshEngine()
+    pe.setup_case(case, n_cores=4)
+
+    class _FakeResult:
+        stdout = "Mem:           15542         750       13560           3        1432       14794\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _FakeResult())
+
+    pe._clamp_cores_to_available_memory()
+
+    assert pe._params.n_cores == 4
+    assert pe._result.warnings == []
+
+
+def test_clamp_cores_handles_query_failure_gracefully(monkeypatch):
+    import shutil
+    import subprocess as _subprocess
+
+    case = Path("C:/cfmesh_bench/parallel_clamp_test_case_3")
+    shutil.rmtree(case, ignore_errors=True)
+    (case / "system").mkdir(parents=True)
+
+    pe = ParallelMeshEngine()
+    pe.setup_case(case, n_cores=4)
+
+    def _raise(*a, **k):
+        raise _subprocess.TimeoutExpired(cmd="wsl.exe", timeout=15)
+
+    monkeypatch.setattr(_subprocess, "run", _raise)
+
+    pe._clamp_cores_to_available_memory()  # must not raise
+
+    assert pe._params.n_cores == 4  # left as requested when the query itself fails
