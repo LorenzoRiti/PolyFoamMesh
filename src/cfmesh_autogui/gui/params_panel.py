@@ -96,22 +96,16 @@ class ParamsPanel(QWidget):
         geom_tab = QWidget()
         geom_layout = QVBoxLayout(geom_tab)
 
-        template_group = QGroupBox("Case Template")
-        template_layout = QVBoxLayout(template_group)
-        self._template_combo = QComboBox()
-        self._template_combo.addItems(["None (manual)", "Internal Flow", "External Aero", "CHT"])
-        self._template_combo.currentTextChanged.connect(self._on_template_selected)
-        template_layout.addWidget(self._template_combo)
-        template_layout.addWidget(QLabel("Preset: geometry + mesh defaults per case type"))
-        geom_layout.addWidget(template_group)
-
+        # CAD Geometry first: loading geometry is the first thing you do
+        # on this (first) tab, before picking a case template that only
+        # makes sense once there's something to apply it to.
         cad_group = QGroupBox("CAD Geometry")
         cad_layout = QVBoxLayout(cad_group)
         self._cad_label = QLabel("No CAD loaded")
         self._cad_label.setWordWrap(True)
         cad_layout.addWidget(self._cad_label)
 
-        btn_load = QPushButton("Load STEP...")
+        btn_load = QPushButton("Load Geometry...")
         btn_load.setToolTip("Load a STEP/STP CAD or STL mesh file. Shortcut: Ctrl+O")
         btn_load.clicked.connect(self.load_step_requested.emit)
         self._btn_load = btn_load
@@ -138,6 +132,15 @@ class ParamsPanel(QWidget):
         cad_layout.addLayout(form_geom)
 
         geom_layout.addWidget(cad_group)
+
+        template_group = QGroupBox("Case Template")
+        template_layout = QVBoxLayout(template_group)
+        self._template_combo = QComboBox()
+        self._template_combo.addItems(["None (manual)", "Internal Flow", "External Aero", "CHT"])
+        self._template_combo.currentTextChanged.connect(self._on_template_selected)
+        template_layout.addWidget(self._template_combo)
+        template_layout.addWidget(QLabel("Preset: geometry + mesh defaults per case type"))
+        geom_layout.addWidget(template_group)
 
         patch_group = QGroupBox("Patches")
         patch_layout = QVBoxLayout(patch_group)

@@ -51,7 +51,7 @@ from cfmesh_autogui.gui.quality_panel import QualityPanel
 from cfmesh_autogui.gui.viewer_widget import ViewerWidget
 from cfmesh_autogui.gui.params_panel import ParamsPanel
 from cfmesh_autogui.gui.log_panel import LogPanel
-from cfmesh_autogui.gui.style import COLOR_TEXT_DISABLED
+from cfmesh_autogui.gui.style import COLOR_TEXT_DISABLED, COLOR_DANGER
 from cfmesh_autogui.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
 from cfmesh_autogui.gui.log_tags import Tag
 from cfmesh_autogui.gui.design_tokens import ORANGE_500, ORANGE_600, ORANGE_400, APP_VERSION
@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Keyboard Shortcuts",
-            "Ctrl+O   Load STEP or STL file\n"
+            "Ctrl+O   Load Geometry (STEP or STL)\n"
             "Ctrl+R   Generate mesh (or Cancel if running)\n"
             "Ctrl+N   Reset all\n"
             "Ctrl+Q   Exit\n\n"
@@ -265,6 +265,24 @@ class MainWindow(QMainWindow):
             f"QToolButton {{ background:{ORANGE_500}; color:white; border:1px solid {ORANGE_600}; "
             "border-radius:4px; padding:4px 16px; font-weight:700; }"
             f"QToolButton:hover {{ background:{ORANGE_400}; }}"
+        )
+        # The Mesh tab's "Generate Mesh" button already turns into "Cancel"
+        # while a run is active, but that button lives on one specific tab
+        # — if meshing was started from the ribbon's Quick Mesh while
+        # looking at a different tab, there was no visible way to stop it.
+        # This mirrors that same cancel action in the ribbon itself, always
+        # reachable regardless of which tab is showing.
+        self._ribbon_btns["cancel"] = _make_ribbon_btn(
+            "Cancel", "cancel", self._on_cancel_meshing, checkable=False,
+        )
+        cancel_btn = self._ribbon_btns["cancel"]
+        cancel_btn.setAutoExclusive(False)
+        cancel_btn.setToolTip("Stop the meshing run in progress.")
+        cancel_btn.setVisible(False)
+        cancel_btn.setStyleSheet(
+            f"QToolButton {{ background:{COLOR_DANGER}; color:white; "
+            f"border:1px solid {COLOR_DANGER}; border-radius:4px; padding:4px 16px; "
+            "font-weight:700; }"
         )
         ribbon.addSeparator()
         # Simple by default (just cell sizes + Generate Mesh); toggling
@@ -754,7 +772,7 @@ class MainWindow(QMainWindow):
         s = self._settings()
         last_dir = s.get_value("geometry/last_step_dir", "")
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load STEP or STL File", last_dir,
+            self, "Load Geometry", last_dir,
             "Geometry Files (*.step *.stp *.stl);;STEP Files (*.step *.stp);;STL Files (*.stl);;All Files (*.*)",
         )
         if not path:
@@ -952,7 +970,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "No Geometry",
                 "No geometry loaded. Please load a STEP or CAD file first "
-                "(use File \u2192 Load STEP, drag & drop, or press Ctrl+O).",
+                "(use File \u2192 Load Geometry, drag & drop, or press Ctrl+O).",
             )
             return
 
@@ -1284,6 +1302,13 @@ class MainWindow(QMainWindow):
             self._on_meshing_finished(exit_code, output, attempts)
 
         self._params.set_meshing_state(True)
+        # The progress bar existed and MeshWorker already emitted real
+        # percentages, but nothing ever set it *visible* when a meshing
+        # run actually started — so it silently stayed hidden the whole
+        # time cartesianMesh ran, reading as "no progress, is this stuck?"
+        self._progress.setRange(0, 0)
+        self._progress.setVisible(True)
+        self._ribbon_btns["cancel"].setVisible(True)
 
         parallel_enabled, n_cores = self._params.get_parallel_params()
         if parallel_enabled and n_cores >= 2:
@@ -1585,10 +1610,16 @@ class MainWindow(QMainWindow):
             self._progress.setVisible(False)
 
     def _on_cancel_meshing(self):
-        self._runner.terminate()
+        if getattr(self._runner, "is_running", False):
+            self._runner.terminate()
+        parallel_thread = getattr(self, "_parallel_thread", None)
+        if parallel_thread is not None and parallel_thread.isRunning():
+            parallel_thread.requestInterruption()
+            parallel_thread.quit()
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
+        self._ribbon_btns["cancel"].setVisible(False)
         self._status.showMessage("Cancelled")
         self._log.append_log(f"{Tag.CANCELLED} Meshing cancelled by user.")
 
@@ -1596,6 +1627,7 @@ class MainWindow(QMainWindow):
     def _on_meshing_finished(self, exit_code: int, output: str, attempts: int = 1):
         self._params.set_meshing_state(False)
         self._progress.setVisible(False)
+        self._ribbon_btns["cancel"].setVisible(False)
         self._params.set_all_enabled(True)
         if exit_code != 0:
             self._set_workflow_stage("generate", "error")
