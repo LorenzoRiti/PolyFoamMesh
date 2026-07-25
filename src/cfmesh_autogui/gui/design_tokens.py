@@ -36,7 +36,7 @@ ANTHROPIC_CLAY_LIGHT = "#e2916f"
 ANTHROPIC_CLAY_DARK = "#b85c3e"
 ANTHROPIC_CLAY_TINT = "#fbede6"  # very light bg tint for hover/selected rows
 # Graphics background (dark)
-GRAPHICS_BG = "#1a1a2e"
+GRAPHICS_BG = "#1e1e1e"
 GRAPHICS_BG_LIGHT = "#f4f4f4"
 # Workflow cell colors
 CELL_HEADER = "#2b579a"
@@ -87,18 +87,19 @@ SECONDARY_950 = "#2e1065"
 ACCENT_500 = "#06b6d4"
 ACCENT_600 = "#0891b2"
 
-# Neutral (slate-based — pairs well with the blue primary)
-NEUTRAL_50  = "#f8fafc"
-NEUTRAL_100 = "#f1f5f9"
-NEUTRAL_200 = "#e2e8f0"
-NEUTRAL_300 = "#cbd5e1"
-NEUTRAL_400 = "#94a3b8"
-NEUTRAL_500 = "#64748b"
-NEUTRAL_600 = "#475569"
-NEUTRAL_700 = "#334155"
-NEUTRAL_800 = "#1e293b"
-NEUTRAL_900 = "#0f172a"
-NEUTRAL_950 = "#020617"
+# Neutral (true gray, no blue tint — BaramFlow/most CFD tools use flat
+# grays rather than a slate/blue-tinted scale for the dark surfaces)
+NEUTRAL_50  = "#fafafa"
+NEUTRAL_100 = "#f5f5f5"
+NEUTRAL_200 = "#e5e5e5"
+NEUTRAL_300 = "#d4d4d4"
+NEUTRAL_400 = "#a3a3a3"
+NEUTRAL_500 = "#737373"
+NEUTRAL_600 = "#525252"
+NEUTRAL_700 = "#404040"
+NEUTRAL_800 = "#262626"
+NEUTRAL_900 = "#171717"
+NEUTRAL_950 = "#0a0a0a"
 
 # Semantic
 SUCCESS       = "#16a34a"
