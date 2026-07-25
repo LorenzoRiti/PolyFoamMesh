@@ -231,3 +231,37 @@ class FeatureDetector:
             except Exception:
                 pass
             self._gmsh_initialized = False
+
+
+from PySide6.QtCore import QObject, Signal, Slot
+
+
+class FeatureDetectWorker(QObject):
+    """Runs FeatureDetector.analyze_step() in a background QThread.
+
+    analyze_step() calls gmsh.model.mesh.generate(2) — a full 2D surface
+    remesh of the STEP geometry, purely to derive curvature/sharp-edge
+    stats for cell sizing. On a complex or poorly-defeatured CAD model
+    (many small/degenerate surfaces) GMSH's own algorithm can spend a
+    long time retrying ("Splitting those edges and trying again",
+    "N elements remain invalid in surface M") — confirmed live: the whole
+    app showed "Not Responding" for the entire time this ran, because it
+    used to run directly on the GUI thread inside
+    MainWindow._continue_run_meshing().
+    """
+
+    finished = Signal(object, object)  # (FeatureMap | None, error_str | None)
+
+    def __init__(self, step_path: str, detail: str, parent=None):
+        super().__init__(parent)
+        self._step_path = step_path
+        self._detail = detail
+
+    @Slot()
+    def run(self):
+        try:
+            detector = FeatureDetector()
+            feature_map = detector.analyze_step(self._step_path, detail=self._detail)
+            self.finished.emit(feature_map, None)
+        except Exception as exc:
+            self.finished.emit(None, str(exc))

@@ -43,7 +43,7 @@ from cfmesh_autogui.core.openfoam_runner import (
     RetryRunner, CheckMeshWorker, PolyDualWorker, QualityFixWorker,
     ParallelMeshWorker, WslCheckWorker, analyze_error, ErrorType,
 )
-from cfmesh_autogui.core.feature_detector import FeatureDetector
+from cfmesh_autogui.core.feature_detector import FeatureDetectWorker
 from cfmesh_autogui.core.boundary_reader import parse_boundary
 from cfmesh_autogui.core.case_setup import setup_case
 from cfmesh_autogui.core.workflow import MeshingWorkflow, Step, Status
@@ -1150,38 +1150,78 @@ class MainWindow(QMainWindow):
         bbox_dim = compute_bbox_dim(self._meshes)
         logger.info("Geometry bbox max dim: %.4f", bbox_dim)
 
-        # Feature detection — geometry-aware cell sizing (Fix 1)
+        # Feature detection — geometry-aware cell sizing (Fix 1). Runs a
+        # full GMSH 2D surface remesh internally just to derive curvature/
+        # sharp-edge stats; on a complex or poorly-defeatured CAD model
+        # that can take a long time (GMSH retrying "Splitting those edges"
+        # on many surfaces) — confirmed live, the whole app showed "Not
+        # Responding" for the entire duration when this ran directly here
+        # on the GUI thread. Now on a background QThread.
         feature_step_path = getattr(self, '_loaded_step_path', None)
         if feature_step_path and Path(feature_step_path).exists():
-            try:
-                detector = FeatureDetector()
-                feature_map = detector.analyze_step(
-                    feature_step_path,
-                    detail=self._params.get_detail_level(),
-                )
-                self._log.append_log(
-                    f"[feature] Detected: {len(feature_map.sharp_edges)} sharp edges, "
-                    f"{len(feature_map.gap_regions)} gaps, "
-                    f"curvature={feature_map.curvature_radius:.4f}"
-                )
-                suggested_max = feature_map.suggested_max_cell
-                suggested_min = feature_map.suggested_min_cell
-                self._log.append_log(
-                    f"[feature] Feature-based cell sizes: max={suggested_max:.4f} "
-                    f"min={suggested_min:.4f}"
-                )
-                self._params._max_cell.setValue(suggested_max)
-                self._params._min_cell.setValue(suggested_min)
-                # ✅ F-007: validate feature detection values against bbox
-                bbox_dim = compute_bbox_dim(self._meshes)
-                p = self._params.get_mesh_params()
-                safe_max, safe_min, _ = validate_cell_sizes(bbox_dim, p["max_cell_size"], p["min_cell_size"])
-                self._params._max_cell.setValue(safe_max)
-                self._params._min_cell.setValue(safe_min)
-            except Exception as e:
-                logger.warning("Feature detection failed (non-fatal): %s", e)
-                self._log.append_log(f"[warn] Feature detection skipped: {e}")
+            self._log.append_log("[feature] Analyzing geometry features...")
+            self._start_feature_detect(my_id, feature_step_path, surface_file, bbox_dim)
+            return
 
+        self._continue_run_meshing_after_feature_detect(my_id, surface_file, bbox_dim)
+
+    def _start_feature_detect(
+        self, my_id: int, step_path: str, surface_file: str, bbox_dim: float,
+    ) -> None:
+        if getattr(self, "_feature_thread", None) and self._feature_thread.isRunning():
+            self._feature_thread.quit()
+            self._feature_thread.wait(3000)
+
+        self._feature_thread = QThread()
+        self._feature_worker = FeatureDetectWorker(
+            step_path, self._params.get_detail_level(),
+        )
+        self._feature_worker.moveToThread(self._feature_thread)
+        self._feature_thread.started.connect(self._feature_worker.run)
+        self._feature_worker.finished.connect(
+            lambda fm, err: self._on_feature_detect_finished(my_id, surface_file, bbox_dim, fm, err),
+            Qt.QueuedConnection,
+        )
+        self._feature_worker.finished.connect(self._feature_thread.quit, Qt.QueuedConnection)
+        self._feature_worker.finished.connect(self._feature_worker.deleteLater, Qt.QueuedConnection)
+        self._feature_thread.start()
+
+    def _on_feature_detect_finished(
+        self, my_id: int, surface_file: str, bbox_dim: float, feature_map, error: str | None,
+    ) -> None:
+        if my_id != self._run_id:
+            logger.debug("Stale feature-detect callback ignored (got %d, current %d).", my_id, self._run_id)
+            return
+
+        if error is not None:
+            logger.warning("Feature detection failed (non-fatal): %s", error)
+            self._log.append_log(f"[warn] Feature detection skipped: {error}")
+        elif feature_map is not None:
+            self._log.append_log(
+                f"[feature] Detected: {len(feature_map.sharp_edges)} sharp edges, "
+                f"{len(feature_map.gap_regions)} gaps, "
+                f"curvature={feature_map.curvature_radius:.4f}"
+            )
+            suggested_max = feature_map.suggested_max_cell
+            suggested_min = feature_map.suggested_min_cell
+            self._log.append_log(
+                f"[feature] Feature-based cell sizes: max={suggested_max:.4f} "
+                f"min={suggested_min:.4f}"
+            )
+            self._params._max_cell.setValue(suggested_max)
+            self._params._min_cell.setValue(suggested_min)
+            # ✅ F-007: validate feature detection values against bbox
+            bbox_dim = compute_bbox_dim(self._meshes)
+            p = self._params.get_mesh_params()
+            safe_max, safe_min, _ = validate_cell_sizes(bbox_dim, p["max_cell_size"], p["min_cell_size"])
+            self._params._max_cell.setValue(safe_max)
+            self._params._min_cell.setValue(safe_min)
+
+        self._continue_run_meshing_after_feature_detect(my_id, surface_file, bbox_dim)
+
+    def _continue_run_meshing_after_feature_detect(
+        self, my_id: int, surface_file: str, bbox_dim: float,
+    ) -> None:
         p = self._params.get_mesh_params()
         from cfmesh_autogui.core.validation import validate_cell_size
         validation_result = validate_cell_size(
