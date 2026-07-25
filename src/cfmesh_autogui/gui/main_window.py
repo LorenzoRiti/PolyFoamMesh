@@ -450,7 +450,6 @@ class MainWindow(QMainWindow):
 
     @contextlib.contextmanager
     def _busy(self, disable_run: bool = True):
-        prev_run_enabled = self._params._btn_run.isEnabled() if hasattr(self._params, "_btn_run") else True
         QGuiApplication.setOverrideCursor(Qt.WaitCursor)
         self._progress.setRange(0, 0)
         self._progress.setVisible(True)
@@ -463,7 +462,18 @@ class MainWindow(QMainWindow):
             self._progress.setRange(0, 100)
             self._progress.setVisible(False)
             if disable_run and hasattr(self._params, "_btn_run"):
-                self._params._btn_run.setEnabled(prev_run_enabled)
+                # Re-derive from the current patch list rather than
+                # restoring a snapshot taken before this block ran: geometry
+                # loading happens *inside* this context and calls
+                # set_patches(), which is what should actually decide
+                # whether "Generate Mesh" is enabled. Restoring a stale
+                # pre-load snapshot (always False before geometry existed)
+                # silently clobbered that back to disabled every time —
+                # geometry loaded fine, patches showed up, "Ready to mesh"
+                # displayed, but the button just sat there dead.
+                self._params._btn_run.setEnabled(
+                    bool(self._params.get_patch_names())
+                )
 
     @staticmethod
     def _settings() -> AppSettings:

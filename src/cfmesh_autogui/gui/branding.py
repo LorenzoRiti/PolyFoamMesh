@@ -72,7 +72,7 @@ def make_splash_pixmap(width: int = 520, height: int = 300, dark: bool = False) 
 
     # Background: dark gradient (like ANSYS Fluent)
     if dark:
-        bg = QColor("#1a1a2e")
+        bg = QColor("#1e1e1e")
         bottom_bar = QColor(ORANGE_500)
         accent = QColor(ORANGE_500)
     else:
@@ -91,7 +91,7 @@ def make_splash_pixmap(width: int = 520, height: int = 300, dark: bool = False) 
 
     # App name — bold display
     text_x = 24 + logo_size + 20
-    name_color = QColor("#ffffff" if dark else "#1a1a2e")
+    name_color = QColor("#ffffff" if dark else "#1e1e1e")
     name_font = QFont()
     name_font.setPointSize(24)
     name_font.setBold(True)
@@ -171,7 +171,7 @@ def _draw_ribbon_icon(name: str, size: int = 20) -> QIcon:
             p.setPen(Qt.NoPen)
             p.setBrush(brush)
             p.drawEllipse(q3+1, q3+1, s-2*q3-2, s-2*q3-2)
-            p.setBrush(QColor("#1a1a2e"))
+            p.setBrush(QColor("#1e1e1e"))
             p.drawEllipse(half-2, half-2, 4, 4)
         elif name == "quality":
             # Checkmark
