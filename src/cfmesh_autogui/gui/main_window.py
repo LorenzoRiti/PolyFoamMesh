@@ -1289,10 +1289,16 @@ class MainWindow(QMainWindow):
 
             bl_params = dict(bl_params)
             bl_params["wallPatches"] = wall_patches
+            # bl_params comes from ParamsPanel.get_bl_params(), whose real
+            # keys are nLayers/thicknessRatio/firstLayerThickness (see that
+            # method's own contract comment) — there is no "expansionRatio"
+            # key. This used to crash with KeyError on every meshing run
+            # that had boundary layers enabled, confirmed live.
             logger.info(
-                "BL params: nLayers=%d, thrRatio=%.4f, expRatio=%.2f, walls=%s",
+                "BL params: nLayers=%d, thicknessRatio=%.4f, "
+                "firstLayerThickness=%.6f, walls=%s",
                 bl_params['nLayers'], bl_params['thicknessRatio'],
-                bl_params['expansionRatio'], wall_patches,
+                bl_params['firstLayerThickness'], wall_patches,
             )
         else:
             self._log.append_log(f"{Tag.BL} Boundary layers: disabled.")
@@ -1552,9 +1558,15 @@ class MainWindow(QMainWindow):
 
         detail = self._params.get_detail_level()
         bl_params = self._params.get_bl_params()
+        # get_bl_params()'s real keys are nLayers/thicknessRatio (the
+        # growth ratio)/firstLayerThickness (absolute metres) — this used
+        # to read "thicknessRatio" for the absolute thickness and a
+        # nonexistent "expansionRatio" for the growth ratio, so the user's
+        # actual BL settings were silently ignored on the GMSH-direct path
+        # (same key-name bug that crashed the cfMesh path with KeyError).
         n_layers = bl_params.get("nLayers", 0) if bl_params else 0
-        bl_thickness = bl_params.get("thicknessRatio", 0.005) if bl_params else None
-        bl_expansion = bl_params.get("expansionRatio", 1.2) if bl_params else 1.2
+        bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
+        bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
 
         self._log.append_log("[gmsh] Generating volume mesh (tetra + BL)...")
         self._status.showMessage("GMSH: volume mesh...")

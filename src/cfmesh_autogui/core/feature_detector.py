@@ -170,8 +170,12 @@ class FeatureDetector:
         except Exception:
             pass
 
-        bbox_min, bbox_max = gmsh.model.getBoundingBox(-1)
-        bbox_dim = max(bbox_max[i] - bbox_min[i] for i in range(3))
+        # getBoundingBox(dim, tag) needs both positional args (missing the
+        # second one crashed every call: "missing 1 required positional
+        # argument: 'tag'", confirmed live) and returns one flat 6-tuple
+        # (xmin, ymin, zmin, xmax, ymax, zmax), not two 3-tuples.
+        bbox = gmsh.model.getBoundingBox(-1, -1)
+        bbox_dim = max(bbox[i + 3] - bbox[i] for i in range(3))
         feature_map.suggested_min_cell, feature_map.suggested_max_cell = (
             self.suggest_cell_sizes(feature_map, bbox_dim)
         )
