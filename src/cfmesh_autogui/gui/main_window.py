@@ -231,13 +231,15 @@ class MainWindow(QMainWindow):
             ribbon.addWidget(btn)
             return btn
 
+        # The left Workflow dock (see _setup_workflow_tree) already provides
+        # step-by-step navigation with progress/lock state — a second,
+        # independent set of tab-switching buttons here (Home/Geometry/
+        # Mesh/Advanced/Quality), mirroring the right panel's own QTabWidget
+        # tabs, was a third parallel navigation surface for the exact same
+        # 4-5 stages, and none of the three reliably stayed in sync with
+        # each other. Keeping only the ribbon's action buttons (not
+        # navigation) removes that duplication instead of syncing it.
         self._ribbon_btns = {}
-        self._ribbon_btns["home"] = _make_ribbon_btn("Home", "home", lambda: self._on_ribbon_tab("home"))
-        self._ribbon_btns["geometry"] = _make_ribbon_btn("Geometry", "geometry", lambda: self._on_ribbon_tab("geometry"))
-        self._ribbon_btns["mesh"] = _make_ribbon_btn("Mesh", "mesh", lambda: self._on_ribbon_tab("mesh"))
-        self._ribbon_btns["advanced"] = _make_ribbon_btn("Advanced", "advanced", lambda: self._on_ribbon_tab("advanced"))
-        self._ribbon_btns["quality"] = _make_ribbon_btn("Quality", "quality", lambda: self._on_ribbon_tab("quality"))
-        ribbon.addSeparator()
         self._ribbon_btns["new"] = _make_ribbon_btn("New Case", "home", self._on_new_case_wizard, checkable=False)
         self._ribbon_btns["quick"] = _make_ribbon_btn("Quick Mesh", "quick", self._on_quick_mesh, checkable=False)
         qm = self._ribbon_btns["quick"]
@@ -250,13 +252,6 @@ class MainWindow(QMainWindow):
         )
         self.addToolBar(Qt.TopToolBarArea, ribbon)
         self._ribbon = ribbon
-        self._ribbon_btns["home"].setChecked(True)
-
-    def _on_ribbon_tab(self, tab: str):
-        tab_index_map = {"home": 0, "geometry": 0, "mesh": 1, "advanced": 2, "quality": 3}
-        idx = tab_index_map.get(tab, 0)
-        self._params.set_current_tab(idx)
-        self._status.showMessage(f"Tab: {tab.capitalize()}", 2000)
 
     # ------------------------------------------------------------------
     # ANSYS Workflow Tree (Project Schematic-style)
@@ -359,11 +354,6 @@ class MainWindow(QMainWindow):
         tab_map = {"geometry": 0, "mesh_settings": 1, "advanced": 2, "generate_mesh": 1, "quality_check": 3}
         idx = tab_map.get(stage, 0)
         self._params.set_current_tab(idx)
-        ribbon_tab = {"geometry": "home", "mesh_settings": "mesh", "advanced": "advanced", "quality_check": "quality"}.get(stage, "home")
-        for k, v in self._ribbon_btns.items():
-            if k in ("quick",):
-                continue
-            v.setChecked(k == ribbon_tab)
 
     def _set_workflow_stage(self, stage: str, status: str):
         if stage in self._wf_items:
