@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from cfmesh_autogui.core.feature_detector import (
@@ -133,7 +135,8 @@ class TestFeatureDetectWorker:
         assert len(results) == 1
         feature_map, error = results[0]
         assert feature_map is None
-        assert error is not None
+        # The real reason must survive, not be flattened to "exit code 1".
+        assert "not found" in error.lower()
 
     def test_run_never_raises(self, qtbot):
         # run() must always emit via the signal, never propagate an
@@ -141,3 +144,54 @@ class TestFeatureDetectWorker:
         # surrounding try/except at the call site.
         worker = FeatureDetectWorker("", "medium")
         worker.run()  # should not raise
+
+    def test_native_child_crash_is_contained(self, qtbot, monkeypatch):
+        """gmsh bundles its own OpenCASCADE while the app loads cadquery/
+        OCP's — driving gmsh's OCC STEP reader in-process took the whole
+        application down with a hard native crash (no traceback) on a real
+        user geometry, on BOTH the serial and parallel meshing paths. That
+        is why detection runs out-of-process: a segfault must surface as a
+        handled error, never kill the app."""
+        import subprocess as _subprocess
+
+        # Capture the real run() BEFORE patching, otherwise the replacement
+        # calls itself.
+        _real_run = _subprocess.run
+
+        def _crashing_run(cmd, **kwargs):
+            return _real_run(
+                [sys.executable, "-c", "import ctypes; ctypes.string_at(0)"],
+                **kwargs
+            )
+
+        monkeypatch.setattr(
+            "cfmesh_autogui.core.feature_detector.subprocess.run", _crashing_run,
+            raising=False,
+        )
+        worker = FeatureDetectWorker("whatever.step", "medium")
+        results = []
+        worker.finished.connect(lambda fm, err: results.append((fm, err)))
+        worker.run()  # must not crash the test process
+
+        assert len(results) == 1
+        feature_map, error = results[0]
+        assert feature_map is None
+        assert "crash" in error.lower()
+
+    def test_timeout_is_reported_not_hung(self, qtbot, monkeypatch):
+        import subprocess as _subprocess
+
+        def _timeout_run(cmd, **kwargs):
+            raise _subprocess.TimeoutExpired(cmd=cmd, timeout=1)
+
+        monkeypatch.setattr(
+            "cfmesh_autogui.core.feature_detector.subprocess.run", _timeout_run,
+            raising=False,
+        )
+        worker = FeatureDetectWorker("whatever.step", "medium")
+        results = []
+        worker.finished.connect(lambda fm, err: results.append((fm, err)))
+        worker.run()
+
+        assert results[0][0] is None
+        assert "exceeded" in results[0][1]
