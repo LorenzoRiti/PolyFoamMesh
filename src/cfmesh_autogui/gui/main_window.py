@@ -1173,8 +1173,13 @@ class MainWindow(QMainWindow):
             self._feature_thread.wait(3000)
 
         self._feature_thread = QThread()
+        # Pass the SAME CAD-unit scale factor already applied to the loaded
+        # meshes: the detector reads the raw CAD file, so without this its
+        # suggestions come back in the file's own units (mm) and get used
+        # as metres — confirmed live on a 3 m model authored in mm, where
+        # it suggested a 150 m max cell size.
         self._feature_worker = FeatureDetectWorker(
-            step_path, self._params.get_detail_level(),
+            step_path, self._params.get_detail_level(), self._current_scale,
         )
         self._feature_worker.moveToThread(self._feature_thread)
         self._feature_thread.started.connect(self._feature_worker.run)

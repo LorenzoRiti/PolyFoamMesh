@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 import logging
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,14 +44,25 @@ class FeatureDetector:
         self._gmsh_initialized = False
 
     def analyze_step(
-        self, filepath: Path | str, detail: str = "medium"
+        self, filepath: Path | str, detail: str = "medium", scale: float = 1.0,
     ) -> FeatureMap:
+        """Analyse *filepath* and suggest cell sizes.
+
+        *scale* converts the CAD file's own units into the units the rest
+        of the app works in (metres) — the SAME factor MainWindow applies
+        to the loaded geometry. Without it, this returns sizes in the CAD
+        file's units while the caller treats them as metres: confirmed
+        live on a 3 m model authored in mm, where GMSH's bbox is 3000 and
+        the suggestion came back as 150 — applied as 150 METRES, i.e.
+        50x the whole model, which then got clamped and logged as
+        "maxCellSize clamped from 100.0000 to 1.5000".
+        """
         filepath = Path(filepath)
         if not filepath.exists():
             raise FileNotFoundError(f"STEP file not found: {filepath}")
 
-        # Check cache: keyed by (resolved path + mtime + detail)
-        cache_key = f"{filepath.resolve()}::{filepath.stat().st_mtime}::{detail}"
+        # Check cache: keyed by (resolved path + mtime + detail + scale)
+        cache_key = f"{filepath.resolve()}::{filepath.stat().st_mtime}::{detail}::{scale}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -183,7 +197,19 @@ class FeatureDetector:
         # argument: 'tag'", confirmed live) and returns one flat 6-tuple
         # (xmin, ymin, zmin, xmax, ymax, zmax), not two 3-tuples.
         bbox = gmsh.model.getBoundingBox(-1, -1)
-        bbox_dim = max(bbox[i + 3] - bbox[i] for i in range(3))
+        bbox_dim = max(bbox[i + 3] - bbox[i] for i in range(3)) * scale
+
+        # Every length gathered above (edge lengths, gap widths, curvature
+        # radius) is in the CAD file's own units, and suggest_cell_sizes()
+        # compares them against bbox_dim — so they all have to be converted
+        # together, or the comparisons silently mix mm with metres.
+        if scale != 1.0:
+            for e in feature_map.sharp_edges:
+                e.length *= scale
+            for g in feature_map.gap_regions:
+                g.gap_width *= scale
+            feature_map.curvature_radius *= scale
+
         feature_map.suggested_min_cell, feature_map.suggested_max_cell = (
             self.suggest_cell_sizes(feature_map, bbox_dim)
         )
@@ -245,31 +271,129 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 
 class FeatureDetectWorker(QObject):
-    """Runs FeatureDetector.analyze_step() in a background QThread.
+    """Runs feature detection in a SEPARATE PROCESS, driven from a
+    background QThread.
 
-    analyze_step() calls gmsh.model.mesh.generate(2) — a full 2D surface
-    remesh of the STEP geometry, purely to derive curvature/sharp-edge
-    stats for cell sizing. On a complex or poorly-defeatured CAD model
-    (many small/degenerate surfaces) GMSH's own algorithm can spend a
-    long time retrying ("Splitting those edges and trying again",
-    "N elements remain invalid in surface M") — confirmed live: the whole
-    app showed "Not Responding" for the entire time this ran, because it
-    used to run directly on the GUI thread inside
-    MainWindow._continue_run_meshing().
+    Two independent reasons this cannot run in-process on the GUI thread:
+
+    1. Responsiveness: analyze_step() calls gmsh.model.mesh.generate(2), a
+       full 2D surface remesh. On a complex or poorly-defeatured CAD model
+       GMSH can spend a long time retrying ("Splitting those edges and
+       trying again", "N elements remain invalid in surface M") — the app
+       showed "Not Responding" for that whole time when it ran on the GUI
+       thread.
+
+    2. Crash isolation: gmsh bundles its OWN OpenCASCADE build, while the
+       app separately loads cadquery/OCP's OpenCASCADE for STEP handling.
+       Both live in one process, and driving gmsh's OCC STEP reader on a
+       complex model took the entire application down with a hard native
+       crash — no Python traceback, just a dead process (reported live on
+       both the serial and parallel meshing paths, on a geometry where
+       GMSH's log showed it fighting "3 intersections in the 1D mesh").
+       Feature detection is a *nice-to-have* that only refines suggested
+       cell sizes; it must never be able to kill a meshing run. Running it
+       out-of-process means even a segfault is just a non-zero exit code
+       here, and the caller falls back to the existing cell sizes.
     """
 
     finished = Signal(object, object)  # (FeatureMap | None, error_str | None)
 
-    def __init__(self, step_path: str, detail: str, parent=None):
+    # Generous vs. a normal run (seconds), tight enough that a pathological
+    # geometry can't stall meshing indefinitely.
+    TIMEOUT_S = 120
+
+    def __init__(self, step_path: str, detail: str, scale: float = 1.0, parent=None):
         super().__init__(parent)
         self._step_path = step_path
         self._detail = detail
+        self._scale = scale
 
     @Slot()
     def run(self):
         try:
-            detector = FeatureDetector()
-            feature_map = detector.analyze_step(self._step_path, detail=self._detail)
-            self.finished.emit(feature_map, None)
+            proc = subprocess.run(
+                [
+                    sys.executable, "-m", "cfmesh_autogui.core.feature_detector",
+                    self._step_path, self._detail, str(self._scale),
+                ],
+                capture_output=True, text=True, timeout=self.TIMEOUT_S,
+                cwd=str(Path(__file__).resolve().parents[2]),
+            )
+        except subprocess.TimeoutExpired:
+            self.finished.emit(
+                None,
+                f"feature detection exceeded {self.TIMEOUT_S}s and was cancelled",
+            )
+            return
         except Exception as exc:
             self.finished.emit(None, str(exc))
+            return
+
+        # Parse stdout first even on a non-zero exit: a clean "couldn't
+        # read this file" still prints its reason as JSON before exiting 1,
+        # and that message is far more useful than "exit code 1".
+        payload = None
+        try:
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception:
+            payload = None
+
+        if payload is None:
+            if proc.returncode != 0:
+                # No parseable output AND a bad exit status: this is the
+                # native-crash case (segfault etc.) that running
+                # out-of-process exists to contain.
+                tail = (proc.stderr or "").strip().splitlines()
+                detail = tail[-1] if tail else f"exit code {proc.returncode}"
+                self.finished.emit(None, f"feature detection crashed ({detail})")
+            else:
+                self.finished.emit(None, "feature detection produced no usable output")
+            return
+
+        if not payload.get("ok"):
+            self.finished.emit(None, payload.get("error", "unknown error"))
+            return
+
+        feature_map = FeatureMap(
+            curvature_radius=payload["curvature_radius"],
+            suggested_min_cell=payload["suggested_min_cell"],
+            suggested_max_cell=payload["suggested_max_cell"],
+        )
+        # Only the counts matter downstream (they're logged); the full edge
+        # geometry isn't used by the caller, so it isn't serialised.
+        feature_map.sharp_edges = [None] * payload["n_sharp_edges"]
+        feature_map.gap_regions = [None] * payload["n_gap_regions"]
+        self.finished.emit(feature_map, None)
+
+
+def _main() -> int:
+    """CLI entry point: analyse a CAD file and print one line of JSON.
+
+    Deliberately isolated in its own process — see FeatureDetectWorker.
+    """
+    if len(sys.argv) < 3:
+        print(json.dumps({"ok": False, "error": "usage: <file> <detail> [scale]"}))
+        return 2
+
+    path, detail = sys.argv[1], sys.argv[2]
+    scale = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+
+    try:
+        fm = FeatureDetector().analyze_step(path, detail=detail, scale=scale)
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+
+    print(json.dumps({
+        "ok": True,
+        "n_sharp_edges": len(fm.sharp_edges),
+        "n_gap_regions": len(fm.gap_regions),
+        "curvature_radius": fm.curvature_radius,
+        "suggested_min_cell": fm.suggested_min_cell,
+        "suggested_max_cell": fm.suggested_max_cell,
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())
