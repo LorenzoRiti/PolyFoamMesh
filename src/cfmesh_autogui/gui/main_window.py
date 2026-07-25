@@ -250,8 +250,29 @@ class MainWindow(QMainWindow):
             "border-radius:4px; padding:4px 16px; font-weight:700; }"
             f"QToolButton:hover {{ background:{ORANGE_400}; }}"
         )
+        ribbon.addSeparator()
+        # Simple by default (just cell sizes + Generate Mesh); toggling
+        # this reveals boundary layers, mesher choice, and the
+        # parallel/polyhedral Advanced tab for users who want to tune them.
+        self._ribbon_btns["expert"] = _make_ribbon_btn(
+            "Advanced Mode", "advanced", self._on_toggle_expert_mode,
+        )
+        expert_btn = self._ribbon_btns["expert"]
+        expert_btn.setAutoExclusive(False)
+        expert_btn.setToolTip(
+            "Off: just cell sizes and Generate Mesh — enough for most cases.\n"
+            "On: also shows boundary layers, mesher choice, and multi-core/"
+            "polyhedral options."
+        )
         self.addToolBar(Qt.TopToolBarArea, ribbon)
         self._ribbon = ribbon
+
+    def _on_toggle_expert_mode(self, checked: bool) -> None:
+        self._params.set_expert_mode(checked)
+        self._status.showMessage(
+            "Advanced mode on" if checked else "Simple mode — advanced options hidden",
+            3000,
+        )
 
     # ------------------------------------------------------------------
     # ANSYS Workflow Tree (Project Schematic-style)
@@ -479,6 +500,7 @@ class MainWindow(QMainWindow):
             self.move(pos)
         self._viewer.restore_background(s.raw)
         self._params.restore_params(s.raw)
+        self._ribbon_btns["expert"].setChecked(self._params.is_expert_mode())
 
     def _load_geometry(self, shape: cq.Shape):
         self._original_shape = shape
