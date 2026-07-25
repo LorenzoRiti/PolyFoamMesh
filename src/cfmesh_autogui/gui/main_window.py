@@ -998,18 +998,26 @@ class MainWindow(QMainWindow):
             self._wsl_check_thread.quit()
             self._wsl_check_thread.wait(3000)
 
+        # my_id is stashed on self rather than captured in a lambda: a plain
+        # Python lambda has no QObject thread affinity for PySide6 to queue
+        # against, so a Qt.QueuedConnection to one can run on the emitting
+        # (background) thread instead of the GUI thread — which is exactly
+        # what happened here, crashing the process the moment the callback
+        # touched the log widget's QTextDocument from the worker thread.
+        # Connecting straight to a bound method of this QObject (as done
+        # everywhere else in this file) queues correctly.
+        self._wsl_check_run_id = my_id
         self._wsl_check_thread = QThread()
         self._wsl_check_worker = WslCheckWorker(self._of_config)
         self._wsl_check_worker.moveToThread(self._wsl_check_thread)
         self._wsl_check_thread.started.connect(self._wsl_check_worker.run)
-        self._wsl_check_worker.finished.connect(
-            lambda ok: self._on_wsl_check_finished(my_id, ok), Qt.QueuedConnection,
-        )
+        self._wsl_check_worker.finished.connect(self._on_wsl_check_finished, Qt.QueuedConnection)
         self._wsl_check_worker.finished.connect(self._wsl_check_thread.quit, Qt.QueuedConnection)
         self._wsl_check_worker.finished.connect(self._wsl_check_worker.deleteLater, Qt.QueuedConnection)
         self._wsl_check_thread.start()
 
-    def _on_wsl_check_finished(self, my_id: int, of_available: bool) -> None:
+    def _on_wsl_check_finished(self, of_available: bool) -> None:
+        my_id = self._wsl_check_run_id
         if my_id != self._run_id:
             logger.debug("Stale WSL-check callback ignored (got %d, current %d).", my_id, self._run_id)
             return
@@ -1653,12 +1661,21 @@ class MainWindow(QMainWindow):
             return
         self._quality.show_report(payload)
         self._refresh_workflow(quality_passed=bool(report.passed))
+        # checkMesh's cell count is authoritative — cartesianMesh's own log
+        # only exposes an interim octree-subdivision estimate mid-run, which
+        # can differ noticeably from the final surface-conforming count.
+        # Overwrite the earlier estimate everywhere it's displayed so the
+        # UI doesn't show a stale/wrong number once the real one is known.
+        if report.cells:
+            self._on_cell_count_found(report.cells)
         if report.passed:
             self._set_workflow_stage("quality", "done")
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
+            self._status.showMessage("Ready — mesh complete")
         else:
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
+            self._status.showMessage("Mesh quality check failed")
 
         if report.passed and self._params.get_poly_conversion():
             self._launch_polydual()
