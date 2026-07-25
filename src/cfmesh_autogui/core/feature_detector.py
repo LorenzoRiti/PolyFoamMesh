@@ -56,7 +56,15 @@ class FeatureDetector:
         import gmsh
 
         if not self._gmsh_initialized:
-            gmsh.initialize()
+            # interruptible=True (gmsh's default) calls signal.signal() to
+            # let Ctrl+C abort a long operation — but signal handlers can
+            # only be installed from the main thread, and this now runs
+            # on a background QThread (FeatureDetectWorker) to keep the
+            # GUI responsive. Confirmed live: every feature-detection call
+            # failed with "signal only works in main thread of the main
+            # interpreter" the moment it stopped running on the GUI
+            # thread. interruptible=False skips that call entirely.
+            gmsh.initialize(interruptible=False)
             self._gmsh_initialized = True
 
         gmsh.clear()
