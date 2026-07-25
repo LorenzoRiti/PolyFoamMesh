@@ -126,7 +126,12 @@ class MainWindow(QMainWindow):
 
     def _setup_menu(self):
         fm = self.menuBar().addMenu("&File")
-        fm.addAction("Load Geometry...\tCtrl+O", self._on_load_step)
+        load_geom_action = fm.addAction("Load Geometry...\tCtrl+O", self._on_load_step)
+        load_geom_action.setToolTip(
+            "Load or replace the geometry in the current case, keeping "
+            "your existing mesh settings. To start a brand-new project "
+            "with guided setup, use New Case in the ribbon instead."
+        )
         self._recent_menu = fm.addMenu("Recent Geometry Files")
         self._refresh_recent_menu()
         fm.addSeparator()
@@ -246,6 +251,12 @@ class MainWindow(QMainWindow):
         # navigation) removes that duplication instead of syncing it.
         self._ribbon_btns = {}
         self._ribbon_btns["new"] = _make_ribbon_btn("New Case", "home", self._on_new_case_wizard, checkable=False)
+        self._ribbon_btns["new"].setToolTip(
+            "Recommended starting point: guided setup that walks you "
+            "through loading geometry and choosing initial mesh settings "
+            "in one flow. Use File > Load Geometry instead if you just "
+            "want to swap the geometry in an existing case."
+        )
         self._ribbon_btns["quick"] = _make_ribbon_btn("Quick Mesh", "quick", self._on_quick_mesh, checkable=False)
         qm = self._ribbon_btns["quick"]
         qm.setCheckable(False)
