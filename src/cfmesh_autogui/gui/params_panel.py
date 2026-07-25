@@ -355,15 +355,24 @@ class ParamsPanel(QWidget):
             "(cartesianMesh -parallel) and reconstructs the result. "
             "Worth it above a few hundred thousand cells; the "
             "decompose/reconstruct overhead can outweigh the benefit on "
-            "small meshes."
+            "small meshes.\n\n"
+            "Each core loads a full copy of the geometry, so memory use "
+            "scales with the core count — inside WSL2 (which caps its own "
+            "memory well below the host's) too many cores on a large "
+            "geometry can exhaust that memory and hang rather than speed "
+            "things up. Start low and increase only if it works reliably."
         )
         self._parallel_check.toggled.connect(
             lambda on: self._parallel_cores.setEnabled(on)
         )
         parallel_row.addWidget(self._parallel_check)
         self._parallel_cores = QSpinBox()
-        self._parallel_cores.setRange(2, max(2, (os.cpu_count() or 4)))
-        self._parallel_cores.setValue(min(4, max(2, (os.cpu_count() or 4))))
+        cpu_n = os.cpu_count() or 4
+        self._parallel_cores.setRange(2, max(2, cpu_n))
+        # Half the cores, not "all but one": each rank redundantly loads
+        # the full geometry, so memory (not just CPU) scales with core
+        # count, and WSL2's own memory cap is the usual real constraint.
+        self._parallel_cores.setValue(max(2, min(4, cpu_n // 2)))
         self._parallel_cores.setSuffix(" cores")
         self._parallel_cores.setEnabled(False)
         parallel_row.addWidget(self._parallel_cores)

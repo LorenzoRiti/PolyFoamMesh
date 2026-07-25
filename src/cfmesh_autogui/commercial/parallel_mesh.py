@@ -75,6 +75,12 @@ class ParallelMeshEngine:
     # Max cores supported (practical limit for WSL2)
     MAX_CORES = 128
     MIN_CORES = 2
+    # 2 hours used to be the ceiling before this failed with an exception at
+    # all — a real hang (see _kill_stray_processes) looked exactly like an
+    # indefinite freeze/crash for that whole time. 30 minutes is still
+    # generous for interactive use; a genuinely large mesh that needs
+    # longer should go through the serial path instead.
+    _TIMEOUT_S = 1800
 
     def __init__(self, of_config: OFConfig | None = None) -> None:
         self._of_config = of_config or OFConfig()
@@ -126,6 +132,25 @@ class ParallelMeshEngine:
         across write_meshdict() callers elsewhere this session)."""
         self._patch_names = patch_names
 
+    def _kill_stray_processes(self) -> None:
+        """Best-effort: kill any mpirun/cartesianMesh still running inside
+        the WSL2 VM from a previous timed-out/hung attempt.
+
+        Killing the Windows-side wsl.exe process on a Python-level timeout
+        does not kill what it spawned inside WSL2 — the VM is a persistent
+        session, not a 1:1 child of that invocation — so a run that hung
+        once leaves orphaned ranks consuming CPU/RAM, and the *next*
+        attempt starts even more starved than the first.
+        """
+        try:
+            cmd = self._of_config._build_wsl_cmd(
+                "pkill -9 -f cartesianMesh 2>/dev/null; "
+                "pkill -9 -f mpirun 2>/dev/null; true"
+            )
+            subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        except Exception as exc:
+            logger.debug("Stray-process cleanup skipped: %s", exc)
+
     def run(self) -> ParallelMeshResult:
         """Execute the parallel meshing workflow.
 
@@ -146,6 +171,15 @@ class ParallelMeshEngine:
             if not self._case_dir:
                 raise RuntimeError("No case directory. Call setup_case() first.")
 
+            # A previous run that hung or timed out may have left mpirun/
+            # cartesianMesh processes alive *inside* the WSL2 VM: killing
+            # the Windows-side wsl.exe launcher on a timeout does not
+            # reliably kill what it spawned in the (persistent) Linux VM.
+            # Starting a new run on top of orphaned ones compounds the
+            # memory pressure that likely caused the original hang —
+            # clean up first.
+            self._kill_stray_processes()
+
             self._write_meshdict()
             self._write_decompose_par_dict()
             self._step_create_processor_dirs()
@@ -159,6 +193,24 @@ class ParallelMeshEngine:
             octo.log_event("parallel_mesh", "workflow_complete", {
                 "cell_count": self._result.cell_count,
             })
+        except subprocess.TimeoutExpired:
+            # Each MPI rank redundantly loads the full surface and does its
+            # own octree pass over it before discarding non-owned cells —
+            # so memory/CPU use scales with n_cores, and WSL2's VM (often
+            # capped well below host RAM) can start thrashing or hit its
+            # OOM killer on a big real geometry with many ranks, which
+            # reads as an indefinite hang rather than a clean failure.
+            self._kill_stray_processes()
+            msg = (
+                f"Parallel meshing timed out after {self._TIMEOUT_S // 60} "
+                f"minutes across {self._params.n_cores} cores. This usually "
+                "means WSL2 ran out of memory for that many ranks on this "
+                "geometry — try fewer cores, or disable parallel meshing "
+                "for this case."
+            )
+            self._result.errors.append(msg)
+            logger.error(msg)
+            octo.log_event("parallel_mesh", "workflow_timeout", {"n_cores": self._params.n_cores})
         except Exception as exc:
             self._result.errors.append(str(exc))
             logger.exception("Parallel meshing failed")
@@ -279,7 +331,7 @@ class ParallelMeshEngine:
             f"mpirun --allow-run-as-root -np {n} {bin_q} -parallel 2>&1 | tail -20"
         )
         logger.info("Parallel mesh on %d cores...", n)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=self._TIMEOUT_S)
 
         if result.returncode == 0:
             logger.info("Parallel meshing OK")
