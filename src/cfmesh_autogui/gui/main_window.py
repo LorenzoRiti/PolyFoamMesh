@@ -2404,18 +2404,23 @@ class MainWindow(QMainWindow):
             "for parallel solving..."
         )
         self._status.showMessage("Decomposing mesh for parallel solving...")
+        self._cleanup_thread("_decompose_thread", "_decompose_worker")
         t = QThread()
         w = DecomposeParWorker(self._case_dir, self._of_config, n_cores)
         w.moveToThread(t)
+        self._decompose_thread = t
+        self._decompose_worker = w
         w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
         w.finished.connect(lambda _: self._log.append_log(
             f"{Tag.MESHING} decomposePar OK — parallel solving ready."
         ), Qt.QueuedConnection)
         w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
         w.failed.connect(lambda msg: self._log.append_log(
             f"{Tag.WARN} decomposePar FAILED: {msg} — mesh still usable for serial solving."
         ), Qt.QueuedConnection)
         w.failed.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
         t.started.connect(w.run)
         t.start()
 
@@ -2845,12 +2850,16 @@ class MainWindow(QMainWindow):
         self._quality_fix_worker.failed.connect(_on_qf_failed, Qt.QueuedConnection)
         self._quality_fix_worker.failed.connect(self._quality_fix_thread.quit, Qt.QueuedConnection)
         self._quality_fix_worker.failed.connect(self._quality_fix_worker.deleteLater, Qt.QueuedConnection)
+        max_cell = self._params.get_max_cell()
+        min_cell = self._params.get_min_cell()
+        bl_params = self._params.get_bl_params()
+        case_dir = self._case_dir
         self._quality_fix_thread.started.connect(
             lambda: self._quality_fix_worker.run(
-                self._case_dir,
-                max_cell=self._params.get_max_cell(),
-                min_cell=self._params.get_min_cell(),
-                bl_params=self._params.get_bl_params(),
+                case_dir,
+                max_cell=max_cell,
+                min_cell=min_cell,
+                bl_params=bl_params,
             ),
         )
         self._quality_fix_thread.start()
@@ -2880,6 +2889,24 @@ class MainWindow(QMainWindow):
             logger.error("ParaView launch failed: %s", e)
             QMessageBox.critical(self, "Error", f"Failed to launch ParaView:\n{e}")
 
+    def _cleanup_thread(self, attr_thread: str, attr_worker: str, timeout_ms: int = 3000):
+        thread = getattr(self, attr_thread, None)
+        worker = getattr(self, attr_worker, None)
+        if thread and thread.isRunning():
+            if worker:
+                try:
+                    worker.finished.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                worker.deleteLater()
+            thread.quit()
+            if not thread.wait(timeout_ms):
+                thread.terminate()
+                thread.wait(1000)
+        for a in (attr_thread, attr_worker):
+            if hasattr(self, a):
+                setattr(self, a, None)
+
     def closeEvent(self, event):
         s = self._settings()
         s.set_value("window/size", self.size())
@@ -2894,6 +2921,17 @@ class MainWindow(QMainWindow):
         s.sync()
         if self._runner and self._runner.is_running:
             self._runner.terminate()
+        # Clean up ALL background threads
+        for attr_t, attr_w in [
+            ("_wsl_check_thread", "_wsl_check_worker"),
+            ("_feature_thread", "_feature_worker"),
+            ("_parallel_thread", "_parallel_worker"),
+            ("_polydual_thread", "_polydual_worker"),
+            ("_checkmesh_thread", "_checkmesh_worker"),
+            ("_quality_fix_thread", "_quality_fix_worker"),
+            ("_decompose_thread", "_decompose_worker"),
+        ]:
+            self._cleanup_thread(attr_t, attr_w)
         from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
         gmsh_shutdown()
         octo.log_event("main_window", "close", "app closed")

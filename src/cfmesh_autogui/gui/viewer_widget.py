@@ -918,7 +918,7 @@ class ViewerWidget(QWidget):
             QApplication.processEvents()
 
         QTimer.singleShot(0, lambda: self._load_stats_async(Path(case_dir)))
-        QTimer.singleShot(50, self._do_display_mesh)  # let stats load first
+        QTimer.singleShot(50, self._display_mesh)  # let stats load first
 
     def clear(self):
         self._cad_meshes = []
