@@ -259,6 +259,7 @@ def _write_ctrl_dict(case_dir: Path) -> None:
         "stopAt endTime; endTime 1000;\n"
         "deltaT 1;\n"
         "writeControl timeStep; writeInterval 1;\n"
+        "writeFrequency 1;\n"
         "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
         "writeCompression on; timeFormat general; timePrecision 6;\n"
         "runTimeModifiable true;\n",
