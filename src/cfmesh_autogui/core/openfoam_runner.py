@@ -35,7 +35,7 @@ __all__ = [
     "MeshWorker", "RetryRunner",
     "MeshQualityReport", "parse_checkmesh_output",
     "CheckMeshWorker", "PolyDualWorker", "QualityFixWorker", "ParallelMeshWorker",
-    "WslCheckWorker",
+    "DecomposeParWorker", "WslCheckWorker",
     "generate_fms",
 ]
 
@@ -1000,6 +1000,47 @@ class PolyDualWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class DecomposeParWorker(QObject):
+    """Runs decomposePar -force in a background QThread to decompose an
+    existing mesh into processorN/ directories for parallel SOLVING."""
+
+    log_line = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, case_dir: Path | str, of_config: OFConfig,
+                 n_cores: int, method: str = "scotch", parent=None):
+        super().__init__(parent)
+        self._case_dir = Path(case_dir).resolve()
+        self._of_config = of_config
+        self._n_cores = n_cores
+        self._method = method
+
+    @Slot()
+    def run(self):
+        try:
+            cmd = self._of_config.build_decompose_par_cmd(
+                self._case_dir, self._n_cores, method=self._method,
+            )
+            self.log_line.emit(f"[decomposePar] {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                self.log_line.emit("[decomposePar] Decomposition OK")
+                self.finished.emit(self._case_dir)
+            else:
+                self.log_line.emit(f"[decomposePar] Return code {result.returncode}")
+                self.failed.emit(f"decomposePar returned {result.returncode}")
+        except subprocess.TimeoutExpired:
+            self.log_line.emit("[decomposePar] TIMEOUT (120s)")
+            self.failed.emit("decomposePar timed out")
+        except FileNotFoundError:
+            self.log_line.emit("[decomposePar] WSL not found")
+            self.failed.emit("WSL not found")
+        except Exception as exc:
+            self.log_line.emit(f"[decomposePar] ERROR: {exc}")
+            self.failed.emit(str(exc))
+
+
 class ParallelMeshWorker(QObject):
     """Runs ParallelMeshEngine.run() (synchronous, MPI-based) in a
     background QThread so it doesn't freeze the GUI's own event loop.
@@ -1017,6 +1058,7 @@ class ParallelMeshWorker(QObject):
         max_cell: float, min_cell: float, n_cores: int,
         patch_names: list[str] | None = None,
         method: str = "scotch", parent=None,
+        bl_params: dict | None = None,
     ):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
@@ -1026,6 +1068,7 @@ class ParallelMeshWorker(QObject):
         self._n_cores = n_cores
         self._patch_names = patch_names
         self._method = method
+        self._bl_params = bl_params
         self._engine: ParallelMeshEngine | None = None
 
     def cancel(self) -> None:
@@ -1048,6 +1091,7 @@ class ParallelMeshWorker(QObject):
             self._engine.setup_case(self._case_dir, n_cores=self._n_cores, method=self._method)
             self._engine.set_cell_sizes(self._max_cell, self._min_cell)
             self._engine.set_patch_names(self._patch_names)
+            self._engine.set_bl_params(self._bl_params)
             result = self._engine.run()
             if result.success:
                 self.log_line.emit(

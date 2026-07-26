@@ -87,57 +87,99 @@ class OFConfig:
     ) -> list[str]:
         """Build WSL command for MPI-parallel cartesianMesh.
 
-        Constructs a single bash command that:
-          1. Sources the OpenFOAM environment
-          2. Sets OMPI_MCA_btl to disable TCP/IB (speeds intra-node MPI)
-          3. Writes decomposeParDict (cartesianMesh -parallel reads
-             numberOfSubdomains from it — confirmed live)
-          4. Creates processorN/ dirs with hard-linked triSurface (avoid
-             copying multi-hundred-MB STL files N times)
-          5. Runs ``mpirun -np N cartesianMesh -parallel``
-          6. Runs reconstructParMesh -constant
+        Writes a shell script to the case dir and executes it.  The script
+        runs cartesianMesh -parallel inside WSL2's native Linux tmpfs
+        (/tmp/) to avoid the Windows filesystem (/mnt/c/) which does not
+        support shared memory, file locking, and mmap that OpenMPI needs
+        — these cause SIGSEGV (exit 139) on WSL2.
 
-        Returns ``["wsl.exe", "-d", distro, "--", "bash", "-lc", cmd]``.
-
-        NOTE: step 4 (processor dir creation) is done on the Python side
-        in ``ParallelMeshEngine._step_create_processor_dirs()`` for better
-        error handling. This method only emits the MPI + reconstruct part.
+        Using a shell script avoids quoting/glob issues with inline bash
+        commands passed via ``wsl.exe bash -lc "..."``.
         """
         case_dir_resolved = Path(case_dir).resolve()
-        linux_case = self._quoted_linux_path(case_dir_resolved)
-        env_q = shlex.quote(self.env_script)
-        bin_q = shlex.quote(self.cartesian_mesh_bin)
+        linux_case = self.wsl_linux_case_path(case_dir_resolved)  # unquoted for script
+        env_q = self.env_script
+        bin_q = self.cartesian_mesh_bin
         n_threads = os.cpu_count() or 4
 
-        # Write decomposeParDict inline before launching
-        deco_dict = (
-            "FoamFile { version 2.0; format ascii; "
-            "class dictionary; object decomposeParDict; }\\n"
-            f"numberOfSubdomains {n_cores};\\n"
-            f"method {method};\\n"
-            f"{method}Coeffs {{ preservePatches (boundary); }}\\n"
+        script = (
+            f"#!/bin/bash\n"
+            f"set -o pipefail\n"
+            f"source {env_q} 2>/dev/null\n"
+            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}\n"
+            # OpenMPI's negation operator only applies once, at the start
+            # of the whole list — "^openib,^openfabric,^uct" is invalid
+            # ("MCA framework parameters can only take a single negation
+            # operator") and made MPI_Init fail outright, confirmed live.
+            # Matches the correct single-prefix form already used
+            # elsewhere in this file (build_check_mesh_cmd etc).
+            f"export OMPI_MCA_btl=^openib,openfabric,uct\n"
+            f"SRC=\"{linux_case}\"\n"
+            f"TMPD=$(mktemp -d /tmp/cfmesh_parallel_XXXXX)\n"
+            f"mkdir -p $TMPD/constant/triSurface $TMPD/system\n"
+            f'cp "$SRC/system/"* "$TMPD/system/" 2>/dev/null\n'
+            f'cp "$SRC/constant/triSurface/"* "$TMPD/constant/triSurface/" 2>/dev/null\n'
+            f"cd $TMPD\n"
+            # write decomposeParDict
+            f"cat > system/decomposeParDict << 'EOF'\n"
+            f"FoamFile {{ version 2.0; format ascii; class dictionary; object decomposeParDict; }}\n"
+            f"numberOfSubdomains {n_cores};\n"
+            f"method {method};\n"
+            f"{method}Coeffs {{ preservePatches (boundary); }}\n"
+            f"EOF\n"
+            # cartesianMesh -parallel needs each processorN/ to already
+            # exist with its own copy of system/ + constant/ (confirmed
+            # multiple times this session: "cannot open case directory
+            # processorN" without this) — ParallelMeshEngine's own
+            # _step_create_processor_dirs() creates these, but on the
+            # WINDOWS side of case_dir (/mnt/c/...), which this script
+            # never looks at: it only copies system/+triSurface/ once
+            # into $TMPD's ROOT, not per-rank. Confirmed live: without
+            # this loop, cartesianMesh -parallel failed immediately with
+            # "cannot open case directory /tmp/.../processor0" since
+            # nothing had ever created it inside $TMPD.
+            f"for i in $(seq 0 {n_cores - 1}); do\n"
+            f"  mkdir -p $TMPD/processor$i\n"
+            f"  cp -r $TMPD/system $TMPD/processor$i/\n"
+            f"  cp -r $TMPD/constant $TMPD/processor$i/\n"
+            f"done\n"
+            # run MPI-parallel meshing
+            f"mpirun --allow-run-as-root --oversubscribe "
+            f"-np {n_cores} {bin_q} -parallel 2>&1 | "
+            f"tee $TMPD/parallel_mesh.log | tail -30\n"
+            f"RC1=${{PIPESTATUS[0]}}\n"
+            # reconstruct
+            f"if [ $RC1 -eq 0 ]; then\n"
+            f"  reconstructParMesh -constant 2>&1 | "
+            f"tee -a $TMPD/parallel_mesh.log | tail -15\n"
+            f"  RC2=${{PIPESTATUS[0]}}\n"
+            f"else\n"
+            f"  RC2=$RC1\n"
+            f"fi\n"
+            # copy result back
+            f'cp -r "$TMPD/constant/polyMesh" "$SRC/constant/" 2>/dev/null\n'
+            f'cp "$TMPD/parallel_mesh.log" "$SRC/" 2>/dev/null\n'
+            # clean up
+            f"rm -rf $TMPD\n"
+            f"exit $RC2\n"
         )
 
-        # Single bash command with pipefail so that | tail does not mask
-        # mpirun/reconstructParMesh exit codes (before the fix, a failed
-        # cartesianMesh -parallel that produced 0 cells was reported as
-        # "success" because `mpirun ... 2>&1 | tail -30` returns tail's
-        # exit code, not mpirun's — verified live).
+        # Write script to case dir and execute it. newline="" is required
+        # on Windows: Path.write_text() otherwise translates every "\n" to
+        # "\r\n", which corrupts the "#!/bin/bash" shebang into
+        # "#!/bin/bash\r" — Linux then looks for an interpreter literally
+        # named "/bin/bash\r", which doesn't exist, and the whole script
+        # fails with exit 127 "command not found" (confirmed live: hex-
+        # dumped the written file and found 0d0a right after the shebang).
+        script_path = case_dir_resolved / "system" / "_run_parallel.sh"
+        script_path.write_text(script, encoding="ascii", newline="")
+        linux_script = self.wsl_linux_case_path(script_path)
+
         cmd = (
             f"set -o pipefail; "
-            f"export OMPI_MCA_btl=vader,self; "
-            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
-            f"source {env_q} 2>/dev/null; "
-            f"cd {linux_case} && "
-            # write decomposeParDict if not already present
-            f"mkdir -p system && "
-            f"echo -e '{deco_dict}' > system/decomposeParDict && "
-            # run MPI-parallel meshing
-            f"mpirun --allow-run-as-root "
-            f"--bind-to core --map-by socket "
-            f"-np {n_cores} {bin_q} -parallel 2>&1 | tail -30 && "
-            # reconstruct
-            f"reconstructParMesh -constant 2>&1 | tail -15"
+            f"source {shlex.quote(self.env_script)} 2>/dev/null; "
+            f"chmod +x {shlex.quote(linux_script)} && "
+            f"{shlex.quote(linux_script)} 2>&1 | tail -50"
         )
         return self._build_wsl_cmd(cmd)
 
@@ -155,13 +197,38 @@ class OFConfig:
         )
         return self._build_wsl_cmd(cmd)
 
+    def build_decompose_par_cmd(self, case_dir: Path | str, n_cores: int,
+                                 method: str = "scotch") -> list[str]:
+        """Build WSL command to decompose an existing mesh for parallel solving.
+        Writes a temporary decomposeParDict, runs decomposePar -force, and
+        cleans up — leaving the original mesh intact plus processorN/ dirs."""
+        case_dir = Path(case_dir).resolve()
+        linux_case = self._quoted_linux_path(case_dir)
+        env_q = shlex.quote(self.env_script)
+        cmd = (
+            f"set -o pipefail; "
+            f"source {env_q} 2>/dev/null; "
+            f"cd {linux_case} && "
+            f"echo 'FoamFile {{ version 2.0; format ascii; "
+            f"class dictionary; object decomposeParDict; }}' > "
+            f"system/decomposeParDict && "
+            f"echo 'numberOfSubdomains {n_cores};' >> "
+            f"system/decomposeParDict && "
+            f"echo 'method {method};' >> "
+            f"system/decomposeParDict && "
+            f"echo 'scotchCoeffs {{ preservePatches (boundary); }}' >> "
+            f"system/decomposeParDict && "
+            f"decomposePar -force 2>&1 | tail -20"
+        )
+        return self._build_wsl_cmd(cmd)
+
     def build_poly_dual_cmd(self, case_dir: Path | str) -> list[str]:
         case_dir = Path(case_dir).resolve()
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
-        import os as _os
-        n_threads = _os.cpu_count() or 4
+        n_threads = os.cpu_count() or 4
         cmd = (
+            f"set -o pipefail; "
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
             f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "

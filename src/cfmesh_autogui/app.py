@@ -105,6 +105,22 @@ def _load_plugins(app):
 
 
 def main():
+    # FeatureDetectWorker isolates GMSH's feature-detection pass in a
+    # child process (a hard native crash there must never take the whole
+    # app down — see feature_detector.py). In a normal dev run it invokes
+    # `sys.executable -m cfmesh_autogui.core.feature_detector ...`, but in
+    # a PyInstaller-frozen build sys.executable IS this same exe, and the
+    # frozen bootloader does not support the `-m` flag — it just re-runs
+    # this same main() regardless of arguments, which opened a second GUI
+    # window that immediately crashed (confirmed live: a second
+    # "CFMesh-AutoGUI.exe" process appeared with an "Unhandled exception
+    # in script" title every time feature detection ran). Detect that
+    # exact invocation shape here and dispatch to the CLI entry point
+    # instead of ever reaching QApplication.
+    if len(_sys.argv) > 1 and _sys.argv[1] == "--feature-detect":
+        from cfmesh_autogui.core.feature_detector import _main as _feature_detect_main
+        _sys.exit(_feature_detect_main(_sys.argv[2:]))
+
     app = QApplication(_sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
@@ -141,4 +157,18 @@ def main():
 
 
 if __name__ == "__main__":
+    # Required on Windows for any frozen (PyInstaller) exe that has a
+    # dependency using multiprocessing's "spawn" start method — without
+    # this, a spawned worker just re-runs this same frozen entry point
+    # from scratch instead of running as a worker, which for a GUI app
+    # means launching a full second copy of the window. Confirmed live:
+    # a bare, no-argument child of the exact same exe (no --feature-detect
+    # or any other distinguishing arg) appeared ~12s after a real
+    # STEP-file meshing run started and immediately crashed — some
+    # dependency in that path (numpy/scipy/pyvista/gmsh all use
+    # multiprocessing internally in various places) spawns a worker.
+    # freeze_support() must run before anything else, even other imports
+    # that might themselves trigger a spawn.
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

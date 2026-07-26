@@ -97,6 +97,7 @@ class ParallelMeshEngine:
         self._max_cell: float = 0.05
         self._min_cell: float = 0.01
         self._patch_names: list[str] | None = None
+        self._bl_params: dict | None = None
         self._result = ParallelMeshResult()
         self._cancel_event = threading.Event()
 
@@ -138,6 +139,9 @@ class ParallelMeshEngine:
 
     def set_patch_names(self, patch_names: list[str] | None) -> None:
         self._patch_names = patch_names
+
+    def set_bl_params(self, bl_params: dict | None) -> None:
+        self._bl_params = bl_params
 
     def _kill_stray_processes(self) -> None:
         try:
@@ -271,12 +275,20 @@ class ParallelMeshEngine:
         if not self._case_dir:
             return
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
+        # Detect FMS feature edges from earlier feature-detect step
+        fms_path = self._case_dir / "constant" / "triSurface" / "surface.fms"
+        surface_file = "constant/triSurface/surface.fms" if fms_path.exists() else "constant/triSurface/surface.stl"
         write_meshdict(
             self._case_dir, self._max_cell, self._min_cell,
             patch_names=self._patch_names,
+            bl_params=self._bl_params,
+            surface_file=surface_file,
         )
         logger.info(
-            "meshDict written: max=%s min=%s", self._max_cell, self._min_cell,
+            "meshDict written: max=%s min=%s bl=%s surface=%s",
+            self._max_cell, self._min_cell,
+            "yes" if self._bl_params else "no",
+            surface_file,
         )
 
     def _write_decompose_par_dict(self) -> None:
@@ -311,14 +323,20 @@ class ParallelMeshEngine:
         potentially hundreds of MB N times.  Each rank reads the STL
         independently; a hardlinked copy is indistinguishable from a
         regular one at the file-descriptor level.
+
+        Cleans up ANY leftover processorN/ dirs (not just the ones for
+        this core count) so a partial previous run can't leave stale
+        data that confuses cartesianMesh -parallel.
         """
         if not self._case_dir:
             return
 
+        for d in list(self._case_dir.glob("processor*")):
+            if d.is_dir():
+                shutil.rmtree(d)
+
         for i in range(self._params.n_cores):
             proc_dir = self._case_dir / f"processor{i}"
-            if proc_dir.exists():
-                shutil.rmtree(proc_dir)
             proc_dir.mkdir(parents=True)
 
             # Copy system/ (small text files — plain copy is fast enough)
@@ -418,9 +436,14 @@ class ParallelMeshEngine:
                         points_exist = True
                         break
             if not points_exist:
+                log_path = self._case_dir / "parallel_mesh.log"
+                detail = ""
+                if log_path.exists():
+                    detail = log_path.read_text(encoding="ascii", errors="replace")[-1000:]
                 raise RuntimeError(
                     f"Parallel meshing failed (exit {result.returncode}). "
-                    f"No polyMesh found.\n{result.stderr[-500:]}"
+                    f"No polyMesh found.  Full log: {log_path}\n"
+                    f"{detail or result.stderr[-500:]}"
                 )
             logger.warning(
                 "Parallel meshing exit=%d but partial mesh may exist",
