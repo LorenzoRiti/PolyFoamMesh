@@ -254,7 +254,7 @@ class MeshEngine:
     # Algorithm implementations
     # ------------------------------------------------------------------
     def _run_cartesian_hex(self, case_dir: Path, meshes: list | None) -> None:
-        """Run cfMesh cartesianMesh via WSL2."""
+        """Run cfMesh cartesianMesh via WSL2 — parallel when n_cores > 1."""
         from cfmesh_autogui.core.stl_writer import export_surface_file
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
 
@@ -273,11 +273,6 @@ class MeshEngine:
         for w in size_warns:
             logger.info("Cell size adjusted: %s", w)
 
-        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
-        # firstLayerThickness = absolute metres (same bug found and fixed in
-        # commercial/watertight.py and fault_tolerant.py — passing a 0.005
-        # first-layer fraction as "thicknessRatio" gets clamped to a default
-        # growth ratio and silently drops the first-layer size entirely).
         bl_params = {
             "nLayers": self._params.bl_n_layers,
             "thicknessRatio": 1.2,
@@ -292,24 +287,72 @@ class MeshEngine:
         write_meshdict(case_dir, safe_max, safe_min, bl_params=bl_params, patch_names=patch_names)
         _write_control_dict(case_dir)
 
-        # RetryRunner is QObject/QThread-based: .run() starts a background
-        # thread and returns immediately, delivering completion via a
-        # QueuedConnection signal that needs a running Qt event loop to ever
-        # fire. Calling it here and immediately continuing to
-        # _run_polyhedral()/_check_quality()/_count_cells() raced the actual
-        # meshing every time — those steps ran against a polyMesh that was
-        # still being written (or didn't exist yet), silently producing a
-        # "successful" 0-cell mesh. run() cartesianMesh synchronously instead,
-        # with the same BL-failure fallback RetryRunner offered.
+        # Dispatch to parallel engine when n_cores > 1
+        n_cores = getattr(self._params, 'n_cores', 1)
+        if n_cores > 1:
+            self._run_parallel_mesh(case_dir, safe_max, safe_min, bl_params, patch_names, n_cores)
+        else:
+            self._run_serial_mesh(case_dir, safe_max, safe_min, bl_params, patch_names)
+
+    def _run_parallel_mesh(
+        self, case_dir: Path,
+        safe_max: float, safe_min: float,
+        bl_params: dict | None, patch_names: list[str] | None,
+        n_cores: int = 2,
+    ) -> None:
+        """Run parallel meshing via ParallelMeshEngine with optional BL fallback."""
+        from cfmesh_autogui.commercial.parallel_mesh import ParallelMeshEngine
+
+        pe = ParallelMeshEngine(self._of_config)
+        pe.setup_case(case_dir, n_cores=n_cores)
+        pe.set_cell_sizes(safe_max, safe_min)
+        pe.set_patch_names(patch_names)
+
+        result = pe.run()
+
+        if result.success:
+            logger.info(
+                "Parallel mesh OK: %d cells (%d cores, %.1fs)",
+                result.cell_count, n_cores, result.wall_time_seconds,
+            )
+            return
+
+        # BL fallback: parallel failed → retry without BL
+        if bl_params:
+            logger.warning("Parallel mesh failed with BL, retrying without BL")
+            from cfmesh_autogui.core.meshdict_gen import write_meshdict
+            write_meshdict(case_dir, safe_max, safe_min, patch_names=patch_names)
+            _write_control_dict(case_dir)
+            pe2 = ParallelMeshEngine(self._of_config)
+            pe2.setup_case(case_dir, n_cores=n_cores)
+            pe2.set_cell_sizes(safe_max, safe_min)
+            pe2.set_patch_names(patch_names)
+            result2 = pe2.run()
+            if result2.success:
+                logger.info("Parallel mesh OK (without BL)")
+                return
+
+        # Final fallback: try serial
+        logger.warning("Parallel mesh failed — falling back to serial")
+        self._params.n_cores = 1
+        self._run_serial_mesh(case_dir, safe_max, safe_min, None, patch_names)
+
+    def _run_serial_mesh(
+        self, case_dir: Path,
+        safe_max: float, safe_min: float,
+        bl_params: dict | None, patch_names: list[str] | None,
+    ) -> None:
+        """Run serial cartesianMesh synchronously, with BL fallback."""
         if not self._run_cartesian_mesh_sync(case_dir):
             if bl_params:
                 logger.warning("CartesianHex: failed with boundary layers, retrying without BL")
-                write_meshdict(case_dir, safe_max, safe_min, bl_params=None, patch_names=patch_names)
+                from cfmesh_autogui.core.meshdict_gen import write_meshdict
+                write_meshdict(case_dir, safe_max, safe_min, patch_names=patch_names)
                 if not self._run_cartesian_mesh_sync(case_dir):
                     raise RuntimeError("cartesianMesh failed (with and without boundary layers)")
             else:
                 raise RuntimeError("cartesianMesh failed")
-        logger.info("CartesianHex: OK (max=%s min=%s)", safe_max, safe_min)
+        logger.info("CartesianHex (serial): OK (max=%s min=%s)", safe_max, safe_min)
 
     def _run_cartesian_mesh_sync(self, case_dir: Path) -> bool:
         """Run cartesianMesh synchronously and wait for it to actually finish."""

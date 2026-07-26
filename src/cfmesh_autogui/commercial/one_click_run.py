@@ -87,6 +87,7 @@ class FullAutoPipeline:
         quality_target: str = "medium",
         solver_template: str = "Internal Flow",
         auto_bc: bool = True,
+        n_cores: int = 1,
     ) -> FullAutoResult:
         """Execute the full meshing pipeline.
 
@@ -96,6 +97,7 @@ class FullAutoPipeline:
             quality_target: ``"draft"``, ``"medium"``, or ``"high"``.
             solver_template: Name of template to apply for solver setup.
             auto_bc: Auto-detect boundary condition types.
+            n_cores: Number of parallel cores (1 = serial, >1 = MPI).
 
         Returns:
             ``FullAutoResult`` with full pipeline summary.
@@ -105,7 +107,7 @@ class FullAutoPipeline:
             geometry_file=geometry_path,
             quality_target=quality_target,
         )
-        octo.log_event("one_click", "start", {"file": geometry_path, "target": quality_target})
+        octo.log_event("one_click", "start", {"file": geometry_path, "target": quality_target, "n_cores": n_cores})
 
         try:
             # Step 1: Import + Heal + Features
@@ -117,9 +119,9 @@ class FullAutoPipeline:
             self._result.n_patches = geo_info.n_patches
             self._result.steps_completed.append(self.STEP_IMPORT)
 
-            # Step 2: Generate mesh (quick_mesh)
+            # Step 2: Generate mesh (quick_mesh, parallel if n_cores > 1)
             qm_result = self._step_mesh(
-                geometry_path, meshes, quality_target, output_dir,
+                geometry_path, meshes, quality_target, output_dir, n_cores=n_cores,
             )
             case_dir = qm_result.case_dir
             self._result.case_dir = case_dir
@@ -183,6 +185,7 @@ class FullAutoPipeline:
     def _step_mesh(
         self, geometry_path: str, meshes: list,
         quality_target: str, output_dir: str | None,
+        n_cores: int = 1,
     ):
         """Step 2: Generate mesh via QuickMesh."""
         from cfmesh_autogui.commercial.quick_mesh import QuickMesh
@@ -191,6 +194,7 @@ class FullAutoPipeline:
             geometry_path,
             output_dir=output_dir,
             quality_target=quality_target,
+            n_cores=n_cores,
         )
         if not result.success:
             raise RuntimeError("; ".join(result.errors))
@@ -306,6 +310,8 @@ def main_cli() -> None:
                          help="Solver template name (default: Internal Flow)")
     parser.add_argument("--no-auto-bc", action="store_true",
                          help="Disable automatic boundary condition detection")
+    parser.add_argument("--n-cores", type=int, default=1,
+                         help="Number of parallel cores (default: 1, serial)")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     args = parser.parse_args()
 
@@ -321,6 +327,7 @@ def main_cli() -> None:
         quality_target=args.quality,
         solver_template=args.solver_template,
         auto_bc=not args.no_auto_bc,
+        n_cores=args.n_cores,
     )
 
     print(f"\n{result.summary()}")

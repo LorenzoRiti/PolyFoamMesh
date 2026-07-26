@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ class OFConfig:
     cartesian_mesh_bin: str = "cartesianMesh"
     check_mesh_bin: str = "checkMesh"
     _validated: bool = False
+    _n_physical: int | None = None  # cached cpu_count for parallel cmd
 
     def validate(self) -> bool:
         try:
@@ -68,8 +70,7 @@ class OFConfig:
         env_quoted = shlex.quote(self.env_script)
         bin_quoted = shlex.quote(self.cartesian_mesh_bin)
 
-        import os as _os
-        n_threads = _os.cpu_count() or 4
+        n_threads = os.cpu_count() or 4
         env_cmd = (
             f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
@@ -79,6 +80,61 @@ class OFConfig:
         if extra_args:
             env_cmd += " " + " ".join(shlex.quote(a) for a in extra_args)
         return self._build_wsl_cmd(env_cmd)
+
+    def build_parallel_command(
+        self, case_dir: Path | str, n_cores: int,
+        method: str = "scotch",
+    ) -> list[str]:
+        """Build WSL command for MPI-parallel cartesianMesh.
+
+        Constructs a single bash command that:
+          1. Sources the OpenFOAM environment
+          2. Sets OMPI_MCA_btl to disable TCP/IB (speeds intra-node MPI)
+          3. Writes decomposeParDict (cartesianMesh -parallel reads
+             numberOfSubdomains from it — confirmed live)
+          4. Creates processorN/ dirs with hard-linked triSurface (avoid
+             copying multi-hundred-MB STL files N times)
+          5. Runs ``mpirun -np N cartesianMesh -parallel``
+          6. Runs reconstructParMesh -constant
+
+        Returns ``["wsl.exe", "-d", distro, "--", "bash", "-lc", cmd]``.
+
+        NOTE: step 4 (processor dir creation) is done on the Python side
+        in ``ParallelMeshEngine._step_create_processor_dirs()`` for better
+        error handling. This method only emits the MPI + reconstruct part.
+        """
+        case_dir_resolved = Path(case_dir).resolve()
+        linux_case = self._quoted_linux_path(case_dir_resolved)
+        env_q = shlex.quote(self.env_script)
+        bin_q = shlex.quote(self.cartesian_mesh_bin)
+        n_threads = os.cpu_count() or 4
+
+        # Write decomposeParDict inline before launching
+        deco_dict = (
+            "FoamFile { version 2.0; format ascii; "
+            "class dictionary; object decomposeParDict; }\\n"
+            f"numberOfSubdomains {n_cores};\\n"
+            f"method {method};\\n"
+            f"{method}Coeffs {{ preservePatches (boundary); }}\\n"
+        )
+
+        # Single bash command: source → write decomposParDict → mpirun → reconstruct
+        cmd = (
+            f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
+            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
+            f"source {env_q} 2>/dev/null; "
+            f"cd {linux_case} && "
+            # write decomposeParDict if not already present
+            f"mkdir -p system && "
+            f"echo -e '{deco_dict}' > system/decomposeParDict && "
+            # run MPI-parallel meshing
+            f"mpirun --allow-run-as-root --use-hwthread-cpus "
+            f"--bind-to core --map-by socket "
+            f"-np {n_cores} {bin_q} -parallel 2>&1 | tail -30 && "
+            # reconstruct
+            f"reconstructParMesh -constant 2>&1 | tail -15"
+        )
+        return self._build_wsl_cmd(cmd)
 
     def build_check_mesh_cmd(self, case_dir: Path | str) -> list[str]:
         case_dir = Path(case_dir).resolve()
