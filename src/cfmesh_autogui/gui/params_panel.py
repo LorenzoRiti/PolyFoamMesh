@@ -661,6 +661,9 @@ class ParamsPanel(QWidget):
             "min_cell_size": self._min_cell.value(),
         }
 
+    def set_bl_enabled(self, enabled: bool) -> None:
+        self._bl_checkbox.setChecked(enabled)
+
     def get_bl_params(self) -> dict | None:
         if not self._bl_checkbox.isChecked():
             return None
