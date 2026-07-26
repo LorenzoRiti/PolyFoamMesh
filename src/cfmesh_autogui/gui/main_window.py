@@ -612,12 +612,16 @@ class MainWindow(QMainWindow):
         self._original_shape = shape
         self._set_workflow_stage("geometry", "done")
         self._set_workflow_stage("mesh", "active")
+        self._status.showMessage("Classifying faces...")
+        QApplication.processEvents()
         n = len(list(shape.Faces()))
         self._log.append_log(f"[geom] Loaded: {n} faces, type: {shape.geomType()}")
 
         patches = classify_faces(shape)
         self._log.append_log(f"{Tag.GEOM} Patches: {[(n, len(f)) for n, f in patches]}")
         try:
+            self._status.showMessage("Tessellating geometry (this may take a moment)...")
+            QApplication.processEvents()
             self._unscaled_meshes = tessellate_patches(patches)
         except RuntimeError as e:
             logger.error("Tessellation error: %s", e)
@@ -959,6 +963,8 @@ class MainWindow(QMainWindow):
             with self._busy():
                 if ext in (".step", ".stp"):
                     self._loaded_step_path = path
+                    self._status.showMessage("Importing STEP geometry...")
+                    QApplication.processEvents()
                     shape = load_step(path)
                     self._load_geometry(shape)
                 elif ext == ".stl":
@@ -1926,8 +1932,8 @@ class MainWindow(QMainWindow):
             "deltaT 1;\n"
             "writeControl timeStep; writeInterval 1;\n"
             "writeFrequency 1;\n"
-            "purgeWrite 0; writeFormat ascii; writePrecision 6;\n"
-            "writeCompression off; timeFormat general; timePrecision 6;\n"
+            "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
+            "writeCompression on; timeFormat general; timePrecision 6;\n"
             "runTimeModifiable true;\n",
             encoding="ascii",
         )
