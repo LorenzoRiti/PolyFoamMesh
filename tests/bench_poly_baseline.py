@@ -148,10 +148,10 @@ def run_single_baseline(name, stl_path, cell_sizes, bl_params):
     hm = _checkmesh_metrics(case_dir)
     print(f"  [{name}] hex: max_skew={hm['max_skewness']}, non_ortho={hm['max_non_orth']}")
 
-    # Step 3: polyDualMesh (BASELINE - no featureAngle)
-    print(f"  [{name}] polyDualMesh (no args)...", end=" ", flush=True)
+    # Step 3: polyDualMesh with featureAngle=90 (best measured quality)
+    print(f"  [{name}] polyDualMesh (fa=90)...", end=" ", flush=True)
     t0 = time.time()
-    rp = _run_wsl(cfg, f"source {env_q} 2>/dev/null; cd {linux_case} && polyDualMesh -constant 2>&1 | tail -20", 600)
+    rp = _run_wsl(cfg, f"source {env_q} 2>/dev/null; cd {linux_case} && polyDualMesh 90 -overwrite 2>&1 | tail -20", 600)
     pt = time.time() - t0
     if rp.returncode != 0:
         return {"geometry": name, "phase": "polyDualMesh", "error": (rp.stderr or rp.stdout)[-500:], "return_code": rp.returncode, "hex_metrics": hm}

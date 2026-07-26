@@ -133,7 +133,7 @@ class MosaicEngine:
     def _step_poly_conversion(self) -> None:
         """Run polyDualMesh via WSL2.
 
-        Uses higher featureAngle (45) for smoother polyhedral cells.
+        Uses featureAngle=90 (measured best: -10% max skewness vs 45).
         polyDualMesh uses -overwrite to modify constant/polyMesh in-place.
         """
         if not self._case_dir:
@@ -146,7 +146,7 @@ class MosaicEngine:
             f"cd {linux_case_raw} && "
             f"polyDualMesh 90 -overwrite 2>&1 | tail -15"
         )
-        logger.info("Running polyDualMesh (mosaic, featureAngle=45)...")
+        logger.info("Running polyDualMesh (mosaic, featureAngle=90)...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
@@ -162,7 +162,7 @@ class MosaicEngine:
 
         *stage* is unused: both "hex" (pre-conversion) and "poly"
         (post-conversion) read the same constant/polyMesh/owner, since
-        polyDualMesh -constant overwrites it in place — run() calls this
+        polyDualMesh -overwrite modifies it in place — run() calls this
         before and after _step_poly_conversion() to get each stage's real
         count from the file as it stood at that point in time.
         """
