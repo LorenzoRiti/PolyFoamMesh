@@ -201,6 +201,21 @@ def build_meshdict_lines(
             lines.append("            maxBoundaryLayerAngle    60;")
             lines.append("        }")
         lines.append("    }")
+        # Optimisation parameters for boundary layer quality:
+        # - nSmoothNormals: number of normal-direction smoothing passes
+        # - maxNumIterations: max iterations for boundary layer optimisation
+        #   (this is BL-specific, independent of the global maxNumIterations)
+        # - featureSizeFactor: controls how much the BL follows surface features
+        # - reCalculateNormals: recalculate normals every N iterations
+        # - relThicknessTol: relative thickness tolerance for layer collapse
+        lines.append("    optimisationParameters")
+        lines.append("    {")
+        lines.append("        nSmoothNormals 3;")
+        lines.append("        maxNumIterations 10;")
+        lines.append("        featureSizeFactor 0.5;")
+        lines.append("        reCalculateNormals 2;")
+        lines.append("        relThicknessTol 0.1;")
+        lines.append("    }")
         lines.append("}")
         lines.append("")
 
