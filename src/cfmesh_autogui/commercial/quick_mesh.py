@@ -157,8 +157,16 @@ class QuickMesh:
             surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
             if fms:
                 logger.info("QuickMesh: using FMS for feature-edge capture")
+            # Add progressive boundary refinement for smoother cell
+            # size transition (Star-CCM+ style).  Cells near walls are
+            # refined to boundaryCellSize over boundaryCellSizeRefinementThickness,
+            # then grow gradually to maxCellSize.
+            bc_size = min(s_max, s_min * 3.0)
+            bc_thick = bbox_dim * 0.15  # 15% of bounding box
             _lazy_md().write_meshdict(
                 case_dir, s_max, s_min, bl_params=bl_params,
+                boundary_cell_size=bc_size,
+                boundary_refinement_thickness=bc_thick,
                 surface_file=surface_file,
                 patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(meshes)],
             )

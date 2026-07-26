@@ -404,7 +404,7 @@ class SolverSetup:
         mesh exists yet (e.g. writing solver files ahead of meshing), so
         behaviour is unchanged for that case.
         """
-        from cfmesh_autogui.commercial.bc_editor import BCEditor, PatchInfo
+        from cfmesh_autogui.commercial.bc_editor import BCEditor, BcPatchInfo as PatchInfo
         try:
             return BCEditor().read_boundary(case_dir)
         except Exception as exc:

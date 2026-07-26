@@ -26,7 +26,9 @@ from cfmesh_autogui.octopoda_local import octo
 logger = logging.getLogger(__name__)
 
 # Supported export formats with metadata
-EXPORT_FORMATS: dict[str, dict[str, Any]] = {
+# NOTE: named EXPORT_FORMAT_REGISTRY to avoid collision with
+# core.mesh_export.EXPORT_FORMATS (different structure: dict of tuples).
+EXPORT_FORMAT_REGISTRY: dict[str, dict[str, Any]] = {
     "openfoam": {"ext": "", "desc": "OpenFOAM polyMesh (native)", "requires_wsl": False},
     "cgns": {"ext": ".cgns", "desc": "CGNS — CFD General Notation System", "requires_wsl": True},
     "vtu": {"ext": ".vtu", "desc": "VTU — ParaView unstructured grid", "requires_wsl": False},
@@ -37,6 +39,9 @@ EXPORT_FORMATS: dict[str, dict[str, Any]] = {
     "gmsh_msh": {"ext": ".msh", "desc": "GMSH .msh v4.1", "requires_wsl": False},
     "stl": {"ext": ".stl", "desc": "STL surface triangulation", "requires_wsl": False},
 }
+
+# Backward compatibility alias
+EXPORT_FORMATS = EXPORT_FORMAT_REGISTRY
 
 
 @dataclass
@@ -68,7 +73,7 @@ class MeshExporter:
 
         Args:
             case_dir: OpenFOAM case directory with constant/polyMesh.
-            fmt: Target format key from ``EXPORT_FORMATS``.
+            fmt: Target format key from ``EXPORT_FORMAT_REGISTRY``.
             output_path: Optional output path. Auto-generated if None.
 
         Returns:
@@ -77,14 +82,14 @@ class MeshExporter:
         case_dir = Path(case_dir)
         fmt = fmt.lower()
 
-        if fmt not in EXPORT_FORMATS:
+        if fmt not in EXPORT_FORMAT_REGISTRY:
             return ExportResult(
                 success=False, format=fmt,
                 error=f"Unsupported format '{fmt}'. "
-                      f"Supported: {', '.join(EXPORT_FORMATS)}",
+                      f"Supported: {', '.join(EXPORT_FORMAT_REGISTRY)}",
             )
 
-        fmt_info = EXPORT_FORMATS[fmt]
+        fmt_info = EXPORT_FORMAT_REGISTRY[fmt]
         ext = fmt_info["ext"]
         start = datetime.now()
 

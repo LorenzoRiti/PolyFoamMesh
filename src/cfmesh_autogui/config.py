@@ -263,7 +263,6 @@ class OFConfig:
                 (increases cell count, use only for specific needs).
         """
         case_dir = Path(case_dir).resolve()
-        linux_case_raw = self.wsl_linux_case_path(case_dir)
         linux_case_q = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         n_threads = os.cpu_count() or 4

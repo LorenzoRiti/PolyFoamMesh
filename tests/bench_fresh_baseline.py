@@ -72,7 +72,7 @@ for name, stl, mc, mi in [
     print(f"{name:>12} {'hex':>10} {hm['cells']:>8} {hm['skew']:>8.4f} {hm['non_ortho_max']:>8.2f} {hm['non_ortho_avg']:>8.2f} {hm['aspect_ratio']:>8.2f} {str(hm['passed']):>6}")
 
     # polyDualMesh
-    cmd = cfg.build_poly_dual_cmd(case_dir, feature_angle=30, concave_multi=True)
+    cmd = cfg.build_poly_dual_cmd(case_dir, feature_angle=45)
     rp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
     # Check if 0/polyMesh exists

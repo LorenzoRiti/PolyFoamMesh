@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _test_helpers import load_commercial_module
 
 _mod = load_commercial_module("bc_editor")
-PatchInfo = _mod.PatchInfo
+BcPatchInfo = _mod.BcPatchInfo
 BCEditor = _mod.BCEditor
 BC_PRESETS = _mod.BC_PRESETS
 PATCH_COLORS = _mod.PATCH_COLORS
@@ -42,7 +42,7 @@ def test_bc_preset_outlet():
 
 
 def test_patch_info_defaults():
-    p = PatchInfo()
+    p = BcPatchInfo()
     assert p.name == ""
     assert p.n_faces == 0
     assert p.bc_type == "patch"
@@ -50,7 +50,7 @@ def test_patch_info_defaults():
 
 
 def test_patch_info_with_data():
-    p = PatchInfo(name="inlet", n_faces=100, start_face=0, bc_type="inlet")
+    p = BcPatchInfo(name="inlet", n_faces=100, start_face=0, bc_type="inlet")
     assert p.name == "inlet"
     assert p.n_faces == 100
     assert p.bc_type == "inlet"
@@ -95,7 +95,7 @@ def test_name_to_type_patch():
 
 def test_rename_patch():
     editor = BCEditor()
-    p = PatchInfo(name="old_name", bc_type="patch")
+    p = BcPatchInfo(name="old_name", bc_type="patch")
     result = editor.rename_patch([p], "old_name", "inlet")
     assert result
     assert p.name == "inlet"
@@ -104,14 +104,14 @@ def test_rename_patch():
 
 def test_rename_patch_not_found():
     editor = BCEditor()
-    p = PatchInfo(name="existing")
+    p = BcPatchInfo(name="existing")
     result = editor.rename_patch([p], "nonexistent", "new")
     assert not result
 
 
 def test_set_type():
     editor = BCEditor()
-    p = PatchInfo(name="test", bc_type="patch")
+    p = BcPatchInfo(name="test", bc_type="patch")
     editor.set_type(p, "wall")
     assert p.bc_type == "wall"
     assert p.detected_by == "user"
@@ -119,7 +119,7 @@ def test_set_type():
 
 def test_set_type_invalid():
     editor = BCEditor()
-    p = PatchInfo()
+    p = BcPatchInfo()
     try:
         editor.set_type(p, "invalid_type")
         assert False, "Should have raised ValueError"
@@ -138,14 +138,14 @@ def test_read_boundary_nonexistent():
 
 def test_auto_detect_by_name():
     editor = BCEditor()
-    p = PatchInfo(name="inlet", centroid=(0, 0.5, 0.5), normal=(1, 0, 0))
+    p = BcPatchInfo(name="inlet", centroid=(0, 0.5, 0.5), normal=(1, 0, 0))
     result = editor._detect_type(p, bbox=(2, 1, 1))
     assert result == "inlet", f"Expected inlet, got {result}"
 
 
 def test_detect_unknown_becomes_patch():
     editor = BCEditor()
-    p = PatchInfo(name="random_name")
+    p = BcPatchInfo(name="random_name")
     result = editor._detect_type(p, bbox=(0, 0, 0))
     assert result == "patch"
 
@@ -154,9 +154,9 @@ def test_export_fields_creates_files():
     tmp = Path(tempfile.mkdtemp(dir=os.environ.get("TEMP", "/tmp")))
     editor = BCEditor()
     patches = [
-        PatchInfo(name="inlet", n_faces=50, start_face=0, bc_type="inlet"),
-        PatchInfo(name="outlet", n_faces=50, start_face=50, bc_type="outlet"),
-        PatchInfo(name="wall", n_faces=200, start_face=100, bc_type="wall"),
+        BcPatchInfo(name="inlet", n_faces=50, start_face=0, bc_type="inlet"),
+        BcPatchInfo(name="outlet", n_faces=50, start_face=50, bc_type="outlet"),
+        BcPatchInfo(name="wall", n_faces=200, start_face=100, bc_type="wall"),
     ]
     files = editor.export_fields(tmp, patches)
     assert len(files) >= 2
@@ -170,7 +170,7 @@ def test_export_fields_creates_files():
 def test_export_boundary_file():
     tmp = Path(tempfile.mkdtemp(dir=os.environ.get("TEMP", "/tmp")))
     editor = BCEditor()
-    patches = [PatchInfo(name="wall", n_faces=100, start_face=0, bc_type="wall")]
+    patches = [BcPatchInfo(name="wall", n_faces=100, start_face=0, bc_type="wall")]
     path = editor.export_boundary_file(tmp, patches)
     content = Path(path).read_text()
     assert "wall" in content
@@ -179,13 +179,13 @@ def test_export_boundary_file():
 
 
 def test_colour_for_patch():
-    p = PatchInfo(bc_type="inlet")
+    p = BcPatchInfo(bc_type="inlet")
     colour = BCEditor.colour_for_patch(p)
     assert colour == PATCH_COLORS["inlet"]
 
 
 def test_colour_for_patch_default():
-    p = PatchInfo(bc_type="unknown")
+    p = BcPatchInfo(bc_type="unknown")
     colour = BCEditor.colour_for_patch(p)
     assert colour == PATCH_COLORS["default"]
 

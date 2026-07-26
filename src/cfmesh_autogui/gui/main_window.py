@@ -5,6 +5,7 @@ import contextlib
 from datetime import datetime
 from pathlib import Path
 
+import os
 import sys
 import cadquery as cq
 import trimesh
@@ -1173,11 +1174,12 @@ class MainWindow(QMainWindow):
         self._runner = RetryRunner(self._of_config)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidates = [
+        raw_candidates = [
             Path.home() / "cfmesh_cases",
             Path("C:/cfmesh_cases"),
-            Path(os.environ.get("TEMP", "C:\\temp")).replace(" ", "_") / "cfmesh_cases",
+            Path(str(Path(os.environ.get("TEMP", "C:\\temp"))).replace(" ", "_")) / "cfmesh_cases",
         ]
+        candidates = [p for p in raw_candidates if " " not in str(p)]
         root = None
         for candidate in candidates:
             try:
