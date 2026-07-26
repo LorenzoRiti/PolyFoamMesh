@@ -2775,7 +2775,7 @@ class MainWindow(QMainWindow):
         self._log.append_log("[poly] Converting hex \u2192 polyhedral mesh (polyDualMesh)...")
         self._status.showMessage("Polyhedral conversion...")
         t = QThread()
-        feature_angle = 45.0  # Higher = smoother polyhedral cells
+        feature_angle = 90  # Higher = smoother polyhedral cells
         w = PolyDualWorker(self._case_dir, self._of_config,
                            feature_angle=feature_angle)
         w.moveToThread(t)

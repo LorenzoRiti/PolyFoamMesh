@@ -377,7 +377,7 @@ class MeshEngine:
             logger.warning("WSL not found for cartesianMesh")
             return False
 
-    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 45.0) -> None:
+    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 90) -> None:
         """Convert hex mesh to polyhedral via polyDualMesh.
 
         polyDualMesh creates the DUAL mesh — cell count INCREASES.
