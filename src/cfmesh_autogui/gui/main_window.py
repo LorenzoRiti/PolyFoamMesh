@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QApplication, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
     QDockWidget, QFrame, QSizePolicy, QDialog,
 )
-from PySide6.QtCore import Qt, Slot, QThread, QSize
+from PySide6.QtCore import Qt, Slot, QThread, QSize, QMetaObject, Q_ARG
 from PySide6.QtGui import (
     QShortcut, QGuiApplication, QKeySequence, QUndoStack, QIcon, QPainter,
     QPixmap, QColor, QFont,
@@ -1490,36 +1490,22 @@ class MainWindow(QMainWindow):
 
         def on_finished(result):
             if result.cell_count == 0:
-                self._log.append_log(
-                    f"{Tag.WARN} Parallel mesh produced 0 cells — "
-                    "treating as failure."
+                QMetaObject.invokeMethod(
+                    self, "_parallel_fallback",
+                    Qt.QueuedConnection,
+                    Q_ARG(str, "Parallel mesh produced 0 cells"),
                 )
-                on_failed("Parallel mesh produced 0 cells")
                 return
             guarded_finished(0, "", 1)
 
         def on_failed(msg: str):
-            self._log.append_log(
-                f"{Tag.WARN} Parallel meshing failed ({msg}) — "
-                "falling back to single-core meshing for this run."
-            )
-            self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (serial fallback)...")
-            self._runner.cell_count_relay.connect(self._on_cell_count_found)
-            self._runner.progress_update.connect(self._on_progress_update)
-            self._runner.run(
-                self._case_dir,
-                on_log=self._log.append_log,
-                on_finished=guarded_finished,
-                fix_action=self._make_fix_action(),
-                bl_params=bl_params,
-                max_cell=max_cell,
-                min_cell=min_cell,
-                patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+            QMetaObject.invokeMethod(
+                self, "_parallel_fallback",
+                Qt.QueuedConnection,
+                Q_ARG(str, msg),
             )
 
         def on_cancelled():
-            # _on_cancel_meshing already did the UI cleanup.
-            # Just log the event so the user sees confirmation.
             self._log.append_log(f"{Tag.CANCELLED} Parallel meshing stopped.")
 
         self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
@@ -1788,6 +1774,42 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             logger.debug("WSL process kill skipped: %s", exc)
+
+    @Slot(str)
+    def _parallel_fallback(self, msg: str) -> None:
+        """Serial fallback for parallel meshing. Runs on GUI thread
+        via QMetaObject.invokeMethod so QObject creation is safe."""
+        self._log.append_log(
+            f"{Tag.WARN} Parallel meshing failed ({msg}) — "
+            "falling back to single-core meshing for this run."
+        )
+        self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (serial fallback)...")
+        p = self._params.get_mesh_params()
+        self._runner.cell_count_relay.connect(self._on_cell_count_found)
+        self._runner.progress_update.connect(self._on_progress_update)
+        self._runner.run(
+            self._case_dir,
+            on_log=self._log.append_log,
+            on_finished=self._make_guarded_finished(),
+            fix_action=self._make_fix_action(),
+            bl_params=self._params.get_bl_params(),
+            max_cell=p["max_cell_size"],
+            min_cell=p["min_cell_size"],
+            patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+        )
+
+    def _make_guarded_finished(self):
+        """Build a guarded_finished closure bound to the current run_id."""
+        my_id = self._run_id
+        def guarded(exit_code, output, attempts):
+            if my_id != self._run_id:
+                logger.debug(
+                    "Stale callback ignored (got %d, current %d).",
+                    my_id, self._run_id,
+                )
+                return
+            self._on_meshing_finished(exit_code, output, attempts)
+        return guarded
 
     def _on_cancel_meshing(self):
         if getattr(self._runner, "is_running", False):

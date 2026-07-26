@@ -125,7 +125,7 @@ class OFConfig:
         # exit code, not mpirun's — verified live).
         cmd = (
             f"set -o pipefail; "
-            f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
+            f"export OMPI_MCA_btl=vader,self; "
             f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
             f"source {env_q} 2>/dev/null; "
             f"cd {linux_case} && "
@@ -133,7 +133,7 @@ class OFConfig:
             f"mkdir -p system && "
             f"echo -e '{deco_dict}' > system/decomposeParDict && "
             # run MPI-parallel meshing
-            f"mpirun --allow-run-as-root --use-hwthread-cpus "
+            f"mpirun --allow-run-as-root "
             f"--bind-to core --map-by socket "
             f"-np {n_cores} {bin_q} -parallel 2>&1 | tail -30 && "
             # reconstruct
