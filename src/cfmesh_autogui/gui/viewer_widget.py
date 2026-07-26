@@ -58,7 +58,7 @@ def _strip_of_comments(text: str) -> str:
 def _is_binary_of(path: Path) -> bool:
     """Check if an OpenFOAM file is in binary format."""
     raw = _read_of_bytes(path)
-    return b'format      binary;' in raw[:512]
+    return bool(re.search(rb"format\s+ binary\s*;", raw[:1024]))
 
 
 def _read_of_block(path: Path) -> str:
@@ -99,6 +99,14 @@ def _read_of_block_binary(path: Path, raw: bytes) -> str:
 
 def _binary_doubles_to_ascii(data: bytes) -> str:
     """Convert binary double array to space-separated ASCII string."""
+    pos = 0
+    while pos < len(data) and data[pos:pos+1] in (b'\n', b' ', b'\r'):
+        pos += 1
+    data = data[pos:]
+    # Find closing paren and stop there
+    end_pos = data.find(b')')
+    if end_pos >= 0:
+        data = data[:end_pos]
     n_floats = len(data) // 8
     if n_floats == 0:
         return ""
@@ -794,8 +802,10 @@ class ViewerWidget(QWidget):
         self._vtk_timeout_timer.start(70000)
 
     def _on_vtk_timeout(self):
-        logger.error("foamToVTK QProcess timed out after 70s")
+        logger.error("foamToVTK QProcess timed out after 70s — falling back to manual parse")
         self._cancel_vtk_process()
+        # Fall back to manual parsing instead of staying stuck on "Loading..."
+        QTimer.singleShot(0, lambda: self._do_load_patches(False))
 
     def _on_vtk_finished(self, exit_code: int, case_dir: Path,
                           vtk_subdir: str, on_finished: callable) -> None:
