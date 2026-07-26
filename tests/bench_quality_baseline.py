@@ -77,7 +77,7 @@ def run_case(case_dir, stl, mc, mi, bl=BL, use_bc=True, label=""):
 
     # polyDualMesh
     print(f"  [{label}] polyDualMesh (FA=45)...", end=" ", flush=True)
-    cmd = cfg.build_poly_dual_cmd(case_dir, feature_angle=45)
+    cmd = cfg.build_poly_dual_cmd(case_dir, feature_angle=90)
     rp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     rp2 = subprocess.run(cfg._build_wsl_cmd(f"source {env_q} 2>/dev/null; cd {lc} && checkMesh 2>&1"),
                          capture_output=True, text=True, timeout=120)
