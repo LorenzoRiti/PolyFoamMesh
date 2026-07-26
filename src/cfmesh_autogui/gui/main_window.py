@@ -2392,7 +2392,15 @@ class MainWindow(QMainWindow):
         self._checkmesh_worker.finished.connect(self._on_checkmesh_finished, Qt.QueuedConnection)
         self._checkmesh_worker.finished.connect(self._checkmesh_thread.quit, Qt.QueuedConnection)
         self._checkmesh_worker.failed.connect(
-            lambda msg: self._log.append_log(f"{Tag.CHECKMESH} FAILED: {msg}"),
+            lambda msg: (
+                self._log.append_log(f"{Tag.CHECKMESH} FAILED: {msg}"),
+                QMessageBox.warning(
+                    self, "Mesh Quality Check Failed",
+                    f"checkMesh reported errors:\n\n{msg}\n\n"
+                    "Check the Quality panel for details. "
+                    "Try reducing cell sizes or enabling auto-fix."
+                ),
+            ),
             Qt.QueuedConnection,
         )
         self._checkmesh_worker.failed.connect(self._checkmesh_thread.quit, Qt.QueuedConnection)
@@ -2480,7 +2488,15 @@ class MainWindow(QMainWindow):
         w.finished.connect(self._on_polydual_finished, Qt.QueuedConnection)
         w.finished.connect(t.quit, Qt.QueuedConnection)
         w.failed.connect(
-            lambda msg: self._log.append_log(f"[poly] FAILED: {msg}"),
+            lambda msg: (
+                self._log.append_log(f"[poly] FAILED: {msg}"),
+                QMessageBox.warning(
+                    self, "Polyhedral Conversion Failed",
+                    f"polyDualMesh failed:\n\n{msg}\n\n"
+                    "The hex mesh is still available. "
+                    "Try a larger feature angle or skip polyhedral conversion."
+                ),
+            ),
             Qt.QueuedConnection,
         )
         w.failed.connect(t.quit, Qt.QueuedConnection)

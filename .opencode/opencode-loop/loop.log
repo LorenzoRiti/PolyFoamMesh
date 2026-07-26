@@ -647,3 +647,6 @@
 {"time":"2026-07-26T20:56:32.295Z","line":"run","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","runCount":3}
 {"time":"2026-07-26T20:57:17.952Z","line":"active-stale-recovery","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","startedAt":1785099392297}
 {"time":"2026-07-26T21:00:18.494Z","line":"run","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","runCount":2}
+{"time":"2026-07-26T21:01:18.807Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785099618498}
+{"time":"2026-07-26T21:01:33.323Z","line":"run","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","runCount":4}
+{"time":"2026-07-26T21:02:18.842Z","line":"active-stale-recovery","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","startedAt":1785099693337}
