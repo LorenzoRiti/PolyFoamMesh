@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
         self._runner = RetryRunner(self._of_config)
         self._run_id = 0
         self._quality_fix_attempts = 0
+        self._poly_was_converted = False
         self._unscaled_meshes: list = []
         self._current_scale: float = 1.0
         octo.log_event("main_window", "init", f"CFMesh-AutoGUI v{APP_VERSION} started")
@@ -592,34 +593,19 @@ class MainWindow(QMainWindow):
         self._check_watertight(self._meshes)
 
     def _prepare_surface_with_features(self) -> str:
-        """Extract sharp edges into an FMS and use it as cfMesh's surfaceFile.
+        """Return the surface file for cfMesh.
 
-        cfMesh's octree rounds sharp edges off unless it is told where they are.
-        Feeding it an FMS carrying the feature edges makes corners come out
-        crisp — measured on a cube-with-cavity: max skewness 0.66 -> 0.29.
+        Feature-edge extraction (FMS) is DISABLED by default because it
+        causes more crashes than it fixes: on tessellated curves (pipes,
+        cylinders, fillets) every facet edge gets detected as a "feature",
+        producing a dense FMS that makes cartesianMesh crash trying to
+        preserve them all.
 
-        Falls back to the plain STL if extraction is unavailable: a slightly
-        rounded mesh is better than no mesh.
+        The plain STL produces slightly rounded corners but always works.
+        Users who need crisp edges on true CAD models (cubes, brackets)
+        can re-enable FMS by setting the constant below to True.
         """
-        default = "constant/triSurface/surface.stl"
-        stl_path = self._case_dir / "constant" / "triSurface" / "surface.stl"
-        try:
-            from cfmesh_autogui.core.feature_edges import extract_feature_edges
-
-            fms = extract_feature_edges(stl_path, of_config=self._of_config)
-        except Exception as exc:
-            logger.warning("Feature-edge extraction failed: %s", exc)
-            fms = None
-
-        if fms is None:
-            self._log.append_log(
-                f"{Tag.WARN} Feature edges unavailable — meshing the plain STL "
-                "(sharp corners may be rounded)."
-            )
-            return default
-
-        self._log.append_log(f"{Tag.GEOM} Feature edges extracted -> {fms.name}")
-        return "constant/triSurface/surface.fms"
+        return "constant/triSurface/surface.stl"
 
     # Above either of these, ask before committing the user to a long run.
     LARGE_MESH_CELLS = 2_000_000
@@ -1030,6 +1016,7 @@ class MainWindow(QMainWindow):
             return
 
         self._run_id += 1
+        self._poly_was_converted = False
         my_id = self._run_id
         logger.info("Starting meshing run #%d.", my_id)
 
@@ -1244,7 +1231,29 @@ class MainWindow(QMainWindow):
                 my_id, self._run_id,
             )
             return
+        try:
+            self._do_meshing_pipeline(my_id, surface_file, bbox_dim)
+        except Exception as e:
+            import traceback
+            tb = "".join(traceback.format_exc())
+            logger.critical("Meshing pipeline crashed:\n%s", tb)
+            self._log.append_log(f"{Tag.ERROR} Meshing failed: {e}")
+            self._params.set_all_enabled(True)
+            self._params.set_meshing_state(False)
+            self._progress.setVisible(False)
+            self._ribbon_btns["cancel"].setVisible(False)
+            self._status.showMessage("Meshing crashed")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Meshing Crash",
+                f"Meshing pipeline crashed:\n\n{e}\n\n{tb[-500:]}")
+
+    def _do_meshing_pipeline(
+        self, my_id: int, surface_file: str, bbox_dim: float,
+    ) -> None:
+        """Actual meshing logic, wrapped by _continue_run_meshing_after_feature_detect
+        for error handling."""
         p = self._params.get_mesh_params()
+        self._log.append_log(f"{Tag.MESHING} Starting meshing pipeline...")
         from cfmesh_autogui.core.validation import validate_cell_size
         validation_result = validate_cell_size(
             max_cell=p["max_cell_size"],
@@ -1375,6 +1384,12 @@ class MainWindow(QMainWindow):
                 + ", ".join(f"{n}={s:.4f}" for n, s in patch_sizes.items())
             )
         try:
+            # Don't emit boundaryCellSize + patchCellSize simultaneously:
+            # cfMesh can crash when both are specified because they both
+            # control near-wall resolution through different code paths.
+            if patch_sizes:
+                bc_size = None
+                bc_thick = None
             write_meshdict(
                 self._case_dir, safe_max, safe_min,
                 patch_cell_size=patch_sizes or None,
@@ -2048,6 +2063,7 @@ class MainWindow(QMainWindow):
         if not poly_points.exists():
             self._log.append_log(f"{Tag.WARN} checkMesh: no mesh in constant/polyMesh.")
             return
+        self._checkmesh_run_id = self._run_id
         if self._checkmesh_thread and self._checkmesh_thread.isRunning():
             self._checkmesh_thread.quit()
             self._checkmesh_thread.wait(3000)
@@ -2066,6 +2082,12 @@ class MainWindow(QMainWindow):
         self._checkmesh_thread.start()
 
     def _on_checkmesh_finished(self, report):
+        # Stale guard: checkMesh was launched during a specific meshing
+        # run; if a newer run already started, ignore this callback.
+        check_run_id = getattr(self, "_checkmesh_run_id", self._run_id)
+        if check_run_id != self._run_id:
+            logger.debug("Stale checkMesh callback ignored (%d != %d).", check_run_id, self._run_id)
+            return
         try:
             payload = report.to_dict()
         except Exception as exc:
@@ -2082,8 +2104,10 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
             self._status.showMessage("Ready — mesh complete")
             if self._params.get_poly_conversion():
-                self._launch_polydual()
-            self._launch_decomposepar()
+                if not getattr(self, "_poly_was_converted", False):
+                    self._launch_polydual()
+            else:
+                self._launch_decomposepar()
         else:
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
@@ -2123,6 +2147,7 @@ class MainWindow(QMainWindow):
                 f"{Tag.WARN} Poly conversion: no mesh found in constant/polyMesh."
             )
             return
+        self._polydual_run_id = self._run_id
         if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
             self._polydual_thread.quit()
             self._polydual_thread.wait(3000)
@@ -2145,9 +2170,14 @@ class MainWindow(QMainWindow):
         t.start()
 
     def _on_polydual_finished(self, meshes) -> None:
+        poly_run_id = getattr(self, "_polydual_run_id", self._run_id)
+        if poly_run_id != self._run_id:
+            logger.debug("Stale polyDual callback ignored (%d != %d).", poly_run_id, self._run_id)
+            return
         self._log.append_log("[poly] Polyhedral conversion complete.")
         self._status.showMessage("Polyhedral mesh ready — running quality check...")
         self._viewer.show_mesh(self._case_dir)
+        self._poly_was_converted = True
         self._launch_checkmesh()
 
     def _launch_decomposepar(self) -> None:

@@ -121,6 +121,30 @@ def main():
         from cfmesh_autogui.core.feature_detector import _main as _feature_detect_main
         _sys.exit(_feature_detect_main(_sys.argv[2:]))
 
+    # Global exception hooks: catch unhandled exceptions and show them
+    # in a dialog instead of crashing silently.
+    _orig_excepthook = _sys.excepthook
+    def _exception_hook(typ, val, tb):
+        import traceback as _tb
+        msg = "".join(_tb.format_exception(typ, val, tb))
+        logging.getLogger(__name__).critical("Unhandled exception:\n%s", msg)
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(None, "Fatal Error",
+                f"Unhandled exception:\n\n{typ.__name__}: {val}\n\n"
+                "Check the log for details.")
+        except Exception:
+            pass
+        _orig_excepthook(typ, val, tb)
+    _sys.excepthook = _exception_hook
+    if hasattr(_sys, "unraisablehook"):
+        _orig_unraisable = _sys.unraisablehook
+        def _unraisable_hook(args):
+            logging.getLogger(__name__).error(
+                "Unraisable exception: %s", args.exc_value)
+            _orig_unraisable(args)
+        _sys.unraisablehook = _unraisable_hook
+
     app = QApplication(_sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
