@@ -837,6 +837,9 @@ def generate_fms(
     Returns:
         Path to the generated ``.fms`` file, or ``None`` on failure.
     """
+    from cfmesh_autogui.config import OFConfig
+
+    cfg = OFConfig()
     case_dir = Path(case_dir).resolve()
     stl_path = case_dir / "constant" / "triSurface" / "surface.stl"
     fms_path = case_dir / "constant" / "triSurface" / "surface.fms"
@@ -844,16 +847,17 @@ def generate_fms(
         logger.warning("generate_fms: %s not found", stl_path)
         return None
 
-    linux = _to_wsl_path_wsl(case_dir)
+    linux = cfg._quoted_linux_path(case_dir)
     in_stl = "constant/triSurface/surface.stl"
     out_fms = "constant/triSurface/surface.fms"
     cmd = (
+        f"source {shlex.quote(cfg.env_script)} 2>/dev/null; "
         f"cd {linux} && "
         f"surfaceFeatureEdges -angle {angle} {in_stl} {out_fms} 2>&1"
     )
     try:
         r = subprocess.run(
-            ["wsl.exe", "-e", "bash", "-lc", f". {OF_BASHRC} && {cmd}"],
+            cfg._build_wsl_cmd(cmd),
             capture_output=True, text=True, timeout=timeout,
         )
         if r.returncode == 0 and fms_path.exists():

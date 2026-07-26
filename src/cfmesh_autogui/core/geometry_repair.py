@@ -62,9 +62,20 @@ def _count_open_edges(combined: trimesh.Trimesh) -> int:
         return -1
 
 
+_COMBINED_CACHE: dict[int, tuple[trimesh.Trimesh, int]] = {}
+
+
 def _combined(meshes: list[trimesh.Trimesh]) -> trimesh.Trimesh:
+    cache_key = id(meshes)
+    face_count = sum(len(m.faces) for m in meshes)
+    cached = _COMBINED_CACHE.get(cache_key)
+    if cached is not None and cached[1] == face_count:
+        return cached[0]
     combined = trimesh.util.concatenate(meshes)
     combined.merge_vertices()
+    if len(_COMBINED_CACHE) > 5:
+        _COMBINED_CACHE.clear()
+    _COMBINED_CACHE[cache_key] = (combined, face_count)
     return combined
 
 
