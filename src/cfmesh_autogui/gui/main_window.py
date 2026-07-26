@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QApplication, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
     QDockWidget, QFrame, QSizePolicy, QDialog,
 )
-from PySide6.QtCore import Qt, Slot, QThread, QSize, QMetaObject, Q_ARG
+from PySide6.QtCore import Qt, Slot, QThread, QSize, QMetaObject, Q_ARG, QTimer
 from PySide6.QtGui import (
     QShortcut, QGuiApplication, QKeySequence, QUndoStack, QIcon, QPainter,
     QPixmap, QColor, QFont,
@@ -30,11 +30,7 @@ from cfmesh_autogui.core.geometry import (
     compute_patch_cell_sizes,
     scale_meshes, unit_to_scale,
 )
-from cfmesh_autogui.core.gmsh_wrapper import (
-    gmsh_shutdown,
-    from_step as gmsh_read_step,
-)
-from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
+from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
 from cfmesh_autogui.core.stl_writer import export_surface_file
 from cfmesh_autogui.core.meshdict_gen import write_meshdict
 from cfmesh_autogui.core.openfoam_runner import (
@@ -3144,15 +3140,20 @@ class MainWindow(QMainWindow):
         worker = getattr(self, attr_worker, None)
         if thread and thread.isRunning():
             if worker:
-                try:
-                    worker.finished.disconnect()
-                except (TypeError, RuntimeError):
-                    pass
-                worker.deleteLater()
+                for sig_name in ("finished", "failed", "cancelled", "log_line", "error_occurred"):
+                    sig = getattr(worker, sig_name, None)
+                    if sig is not None:
+                        try:
+                            sig.disconnect()
+                        except (TypeError, RuntimeError):
+                            pass
             thread.quit()
             if not thread.wait(timeout_ms):
                 thread.terminate()
                 thread.wait(1000)
+            if worker:
+                worker.deleteLater()
+            thread.deleteLater()
         for a in (attr_thread, attr_worker):
             if hasattr(self, a):
                 setattr(self, a, None)

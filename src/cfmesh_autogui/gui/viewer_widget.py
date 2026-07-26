@@ -81,7 +81,13 @@ def _read_of_block_binary(path: Path, raw: bytes) -> str:
     from cfmesh_autogui.core.of_reader import _is_binary_format
     text_part = raw.decode("ascii", errors="replace")
     text_part = _strip_of_comments(text_part)
-    header_end = text_part.find("}")
+    # Binary data can contain stray byte 0x7D ('}'), so text_part.find("}")
+    # is unreliable. Limit the search to the first 512 chars (safe header size).
+    header_end = text_part[:512].rfind("}")
+    if header_end < 0:
+        header_end = text_part.find("}")
+        if header_end < 0:
+            raise ValueError(f"Cannot find FoamFile header end in {path}")
     body = raw[header_end + 1:] if header_end != -1 else raw
     m = re.search(rb"(\d+)\s*\(", body)
     if not m:
