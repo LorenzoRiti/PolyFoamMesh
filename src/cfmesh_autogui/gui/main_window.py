@@ -7,7 +7,6 @@ from pathlib import Path
 
 import os
 import sys
-import cadquery as cq
 import trimesh
 
 from PySide6.QtWidgets import (
@@ -101,7 +100,7 @@ class MainWindow(QMainWindow):
 
         self._of_config = OFConfig()
         self._meshes: list[trimesh.Trimesh] = []  # ✅ F-009
-        self._original_shape: cq.Shape | None = None
+        self._original_shape: "cq.Shape" | None = None
         self._case_dir: Path | None = None
         self._runner = RetryRunner(self._of_config)
         self._run_id = 0
@@ -595,7 +594,7 @@ class MainWindow(QMainWindow):
         self._params.restore_params(s.raw)
         self._ribbon_btns["expert"].setChecked(self._params.is_expert_mode())
 
-    def _load_geometry(self, shape: cq.Shape):
+    def _load_geometry(self, shape: "cq.Shape"):
         self._original_shape = shape
         self._set_workflow_stage("geometry", "done")
         self._set_workflow_stage("mesh", "active")
@@ -2212,8 +2211,8 @@ class MainWindow(QMainWindow):
             self._runner.progress_update.disconnect(self._on_progress_update)
         except (RuntimeError, TypeError):
             pass
-        self._runner.cell_count_relay.connect(self._on_cell_count_found)
-        self._runner.progress_update.connect(self._on_progress_update)
+        self._runner.cell_count_relay.connect(self._on_cell_count_found, Qt.QueuedConnection)
+        self._runner.progress_update.connect(self._on_progress_update, Qt.QueuedConnection)
 
     @Slot(str)
     @Slot(str)
