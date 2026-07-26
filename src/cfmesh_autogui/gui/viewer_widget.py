@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import logging
+import struct
 
 import numpy as np
 import pyvista as pv
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer, Signal, QProcess
 
 from cfmesh_autogui.core.boundary_reader import parse_boundary as _core_parse_boundary  # ✅ F-012
-from cfmesh_autogui.core.of_reader import read_of_text, of_list_count
+from cfmesh_autogui.core.of_reader import read_of_text, of_list_count, _read_of_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -54,25 +55,111 @@ def _strip_of_comments(text: str) -> str:
     return text
 
 
+def _is_binary_of(path: Path) -> bool:
+    """Check if an OpenFOAM file is in binary format."""
+    raw = _read_of_body(path)
+    return b'format      binary;' in raw[:512]
+
+
 def _read_of_block(path: Path) -> str:
-    text = _strip_of_comments(read_of_text(path))
+    raw = _read_of_bytes(path)
+    if _is_binary_of(path):
+        return _read_of_block_binary(path, raw)
+    text = _strip_of_comments(raw.decode("ascii", errors="replace"))
     match = re.search(r"\(\s*(.*)\s*\)", text, flags=re.DOTALL)
     if not match:
         raise ValueError(f"Cannot parse OF block in {path}")
     return match.group(1)
 
 
+def _read_of_block_binary(path: Path, raw: bytes) -> str:
+    """Return ASCII representation of the data block in a binary OF file.
+    
+    For points: returns 'x1 y1 z1  x2 y2 z2 ...'
+    For faces: returns 'n1 (v0 v1 ...)  n2 (v0 v1 ...) ...'
+    """
+    from cfmesh_autogui.core.of_reader import _is_binary_format
+    text_part = raw.decode("ascii", errors="replace")
+    text_part = _strip_of_comments(text_part)
+    header_end = text_part.find("}")
+    body = raw[header_end + 1:] if header_end != -1 else raw
+    m = re.search(rb"(\d+)\s*\(", body)
+    if not m:
+        raise ValueError(f"Cannot parse binary OF block header count in {path}")
+    body_start = header_end + 1 + m.end()
+    body_bytes = raw[body_start:] if body_start < len(raw) else b""
+    # Determine type from class in header
+    cls_match = re.search(r"class\s+(\w+);", text_part)
+    cls = cls_match.group(1) if cls_match else ""
+    if cls == "faceList":
+        return _binary_faces_to_ascii(body_bytes)
+    # Default: points, vectorField etc. — flat doubles
+    return _binary_doubles_to_ascii(body_bytes)
+
+
+def _binary_doubles_to_ascii(data: bytes) -> str:
+    """Convert binary double array to space-separated ASCII string."""
+    n_floats = len(data) // 8
+    if n_floats == 0:
+        return ""
+    values = struct.unpack(f"<{n_floats}d", data[:n_floats * 8])
+    return " ".join(f"{v:.10g}" for v in values)
+
+
+def _binary_faces_to_ascii(data: bytes) -> str:
+    """Convert binary faceList to ASCII 'n (v0 v1 ...)' string.
+    
+    Binary face format: for each face, nVertices (int32) followed by
+    nVertices vertex indices (int32). The first ( after the header
+    is already consumed by the caller.
+    """
+    parts = []
+    pos = 0
+    while pos < len(data):
+        # Skip whitespace/newlines
+        while pos < len(data) and data[pos:pos+1] in (b'\n', b' ', b'\r'):
+            pos += 1
+        if pos >= len(data) or data[pos:pos+1] in (b')',):
+            break
+        # Check if it's an ASCII digit (mixed format)
+        if 48 <= data[pos] <= 57:  # '0'-'9'
+            end = pos
+            while end < len(data) and 48 <= data[end] <= 57:
+                end += 1
+            n_verts = int(data[pos:end].decode("ascii"))
+            pos = end
+        else:
+            # Binary int32 for face size
+            n_verts = struct.unpack('<i', data[pos:pos+4])[0]
+            pos += 4
+        # Skip to '('
+        while pos < len(data) and data[pos:pos+1] in (b'\n', b' ', b'\r'):
+            pos += 1
+        if pos < len(data) and data[pos:pos+1] == b'(':
+            pos += 1
+        # Read n_verts int32 indices
+        n_bytes = n_verts * 4
+        if pos + n_bytes > len(data):
+            break
+        verts = struct.unpack(f"<{n_verts}i", data[pos:pos+n_bytes])
+        pos += n_bytes
+        # Skip ')'
+        while pos < len(data) and data[pos:pos+1] not in (b')',):
+            pos += 1
+        if pos < len(data):
+            pos += 1
+        parts.append(f"{n_verts} (" + " ".join(str(v) for v in verts) + ")")
+    return "\n".join(parts)
+
+
 def _parse_of_points(path: Path) -> np.ndarray:
     text = _read_of_block(path)
-    text = re.sub(r"^\d+\s*", "", text, count=1)
-    text = text.replace("(", " ").replace(")", " ")
     arr = np.fromstring(text, sep=" ", dtype=np.float64)
     return arr.reshape(-1, 3)
 
 
 def _parse_of_faces(path: Path) -> list[list[int]]:
     text = _read_of_block(path)
-    text = re.sub(r"^\d+\s*", "", text, count=1)
     faces = []
     entry_re = re.compile(r"(\d+)\s*\(([^)]*)\)")
     for entry in entry_re.finditer(text):
