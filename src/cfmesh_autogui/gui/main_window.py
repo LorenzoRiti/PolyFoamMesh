@@ -41,7 +41,8 @@ from cfmesh_autogui.core.stl_writer import export_surface_file
 from cfmesh_autogui.core.meshdict_gen import write_meshdict
 from cfmesh_autogui.core.openfoam_runner import (
     RetryRunner, CheckMeshWorker, PolyDualWorker, QualityFixWorker,
-    ParallelMeshWorker, WslCheckWorker, analyze_error, ErrorType,
+    ParallelMeshWorker, DecomposeParWorker, WslCheckWorker,
+    analyze_error, ErrorType,
 )
 from cfmesh_autogui.core.feature_detector import FeatureDetectWorker
 from cfmesh_autogui.core.boundary_reader import parse_boundary
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
         self._case_dir: Path | None = None
         self._runner = RetryRunner(self._of_config)
         self._run_id = 0
+        self._quality_fix_attempts = 0
         self._unscaled_meshes: list = []
         self._current_scale: float = 1.0
         octo.log_event("main_window", "init", f"CFMesh-AutoGUI v{APP_VERSION} started")
@@ -1427,14 +1429,20 @@ class MainWindow(QMainWindow):
                 self._log.append_log(
                     f"{Tag.MESHING} Running cartesianMesh across {n_cores} cores..."
                 )
+                # Stash params for _parallel_fallback so it uses the
+                # SAME settings the parallel run was configured with,
+                # not whatever the user changed in the UI during meshing.
+                self._fallback_mesh_params = dict(p)
+                self._fallback_safe_max = safe_max
+                self._fallback_safe_min = safe_min
+                self._fallback_bl_params = bl_params
                 self._run_parallel_mesh(
                     safe_max, safe_min, n_cores, guarded_finished, bl_params,
                 )
                 return
 
             self._log.append_log(f"{Tag.MESHING} Running cartesianMesh...")
-            self._runner.cell_count_relay.connect(self._on_cell_count_found)
-            self._runner.progress_update.connect(self._on_progress_update)
+            self._connect_runner_signals()
             self._runner.run(
                 self._case_dir,
                 on_log=self._log.append_log,
@@ -1484,6 +1492,7 @@ class MainWindow(QMainWindow):
             self._case_dir, self._of_config,
             max_cell=max_cell, min_cell=min_cell, n_cores=n_cores,
             patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
+            bl_params=bl_params,
         )
         self._parallel_worker.moveToThread(self._parallel_thread)
         self._parallel_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
@@ -1496,7 +1505,10 @@ class MainWindow(QMainWindow):
                     Q_ARG(str, "Parallel mesh produced 0 cells"),
                 )
                 return
-            guarded_finished(0, "", 1)
+            QMetaObject.invokeMethod(
+                self, "_on_parallel_mesh_success",
+                Qt.QueuedConnection,
+            )
 
         def on_failed(msg: str):
             QMetaObject.invokeMethod(
@@ -1505,13 +1517,25 @@ class MainWindow(QMainWindow):
                 Q_ARG(str, msg),
             )
 
+        def _cleanup():
+            self._parallel_worker.deleteLater()
+            self._parallel_worker = None
+            self._parallel_thread.deleteLater()
+            self._parallel_thread = None
+
         def on_cancelled():
             self._log.append_log(f"{Tag.CANCELLED} Parallel meshing stopped.")
+            _cleanup()
+
+        def _on_any_finished():
+            _cleanup()
 
         self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
         self._parallel_worker.finished.connect(self._parallel_thread.quit, Qt.QueuedConnection)
+        self._parallel_worker.finished.connect(_on_any_finished, Qt.QueuedConnection)
         self._parallel_worker.failed.connect(on_failed, Qt.QueuedConnection)
         self._parallel_worker.failed.connect(self._parallel_thread.quit, Qt.QueuedConnection)
+        self._parallel_worker.failed.connect(_on_any_finished, Qt.QueuedConnection)
         self._parallel_worker.cancelled.connect(on_cancelled, Qt.QueuedConnection)
         self._parallel_worker.cancelled.connect(self._parallel_thread.quit, Qt.QueuedConnection)
         self._parallel_thread.started.connect(self._parallel_worker.run)
@@ -1620,8 +1644,7 @@ class MainWindow(QMainWindow):
         )
 
         self._runner = RetryRunner(self._of_config)
-        self._runner.cell_count_relay.connect(self._on_cell_count_found)
-        self._runner.progress_update.connect(self._on_progress_update)
+        self._connect_runner_signals()
 
         def guarded_finished(exit_code, output, attempts):
             if my_id != self._run_id:
@@ -1775,6 +1798,30 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.debug("WSL process kill skipped: %s", exc)
 
+    @Slot()
+    def _on_parallel_mesh_success(self) -> None:
+        """Called on the GUI thread when parallel meshing succeeds.
+        Dispatched via QMetaObject.invokeMethod from the QThread."""
+        my_id = self._run_id
+        def guarded(exit_code, output, attempts):
+            if my_id != self._run_id:
+                return
+            self._on_meshing_finished(exit_code, output, attempts)
+        guarded(0, "", 1)
+
+    def _connect_runner_signals(self) -> None:
+        """Connect RetryRunner signals to handlers, avoiding duplicates."""
+        try:
+            self._runner.cell_count_relay.disconnect(self._on_cell_count_found)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self._runner.progress_update.disconnect(self._on_progress_update)
+        except (RuntimeError, TypeError):
+            pass
+        self._runner.cell_count_relay.connect(self._on_cell_count_found)
+        self._runner.progress_update.connect(self._on_progress_update)
+
     @Slot(str)
     def _parallel_fallback(self, msg: str) -> None:
         """Serial fallback for parallel meshing. Runs on GUI thread
@@ -1783,18 +1830,28 @@ class MainWindow(QMainWindow):
             f"{Tag.WARN} Parallel meshing failed ({msg}) — "
             "falling back to single-core meshing for this run."
         )
+        if self._case_dir:
+            import glob as _glob
+            for d in _glob.glob(str(self._case_dir / "processor*")):
+                import shutil as _su
+                try:
+                    _su.rmtree(d)
+                except Exception:
+                    pass
         self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (serial fallback)...")
-        p = self._params.get_mesh_params()
-        self._runner.cell_count_relay.connect(self._on_cell_count_found)
-        self._runner.progress_update.connect(self._on_progress_update)
+        p = getattr(self, "_fallback_mesh_params", None) or self._params.get_mesh_params()
+        bl_params = getattr(self, "_fallback_bl_params", None)
+        max_cell = p.get("max_cell_size", 0.05)
+        min_cell = p.get("min_cell_size", 0.01)
+        self._connect_runner_signals()
         self._runner.run(
             self._case_dir,
             on_log=self._log.append_log,
             on_finished=self._make_guarded_finished(),
             fix_action=self._make_fix_action(),
-            bl_params=self._params.get_bl_params(),
-            max_cell=p["max_cell_size"],
-            min_cell=p["min_cell_size"],
+            bl_params=bl_params,
+            max_cell=max_cell,
+            min_cell=min_cell,
             patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
         )
 
@@ -1911,7 +1968,86 @@ class MainWindow(QMainWindow):
                 "manually in the case directory."
             )
 
+    def _direct_remesh(self) -> None:
+        """Re-mesh directly from current state, skipping WSL check
+        and feature detect.  Used by quality auto-fix for speed."""
+        if not self._meshes or not self._case_dir:
+            self._log.append_log(f"{Tag.ERROR} Cannot remesh: no geometry loaded.")
+            return
+        self._run_id += 1
+        my_id = self._run_id
+        logger.info("Direct re-mesh run #%d (quality fix).", my_id)
+        from cfmesh_autogui.core.geometry import compute_bbox_dim, validate_cell_sizes
+        from cfmesh_autogui.core.stl_writer import export_surface_file
+        from cfmesh_autogui.core.meshdict_gen import write_meshdict
+        bbox_dim = compute_bbox_dim(self._meshes)
+        p = self._params.get_mesh_params()
+        safe_max, safe_min, _ = validate_cell_sizes(
+            bbox_dim, p["max_cell_size"], p["min_cell_size"],
+        )
+        bl_params = self._params.get_bl_params()
+        all_names = [m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)]
+        if bl_params is not None:
+            wall_patches = [n for n in all_names if _is_wall_patch(n)]
+            if wall_patches:
+                bl_params = dict(bl_params)
+                bl_params["wallPatches"] = wall_patches
+            else:
+                bl_params = None
+        try:
+            export_surface_file(self._meshes, self._case_dir)
+            # Detect if FMS feature edges were previously generated
+            fms_path = self._case_dir / "constant" / "triSurface" / "surface.fms"
+            surface_file = "constant/triSurface/surface.fms" if fms_path.exists() else "constant/triSurface/surface.stl"
+            write_meshdict(self._case_dir, safe_max, safe_min, bl_params=bl_params,
+                           patch_names=all_names, surface_file=surface_file)
+            from cfmesh_autogui.commercial.mesh_engine import _write_control_dict
+            _write_control_dict(self._case_dir)
+        except Exception as e:
+            logger.error("Direct remesh setup failed: %s", e)
+            self._log.append_log(f"{Tag.ERROR} Direct remesh setup failed: {e}")
+            self._params.set_all_enabled(True)
+            return
+
+        def guarded(ec, out, att):
+            if my_id != self._run_id:
+                return
+            self._on_meshing_finished(ec, out, att)
+
+        try:
+            self._params.set_meshing_state(True)
+            self._progress.setRange(0, 0)
+            self._progress.setVisible(True)
+            self._ribbon_btns["cancel"].setVisible(True)
+            parallel_enabled, n_cores = self._params.get_parallel_params()
+            if parallel_enabled and n_cores >= 2:
+                self._fallback_mesh_params = dict(p)
+                self._fallback_safe_max = safe_max
+                self._fallback_safe_min = safe_min
+                self._fallback_bl_params = bl_params
+                self._run_parallel_mesh(safe_max, safe_min, n_cores, guarded, bl_params)
+                return
+            self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (direct re-mesh)...")
+            self._connect_runner_signals()
+            self._runner.run(self._case_dir, on_log=self._log.append_log,
+                             on_finished=guarded, fix_action=self._make_fix_action(),
+                             bl_params=bl_params, max_cell=safe_max, min_cell=safe_min,
+                             patch_names=all_names)
+        except Exception as e:
+            logger.error("Direct remesh launch failed: %s", e)
+            self._log.append_log(f"{Tag.ERROR} Direct remesh launch failed: {e}")
+            self._params.set_all_enabled(True)
+            self._params.set_meshing_state(False)
+            self._progress.setVisible(False)
+            self._ribbon_btns["cancel"].setVisible(False)
+
     def _launch_checkmesh(self):
+        if not self._case_dir:
+            return
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if not poly_points.exists():
+            self._log.append_log(f"{Tag.WARN} checkMesh: no mesh in constant/polyMesh.")
+            return
         if self._checkmesh_thread and self._checkmesh_thread.isRunning():
             self._checkmesh_thread.quit()
             self._checkmesh_thread.wait(3000)
@@ -1939,27 +2075,53 @@ class MainWindow(QMainWindow):
             return
         self._quality.show_report(payload)
         self._refresh_workflow(quality_passed=bool(report.passed))
-        # checkMesh's cell count is authoritative — cartesianMesh's own log
-        # only exposes an interim octree-subdivision estimate mid-run, which
-        # can differ noticeably from the final surface-conforming count.
-        # Overwrite the earlier estimate everywhere it's displayed so the
-        # UI doesn't show a stale/wrong number once the real one is known.
         if report.cells:
             self._on_cell_count_found(report.cells)
         if report.passed:
             self._set_workflow_stage("quality", "done")
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
             self._status.showMessage("Ready — mesh complete")
+            if self._params.get_poly_conversion():
+                self._launch_polydual()
+            self._launch_decomposepar()
         else:
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
             self._status.showMessage("Mesh quality check failed")
+            # Auto-fix: offer to relax cell sizes and re-mesh
+            self._auto_quality_fix(report)
 
-        if report.passed and self._params.get_poly_conversion():
-            self._launch_polydual()
+    def _auto_quality_fix(self, report) -> None:
+        """Auto-fix poor quality by relaxing cell sizes and re-meshing.
+        Runs at most 2 iterations to avoid infinite loops.
+        Calls _direct_remesh() instead of _on_run_meshing() to skip
+        the WSL check + feature detect pipeline.
+        """
+        n = self._quality_fix_attempts
+        if n >= 2:
+            self._log.append_log(
+                f"{Tag.WARN} Quality auto-fix: max iterations (2) reached."
+            )
+            return
+        self._quality_fix_attempts = n + 1
+        max_cell = self._params.get_max_cell()
+        min_cell = self._params.get_min_cell()
+        self._params._max_cell.setValue(max_cell * 1.3)
+        self._params._min_cell.setValue(max(min_cell * 0.7, 0.0001))
+        self._log.append_log(
+            f"{Tag.FIX} Quality auto-fix #{n + 1}: "
+            f"relaxed cells max={max_cell*1.3:.4f} min={max(min_cell*0.7, 0.0001):.6f}"
+        )
+        self._direct_remesh()
 
     def _launch_polydual(self) -> None:
         if not self._case_dir:
+            return
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if not poly_points.exists():
+            self._log.append_log(
+                f"{Tag.WARN} Poly conversion: no mesh found in constant/polyMesh."
+            )
             return
         if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
             self._polydual_thread.quit()
@@ -1984,8 +2146,40 @@ class MainWindow(QMainWindow):
 
     def _on_polydual_finished(self, meshes) -> None:
         self._log.append_log("[poly] Polyhedral conversion complete.")
-        self._status.showMessage("Polyhedral mesh ready")
+        self._status.showMessage("Polyhedral mesh ready — running quality check...")
         self._viewer.show_mesh(self._case_dir)
+        self._launch_checkmesh()
+
+    def _launch_decomposepar(self) -> None:
+        """Run decomposePar to create processor dirs for parallel solving.
+        Called after serial meshing when user has parallel mode enabled."""
+        if not self._case_dir:
+            return
+        parallel_enabled, n_cores = self._params.get_parallel_params()
+        if not parallel_enabled or n_cores < 2:
+            return
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if not poly_points.exists():
+            return
+        self._log.append_log(
+            f"{Tag.MESHING} Running decomposePar across {n_cores} cores "
+            "for parallel solving..."
+        )
+        self._status.showMessage("Decomposing mesh for parallel solving...")
+        t = QThread()
+        w = DecomposeParWorker(self._case_dir, self._of_config, n_cores)
+        w.moveToThread(t)
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.finished.connect(lambda _: self._log.append_log(
+            f"{Tag.MESHING} decomposePar OK — parallel solving ready."
+        ), Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(lambda msg: self._log.append_log(
+            f"{Tag.WARN} decomposePar FAILED: {msg} — mesh still usable for serial solving."
+        ), Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        t.start()
 
     def _make_fix_action(self):
         shape = self._original_shape

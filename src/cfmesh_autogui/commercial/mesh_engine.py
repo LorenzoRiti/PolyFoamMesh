@@ -372,11 +372,7 @@ class MeshEngine:
     def _run_polyhedral(self, case_dir: Path) -> None:
         """Convert hex mesh to polyhedral via polyDualMesh."""
         import subprocess
-        linux_case = self._of_config._quoted_linux_path(case_dir)
-        env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
-        cmd = self._of_config._build_wsl_cmd(
-            f"source {env_q} 2>/dev/null; cd {linux_case} && polyDualMesh -constant 2>&1 | tail -10"
-        )
+        cmd = self._of_config.build_poly_dual_cmd(case_dir)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError(f"polyDualMesh failed (exit {r.returncode})")

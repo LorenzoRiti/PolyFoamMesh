@@ -19,6 +19,7 @@ class AnalysisResult(TypedDict):  # ✅ F-016
     p50: float
     p75: float
     n_samples: int
+    min_thickness: float
     bbox: tuple[float, float, float]
 
 
@@ -196,11 +197,11 @@ def compute_bbox_full(meshes: list[trimesh.Trimesh]) -> tuple[float, float, floa
 # respect both the small features and the overall domain scale.
 
 _DETAIL_PRESETS = {
-    "very_coarse": {"max_mult": 1.0,  "min_div": 1.2, "samples": 256,  "p_max": "p50", "p_min": "p5",  "cells_per_curvature": 4},
-    "coarse":      {"max_mult": 0.7,  "min_div": 1.5, "samples": 384,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 6},
-    "medium":      {"max_mult": 0.5,  "min_div": 2.0, "samples": 768,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 8},
-    "fine":        {"max_mult": 0.3,  "min_div": 3.0, "samples": 1536, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 12},
-    "very_fine":   {"max_mult": 0.2,  "min_div": 4.0, "samples": 3072, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 16},
+    "very_coarse": {"max_mult": 0.6,  "min_div": 2.0, "samples": 256,  "p_max": "p50", "p_min": "p10", "cells_per_curvature": 4,  "min_thick_cells": 3},
+    "coarse":      {"max_mult": 0.4,  "min_div": 3.0, "samples": 384,  "p_max": "p50", "p_min": "p5",  "cells_per_curvature": 6,  "min_thick_cells": 5},
+    "medium":      {"max_mult": 0.3,  "min_div": 4.0, "samples": 768,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 10, "min_thick_cells": 8},
+    "fine":        {"max_mult": 0.18, "min_div": 6.0, "samples": 1536, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 16, "min_thick_cells": 12},
+    "very_fine":   {"max_mult": 0.05, "min_div": 12.0,"samples": 4096, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 32, "min_thick_cells": 30},
 }
 
 
@@ -283,6 +284,7 @@ def analyze_local_thickness(
         "p50": p50,
         "p75": p75,
         "n_samples": total_n,
+        "min_thickness": p1,
         "bbox": (float(bbox[0]), float(bbox[1]), float(bbox[2])),
     }
 
@@ -291,6 +293,7 @@ def _empty_analysis(bbox) -> AnalysisResult:  # ✅ F-016
     return {
         "p1": 0.0, "p5": 0.0, "p10": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0,
         "n_samples": 0,
+        "min_thickness": 0.0,
         "bbox": (float(bbox[0]), float(bbox[1]), float(bbox[2])),
     }
 
@@ -575,8 +578,15 @@ def suggest_cell_sizes(
     # min > max (e.g. a simple cube triggers this on every detail level).
     s_max = min(s_max, bbox_max / 8.0)
     s_max = max(s_max, 0.001)
+
+    # min_thick_cells: guarantee at least N cells through the smallest
+    # local thickness so thin features are always resolved regardless
+    # of the detail preset (which was producing ~300-cell meshes before).
+    min_thick = analysis.get("min_thickness", bbox_max)
+    min_thick_cells = preset.get("min_thick_cells", 8)
+    s_min_from_thick = min_thick / min_thick_cells if min_thick > 0 else s_min
     s_min = max(s_min, 0.0001)
-    s_min = min(s_min, s_max / 2.0)
+    s_min = min(s_min, s_max / 2.0, s_min_from_thick)
 
     # Snap both sizes to the cfMesh octree level grid so they are not
     # silently rounded by cartesianMesh. The max cell snaps to a coarser

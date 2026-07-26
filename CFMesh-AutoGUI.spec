@@ -1,37 +1,59 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all
+
+# casadi ships ~100 sibling DLLs (optional solver plugins: bonmin, cbc,
+# clp, ipopt, ...) directly in its own package folder rather than a
+# `.libs` subfolder PyInstaller's automatic scanner handles well, and
+# has no official PyInstaller hook. collect_dynamic_libs() alone still
+# left the frozen exe failing with "DLL load failed while importing
+# _casadi" (its binaries ended up in a differently-structured location
+# than where _casadi.pyd — discovered separately via normal import
+# scanning — was placed). collect_all() keeps submodules/data/binaries
+# consistent as a single unit, which is the officially recommended fix
+# for exactly this "large native package, no hook" scenario. casadi is
+# a REAL dependency here despite cfmesh_autogui never importing it
+# directly: cadquery/assembly.py -> occ_impl/solver.py does
+# `import casadi as ca` unconditionally at module load time, and
+# main_window.py does `import cadquery as cq` at its own module level
+# — so it's on the very first import of the GUI, not a lazily-triggered
+# path an end user could avoid by not using some optional feature.
+casadi_datas, casadi_binaries, casadi_hidden = collect_all('casadi')
 
 a = Analysis(
     ['src\\cfmesh_autogui\\app.py'],
     pathex=[],
-    binaries=[],
-    datas=[('templates', 'templates'), ('plugins', 'plugins')],  # ✅ F-028: rimosso src/cfmesh_autogui (gia come scripts)
-    hiddenimports=['PySide6.QtCore', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtNetwork', 'gmsh', 'meshio', 'reportlab', 'cadquery', 'pyvista', 'pyvistaqt', 'numpy', 'trimesh', 'pymeshfix'],
+    binaries=casadi_binaries,
+    datas=[('templates', 'templates'), ('plugins', 'plugins')] + casadi_datas,  # ✅ F-028: rimosso src/cfmesh_autogui (gia come scripts)
+    hiddenimports=['PySide6.QtCore', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtNetwork', 'gmsh', 'meshio', 'reportlab', 'cadquery', 'pyvista', 'pyvistaqt', 'numpy', 'trimesh', 'pymeshfix'] + casadi_hidden,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # collect_all('casadi') gets every DLL into the bundle, but the OS
+    # loader still failed to find them at runtime ("DLL load failed
+    # while importing _casadi") — Python 3.8+ requires an explicit
+    # os.add_dll_directory() call for sibling-DLL discovery, which
+    # casadi's own __init__.py doesn't make. This runtime hook runs
+    # before any user code and registers casadi's extracted DLL folder.
+    runtime_hooks=['rthook_casadi_dlls.py'],
     # This dev machine's global Python environment has a lot of unrelated
     # packages installed for other projects (ML/robotics/DB work), and
     # PyInstaller's static analysis pulled several of them into the build
-    # even though nothing in cfmesh_autogui imports them. casadi in
-    # particular crashed every launch of the frozen exe with "DLL load
-    # failed while importing _casadi" (its own native deps weren't
-    # collected correctly), even though the app never touches it.
-    # Excluding these also cuts the exe from ~715MB toward ~390MB.
+    # even though nothing in cfmesh_autogui imports them.
     #
-    # NOTE: nlopt was in this list originally and broke the build —
-    # cadquery.occ_impl.sketch_solver imports it unconditionally at
-    # top-level (confirmed in warn-CFMesh-AutoGUI.txt: "imported by
-    # cadquery.occ_impl.sketch_solver (top-level)"), so it's a real
-    # dependency, not incidental bloat. Before adding anything else here,
-    # grep warn-CFMesh-AutoGUI.txt for the package name and check whether
-    # it's reached via a "top-level" (real) import or only
-    # "delayed"/"conditional"/"optional" (usually safe to exclude) —
-    # a plain source grep isn't enough, since these are all pulled in
-    # transitively through cadquery/pyvista/pandas, never referenced
-    # directly by this app's own code either way.
+    # casadi and nlopt both turned out to be REAL dependencies, not bloat
+    # — cadquery.occ_impl.sketch_solver uses both as optional constraint-
+    # solver backends. nlopt is a top-level import (visible in
+    # warn-CFMesh-AutoGUI.txt); casadi's usage wasn't visible there at
+    # all (likely imported inside a function, not at module load), which
+    # is why excluding it produced a clean "No module named 'casadi'"
+    # rather than showing up as a warning — static analysis missed it,
+    # but the app hit it at runtime regardless. Lesson: for this app,
+    # "not referenced in warn-CFMesh-AutoGUI.txt" is NOT sufficient proof
+    # a package is safe to exclude, only a real functional test of the
+    # built exe is. Excluding these also cuts the exe from ~715MB toward
+    # ~390MB.
     excludes=[
-        'casadi', 'torch', 'cv2', 'pyarrow', 'psycopg', 'psycopg2',
+        'torch', 'cv2', 'pyarrow', 'psycopg', 'psycopg2',
         'sentencepiece', 'av', 'IPython',
         'jupyter', 'notebook', 'tensorflow', 'sklearn',
     ],

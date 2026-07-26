@@ -310,14 +310,33 @@ class FeatureDetectWorker(QObject):
 
     @Slot()
     def run(self):
+        # In a normal (non-frozen) run, sys.executable is a real python.exe
+        # that understands `-m modulename`. In a PyInstaller-frozen build,
+        # sys.executable IS this same exe, and the frozen bootloader does
+        # not implement Python's `-m` flag at all — it just re-runs the
+        # app's normal entry point regardless of arguments, which used to
+        # pop a second GUI window that immediately crashed on every
+        # meshing run (confirmed live). app.main() checks for
+        # "--feature-detect" as its first argument and dispatches to
+        # _main() below instead of starting the GUI — see app.py.
+        frozen = getattr(sys, "frozen", False)
+        if frozen:
+            cmd = [sys.executable, "--feature-detect", self._step_path, self._detail, str(self._scale)]
+        else:
+            cmd = [
+                sys.executable, "-m", "cfmesh_autogui.core.feature_detector",
+                self._step_path, self._detail, str(self._scale),
+            ]
+        # The dev-mode cwd anchors relative imports when invoking `-m` from
+        # an arbitrary working directory; a frozen exe is self-contained
+        # (PyInstaller resolves everything via sys._MEIPASS) and doesn't
+        # need or benefit from it — inherit the parent's cwd instead.
+        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
         try:
             proc = subprocess.run(
-                [
-                    sys.executable, "-m", "cfmesh_autogui.core.feature_detector",
-                    self._step_path, self._detail, str(self._scale),
-                ],
+                cmd,
                 capture_output=True, text=True, timeout=self.TIMEOUT_S,
-                cwd=str(Path(__file__).resolve().parents[2]),
+                cwd=run_cwd,
             )
         except subprocess.TimeoutExpired:
             self.finished.emit(
@@ -366,17 +385,27 @@ class FeatureDetectWorker(QObject):
         self.finished.emit(feature_map, None)
 
 
-def _main() -> int:
+def _main(argv: list[str] | None = None) -> int:
     """CLI entry point: analyse a CAD file and print one line of JSON.
 
     Deliberately isolated in its own process — see FeatureDetectWorker.
+
+    *argv* is ``[file, detail, scale]`` with no leading program name —
+    pass it explicitly when dispatching from app.main()'s frozen-exe
+    "--feature-detect" path (its own sys.argv still has the exe name and
+    the "--feature-detect" flag ahead of these). Defaults to sys.argv[1:]
+    for the normal ``python -m cfmesh_autogui.core.feature_detector``
+    invocation used in a non-frozen (dev) run.
     """
-    if len(sys.argv) < 3:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if len(argv) < 2:
         print(json.dumps({"ok": False, "error": "usage: <file> <detail> [scale]"}))
         return 2
 
-    path, detail = sys.argv[1], sys.argv[2]
-    scale = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+    path, detail = argv[0], argv[1]
+    scale = float(argv[2]) if len(argv) > 2 else 1.0
 
     try:
         fm = FeatureDetector().analyze_step(path, detail=detail, scale=scale)
