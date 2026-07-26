@@ -67,6 +67,7 @@ class ErrorType(enum.Enum):
     CRASH = "crash"
     NON_MAPPABLE = "non_mappable"
     BOUNDARY_NOT_FOUND = "boundary_not_found"
+    BL_FAILURE = "boundary_layer_failure"
 
 
 def _extract_detail(full_output: str, max_lines: int = 10) -> str:
@@ -92,6 +93,16 @@ def analyze_error(full_output: str) -> ErrorInfo:
     lo = full_output.lower()
     detail = _extract_detail(full_output)
 
+    bl_keywords = ["boundary layer", "prism layer", "near-wall layer"]
+    if any(kw in lo for kw in bl_keywords) and (
+            "failed" in lo or "collaps" in lo or "uncovered" in lo or "degenerate" in lo
+    ):
+        return ErrorInfo(
+            ErrorType.BL_FAILURE,
+            "Boundary layer generation failed (prism layers collapsed or degenerate).",
+            "Reducing or disabling boundary layers and retrying.",
+            detail,
+        )
     if "--> foam fatal error:" in lo or "foam fatal" in lo:
         return ErrorInfo(
             ErrorType.FOAM_FATAL,
