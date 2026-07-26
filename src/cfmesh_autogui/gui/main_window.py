@@ -62,12 +62,21 @@ logger = logging.getLogger(__name__)
 
 
 def _is_wall_patch(name: str) -> bool:
+    """Heuristic: a patch is a wall if its name does NOT match known
+    non-wall boundary types (inlet/outlet/symmetry/opening/farfield/empty).
+
+    This catches real-world CAD naming like 'body', 'fixed', 'blade',
+    'casing', 'housing' etc., while excluding patches that should never
+    get boundary layers.
+    """
     name_lower = name.lower()
-    return (
-        name_lower == "wall"
-        or name_lower.startswith("wall_")
-        or name_lower == "walls"
+    non_wall_keywords = (
+        "inlet", "outlet", "symmetry", "opening", "farfield",
+        "empty", "porous", "interface",
     )
+    if any(kw in name_lower for kw in non_wall_keywords):
+        return False
+    return True
 
 
 class MainWindow(QMainWindow):
@@ -935,7 +944,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Name",
                 "Patch name must not contain: ; { } \" / or whitespace.")
             return
-        logger.info("Renaming patch '%s' \u2192 '%s'.", patch_name, new_name)
+        logger.info("Renaming patch '%s' -> '%s'.", patch_name, new_name)
         for mesh in self._meshes:
             if mesh.metadata.get("name") == patch_name:
                 mesh.metadata["name"] = new_name
@@ -1227,6 +1236,12 @@ class MainWindow(QMainWindow):
     def _continue_run_meshing_after_feature_detect(
         self, my_id: int, surface_file: str, bbox_dim: float,
     ) -> None:
+        if my_id != self._run_id:
+            logger.debug(
+                "Stale continue-run callback ignored (got %d, current %d).",
+                my_id, self._run_id,
+            )
+            return
         p = self._params.get_mesh_params()
         from cfmesh_autogui.core.validation import validate_cell_size
         validation_result = validate_cell_size(
@@ -1321,19 +1336,18 @@ class MainWindow(QMainWindow):
                 )
 
             if not wall_patches:
-                wall_patches = list(all_names)
                 self._log.append_log(
-                    f"{Tag.WARN} No patches named like 'wall' — "
-                    f"applying BL to all {len(wall_patches)} patches. "
-                    "Tick 'Apply BL to all patches' to suppress this warning."
+                    f"{Tag.WARN} No wall-like patches detected — "
+                    "disabling boundary layers to avoid BL on inlet/outlet."
                 )
+                bl_params = None
+                self._params.set_bl_enabled(False)
             else:
                 self._log.append_log(
                     f"{Tag.BL} BL enabled on {bl_log}"
                 )
-
-            bl_params = dict(bl_params)
-            bl_params["wallPatches"] = wall_patches
+                bl_params = dict(bl_params)
+                bl_params["wallPatches"] = wall_patches
             # bl_params comes from ParamsPanel.get_bl_params(), whose real
             # keys are nLayers/thicknessRatio/firstLayerThickness (see that
             # method's own contract comment) — there is no "expansionRatio"
@@ -1374,18 +1388,24 @@ class MainWindow(QMainWindow):
             self._params.set_all_enabled(True)
             return
 
-        (self._case_dir / "system" / "controlDict").write_text(
-            "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
-            "application cartesianMesh;\n"
-            "startFrom startTime; startTime 0;\n"
-            "stopAt endTime; endTime 1000;\n"
-            "deltaT 1;\n"
-            "writeControl timeStep; writeInterval 1;\n"
-            "purgeWrite 0; writeFormat ascii; writePrecision 6;\n"
-            "writeCompression off; timeFormat general; timePrecision 6;\n"
-            "runTimeModifiable true;\n",
-            encoding="ascii",
-        )
+        try:
+            (self._case_dir / "system" / "controlDict").write_text(
+                "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
+                "application cartesianMesh;\n"
+                "startFrom startTime; startTime 0;\n"
+                "stopAt endTime; endTime 1000;\n"
+                "deltaT 1;\n"
+                "writeControl timeStep; writeInterval 1;\n"
+                "purgeWrite 0; writeFormat ascii; writePrecision 6;\n"
+                "writeCompression off; timeFormat general; timePrecision 6;\n"
+                "runTimeModifiable true;\n",
+                encoding="ascii",
+            )
+        except Exception as e:
+            logger.error("controlDict write failed: %s", e)
+            self._log.append_log(f"{Tag.ERROR} controlDict write failed: {e}")
+            self._params.set_all_enabled(True)
+            return
 
         self._status.showMessage("Meshing...")
 
@@ -1396,39 +1416,43 @@ class MainWindow(QMainWindow):
                 return
             self._on_meshing_finished(exit_code, output, attempts)
 
-        self._params.set_meshing_state(True)
-        # The progress bar existed and MeshWorker already emitted real
-        # percentages, but nothing ever set it *visible* when a meshing
-        # run actually started — so it silently stayed hidden the whole
-        # time cartesianMesh ran, reading as "no progress, is this stuck?"
-        self._progress.setRange(0, 0)
-        self._progress.setVisible(True)
-        self._ribbon_btns["cancel"].setVisible(True)
+        try:
+            self._params.set_meshing_state(True)
+            self._progress.setRange(0, 0)
+            self._progress.setVisible(True)
+            self._ribbon_btns["cancel"].setVisible(True)
 
-        parallel_enabled, n_cores = self._params.get_parallel_params()
-        if parallel_enabled and n_cores >= 2:
-            self._log.append_log(
-                f"{Tag.MESHING} Running cartesianMesh across {n_cores} cores..."
+            parallel_enabled, n_cores = self._params.get_parallel_params()
+            if parallel_enabled and n_cores >= 2:
+                self._log.append_log(
+                    f"{Tag.MESHING} Running cartesianMesh across {n_cores} cores..."
+                )
+                self._run_parallel_mesh(
+                    safe_max, safe_min, n_cores, guarded_finished, bl_params,
+                )
+                return
+
+            self._log.append_log(f"{Tag.MESHING} Running cartesianMesh...")
+            self._runner.cell_count_relay.connect(self._on_cell_count_found)
+            self._runner.progress_update.connect(self._on_progress_update)
+            self._runner.run(
+                self._case_dir,
+                on_log=self._log.append_log,
+                on_finished=guarded_finished,
+                fix_action=self._make_fix_action(),
+                bl_params=bl_params,
+                max_cell=safe_max,
+                min_cell=safe_min,
+                patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
             )
-            self._run_parallel_mesh(
-                safe_max, safe_min, n_cores, guarded_finished, bl_params,
-            )
+        except Exception as e:
+            logger.error("Meshing launch failed: %s", e)
+            self._log.append_log(f"{Tag.ERROR} Meshing launch failed: {e}")
+            self._params.set_all_enabled(True)
+            self._params.set_meshing_state(False)
+            self._progress.setVisible(False)
+            self._ribbon_btns["cancel"].setVisible(False)
             return
-
-        self._log.append_log(f"{Tag.MESHING} Running cartesianMesh...")
-        self._runner.cell_count_relay.connect(self._on_cell_count_found)
-        self._runner.progress_update.connect(self._on_progress_update)
-
-        self._runner.run(
-            self._case_dir,
-            on_log=self._log.append_log,
-            on_finished=guarded_finished,
-            fix_action=self._make_fix_action(),
-            bl_params=bl_params,
-            max_cell=safe_max,
-            min_cell=safe_min,
-            patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
-        )
 
     def _run_parallel_mesh(
         self, max_cell: float, min_cell: float, n_cores: int, guarded_finished,
@@ -1465,6 +1489,13 @@ class MainWindow(QMainWindow):
         self._parallel_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
 
         def on_finished(result):
+            if result.cell_count == 0:
+                self._log.append_log(
+                    f"{Tag.WARN} Parallel mesh produced 0 cells — "
+                    "treating as failure."
+                )
+                on_failed("Parallel mesh produced 0 cells")
+                return
             guarded_finished(0, "", 1)
 
         def on_failed(msg: str):
@@ -1486,10 +1517,17 @@ class MainWindow(QMainWindow):
                 patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
             )
 
+        def on_cancelled():
+            # _on_cancel_meshing already did the UI cleanup.
+            # Just log the event so the user sees confirmation.
+            self._log.append_log(f"{Tag.CANCELLED} Parallel meshing stopped.")
+
         self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
         self._parallel_worker.finished.connect(self._parallel_thread.quit, Qt.QueuedConnection)
         self._parallel_worker.failed.connect(on_failed, Qt.QueuedConnection)
         self._parallel_worker.failed.connect(self._parallel_thread.quit, Qt.QueuedConnection)
+        self._parallel_worker.cancelled.connect(on_cancelled, Qt.QueuedConnection)
+        self._parallel_worker.cancelled.connect(self._parallel_thread.quit, Qt.QueuedConnection)
         self._parallel_thread.started.connect(self._parallel_worker.run)
         self._parallel_thread.start()
 
@@ -1735,13 +1773,35 @@ class MainWindow(QMainWindow):
         if value == 100:
             self._progress.setVisible(False)
 
+    def _kill_wsl_processes(self) -> None:
+        """Best-effort kill of WSL2 mpirun/cartesianMesh processes.
+        Called on cancel to ensure no orphaned ranks continue running."""
+        try:
+            import subprocess as _sp
+            _sp.run(
+                ["wsl.exe", "-d", self._of_config.wsl_distro, "--",
+                 "bash", "-lc",
+                 "pkill -9 -f cartesianMesh 2>/dev/null; "
+                 "pkill -9 -f mpirun 2>/dev/null; "
+                 "pkill -9 -f reconstructParMesh 2>/dev/null; true"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as exc:
+            logger.debug("WSL process kill skipped: %s", exc)
+
     def _on_cancel_meshing(self):
         if getattr(self._runner, "is_running", False):
             self._runner.terminate()
+        parallel_worker = getattr(self, "_parallel_worker", None)
+        if parallel_worker is not None:
+            parallel_worker.cancel()
         parallel_thread = getattr(self, "_parallel_thread", None)
         if parallel_thread is not None and parallel_thread.isRunning():
             parallel_thread.requestInterruption()
-            parallel_thread.quit()
+            if not parallel_thread.wait(5000):
+                parallel_thread.terminate()
+                parallel_thread.wait(3000)
+        self._kill_wsl_processes()
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
@@ -1935,9 +1995,16 @@ class MainWindow(QMainWindow):
                     if bl_retry is not None:
                         wall_patches = [
                             n for n in names if _is_wall_patch(n)
-                        ] or ["wall"]
-                        bl_retry = dict(bl_retry)
-                        bl_retry["wallPatches"] = wall_patches
+                        ]
+                        if not wall_patches:
+                            bl_retry = None
+                            self._log.append_log(
+                                f"{Tag.WARN} Retry: no wall-like patches — "
+                                "disabling BL."
+                            )
+                        else:
+                            bl_retry = dict(bl_retry)
+                            bl_retry["wallPatches"] = wall_patches
                     detail = self._params.get_detail_level()
                     ps_r, bc_r, bt_r = compute_patch_cell_sizes(
                         self._meshes, detail=detail,

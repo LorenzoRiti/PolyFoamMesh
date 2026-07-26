@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cfmesh_autogui.commercial.parallel_mesh import ParallelMeshEngine
 
 # Monotonic clock for elapsed-time measurement (immune to wall-clock jumps).
 _now = time.monotonic
@@ -999,11 +1002,15 @@ class PolyDualWorker(QObject):
 
 class ParallelMeshWorker(QObject):
     """Runs ParallelMeshEngine.run() (synchronous, MPI-based) in a
-    background QThread so it doesn't freeze the GUI's own event loop."""
+    background QThread so it doesn't freeze the GUI's own event loop.
+
+    Supports cancellation via cancel(): sets an event that the engine's
+    polling subprocess runner checks every 0.5s and kills the MPI ranks."""
 
     log_line = Signal(str)
     finished = Signal(object)  # ParallelMeshResult
     failed = Signal(str)
+    cancelled = Signal()  # emitted when user cancels mid-run
 
     def __init__(
         self, case_dir: Path | str, of_config: OFConfig,
@@ -1019,19 +1026,29 @@ class ParallelMeshWorker(QObject):
         self._n_cores = n_cores
         self._patch_names = patch_names
         self._method = method
+        self._engine: ParallelMeshEngine | None = None
+
+    def cancel(self) -> None:
+        """Request cancellation of the running parallel meshing.
+        Safe to call from any thread; triggers a process-tree kill
+        inside WSL2 on the next 0.5s poll cycle."""
+        if self._engine is not None:
+            self._engine.cancel()
 
     @Slot()
     def run(self):
         try:
-            from cfmesh_autogui.commercial.parallel_mesh import ParallelMeshEngine
+            from cfmesh_autogui.commercial.parallel_mesh import (
+                ParallelMeshEngine, CancelledError,
+            )
             self.log_line.emit(
                 f"[parallel] Meshing across {self._n_cores} cores..."
             )
-            engine = ParallelMeshEngine(self._of_config)
-            engine.setup_case(self._case_dir, n_cores=self._n_cores, method=self._method)
-            engine.set_cell_sizes(self._max_cell, self._min_cell)
-            engine.set_patch_names(self._patch_names)
-            result = engine.run()
+            self._engine = ParallelMeshEngine(self._of_config)
+            self._engine.setup_case(self._case_dir, n_cores=self._n_cores, method=self._method)
+            self._engine.set_cell_sizes(self._max_cell, self._min_cell)
+            self._engine.set_patch_names(self._patch_names)
+            result = self._engine.run()
             if result.success:
                 self.log_line.emit(
                     f"[parallel] Done: {result.cell_count:,} cells "
@@ -1043,6 +1060,9 @@ class ParallelMeshWorker(QObject):
                 msg = "; ".join(result.errors) or "unknown error"
                 self.log_line.emit(f"[parallel] FAILED: {msg}")
                 self.failed.emit(msg)
+        except CancelledError:
+            self.log_line.emit("[parallel] Cancelled by user.")
+            self.cancelled.emit()
         except Exception as exc:
             self.log_line.emit(f"[parallel] ERROR: {exc}")
             self.failed.emit(str(exc))

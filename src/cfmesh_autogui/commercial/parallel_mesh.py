@@ -29,6 +29,8 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 # Decomposition methods supported by OpenFOAM
 DECOMP_METHODS = ("scotch", "metis", "simple", "hierarchical")
+
+
+class CancelledError(RuntimeError):
+    """Raised inside ParallelMeshEngine when cancel() is called mid-run."""
 
 
 @dataclass
@@ -92,6 +98,15 @@ class ParallelMeshEngine:
         self._min_cell: float = 0.01
         self._patch_names: list[str] | None = None
         self._result = ParallelMeshResult()
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Request cancellation of a running meshing operation.
+        Sets an internal event that is polled between steps and during
+        the blocking subprocess call (via Popen + polling loop).
+        """
+        self._cancel_event.set()
+        self._kill_stray_processes()
 
     def setup_case(
         self, case_dir: Path | str, n_cores: int = 4,
@@ -200,15 +215,25 @@ class ParallelMeshEngine:
         try:
             if not self._case_dir:
                 raise RuntimeError("No case directory. Call setup_case() first.")
+            if self._cancel_event.is_set():
+                raise CancelledError("Cancelled before start")
 
             self._kill_stray_processes()
             self._clamp_cores_to_available_memory()
             self._result.n_cores = self._params.n_cores
 
             self._write_meshdict()
+            if self._cancel_event.is_set():
+                raise CancelledError("Cancelled after meshDict")
             self._write_decompose_par_dict()
+            if self._cancel_event.is_set():
+                raise CancelledError("Cancelled after decomposeParDict")
             self._step_create_processor_dirs()
+            if self._cancel_event.is_set():
+                raise CancelledError("Cancelled after processor dirs")
             self._step_parallel_mesh()
+            if self._cancel_event.is_set():
+                raise CancelledError("Cancelled after parallel mesh step")
             self._step_reconstruct()
 
             from cfmesh_autogui.core.boundary_reader import count_cells
@@ -327,22 +352,54 @@ class ParallelMeshEngine:
             self._params.n_cores,
         )
 
+    def _run_subprocess_with_cancel(
+        self, cmd: list[str], timeout: int,
+    ) -> subprocess.CompletedProcess:
+        """Run *cmd* as a subprocess with cancellation support.
+        Polls the cancel event every 0.5s; kills the process tree on cancel."""
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=4096,
+        )
+        deadline = time.monotonic() + timeout
+        while process.poll() is None:
+            if self._cancel_event.is_set():
+                self._kill_stray_processes()
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+                raise CancelledError("Cancelled by user during subprocess")
+            if time.monotonic() > deadline:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+            time.sleep(0.5)
+        stdout, stderr = process.communicate()
+        return subprocess.CompletedProcess(
+            cmd, process.returncode, stdout=stdout, stderr=stderr,
+        )
+
     def _step_parallel_mesh(self) -> None:
         """Run cartesianMesh in parallel via MPI on all subdomains."""
         if not self._case_dir:
             return
+        if self._cancel_event.is_set():
+            raise CancelledError("Cancelled before parallel mesh")
 
         case_dir = self._case_dir
         n = self._params.n_cores
 
-        # Single bash invocation: source OF → write decomposeParDict →
-        # mpirun -np N cartesianMesh -parallel → reconstructParMesh -constant
         cmd = self._of_config.build_parallel_command(
             case_dir, n, method=self._params.method,
         )
 
         logger.info("Parallel mesh on %d cores (method=%s)...", n, self._params.method)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=self._TIMEOUT_S)
+        result = self._run_subprocess_with_cancel(cmd, self._TIMEOUT_S)
 
         if result.returncode == 0:
             logger.info("Parallel meshing + reconstruct OK")
@@ -404,8 +461,9 @@ class ParallelMeshEngine:
         """
         if not self._case_dir:
             return
+        if self._cancel_event.is_set():
+            raise CancelledError("Cancelled before reconstruct")
 
-        # Check if already reconstructed
         poly_points = self._case_dir / "constant" / "polyMesh" / "points"
         if poly_points.exists():
             logger.info("Reconstruct already done (polyMesh/points exists)")
@@ -420,7 +478,7 @@ class ParallelMeshEngine:
             f"reconstructParMesh -constant 2>&1 | tail -15"
         )
         logger.info("Reconstructing parallel mesh (standalone fallback)...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=self._RECONSTRUCT_TIMEOUT_S)
+        result = self._run_subprocess_with_cancel(cmd, self._RECONSTRUCT_TIMEOUT_S)
         if result.returncode != 0:
             raise RuntimeError(
                 f"reconstructParMesh failed (exit {result.returncode}):\n{result.stderr[-300:]}"

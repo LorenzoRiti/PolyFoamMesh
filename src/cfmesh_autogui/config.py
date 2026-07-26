@@ -118,8 +118,13 @@ class OFConfig:
             f"{method}Coeffs {{ preservePatches (boundary); }}\\n"
         )
 
-        # Single bash command: source → write decomposParDict → mpirun → reconstruct
+        # Single bash command with pipefail so that | tail does not mask
+        # mpirun/reconstructParMesh exit codes (before the fix, a failed
+        # cartesianMesh -parallel that produced 0 cells was reported as
+        # "success" because `mpirun ... 2>&1 | tail -30` returns tail's
+        # exit code, not mpirun's — verified live).
         cmd = (
+            f"set -o pipefail; "
             f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
             f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
             f"source {env_q} 2>/dev/null; "
