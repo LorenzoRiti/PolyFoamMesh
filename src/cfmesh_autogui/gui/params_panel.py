@@ -80,6 +80,39 @@ class ParamsPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
+        # Flat field styling inside sections: remove individual dark boxes
+        # per field — only the QGroupBox sections keep their background.
+        self.setStyleSheet("""
+            QGroupBox QLabel,
+            QGroupBox QSpinBox,
+            QGroupBox QDoubleSpinBox,
+            QGroupBox QComboBox,
+            QGroupBox QCheckBox,
+            QGroupBox QListWidget {
+                background: transparent;
+                border: none;
+                color: palette(text);
+            }
+            QGroupBox QLabel[role="status-pass"],
+            QGroupBox QLabel[role="status-warn"],
+            QGroupBox QLabel[role="status-fail"],
+            QGroupBox QLabel[role="status-neutral"] {
+                background: transparent;
+                border: none;
+            }
+            QGroupBox QPushButton {
+                background: palette(button);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                padding: 4px 12px;
+            }
+            QGroupBox QPushButton:disabled {
+                color: palette(dark);
+                background: palette(window);
+                border-color: palette(midlight);
+            }
+        """)
+
         self._tabs = QTabWidget()
 
         # Wrap in a scroll area so shrinking the side panel (dragging the
@@ -120,7 +153,7 @@ class ParamsPanel(QWidget):
         cad_layout.addLayout(unit_form)
 
         self._domain_label = QLabel("Domain: --")
-        self._domain_label.setStyleSheet(f"color: {COLOR_ACCENT}; font-weight: bold;")
+        self._domain_label.setStyleSheet(f"color: {COLOR_TEXT_DIM};")
         cad_layout.addWidget(self._domain_label)
 
         form_geom = QFormLayout()
@@ -145,14 +178,15 @@ class ParamsPanel(QWidget):
         patch_group = QGroupBox("Patches")
         patch_layout = QVBoxLayout(patch_group)
         self._patch_list = QListWidget()
+        self._patch_list.setMinimumHeight(40)
         self._patch_list.setMaximumHeight(120)
         patch_layout.addWidget(self._patch_list)
-        self._patch_hint = QLabel(
-            "Tip: enable 'Select Patch' in the viewer, then click a face to rename."
-        )
-        self._patch_hint.setWordWrap(True)
-        self._patch_hint.setStyleSheet(metric_label(COLOR_TEXT_DIM, 10))
-        patch_layout.addWidget(self._patch_hint)
+        self._patch_placeholder = QLabel("Nessuna patch — carica una geometria")
+        self._patch_placeholder.setAlignment(Qt.AlignCenter)
+        self._patch_placeholder.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        self._patch_placeholder.setVisible(True)
+        patch_layout.addWidget(self._patch_placeholder)
+        self._patch_list.setVisible(False)
         geom_layout.addWidget(patch_group)
 
         geom_layout.addStretch()
@@ -651,9 +685,16 @@ class ParamsPanel(QWidget):
 
     def set_patches(self, patch_names: list[str]):
         self._patch_list.clear()
-        for name in patch_names:
-            self._patch_list.addItem(name)
-        self._btn_run.setEnabled(len(patch_names) > 0)
+        has_patches = len(patch_names) > 0
+        if has_patches:
+            for name in patch_names:
+                self._patch_list.addItem(name)
+            self._patch_list.setVisible(True)
+            self._patch_placeholder.setVisible(False)
+        else:
+            self._patch_list.setVisible(False)
+            self._patch_placeholder.setVisible(True)
+        self._btn_run.setEnabled(has_patches)
 
     def get_mesh_params(self) -> dict:
         return {

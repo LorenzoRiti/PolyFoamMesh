@@ -19,8 +19,8 @@ def test_basic_has_robust_flags():
     lines = build_meshdict_lines()
     content = "\n".join(lines)
     assert "keepCellsIntersectingBoundary 1" in content
-    assert "allowDisconnected 0" in content
-    assert "maxNumIterations 15" in content
+    assert "allowDisconnected 1" in content
+    assert "maxNumIterations 50" in content
     assert "surfaceFile" in content
     assert "maxCellSize" in content
     assert "minCellSize" in content

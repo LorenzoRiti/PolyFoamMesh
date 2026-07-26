@@ -129,15 +129,11 @@ class OFConfig:
             f"EOF\n"
             # cartesianMesh -parallel needs each processorN/ to already
             # exist with its own copy of system/ + constant/ (confirmed
-            # multiple times this session: "cannot open case directory
-            # processorN" without this) — ParallelMeshEngine's own
-            # _step_create_processor_dirs() creates these, but on the
-            # WINDOWS side of case_dir (/mnt/c/...), which this script
-            # never looks at: it only copies system/+triSurface/ once
-            # into $TMPD's ROOT, not per-rank. Confirmed live: without
-            # this loop, cartesianMesh -parallel failed immediately with
-            # "cannot open case directory /tmp/.../processor0" since
-            # nothing had ever created it inside $TMPD.
+            # live in this session: "cannot open case directory
+            # processorN" without this). The old _step_create_processor_dirs()
+            # created these on the WINDOWS side (/mnt/c/...) which this
+            # script never reads, so the per-rank creation was moved here
+            # inside the native tmpfs where the actual MPI run happens.
             f"for i in $(seq 0 {n_cores - 1}); do\n"
             f"  mkdir -p $TMPD/processor$i\n"
             f"  cp -r $TMPD/system $TMPD/processor$i/\n"
@@ -157,6 +153,19 @@ class OFConfig:
             f"  RC2=$RC1\n"
             f"fi\n"
             # copy result back
+            # Save per-rank cell counts from processorN/ dirs before cleanup.
+            # The per-rank owner files have NO "note" with nCells (confirmed
+            # live: only the merged polyMesh has it), so we count cells by
+            # scanning the owner data: skip header+N+( lines, then find the
+            # max cell index and print +1.
+            f'for i in $(seq 0 {n_cores - 1}); do\n'
+            f'  f="$TMPD/processor$i/constant/polyMesh/owner"\n'
+            f'  if [ -f "$f" ]; then\n'
+            f'    awk \'BEGIN{{p=0}} /^\\($/ {{p=1; next}} p && /^[0-9]+$/ && $1+0>m {{m=$1+0}} END {{print m+1}}\' "$f"\n'
+            f'  else\n'
+            f'    echo "0"\n'
+            f'  fi\n'
+            f'done > "$SRC/per_rank_cells.txt" 2>/dev/null\n'
             f'cp -r "$TMPD/constant/polyMesh" "$SRC/constant/" 2>/dev/null\n'
             f'cp "$TMPD/parallel_mesh.log" "$SRC/" 2>/dev/null\n'
             # clean up
@@ -175,11 +184,13 @@ class OFConfig:
         script_path.write_text(script, encoding="ascii", newline="")
         linux_script = self.wsl_linux_case_path(script_path)
 
+        # Use "bash script.sh" instead of "chmod +x && ./script.sh"
+        # because chmod +x doesn't work on WSL2's /mnt/c/ filesystem
+        # (Windows filesystem has no executable bit support).
         cmd = (
             f"set -o pipefail; "
             f"source {shlex.quote(self.env_script)} 2>/dev/null; "
-            f"chmod +x {shlex.quote(linux_script)} && "
-            f"{shlex.quote(linux_script)} 2>&1 | tail -50"
+            f"bash {shlex.quote(linux_script)} 2>&1 | tail -50"
         )
         return self._build_wsl_cmd(cmd)
 

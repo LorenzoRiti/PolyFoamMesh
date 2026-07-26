@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DEFAULT_FEATURE_ANGLE", "extract_feature_edges"]
 
-# Dihedral angle above which an edge counts as a feature. 30 deg is the common
-# default across meshers (snappyHexMesh's surfaceFeatureExtract uses it too):
-# low enough to catch chamfers, high enough not to fire on tessellated curves.
-DEFAULT_FEATURE_ANGLE = 30.0
+# Dihedral angle above which an edge counts as a feature. 30 deg was the old default
+# but it fires on tessellated curves (a cylinder with 12 segments has 30° facet edges),
+# producing a massive FMS that makes cartesianMesh crash. 45° is safe: it still catches
+# chamfers and sharp corners but ignores typical tessellation artifacts.
+DEFAULT_FEATURE_ANGLE = 45.0
 
 _TIMEOUT_S = 300
 
@@ -83,8 +84,58 @@ def extract_feature_edges(
         logger.warning("surfaceFeatureEdges produced no usable FMS at %s", fms_path)
         return None
 
+    fms_size = fms_path.stat().st_size
+
+    # Read FMS header to count feature vertices. FMS format:
+    #   line 0: patch name
+    #   line 1: N_vertices
+    #   lines 2..N_vertices+1: vertex coords
+    # If feature vertices > 80% of STL vertices, ALL edges are features
+    # and the FMS will make cartesianMesh crash or produce a huge mesh.
+    try:
+        fms_text = fms_path.read_text(encoding="ascii", errors="replace")
+        fms_lines = [l.strip() for l in fms_text.splitlines() if l.strip()]
+        if len(fms_lines) >= 2:
+            n_fms_verts = int(fms_lines[1])
+            # Hard cap: more than MAX_FMS_FEATURE_VERTS feature vertices
+            # means the FMS captured facet edges, not real features.
+            if n_fms_verts > MAX_FMS_FEATURE_VERTS:
+                logger.warning(
+                    "FMS has %d feature vertices (>%d cap) — "
+                    "too many features (tessellated curve). "
+                    "Falling back to plain STL.",
+                    n_fms_verts, MAX_FMS_FEATURE_VERTS,
+                )
+                return None
+            # Relative check: compare to STL vertex count
+            stl_verts = _count_stl_vertices(stl_path)
+            if stl_verts > 0 and n_fms_verts > stl_verts * 0.8:
+                logger.warning(
+                    "FMS has %d feature vertices (%.0f%% of STL's %d) — "
+                    "all edges detected as features (tessellated curve). "
+                    "Falling back to plain STL.",
+                    n_fms_verts, 100 * n_fms_verts / stl_verts, stl_verts,
+                )
+                return None
+    except (OSError, ValueError, IndexError):
+        pass
+
     logger.info(
         "Feature edges extracted at %.0f deg: %s (%d bytes)",
-        angle_deg, fms_path.name, fms_path.stat().st_size,
+        angle_deg, fms_path.name, fms_size,
     )
     return fms_path
+
+
+MAX_FMS_FEATURE_VERTS = 2000  # Hard cap: beyond this, FMS is too dense
+
+def _count_stl_vertices(stl_path: Path) -> int:
+    """Count vertices in an STL file (ASCII or binary) using trimesh."""
+    if not stl_path.is_file():
+        return 0
+    try:
+        import trimesh as _tm
+        mesh = _tm.load(str(stl_path), force="mesh")
+        return len(mesh.vertices) if hasattr(mesh, "vertices") else 0
+    except Exception:
+        return 0

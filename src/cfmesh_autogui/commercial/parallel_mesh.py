@@ -13,15 +13,15 @@ input files (confirmed live: without them, cartesianMesh -parallel fails
 with "cannot open case directory processorN").
 
 Pipeline:
-  1. Write decomposeParDict (cartesianMesh -parallel reads
-     numberOfSubdomains from it)
-  2. Create processorN/ directories with hard-linked triSurface
-     (avoids copying large STL files N times)
-  3. Write meshDict + controlDict in each processor dir
-  4. mpirun -np N cartesianMesh -parallel
-  5. reconstructParMesh -constant to merge the per-rank meshes back into
-     constant/polyMesh
-  6. Collect per-rank cell counts for diagnostics
+   1. Write meshDict (cell sizes, BL, patch names) to the Windows case dir
+   2. Clean residual /tmp/cfmesh_parallel_* from previous killed runs
+   3. Clean residual processorN/ dirs from previous runs
+   4. build_parallel_command() copies system/+constant/ into a native WSL
+      tmpfs (/tmp/cfmesh_parallel_XXXXX) and runs mpirun there — this
+      avoids SIGSEGV from mmap on /mnt/c (Windows filesystem).
+   5. reconstructParMesh inside tmpfs, then copies back constant/polyMesh
+      and per_rank_cells.txt
+   6. Collect per-rank cell counts from per_rank_cells.txt
 """
 
 from __future__ import annotations
@@ -105,9 +105,11 @@ class ParallelMeshEngine:
         """Request cancellation of a running meshing operation.
         Sets an internal event that is polled between steps and during
         the blocking subprocess call (via Popen + polling loop).
+        Also cleans up stray WSL processes and orphaned tmp dirs.
         """
         self._cancel_event.set()
         self._kill_stray_processes()
+        self._clean_old_tmp_dirs()
 
     def setup_case(
         self, case_dir: Path | str, n_cores: int = 4,
@@ -199,14 +201,14 @@ class ParallelMeshEngine:
         """Execute the parallel meshing workflow.
 
         Steps:
-          1. Kill stray MPI processes from previous runs
-          2. Clamp core count to available WSL2 memory
-          3. Write meshDict (cell sizes, BL, patch names)
-          4. Write decomposeParDict
-          5. Create processorN/ dirs with hard-linked triSurface
-          6. Run cartesianMesh -parallel across n_cores MPI ranks
-          7. Collect per-rank cell counts
-          8. Reconstruct with reconstructParMesh into constant/polyMesh
+           1. Kill stray MPI processes from previous runs
+           2. Clamp core count to available WSL2 memory
+           3. Clean orphaned /tmp/cfmesh_parallel_* from killed runs
+           4. Clean residual processorN/ dirs from previous runs
+           5. Write meshDict (cell sizes, BL, patch names)
+           6. Run cartesianMesh -parallel via tmpfs bash script
+           7. Collect per-rank cell counts from per_rank_cells.txt
+           8. Standalone reconstruct fallback (if bundled one didn't run)
         """
         start = datetime.now()
         self._result = ParallelMeshResult(n_cores=self._params.n_cores)
@@ -226,15 +228,11 @@ class ParallelMeshEngine:
             self._clamp_cores_to_available_memory()
             self._result.n_cores = self._params.n_cores
 
+            self._clean_old_tmp_dirs()
+            self._clean_processor_dirs()
             self._write_meshdict()
             if self._cancel_event.is_set():
                 raise CancelledError("Cancelled after meshDict")
-            self._write_decompose_par_dict()
-            if self._cancel_event.is_set():
-                raise CancelledError("Cancelled after decomposeParDict")
-            self._step_create_processor_dirs()
-            if self._cancel_event.is_set():
-                raise CancelledError("Cancelled after processor dirs")
             self._step_parallel_mesh()
             if self._cancel_event.is_set():
                 raise CancelledError("Cancelled after parallel mesh step")
@@ -291,90 +289,31 @@ class ParallelMeshEngine:
             surface_file,
         )
 
-    def _write_decompose_par_dict(self) -> None:
+    def _clean_old_tmp_dirs(self) -> None:
+        """Clean up any stray /tmp/cfmesh_parallel_* left by killed runs."""
+        cmd = self._of_config._build_wsl_cmd(
+            "rm -rf /tmp/cfmesh_parallel_* 2>/dev/null; true"
+        )
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        except Exception as exc:
+            logger.debug("Tmpdir cleanup skipped: %s", exc)
+
+    def _clean_processor_dirs(self) -> None:
+        """Remove any leftover processorN/ dirs from previous runs so a
+        serial fallback (after parallel failure) starts clean."""
         if not self._case_dir:
             return
-        system_dir = self._case_dir / "system"
-        system_dir.mkdir(parents=True, exist_ok=True)
-
-        preserve = " ".join(
-            f'"{p}"' for p in self._params.preserve_patches
-        ) if self._params.preserve_patches else '"boundary"'
-
-        content = (
-            "FoamFile { version 2.0; format ascii; "
-            "class dictionary; object decomposeParDict; }\n"
-            f"\nnumberOfSubdomains {self._params.n_cores};\n"
-            f"\nmethod          {self._params.method};\n"
-            f"\n{self._params.method}Coeffs {{\n"
-            f"    preservePatches ({preserve});\n"
-            f"}}\n"
-        )
-        (system_dir / "decomposeParDict").write_text(content, encoding="ascii")
-        logger.info(
-            "decomposeParDict: %d cores, method=%s",
-            self._params.n_cores, self._params.method,
-        )
-
-    def _step_create_processor_dirs(self) -> None:
-        """Create processorN/ directories with hard-linked triSurface.
-
-        Uses hardlinks for triSurface STL files to avoid copying
-        potentially hundreds of MB N times.  Each rank reads the STL
-        independently; a hardlinked copy is indistinguishable from a
-        regular one at the file-descriptor level.
-
-        Cleans up ANY leftover processorN/ dirs (not just the ones for
-        this core count) so a partial previous run can't leave stale
-        data that confuses cartesianMesh -parallel.
-        """
-        if not self._case_dir:
-            return
-
         for d in list(self._case_dir.glob("processor*")):
             if d.is_dir():
                 shutil.rmtree(d)
-
-        for i in range(self._params.n_cores):
-            proc_dir = self._case_dir / f"processor{i}"
-            proc_dir.mkdir(parents=True)
-
-            # Copy system/ (small text files — plain copy is fast enough)
-            shutil.copytree(
-                self._case_dir / "system",
-                proc_dir / "system",
-            )
-
-            # Copy constant/ with hardlinks for triSurface/
-            src_const = self._case_dir / "constant"
-            dst_const = proc_dir / "constant"
-            dst_const.mkdir(parents=True)
-            for item in src_const.iterdir():
-                if item.is_dir() and item.name == "triSurface":
-                    dst_ts = dst_const / "triSurface"
-                    dst_ts.mkdir(parents=True)
-                    for f in item.iterdir():
-                        if f.is_file():
-                            dst_file = dst_ts / f.name
-                            try:
-                                dst_file.hardlink_to(f)
-                            except (OSError, NotImplementedError):
-                                shutil.copy2(f, dst_file)
-                elif item.is_dir():
-                    shutil.copytree(item, dst_const / item.name)
-                elif item.is_file():
-                    shutil.copy2(item, dst_const / item.name)
-
-        logger.info(
-            "Created %d processor directories (hardlinked triSurface)",
-            self._params.n_cores,
-        )
 
     def _run_subprocess_with_cancel(
         self, cmd: list[str], timeout: int,
     ) -> subprocess.CompletedProcess:
         """Run *cmd* as a subprocess with cancellation support.
-        Polls the cancel event every 0.5s; kills the process tree on cancel."""
+        Polls the cancel event every 0.5s; kills the full WSL process tree on
+        cancel using both taskkill /t (Windows-side) and pkill (WSL-side)."""
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=4096,
@@ -383,24 +322,37 @@ class ParallelMeshEngine:
         while process.poll() is None:
             if self._cancel_event.is_set():
                 self._kill_stray_processes()
-                process.kill()
-                try:
-                    process.wait(timeout=5)
-                except Exception:
-                    pass
+                self._kill_process_tree(process.pid)
                 raise CancelledError("Cancelled by user during subprocess")
             if time.monotonic() > deadline:
-                process.kill()
-                try:
-                    process.wait(timeout=5)
-                except Exception:
-                    pass
+                self._kill_process_tree(process.pid)
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
             time.sleep(0.5)
         stdout, stderr = process.communicate()
         return subprocess.CompletedProcess(
             cmd, process.returncode, stdout=stdout, stderr=stderr,
         )
+
+    @staticmethod
+    def _kill_process_tree(pid: int) -> None:
+        """Kill the full process tree (wsl.exe + children inside WSL).
+        On Windows, Popen.kill() only terminates the one wsl.exe process,
+        leaving mpirun/cartesianMesh orphaned inside WSL.  taskkill /t walks
+        the entire tree."""
+        try:
+            subprocess.run(
+                ["taskkill", "/f", "/t", "/pid", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            pass
+        try:
+            subprocess.run(
+                ["taskkill", "/f", "/t", "/pid", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            pass
 
     def _step_parallel_mesh(self) -> None:
         """Run cartesianMesh in parallel via MPI on all subdomains."""
@@ -422,49 +374,56 @@ class ParallelMeshEngine:
         if result.returncode == 0:
             logger.info("Parallel meshing + reconstruct OK")
             self._collect_per_rank_counts()
-        else:
-            points_exist = (
-                self._case_dir / "constant" / "polyMesh" / "points"
-            ).exists()
-            if not points_exist:
-                for i in range(n):
-                    proc_points = (
-                        self._case_dir / f"processor{i}"
-                        / "constant" / "polyMesh" / "points"
-                    )
-                    if proc_points.exists():
-                        points_exist = True
-                        break
-            if not points_exist:
-                log_path = self._case_dir / "parallel_mesh.log"
-                detail = ""
-                if log_path.exists():
-                    detail = log_path.read_text(encoding="ascii", errors="replace")[-1000:]
-                raise RuntimeError(
-                    f"Parallel meshing failed (exit {result.returncode}). "
-                    f"No polyMesh found.  Full log: {log_path}\n"
-                    f"{detail or result.stderr[-500:]}"
-                )
+            return
+
+        self._clean_processor_dirs()
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if poly_points.exists():
             logger.warning(
-                "Parallel meshing exit=%d but partial mesh may exist",
+                "Parallel meshing exit=%d but polyMesh exists (reconstruct may "
+                "have partially succeeded after meshing failure)",
                 result.returncode,
             )
             self._result.warnings.append(
                 f"cartesianMesh returned exit code {result.returncode}"
             )
+            return
+
+        log_path = self._case_dir / "parallel_mesh.log"
+        detail = ""
+        if log_path.exists():
+            detail = log_path.read_text(encoding="ascii", errors="replace")[-1000:]
+        raise RuntimeError(
+            f"Parallel meshing failed (exit {result.returncode}). "
+            f"No polyMesh found.  Full log: {log_path}\n"
+            f"{detail or result.stderr[-500:]}"
+        )
 
     def _collect_per_rank_counts(self) -> None:
-        """Read cell counts from each processorN/ directory."""
+        """Read per-rank cell counts saved by the bash script before cleanup.
+
+        The bash script in build_parallel_command() extracts nCells from
+        each processorN/constant/polyMesh/owner's FoamFile header BEFORE
+        deleting $TMPD and writes one integer per line to per_rank_cells.txt.
+        This avoids both: (a) reading stale data from Windows-side
+        processorN/ dirs that never receive mesh data, and (b) needing to
+        copy back the entire processorN/ tree just for one integer per rank.
+        """
         if not self._case_dir:
             return
-        from cfmesh_autogui.core.boundary_reader import count_cells
-        counts: list[int] = []
-        for i in range(self._params.n_cores):
-            proc_dir = self._case_dir / f"processor{i}"
-            if proc_dir.exists():
-                counts.append(count_cells(proc_dir))
-            else:
-                counts.append(0)
+        counts_path = self._case_dir / "per_rank_cells.txt"
+        if counts_path.exists():
+            try:
+                lines = counts_path.read_text(encoding="ascii").strip().splitlines()
+                counts = [int(line.strip()) for line in lines if line.strip()]
+                counts_path.unlink()
+            except Exception as exc:
+                logger.warning("Failed to read per_rank_cells.txt: %s", exc)
+                counts = [0] * self._params.n_cores
+        else:
+            logger.debug("per_rank_cells.txt not found (parallel mesh may have failed)")
+            counts = [0] * self._params.n_cores
+
         self._result.cell_count_per_rank = counts
         total = sum(counts)
         avg = total / max(len(counts), 1)
@@ -476,11 +435,10 @@ class ParallelMeshEngine:
     def _step_reconstruct(self) -> None:
         """Run reconstructParMesh to merge subdomain meshes.
 
-        build_parallel_command now bundles reconstruct into the same
-        mpirun invocation (fewer WSL2 round-trips, better error atomicity).
-        This method is kept as a standalone fallback when the bundled
-        reconstruct inside build_parallel_command fails — it calls
-        reconstructParMesh explicitly on the merged result.
+        The bash script in build_parallel_command bundles reconstruct into
+        the same invocation.  This standalone fallback is only reached when
+        the bundled reconstruct fails or when run() is called directly
+        without _step_parallel_mesh.
         """
         if not self._case_dir:
             return
