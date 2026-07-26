@@ -419,3 +419,45 @@ def generate_volume_mesh(
         msh_path, detail, n_layers, bl_thickness, names,
     )
     return msh_path, names
+
+
+if __name__ == "__main__":
+    import sys, json
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "surface":
+        geom_path = sys.argv[2]
+        stl_out = Path(sys.argv[3])
+        detail = sys.argv[4] if len(sys.argv) > 4 else "medium"
+        stl_out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            names = generate_surface_stl(geom_path, stl_out, detail=detail)
+            sizing = compute_sizing(geom_path, detail=detail)
+            print(json.dumps({
+                "success": True,
+                "names": names,
+                "suggested_volume_size": sizing.suggested_volume_size,
+                "suggested_surface_size": sizing.suggested_surface_size,
+                "min_curvature_radius": sizing.min_curvature_radius,
+                "patch_sizes": sizing.patch_sizes,
+            }))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
+            sys.exit(1)
+    elif cmd == "volume":
+        step_path = sys.argv[2]
+        msh_path = Path(sys.argv[3])
+        detail = sys.argv[4] if len(sys.argv) > 4 else "medium"
+        n_layers = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+        bl_thickness = float(sys.argv[6]) if len(sys.argv) > 6 else None
+        bl_expansion = float(sys.argv[7]) if len(sys.argv) > 7 else 1.2
+        msh_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            result_path, names = generate_volume_mesh(
+                step_path, msh_path, detail=detail,
+                n_layers=n_layers, bl_thickness=bl_thickness,
+                bl_expansion=bl_expansion,
+            )
+            print(json.dumps({"success": True, "path": str(result_path), "names": names}))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
+            sys.exit(1)
