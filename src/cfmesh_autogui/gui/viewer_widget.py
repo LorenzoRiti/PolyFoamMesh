@@ -786,7 +786,9 @@ class ViewerWidget(QWidget):
             f"foamToVTK -constant -noZero -no-fields -overwrite -name {vtk_subdir}"
         )
         self._vtk_process = QProcess(self)
-        self._vtk_process.setProcessChannelMode(QProcess.MergedChannels)
+        # Use separate channels so stderr is readable independently
+        self._vtk_process.setProcessChannelMode(QProcess.SeparateChannels)
+        self._vtk_timeout_fired = False
         self._vtk_process.finished.connect(
             lambda ec, _exit_status: self._on_vtk_finished(
                 ec, case_dir, vtk_subdir, on_finished,
@@ -803,6 +805,7 @@ class ViewerWidget(QWidget):
 
     def _on_vtk_timeout(self):
         logger.error("foamToVTK QProcess timed out after 70s — falling back to manual parse")
+        self._vtk_timeout_fired = True
         self._cancel_vtk_process()
         # Fall back to manual parsing instead of staying stuck on "Loading..."
         QTimer.singleShot(0, lambda: self._do_load_patches(False))
@@ -811,6 +814,9 @@ class ViewerWidget(QWidget):
                           vtk_subdir: str, on_finished: callable) -> None:
         if self._vtk_timeout_timer:
             self._vtk_timeout_timer.stop()
+        if getattr(self, '_vtk_timeout_fired', False):
+            # Timeout already handled cleanup — skip stale callback
+            return
         if exit_code == 0:
             matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
             if matches:
@@ -822,8 +828,12 @@ class ViewerWidget(QWidget):
                     except OSError:
                         pass
         else:
-            stderr = bytes(self._vtk_process.readAllStandardError()).decode("utf-8", errors="replace")[-300:] if self._vtk_process else ""
-            logger.warning("foamToVTK QProcess failed (rc=%d): %s", exit_code, stderr)
+            try:
+                stderr = self._vtk_process.readAllStandardError() if self._vtk_process else b""
+                stderr_text = stderr.decode("utf-8", errors="replace")[-300:] if stderr else ""
+            except RuntimeError:
+                stderr_text = "(process already deleted)"
+            logger.warning("foamToVTK QProcess failed (rc=%d): %s", exit_code, stderr_text)
         on_finished(exit_code == 0)
 
     def _display_mesh(self):
