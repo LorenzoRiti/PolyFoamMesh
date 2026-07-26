@@ -2703,6 +2703,30 @@ class MainWindow(QMainWindow):
                     logger.warning("Fix failed: %s", e)
                     self._log.append_log(f"{Tag.FIX} {e}")
                     return False
+            if error_info.error_type == ErrorType.BL_FAILURE:
+                self._log.append_log(
+                    f"{Tag.FIX} Boundary layers failed — disabling BL and retrying."
+                )
+                self._params.set_bl_enabled(False)
+                try:
+                    from cfmesh_autogui.core.meshdict_gen import write_meshdict
+                    from cfmesh_autogui.core.stl_writer import export_surface_file
+                    export_surface_file(self._meshes, self._case_dir)
+                    names = [m.metadata.get("name", "wall") for m in self._meshes]
+                    p = self._params.get_mesh_params()
+                    write_meshdict(
+                        self._case_dir,
+                        max_cell_size=p["max_cell_size"],
+                        min_cell_size=p["min_cell_size"],
+                        bl_params=None,
+                        patch_names=names,
+                    )
+                    self._log.append_log(f"{Tag.FIX} Re-ran meshDict without BL.")
+                    return True
+                except Exception as e:
+                    logger.warning("BL fix failed: %s", e)
+                    self._log.append_log(f"{Tag.FIX} BL fix error: {e}")
+                    return False
             return False
         return fix
 
