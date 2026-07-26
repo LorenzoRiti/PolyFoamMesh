@@ -201,7 +201,11 @@ class ParallelMeshEngine:
 
     def _clamp_cores_to_available_memory(self) -> int:
         """Clamp core count to available WSL2 memory.
-        
+
+        Uses a conservative fraction of available WSL2 RAM to avoid
+        OOM kills on large meshes — for big surface files (>100 MB)
+        the margin is tightened further.
+
         Returns the actual number of cores to use (may be less than requested).
         Returns 1 (serial) when there isn't enough memory even for 2 ranks.
         """
@@ -225,7 +229,13 @@ class ParallelMeshEngine:
             return self._params.n_cores
 
         per_rank_mb = self._estimate_per_rank_mb()
-        safe_n = int((available_mb * 0.5) // per_rank_mb)
+        surface_mb = 0.0
+        tri_dir = (self._case_dir / "constant" / "triSurface") if self._case_dir else None
+        if tri_dir and tri_dir.is_dir():
+            surface_mb = sum(f.stat().st_size for f in tri_dir.glob("*") if f.is_file()) / (1024 * 1024)
+        # Tighten margin for large geometries: 40 % for surface > 100 MB, else 45 %
+        margin = 0.40 if surface_mb > 100 else 0.45
+        safe_n = int((available_mb * margin) // per_rank_mb)
         if safe_n < 2:
             msg = (
                 f"Parallel disabled: WSL2 has ~{available_mb} MB available, "
@@ -238,8 +248,9 @@ class ParallelMeshEngine:
         if safe_n < self._params.n_cores:
             msg = (
                 f"Reduced parallel cores from {self._params.n_cores} to "
-                f"{safe_n}: WSL2 has ~{available_mb} MB available and each "
-                f"rank is estimated at ~{per_rank_mb} MB for this geometry."
+                f"{safe_n}: WSL2 has ~{available_mb} MB available, each "
+                f"rank needs ~{per_rank_mb} MB (surface={surface_mb:.0f} MB). "
+                f"Using {margin*100:.0f}% of available RAM."
             )
             logger.warning(msg)
             self._result.warnings.append(msg)
@@ -392,13 +403,6 @@ class ParallelMeshEngine:
         On Windows, Popen.kill() only terminates the one wsl.exe process,
         leaving mpirun/cartesianMesh orphaned inside WSL.  taskkill /t walks
         the entire tree."""
-        try:
-            subprocess.run(
-                ["taskkill", "/f", "/t", "/pid", str(pid)],
-                capture_output=True, text=True, timeout=5,
-            )
-        except Exception:
-            pass
         try:
             subprocess.run(
                 ["taskkill", "/f", "/t", "/pid", str(pid)],

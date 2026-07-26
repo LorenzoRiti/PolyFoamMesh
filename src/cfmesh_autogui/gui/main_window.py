@@ -86,6 +86,19 @@ def _is_wall_patch(name: str) -> bool:
     return True
 
 
+def _check_drive_writable(drive: str) -> bool:
+    """Check if a drive root (e.g. 'C:\\') is writable."""
+    import os as _os
+    try:
+        test_path = _os.path.join(drive, ".cfmesh_write_test")
+        with open(test_path, "w") as _f:
+            _f.write("test")
+        _os.remove(test_path)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -100,7 +113,8 @@ class MainWindow(QMainWindow):
         self._run_id = 0
         self._quality_fix_attempts = 0
         self._poly_was_converted = False
-        self._unscaled_meshes: list = []
+        self._unscaled_meshes: list[trimesh.Trimesh] = []
+        self._scaled_meshes: list[trimesh.Trimesh] | None = None
         self._current_scale: float = 1.0
         octo.log_event("main_window", "init", f"CFMesh-AutoGUI v{APP_VERSION} started")
 
@@ -129,6 +143,12 @@ class MainWindow(QMainWindow):
         else:
             logger.info("OpenFOAM v2512 detected via WSL2.")
             self._status.showMessage("Ready — OpenFOAM v2512 via WSL2")
+
+        from cfmesh_autogui.core.disk_cleanup import auto_cleanup
+        try:
+            auto_cleanup(keep_last=20, max_days=60)
+        except Exception as exc:
+            logger.debug("Startup disk cleanup skipped: %s", exc)
 
     def _show_shortcuts(self):
         QMessageBox.information(
@@ -207,6 +227,8 @@ class MainWindow(QMainWindow):
         # Geometry...", which read as a second, competing way to start a
         # real project rather than what it actually is: a demo/sample.
         tm.addAction("Load Sample Cylinder (demo geometry)", self._on_test_cylinder)
+        tm.addSeparator()
+        tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
 
     def _on_theme_change(self, mode: str) -> None:
         from cfmesh_autogui.gui.theme import set_theme_mode, apply_theme
@@ -595,23 +617,16 @@ class MainWindow(QMainWindow):
         patches = classify_faces(shape)
         self._log.append_log(f"{Tag.GEOM} Patches: {[(n, len(f)) for n, f in patches]}")
         try:
-            self._meshes = tessellate_patches(patches)
+            self._unscaled_meshes = tessellate_patches(patches)
         except RuntimeError as e:
             logger.error("Tessellation error: %s", e)
             self._log.append_log(f"{Tag.ERROR} {e}")
             QMessageBox.critical(self, "Tessellation Error", str(e))
             return
 
-        self._heal_geometry(self._meshes)
+        self._heal_geometry(self._unscaled_meshes)
 
-        self._unscaled_meshes = [m.copy() for m in self._meshes]
-
-        scale = self._params.get_scale_factor()
-        self._current_scale = scale
-        if abs(scale - 1.0) > 1e-9:
-            scale_meshes(self._meshes, scale)
-            self._log.append_log(f"{Tag.SCALE} Applied \u00d7{scale:.6f} (CAD unit \u2192 m)")
-            logger.info("Scaled geometry by factor %.6f.", scale)
+        self._rebuild_scaled_meshes()
 
         names = [m.metadata.get("name", "?") for m in self._meshes]
         logger.info("Patches: %s", names)
@@ -627,7 +642,7 @@ class MainWindow(QMainWindow):
 
         # Geometry loaded and auto-sized; the watertight result is set inside.
         self._refresh_workflow(geometry_loaded=True, sizing_ready=True)
-        self._check_watertight(self._meshes)
+        self._check_watertight(self._unscaled_meshes)
 
     def _prepare_surface_with_features(self) -> str:
         """Return the surface file for cfMesh.
@@ -817,10 +832,10 @@ class MainWindow(QMainWindow):
 
         final_report = reports[-1]
         if final_report.watertight_after:
-            self._meshes = repaired
-            self._unscaled_meshes = [m.copy() for m in repaired]
-            self._params.set_patches([m.metadata.get("name", "?") for m in repaired])
-            self._viewer.show_cad(repaired)
+            self._unscaled_meshes = repaired
+            self._rebuild_scaled_meshes()
+            self._params.set_patches([m.metadata.get("name", "?") for m in self._meshes])
+            self._viewer.show_cad(self._meshes)
             self._log.append_log(
                 f"{Tag.GEOM} Watertight check: fixed automatically, geometry is now closed."
             )
@@ -837,6 +852,24 @@ class MainWindow(QMainWindow):
             "gaps closed. Meshing may still fail or leak."
         )
 
+    def _rebuild_scaled_meshes(self) -> None:
+        """Rebuild ``self._meshes`` from ``self._unscaled_meshes`` using
+        ``self._current_scale``.
+
+        When the scale is 1.0 (the common case) no copy is made — ``_meshes``
+        references ``_unscaled_meshes`` directly — avoiding a full in-memory
+        duplicate for geometries with millions of triangles.
+        """
+        scale = self._params.get_scale_factor()
+        self._current_scale = scale
+        if abs(scale - 1.0) <= 1e-9:
+            self._scaled_meshes = None
+            self._meshes = self._unscaled_meshes
+        else:
+            self._scaled_meshes = [m.copy() for m in self._unscaled_meshes]
+            scale_meshes(self._scaled_meshes, scale)
+            self._meshes = self._scaled_meshes
+
     @Slot(str)
     def _on_unit_changed(self, unit: str):
         if not self._unscaled_meshes:
@@ -844,10 +877,7 @@ class MainWindow(QMainWindow):
         new_scale = unit_to_scale(unit)
         if abs(new_scale - self._current_scale) < 1e-9:
             return
-        self._meshes = [m.copy() for m in self._unscaled_meshes]
-        if abs(new_scale - 1.0) > 1e-9:
-            scale_meshes(self._meshes, new_scale)
-        self._current_scale = new_scale
+        self._rebuild_scaled_meshes()
         names = [m.metadata.get("name", "?") for m in self._meshes]
         self._params.set_patches(names)
         self._params.set_suggest_meshes(self._meshes)
@@ -863,6 +893,30 @@ class MainWindow(QMainWindow):
         with self._busy():
             cyl = create_test_cylinder(radius=1.0, height=2.0)
             self._load_geometry(cyl.val())
+
+    def _on_cleanup_cases(self):
+        from cfmesh_autogui.core.disk_cleanup import list_cases, cases_disk_usage_mb, auto_cleanup
+        from PySide6.QtWidgets import QMessageBox, QInputDialog
+        cases = list_cases()
+        usage = cases_disk_usage_mb()
+        if not cases:
+            QMessageBox.information(self, "Disk Cleanup", "No case directories found.")
+            return
+        keep, ok = QInputDialog.getInt(
+            self, "Clean Up Old Cases",
+            f"Found {len(cases)} case directories ({usage:.0f} MB total).\n\n"
+            "Keep how many most recent cases?",
+            value=10, min=1, max=max(len(cases), 10),
+        )
+        if not ok:
+            return
+        result = auto_cleanup(keep_last=keep)
+        QMessageBox.information(
+            self, "Disk Cleanup",
+            f"Removed {result['removed_by_age'] + result['removed_by_keep']} case dirs.\n"
+            f"Freed: {result['disk_freed_mb']:.1f} MB\n"
+            f"Remaining: {result['remaining_mb']:.1f} MB",
+        )
 
     def _on_load_step(self):
         s = self._settings()
@@ -908,9 +962,8 @@ class MainWindow(QMainWindow):
                     self._load_geometry(shape)
                 elif ext == ".stl":
                     self._loaded_step_path = path
-                    meshes = load_geometry(path)
-                    self._meshes = list(meshes)
-                    self._unscaled_meshes = [m.copy() for m in self._meshes]
+                    self._unscaled_meshes = list(load_geometry(path))
+                    self._rebuild_scaled_meshes()
                     names = [m.metadata.get("name", "?") for m in self._meshes]
                     logger.info("STL solids: %s", names)
                     self._log.append_log(
@@ -1024,6 +1077,7 @@ class MainWindow(QMainWindow):
         self._refresh_workflow()
         self._meshes = []
         self._unscaled_meshes = []
+        self._scaled_meshes = None
         self._original_shape = None
         self._case_dir = None
         self._current_scale = 1.0
@@ -1122,8 +1176,23 @@ class MainWindow(QMainWindow):
         root = Path.home() / "cfmesh_cases"
         if " " in str(root):
             root = Path("C:/cfmesh_cases")
+            if not _check_drive_writable("C:\\"):
+                root = Path.home() / "cfmesh_cases_no_spaces"
+                root = Path(str(root).replace(" ", "_"))
         self._case_dir = root / f"case_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._case_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Cannot Write Case Directory",
+                f"Could not create the case directory:\n{self._case_dir}\n\n"
+                f"Error: {exc}\n\n"
+                "Check that the disk is not full and that you have write permissions.\n"
+                "You can set a different case directory via File > Set Case Directory."
+            )
+            self._params.set_all_enabled(True)
+            self._log.append_log(f"{Tag.ERROR} Cannot create case directory: {exc}")
+            return
         self._params.set_case_dir(str(self._case_dir))
 
         valid, msg = OFConfig.validate_case_path(self._case_dir)
@@ -1201,6 +1270,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error("STL export failed: %s", e)
             self._log.append_log(f"{Tag.ERROR} STL export failed: {e}")
+            QMessageBox.critical(
+                self, "STL Export Failed",
+                f"Could not write the surface STL file for meshing:\n\n{e}\n\n"
+                "Check that the case directory is writable and the disk is not full."
+            )
             self._params.set_all_enabled(True)
             return
 
@@ -1541,6 +1615,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error("meshDict failed: %s", e)
             self._log.append_log(f"{Tag.ERROR} meshDict failed: {e}")
+            QMessageBox.critical(
+                self, "Mesh Configuration Failed",
+                f"Could not write the meshDict configuration file:\n\n{e}\n\n"
+                "Check that the case directory is writable and the disk is not full."
+            )
             self._params.set_all_enabled(True)
             return
 
@@ -1560,6 +1639,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error("controlDict write failed: %s", e)
             self._log.append_log(f"{Tag.ERROR} controlDict write failed: {e}")
+            QMessageBox.critical(
+                self, "Mesh Configuration Failed",
+                f"Could not write the controlDict configuration file:\n\n{e}\n\n"
+                "Check that the case directory is writable and the disk is not full."
+            )
             self._params.set_all_enabled(True)
             return
 
@@ -2124,6 +2208,9 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self._ribbon_btns["cancel"].setVisible(False)
         self._params.set_all_enabled(True)
+        # Track retry count to avoid infinite retry loops
+        fail_count = getattr(self, "_meshing_fail_count", 0) + 1
+        self._meshing_fail_count = fail_count
         if exit_code != 0:
             self._set_workflow_stage("generate", "error")
             error = analyze_error(output)
@@ -2139,6 +2226,20 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"{Tag.SUGGESTION} {error.suggestion}")
             self._quality.set_raw_log(output)
             self._status.showMessage("Meshing failed")
+            # Check if retry limit exceeded
+            if fail_count >= 3:
+                QMessageBox.warning(
+                    self, "Meshing Failed Repeatedly",
+                    f"cartesianMesh has failed {fail_count} times in a row.\n\n"
+                    "Auto-recovery by loosening cell sizes has not resolved the issue.\n"
+                    "The problem may be geometry-related (non-watertight surface, "
+                    "invalid patches, or unsupported features).\n\n"
+                    f"Last error: {error.message}\n"
+                    f"Suggestion: {error.suggestion}\n\n"
+                    "Check the log panel for details or try loading a different geometry."
+                )
+                self._meshing_fail_count = 0
+                return
             # Offer auto-recovery: reduce cell sizes by 30% and retry
             retry = QMessageBox.question(
                 self, "Meshing Failed",
@@ -2158,6 +2259,8 @@ class MainWindow(QMainWindow):
                 )
                 self._on_run_meshing()
             return
+        # Reset fail count on success
+        self._meshing_fail_count = 0
 
         self._set_workflow_stage("generate", "done")
         self._set_workflow_stage("quality", "active")

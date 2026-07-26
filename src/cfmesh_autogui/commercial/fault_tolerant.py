@@ -238,8 +238,8 @@ class FaultTolerantWorkflow:
             "stopAt endTime; endTime 1000;\n"
             "deltaT 1;\n"
             "writeControl timeStep; writeInterval 1;\n"
-            "purgeWrite 0; writeFormat ascii; writePrecision 6;\n"
-            "writeCompression off; timeFormat general; timePrecision 6;\n"
+            "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
+            "writeCompression on; timeFormat general; timePrecision 6;\n"
             "runTimeModifiable true;\n",
             encoding="ascii",
         )

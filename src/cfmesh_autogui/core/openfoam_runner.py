@@ -276,6 +276,14 @@ class MeshWorker(QObject):
             self.log_line.emit("ERROR: WSL not found. Is WSL2 installed?")
             self.finished.emit(1, "WSL not found")
             return
+        except (OSError, PermissionError) as exc:
+            self.log_line.emit(f"ERROR: Failed to launch meshing process: {exc}")
+            self.finished.emit(1, f"Process launch failed: {exc}")
+            return
+        except Exception as exc:
+            self.log_line.emit(f"ERROR: Unexpected meshing launch error: {exc}")
+            self.finished.emit(1, f"Unexpected error: {exc}")
+            return
 
         try:
             if process.stdout:
