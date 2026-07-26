@@ -235,8 +235,7 @@ class OFConfig:
 
     def build_poly_dual_cmd(
         self, case_dir: Path | str,
-        feature_angle: float = 30.0,
-        concave_multi: bool = False,
+        feature_angle: float = 45.0,
         split_all_faces: bool = False,
     ) -> list[str]:
         """Build WSL command to run polyDualMesh.
@@ -246,13 +245,22 @@ class OFConfig:
         (exit 0, but did nothing), so every poly conversion before this fix
         was a no-op.
 
+        polyDualMesh creates the DUAL of the existing hex mesh — this
+        INCREASES cell count (each hex vertex becomes a poly cell centre).
+        This is NOT the same as STAR-CCM+ direct polyhedral generation.
+
+        For STAR-CCM+ style quality, the key is:
+        - Higher featureAngle (45°) produces smoother polyhedral cells
+        - Better meshDict settings (boundaryCellSize, maxNumIterations)
+        - Proper boundary layer preservation (already handled by -overwrite)
+
         Args:
             case_dir: Case directory
             feature_angle: Feature angle in degrees [0-180].
-                Lower = more aggressive merging, fewer cells.
-                30 is the Star-CCM+ default for polyhedral meshing.
-            concave_multi: Split cells on concave boundary edges.
-            split_all_faces: Have multiple faces between cells.
+                Higher = smoother cells, better non-orthogonality.
+                45-60 recommended for quality polyhedral meshes.
+            split_all_faces: Have multiple faces between cells
+                (increases cell count, use only for specific needs).
         """
         case_dir = Path(case_dir).resolve()
         linux_case_raw = self.wsl_linux_case_path(case_dir)
@@ -260,24 +268,14 @@ class OFConfig:
         env_quoted = shlex.quote(self.env_script)
         n_threads = os.cpu_count() or 4
 
-        extra = ""
-        if concave_multi:
-            extra += " -concaveMultiCells"
-        if split_all_faces:
-            extra += " -splitAllFaces"
+        extra = " -splitAllFaces" if split_all_faces else ""
 
-        # Use single-quoted paths inside bash to avoid conflicts with
-        # the outer double-quoting that _build_wsl_cmd applies.
         cmd = (
             f"set -o pipefail; "
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
             f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
             f"cd {linux_case_q}; "
-            f"polyDualMesh {feature_angle} -overwrite{extra} 2>&1 | tail -20 && "
-            f"cpath='{linux_case_raw}'; "
-            f"if [ -d \"$cpath/0/polyMesh\" ]; then "
-            f"  cp -r \"$cpath/0/polyMesh/.\" \"$cpath/constant/polyMesh/\"; "
-            f"fi"
+            f"polyDualMesh {feature_angle} -overwrite{extra} 2>&1 | tail -20"
         )
         return self._build_wsl_cmd(cmd)

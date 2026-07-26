@@ -1173,12 +1173,23 @@ class MainWindow(QMainWindow):
         self._runner = RetryRunner(self._of_config)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = Path.home() / "cfmesh_cases"
-        if " " in str(root):
-            root = Path("C:/cfmesh_cases")
-            if not _check_drive_writable("C:\\"):
-                root = Path.home() / "cfmesh_cases_no_spaces"
-                root = Path(str(root).replace(" ", "_"))
+        candidates = [
+            Path.home() / "cfmesh_cases",
+            Path("C:/cfmesh_cases"),
+            Path(os.environ.get("TEMP", "C:\\temp")).replace(" ", "_") / "cfmesh_cases",
+        ]
+        root = None
+        for candidate in candidates:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                root = candidate
+                break
+            except OSError:
+                continue
+        if root is None:
+            self._log.append_log(f"{Tag.ERROR} Cannot create case directory: no writable path found")
+            self._params.set_all_enabled(True)
+            return
         self._case_dir = root / f"case_{ts}"
         try:
             self._case_dir.mkdir(parents=True, exist_ok=True)
@@ -2480,7 +2491,7 @@ class MainWindow(QMainWindow):
         self._log.append_log("[poly] Converting hex \u2192 polyhedral mesh (polyDualMesh)...")
         self._status.showMessage("Polyhedral conversion...")
         t = QThread()
-        feature_angle = 30.0  # Star-CCM+ style polyhedral default
+        feature_angle = 45.0  # Higher = smoother polyhedral cells
         w = PolyDualWorker(self._case_dir, self._of_config,
                            feature_angle=feature_angle)
         w.moveToThread(t)

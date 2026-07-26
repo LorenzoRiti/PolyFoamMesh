@@ -25,14 +25,6 @@ import trimesh
 
 from cfmesh_autogui.octopoda_local import octo
 
-# Lazy import (avoid cadquery DLL load at module level)
-_geometry = None
-def _lazy_geom():
-    global _geometry
-    if _geometry is None:
-        from cfmesh_autogui.core import geometry as _geometry
-    return _geometry
-
 logger = logging.getLogger(__name__)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import trimesh
@@ -127,7 +128,6 @@ def validate_stl_solids(path: Path | str) -> dict[str, int]:
     """
     path = Path(path)
     text = path.read_text(encoding="ascii", errors="replace")
-    import re
     solids: dict[str, int] = {}
     current = None
     count = 0

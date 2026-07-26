@@ -457,115 +457,6 @@ class QualityEngine:
             text,
         )
 
-    # ------------------------------------------------------------------
-    # PDF export
-    # ------------------------------------------------------------------
-    def export_pdf(self, report: QualityReport, output_path: Path | str) -> None:
-        """Export quality report as PDF."""
-        output_path = Path(output_path)
-        try:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib import colors
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.units import mm
-
-            c = canvas.Canvas(str(output_path), pagesize=A4)
-            width, height = A4
-            margin = 20 * mm
-            y = height - margin
-            m = report.metrics
-
-            # Title
-            c.setFont("Helvetica-Bold", 18)
-            c.drawString(margin, y, "Mesh Quality Report")
-            y -= 10 * mm
-            c.setFont("Helvetica", 10)
-            c.drawString(margin, y, f"Generated: {datetime.now():%Y-%m-%d %H:%M}")
-            y -= 8 * mm
-
-            # Status
-            c.setFont("Helvetica-Bold", 14)
-            status_color = colors.green if m.passed else colors.red
-            c.setFillColor(status_color)
-            c.drawString(margin, y, f"Status: {'PASS' if m.passed else 'FAIL'}")
-            c.setFillColor(colors.black)
-            y -= 10 * mm
-
-            # Metrics table
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(margin, y, "Quality Metrics")
-            y -= 6 * mm
-            c.setFont("Helvetica", 10)
-
-            metrics_rows = [
-                ("Cells", f"{m.cells:,}", ""),
-                ("Max Skewness", f"{m.max_skewness:.2f}",
-                 "PASS" if m.max_skewness <= THRESHOLDS["skewness_max"] else "FAIL"),
-                ("Max Non-Orthogonality", f"{m.max_non_orthogonality:.1f}°",
-                 "PASS" if m.max_non_orthogonality <= THRESHOLDS["non_ortho_max"] else "FAIL"),
-                ("Max Aspect Ratio", f"{m.max_aspect_ratio:.0f}",
-                 "PASS" if m.max_aspect_ratio <= THRESHOLDS["aspect_ratio_max"] else "FAIL"),
-                ("Min Volume", f"{m.min_volume:.6e}", ""),
-                ("Negative Cells", f"{m.neg_cells}",
-                 "OK" if m.neg_cells == 0 else "FAIL"),
-            ]
-            for label, value, status in metrics_rows:
-                c.drawString(margin + 5 * mm, y, label)
-                c.drawString(margin + 60 * mm, y, value)
-                if status:
-                    c.setFillColor(colors.green if status in ("PASS", "OK") else colors.red)
-                    c.drawString(margin + 110 * mm, y, status)
-                    c.setFillColor(colors.black)
-                y -= 5 * mm
-
-            y -= 5 * mm
-
-            # Auto-fix summary
-            if report.fixes_applied:
-                c.setFont("Helvetica-Bold", 12)
-                c.drawString(margin, y, "Auto-Fix Actions")
-                y -= 6 * mm
-                c.setFont("Helvetica", 9)
-                for fix in report.fixes_applied:
-                    c.drawString(margin + 5 * mm, y,
-                                 f"• {fix.action}: {fix.target_metric} ({fix.current_value:.2f})")
-                    y -= 4 * mm
-                    if y < margin:
-                        c.showPage()
-                        y = height - margin
-
-            # Histogram data
-            if report.histogram and report.histogram.get("counts"):
-                y -= 5 * mm
-                c.setFont("Helvetica-Bold", 12)
-                c.drawString(margin, y, "Skewness Distribution")
-                y -= 6 * mm
-                c.setFont("Helvetica", 9)
-                h = report.histogram
-                c.drawString(margin, y, f"Mean: {h['mean']:.4f}  |  "
-                             f"P95: {h['p95']:.4f}  |  P99: {h['p99']:.4f}  |  "
-                             f"Max: {h['max']:.4f}")
-
-            c.save()
-            logger.info("PDF quality report exported: %s", output_path)
-
-        except ImportError:
-            # Fallback: export as JSON
-            json_path = output_path.with_suffix(".json")
-            json_path.write_text(json.dumps({
-                "metrics": {
-                    "cells": m.cells,
-                    "max_skewness": m.max_skewness,
-                    "max_non_orthogonality": m.max_non_orthogonality,
-                    "max_aspect_ratio": m.max_aspect_ratio,
-                    "neg_cells": m.neg_cells,
-                },
-                "passed": m.passed,
-                "histogram": report.histogram,
-                "fixes": [f.__dict__ for f in report.fixes_applied],
-            }, indent=2))
-            logger.info("JSON quality report exported: %s", json_path)
-
     def export_json(self, report: QualityReport, path: Path | str) -> None:
         """Export quality report as JSON."""
         Path(path).write_text(json.dumps({
@@ -584,3 +475,5 @@ class QualityEngine:
             "fixes": [{"action": f.action, "target": f.target_metric,
                         "value": f.current_value} for f in report.fixes_applied],
         }, indent=2, default=str))
+
+

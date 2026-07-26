@@ -367,19 +367,22 @@ class MeshEngine:
             logger.warning("WSL not found for cartesianMesh")
             return False
 
-    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 30.0) -> None:
+    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 45.0) -> None:
         """Convert hex mesh to polyhedral via polyDualMesh.
+
+        polyDualMesh creates the DUAL mesh — cell count INCREASES.
+        Quality improvement comes from better hex mesh (boundaryCellSize,
+        maxNumIterations), not from polyDualMesh flags.
 
         Args:
             case_dir: Case directory containing hex mesh.
-            feature_angle: Feature angle in degrees [0-180].
-                30 mimics Star-CCM+ polyhedral quality.  Lower values
-                merge more aggressively (fewer cells, smoother).
+            feature_angle: Feature angle [0-180].  Higher = smoother
+                polyhedral cells, better non-orthogonality.  45-60
+                recommended for best quality.
         """
         import subprocess
         cmd = self._of_config.build_poly_dual_cmd(
             case_dir, feature_angle=feature_angle,
-            concave_multi=True,  # better handling of concave edges
         )
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
