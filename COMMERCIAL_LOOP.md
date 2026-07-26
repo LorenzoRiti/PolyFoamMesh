@@ -256,11 +256,11 @@ octo.remember("implemented_features", done)
 
 ## Criteri di accettazione (tutte le P0)
 
-- [ ] Ogni modulo compila senza errori (`python -m py_compile`)
-- [ ] Ogni test passa (`pytest tests/test_NOME.py -x -q`)
-- [ ] Integrato in `main_window.py` (menu, ribbon o wizard)
-- [ ] L'utente può completare la pipeline dal wizard senza aprire terminale
-- [ ] Quick Mesh produce mesh su geometria STL di test in < 60s
+- [x] Ogni modulo compila senza errori (`python -m py_compile`)
+- [x] Ogni test passa (`pytest tests/test_NOME.py -x -q`)
+- [x] Integrato in `main_window.py` (menu, ribbon o wizard)
+- [x] L'utente può completare la pipeline dal wizard senza aprire terminale
+- [x] Quick Mesh produce mesh su geometria STL di test in < 60s
 - [ ] Report PDF si apre correttamente
-- [ ] Export caso OpenFOAM è valido (checkMesh non dà errori fatali)
-- [ ] Tutto gira su Windows 11 + WSL2 Ubuntu + OpenFOAM v2512
+- [x] Export caso OpenFOAM è valido (checkMesh non dà errori fatali)
+- [x] Tutto gira su Windows 11 + WSL2 Ubuntu + OpenFOAM v2512
