@@ -83,7 +83,7 @@ def test_watertight_check_reports_ok_after_healing_runs_first(app):
     win = _fake_window()
 
     MainWindow._heal_geometry(win, [box])
-    MainWindow._check_watertight(win, [box])
+    MainWindow._check_watertight_sync(win, [box])
 
     assert any(Tag.WARN in line for line in win._log.lines) is False
     assert any("OK" in line for line in win._log.lines)

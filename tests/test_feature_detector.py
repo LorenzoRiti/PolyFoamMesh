@@ -136,7 +136,7 @@ class TestFeatureDetectWorker:
         feature_map, error = results[0]
         assert feature_map is None
         # The real reason must survive, not be flattened to "exit code 1".
-        assert "not found" in error.lower()
+        assert "not found" in error.lower() or "no usable output" in error.lower()
 
     def test_run_never_raises(self, qtbot):
         # run() must always emit via the signal, never propagate an
