@@ -1163,9 +1163,9 @@ class MainWindow(QMainWindow):
             self._params.set_meshing_enabled(False)
             self._params.set_all_enabled(False)
             if mesher_type == "gmsh_hybrid":
-                self._on_run_meshing_gmsh_hybrid(orig)
+                self._start_gmsh_surface_worker(orig, my_id)
             else:
-                self._on_run_meshing_gmsh_direct(orig)
+                self._start_gmsh_volume_worker(orig, my_id)
             return
 
         # Clean up previous runner's thread before creating a new one,
@@ -1856,6 +1856,125 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.warning("Failed to export STL for GMSH: %s", e)
         return None
+
+    def _start_gmsh_surface_worker(self, geom_path: str, my_id: int):
+        from cfmesh_autogui.core.openfoam_runner import GmshSurfaceWorker
+        self._log.append_log("[gmsh] Starting surface STL generation in background...")
+        self._status.showMessage("GMSH: surface mesh...")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        root = self._resolve_case_root()
+        self._case_dir = root / f"gmsh_hybrid_{ts}"
+        self._case_dir.mkdir(parents=True, exist_ok=True)
+        self._params.set_case_dir(str(self._case_dir))
+        tri_dir = self._case_dir / "constant" / "triSurface"
+        tri_dir.mkdir(parents=True, exist_ok=True)
+        stl_out = tri_dir / "surface.stl"
+        detail = self._params.get_detail_level()
+
+        self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
+        t = QThread()
+        w = GmshSurfaceWorker(geom_path, stl_out, detail)
+        w.moveToThread(t)
+        self._gmsh_thread = t
+        self._gmsh_worker = w
+
+        def on_surface_result(result: dict):
+            if my_id != self._run_id:
+                return
+            names = result.get("names", [])
+            sizing = {
+                "suggested_volume_size": result.get("suggested_volume_size", 0.05),
+                "suggested_surface_size": result.get("suggested_surface_size", 0.01),
+                "min_curvature_radius": result.get("min_curvature_radius", 0.0),
+                "patch_sizes": result.get("patch_sizes"),
+            }
+            self._log.append_log(f"[gmsh] Surface STL: {stl_out} — patches: {names}")
+            self._continue_gmsh_hybrid(my_id, names, sizing)
+
+        def on_surface_failed(msg: str):
+            if my_id != self._run_id:
+                return
+            self._log.append_log(f"[ERROR] GMSH surface: {msg}")
+            self._params.set_all_enabled(True)
+            QMessageBox.critical(self, "GMSH Failed", f"Surface mesh failed:\n{msg}")
+
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.finished.connect(on_surface_result, Qt.QueuedConnection)
+        w.failed.connect(on_surface_failed, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        t.start()
+
+    def _resolve_case_root(self) -> Path:
+        root = Path.home() / "cfmesh_cases"
+        if " " in str(root):
+            root = Path("C:/cfmesh_cases")
+            if not _check_drive_writable("C:\\"):
+                root = Path(str(root).replace(" ", "_"))
+        return root
+
+    def _continue_gmsh_hybrid(self, my_id: int, names: list[str], sizing: dict):
+        self._log.append_log("[gmsh] Volume fill via cfMesh...")
+        self._status.showMessage("cfMesh: volume fill...")
+        QApplication.processEvents()
+
+        safe_max = max(float(sizing.get("suggested_volume_size", 0.05)), 0.001)
+        safe_min = max(float(sizing.get("suggested_surface_size", 0.01)), 0.0001)
+        bl_params = self._params.get_bl_params()
+
+        try:
+            from cfmesh_autogui.core.meshdict_gen import write_meshdict
+            write_meshdict(
+                self._case_dir, safe_max, safe_min,
+                patch_cell_size=sizing.get("patch_sizes") or None,
+                boundary_cell_size=float(sizing.get("suggested_surface_size", 0.01)),
+                boundary_refinement_thickness=float(sizing.get("min_curvature_radius", 0.0)) * 2,
+                bl_params=bl_params,
+                patch_names=names,
+            )
+        except Exception as e:
+            logger.error("meshDict failed: %s", e)
+            self._log.append_log(f"{Tag.ERROR} meshDict: {e}")
+            self._params.set_all_enabled(True)
+            return
+
+        self._write_control_dict(self._case_dir)
+
+        self._runner = RetryRunner(self._of_config)
+        self._connect_runner_signals()
+
+        def guarded_finished(exit_code, output, attempts):
+            if my_id != self._run_id:
+                return
+            self._on_meshing_finished(exit_code, output, attempts)
+
+        self._runner.run(
+            self._case_dir,
+            on_log=self._log.append_log,
+            on_finished=guarded_finished,
+            bl_params=bl_params,
+            max_cell=safe_max,
+            min_cell=safe_min,
+            patch_names=names,
+        )
+
+    def _write_control_dict(self, case_dir: Path) -> None:
+        (case_dir / "system" / "controlDict").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
+            "application cartesianMesh;\n"
+            "startFrom startTime; startTime 0;\n"
+            "stopAt endTime; endTime 1000;\n"
+            "deltaT 1;\n"
+            "writeControl timeStep; writeInterval 1;\n"
+            "writeFrequency 1;\n"
+            "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
+            "writeCompression on; timeFormat general; timePrecision 6;\n"
+            "runTimeModifiable true;\n",
+            encoding="ascii",
+        )
 
     def _on_run_meshing_gmsh_hybrid(self, geom_path: str):
         self._run_id += 1
