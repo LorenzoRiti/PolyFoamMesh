@@ -976,3 +976,30 @@
 {"time":"2026-07-26T22:52:33.610Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":128}
 {"time":"2026-07-26T22:52:39.120Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":129}
 {"time":"2026-07-26T22:52:46.790Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":130}
+{"time":"2026-07-26T22:53:16.919Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":131}
+{"time":"2026-07-26T22:53:22.473Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106402470.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:53:22.485Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":132}
+{"time":"2026-07-26T22:53:27.417Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785106232075}
+{"time":"2026-07-26T22:53:33.376Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106413373.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:53:33.383Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":133}
+{"time":"2026-07-26T22:53:39.703Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":134}
+{"time":"2026-07-26T22:53:52.121Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":134}
+{"time":"2026-07-26T22:54:03.034Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":135}
+{"time":"2026-07-26T22:54:09.892Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106449889.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:54:09.899Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":136}
+{"time":"2026-07-26T22:54:19.633Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":137}
+{"time":"2026-07-26T22:54:25.414Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106465410.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:54:25.416Z","line":"heartbeat-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106465414.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:54:25.418Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":138}
+{"time":"2026-07-26T22:54:30.813Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106470762.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:54:30.815Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":139}
+{"time":"2026-07-26T22:54:35.964Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106475960.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:54:35.972Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":140}
+{"time":"2026-07-26T22:54:41.145Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785106481141.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:54:41.162Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":141}
+{"time":"2026-07-26T22:54:46.361Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":142}
+{"time":"2026-07-26T22:54:52.520Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":143}
+{"time":"2026-07-26T22:55:03.321Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":144}
+{"time":"2026-07-26T22:55:07.737Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":145}
+{"time":"2026-07-26T22:55:13.423Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":146}
+{"time":"2026-07-26T22:55:23.019Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":147}
