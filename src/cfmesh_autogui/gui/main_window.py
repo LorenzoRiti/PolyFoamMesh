@@ -1776,6 +1776,7 @@ class MainWindow(QMainWindow):
         bl_params = self._params.get_bl_params()
         self._log.append_log("[gmsh] Generating curvature-aware surface STL...")
         self._status.showMessage("GMSH: surface mesh...")
+        QApplication.processEvents()
 
         try:
             tri_dir = self._case_dir / "constant" / "triSurface"
@@ -1797,6 +1798,7 @@ class MainWindow(QMainWindow):
 
         self._log.append_log("[gmsh] Volume fill via cfMesh...")
         self._status.showMessage("cfMesh: volume fill...")
+        QApplication.processEvents()
 
         sizing = gmsh_compute_sizing(geom_path, detail=detail)
         safe_max = max(sizing.suggested_volume_size, 0.001)
@@ -1875,6 +1877,7 @@ class MainWindow(QMainWindow):
 
         self._log.append_log("[gmsh] Generating volume mesh (tetra + BL)...")
         self._status.showMessage("GMSH: volume mesh...")
+        QApplication.processEvents()
 
         bl_retried = False
         while True:
@@ -1911,6 +1914,7 @@ class MainWindow(QMainWindow):
 
         self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
         self._status.showMessage("GMSH: conversion...")
+        QApplication.processEvents()
         try:
             from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
             poly_dir = msh_to_of_polymesh(msh_path, self._case_dir)
@@ -2089,6 +2093,7 @@ class MainWindow(QMainWindow):
         return guarded
 
     def _on_cancel_meshing(self):
+        self._run_id += 1
         if getattr(self._runner, "is_running", False):
             self._runner.terminate()
         parallel_worker = getattr(self, "_parallel_worker", None)
