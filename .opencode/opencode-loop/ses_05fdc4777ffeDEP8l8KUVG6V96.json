@@ -1,4 +1,57 @@
 {
   "version": 4,
-  "jobs": []
+  "jobs": [
+    {
+      "id": "ms2cn4es-6ff257",
+      "name": "default",
+      "action": "SESSIONE NOTTURNA — obiettivo ambizioso: domattina l'app deve essere sensibilmente più stabile, corretta e performante su tutti i fronti discussi finora. Lavora in autonomia tutta la notte, un problema alla volta, con rigore assoluto sulla verifica — meglio 10 fix piccoli ma veri e verificati che 1 fix grande non testato. DISCIPLINA DA SEGUIRE SEMPRE, per ogni singolo problema: 1. Riproducilo DAL VIVO prima di scrivere qualsiasi fix (lancia l'app vera o uno script diretto contro WSL2/OpenFOAM 2512 reale — mai un fix \"a naso\" dalla sola lettura del codice). 2. Fixa la causa radice, non il sintomo. 3. Riverifica DAL VIVO con lo stesso caso di riproduzione che il fix funzioni davvero. 4. pytest + pyflakes sull'INTERO progetto prima di ogni commit (non solo i file toccati). 5. Committa a fine di OGNI fix verificato con un messaggio che descrive: cosa hai riprodotto, cosa hai trovato, come l'hai fixato, come l'hai riverificato. Non accumulare ore di lavoro in un commit gigante non descritto — se la sessione si interrompe, il lavoro fatto fino a quel punto deve restare salvato. PRIORITÀ, in ordine (dal più critico al meno critico — se il tempo non basta per tutto, quello che conta di più va fatto per primo): 1. CRASH E FREEZE: cerca sistematicamente chiamate bloccanti sul thread GUI non ancora spostate su worker thread, codice nativo (gmsh/OCP/pymeshfix/vtk) a rischio segfault non isolato, race condition tra callback asincroni senza guardia \"è ancora il run corrente\", widget Qt toccati da thread secondari. Nessuna azione dell'utente deve mai produrre \"Non risponde\" o un crash silenzioso senza messaggio. 2. ROBUSTEZZA DEL MESHING (seriale, parallelo, boundary layers): ogni combinazione di parametri e ogni geometria realistica (condotti, geometrie ramificate, spigoli vivi, geometrie molto piccole/grandi, con o senza BL, con o senza parallelismo, con o senza conversione poliedrica) deve produrre una mesh valida o un errore chiaro con indicazione di cosa fare — mai un crash silenzioso, mai un blocco infinito, mai celle degeneri passate come \"successo\". In particolare per i boundary layer: quando lo spazio locale è insufficiente per il numero di strati richiesto, riduci automaticamente invece di far collassare le celle, e verifica il fallback \"riprova senza BL\" ovunque serva. 3. RAFFINAMENTO AUTOMATICO GENERALIZZATO A QUALSIASI GEOMETRIA: implementa (o continua se già iniziato) il rilevamento automatico di zone che meritano più risoluzione — basato sui minimi locali di larghezza di passaggio/spessore della geometria (estendendo analyze_local_thickness già esistente), non su un singolo asse di flusso assunto, così funzioni su condotti semplici, geometrie ramificate, gap esterni tra componenti, e non generi zone inutili su geometrie senza vere strozzature. Deve essere automatico di default, senza azione manuale dell'utente, con log chiaro di cosa è stato rilevato e perché. 4. QUALITÀ MESH POLIEDRICA: porta la conversione poliedrica (polyDualMesh) a un livello paragonabile a STAR-CCM+ poliedrico — transizione fluida tra strati limite prismatici e nucleo poliedrico, transizioni di dimensione cella graduali, pochissime celle ad alta skewness. Misura le metriche checkMesh (non-ortho, skewness, aspect ratio) prima e dopo ogni intervento su almeno due geometrie reali, e accetta solo modifiche che migliorano quei numeri in modo misurabile. 5. OTTIMIZZAZIONE RISORSE per mesh grandi su macchine con poca RAM/CPU/disco: profila PRIMA di ottimizzare (misura dove va davvero la RAM/il tempo/il disco su un caso da milioni di celle). Aree candidate: writeFormat binary + writeCompression on in controlDict per mesh grandi, eliminazione di copie ridondanti in memoria lato Python (self._meshes/self._unscaled_meshes), pulizia automatica delle vecchie cartelle in cfmesh_cases/, decimazione solo visiva nel viewer 3D oltre una soglia di celle (mai sul file di mesh reale). Riporta sempre numeri reali prima/dopo, non stime. 6. RIFINITURE UI: continua la pulizia visiva già iniziata (stile flat nei campi, niente box-in-box, placeholder invece di liste vuote enormi) su TUTTE le tab (Mesh, Advanced, Quality), non solo Geometry — verifica coerenza visiva generale con uno screenshot reale di ciascuna tab. 7. PULIZIA CODICE: rimuovi codice morto o duplicato che trovi lungo il percorso SOLO se confermato inutilizzato (verifica con grep prima di cancellare qualunque cosa) — non usare la notte per refactoring cosmetico fine a se stesso, la priorità resta sempre bug reali prima di stile del codice. REGOLE DI SICUREZZA, senza eccezioni: - Mai git push --force, mai --no-verify, mai bypassare hook. - git status prima di qualunque comando distruttivo (reset --hard, clean, checkout su file modificati) — non buttare mai via lavoro non committato che non è tuo. - Nessuna nuova dipendenza pesante senza motivo chiaro e verificato. - Se un fix richiede una scelta di design ambigua, scegli l'opzione più prudente e reversibile, scrivila chiaramente nel commit, e vai avanti — di notte non arriva conferma, non bloccarti in attesa. A FINE NOTTE (o quando ti fermi per qualunque motivo): rigenera l'eseguibile distribuibile (dist/CFMesh-AutoGUI.exe) e verifica che si lanci ancora correttamente prima di considerare la sessione conclusa. Poi scrivi un riepilogo finale con: - Elenco di tutto quello che hai riprodotto e fixato, con riferimento ai commit. - Metriche reali dove applicabile (checkMesh prima/dopo, RAM/tempo/disco prima/dopo, numero di test). - Qualunque problema trovato ma NON risolto del tutto, con spiegazione del perché e cosa hai provato. - Stato finale della suite di test (quanti, tutti verdi o flaky noti) e conferma che l'exe distribuibile funziona.",
+      "intervalMs": 0,
+      "immediate": true,
+      "maxRuns": 0,
+      "maxRuntimeMs": 0,
+      "maxFailures": 0,
+      "timeoutMs": 0,
+      "includeFiles": [],
+      "watchPaths": [],
+      "compactEveryRuns": 0,
+      "compactEveryMs": 0,
+      "branchDone": false,
+      "goalAcceptance": [],
+      "goalChecks": [],
+      "goalCompleteWhenChecksPass": false,
+      "goalSummary": "",
+      "goalEvidence": "",
+      "goalBlockedReason": "",
+      "goalProgress": [],
+      "noProgressCount": 0,
+      "lastProgressAt": 0,
+      "noOverlap": true,
+      "safe": false,
+      "quiet": false,
+      "askNever": false,
+      "pauseOnVerifyFail": false,
+      "gitCheckpoint": false,
+      "checkpointOnly": false,
+      "dryRun": false,
+      "multi": false,
+      "batch": 0,
+      "runCount": 1,
+      "failureCount": 0,
+      "lastRunAt": 1785103687093,
+      "lastCompactAt": 0,
+      "lastCompactRunCount": 0,
+      "watchSnapshot": {},
+      "watchTriggered": false,
+      "createdAt": "2026-07-26T22:08:02.068Z",
+      "enabled": true,
+      "paused": false,
+      "agent": "build",
+      "model": {
+        "providerID": "deepseek",
+        "modelID": "deepseek-v4-flash"
+      },
+      "activeRecoveryMs": 45000,
+      "lastFinishedAt": 1785103780532
+    }
+  ]
 }
