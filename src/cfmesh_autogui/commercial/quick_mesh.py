@@ -54,6 +54,7 @@ class QuickMeshResult:
     cell_count: int = 0
     max_skewness: float = 0.0
     quality_passed: bool = False
+    n_cores: int = 1
     wall_time_s: float = 0.0
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -80,6 +81,7 @@ class QuickMesh:
         geometry_path: str,
         output_dir: str | None = None,
         quality_target: str = "medium",
+        n_cores: int = 1,
     ) -> QuickMeshResult:
         """Execute quick mesh from geometry file.
 
@@ -87,13 +89,14 @@ class QuickMesh:
             geometry_path: Path to geometry file (.step/.stp/.stl).
             output_dir: Output case directory. Auto-generated if None.
             quality_target: ``"draft"``, ``"medium"``, or ``"high"``.
+            n_cores: Number of parallel cores (1 = serial, >1 = MPI).
 
         Returns:
             ``QuickMeshResult`` with cell count and quality.
         """
-        result = QuickMeshResult()
+        result = QuickMeshResult(n_cores=n_cores)
         start = datetime.now()
-        octo.log_event("quick_mesh", "start", {"file": geometry_path})
+        octo.log_event("quick_mesh", "start", {"file": geometry_path, "n_cores": n_cores})
 
         try:
             # 1. Validate geometry
@@ -131,7 +134,6 @@ class QuickMesh:
 
             # 4. Auto cell sizes (curvature + thickness + BB)
             s_max, s_min = _lazy_geom().suggest_cell_sizes(meshes, detail=detail)
-            # Scale by quality target
             quality_mult = {"draft": 1.5, "medium": 1.0, "high": 0.6}
             s_max *= quality_mult.get(quality_target, 1.0)
             s_min *= quality_mult.get(quality_target, 1.0)
@@ -150,7 +152,6 @@ class QuickMesh:
 
             # 7. Export surface and write meshDict
             _lazy_stl().export_surface_file(meshes, case_dir)
-            # 7a. Generate FMS for feature-edge capture (best-effort)
             from cfmesh_autogui.core.openfoam_runner import generate_fms
             fms = generate_fms(case_dir, angle=60.0)
             surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
@@ -163,12 +164,13 @@ class QuickMesh:
             )
             _write_ctrl_dict(case_dir)
 
-            # 8. Run meshing via engine
+            # 8. Run meshing via engine (parallel when n_cores > 1)
             params = MeshEngineParams(
                 algorithm=algo, detail_level=detail,
                 max_cell=s_max, min_cell=s_min,
                 bl_enabled=bl_params is not None,
                 bl_n_layers=bl_params.get("nLayers", 5) if bl_params else 0,
+                n_cores=n_cores,
             )
             engine.configure(params)
             eng_result = engine.run(case_dir, meshes, geometry_path)
@@ -180,12 +182,16 @@ class QuickMesh:
             if eng_result.algorithm != algo.value:
                 result.algorithm = eng_result.algorithm
                 result.warnings.append(f"Fallback: {eng_result.algorithm}")
+            if eng_result.errors:
+                result.errors.extend(eng_result.errors)
 
-            result.success = True
+            result.success = eng_result.success
+            result.n_cores = params.n_cores
             octo.log_event("quick_mesh", "complete", {
                 "cells": result.cell_count,
                 "quality": result.quality_passed,
                 "algorithm": result.algorithm,
+                "n_cores": result.n_cores,
             })
 
         except Exception as exc:

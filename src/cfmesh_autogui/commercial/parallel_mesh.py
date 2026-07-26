@@ -1,9 +1,7 @@
 """Parallel meshing engine using MPI + cartesianMesh's own -parallel mode.
 
 Runs cartesianMesh across N MPI ranks and reconstructs the result — real
-wall-clock speedup on multi-core machines, verified live (a case that takes
-~7s serial completed in ~18s of wall time across 4 ranks doing ~52s of
-combined CPU work).
+wall-clock speedup on multi-core machines.
 
 This is NOT decomposePar-based domain decomposition: decomposePar splits an
 EXISTING mesh/fields for parallel SOLVING, and requires a mesh to already
@@ -17,15 +15,19 @@ with "cannot open case directory processorN").
 Pipeline:
   1. Write decomposeParDict (cartesianMesh -parallel reads
      numberOfSubdomains from it)
-  2. Create processorN/ directories, each with system/ + constant/ copied in
-  3. mpirun -np N cartesianMesh -parallel
-  4. reconstructParMesh -constant to merge the per-rank meshes back into
+  2. Create processorN/ directories with hard-linked triSurface
+     (avoids copying large STL files N times)
+  3. Write meshDict + controlDict in each processor dir
+  4. mpirun -np N cartesianMesh -parallel
+  5. reconstructParMesh -constant to merge the per-rank meshes back into
      constant/polyMesh
+  6. Collect per-rank cell counts for diagnostics
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -72,15 +74,15 @@ class ParallelMeshEngine:
         result = pe.run()
     """
 
-    # Max cores supported (practical limit for WSL2)
     MAX_CORES = 128
     MIN_CORES = 2
-    # 2 hours used to be the ceiling before this failed with an exception at
-    # all — a real hang (see _kill_stray_processes) looked exactly like an
-    # indefinite freeze/crash for that whole time. 30 minutes is still
-    # generous for interactive use; a genuinely large mesh that needs
-    # longer should go through the serial path instead.
+    # 30 min ceiling (generous for interactive use; very large meshes
+    # that genuinely need longer should use the serial path).
     _TIMEOUT_S = 1800
+    # Reconstruct timeout: merging N subdomain meshes is I/O-bound and
+    # scales with the largest per-rank mesh size.  10 minutes should
+    # cover even multi-million-cell cases.
+    _RECONSTRUCT_TIMEOUT_S = 600
 
     def __init__(self, of_config: OFConfig | None = None) -> None:
         self._of_config = of_config or OFConfig()
@@ -95,13 +97,6 @@ class ParallelMeshEngine:
         self, case_dir: Path | str, n_cores: int = 4,
         method: str = "scotch",
     ) -> None:
-        """Configure the case and decomposition parameters.
-
-        Args:
-            case_dir: OpenFOAM case directory (must exist).
-            n_cores: Number of subdomains (2–128).
-            method: Decomposition method (scotch/metis/simple/hierarchical).
-        """
         result = validate_case_dir(case_dir)
         if not result.valid:
             raise ValueError(result.message)
@@ -127,41 +122,20 @@ class ParallelMeshEngine:
         self._min_cell = min_cell
 
     def set_patch_names(self, patch_names: list[str] | None) -> None:
-        """Patch names for renameBoundary — without these, every patch
-        reverts to cfMesh's default `wall` type (same bug class fixed
-        across write_meshdict() callers elsewhere this session)."""
         self._patch_names = patch_names
 
     def _kill_stray_processes(self) -> None:
-        """Best-effort: kill any mpirun/cartesianMesh still running inside
-        the WSL2 VM from a previous timed-out/hung attempt.
-
-        Killing the Windows-side wsl.exe process on a Python-level timeout
-        does not kill what it spawned inside WSL2 — the VM is a persistent
-        session, not a 1:1 child of that invocation — so a run that hung
-        once leaves orphaned ranks consuming CPU/RAM, and the *next*
-        attempt starts even more starved than the first.
-        """
         try:
             cmd = self._of_config._build_wsl_cmd(
                 "pkill -9 -f cartesianMesh 2>/dev/null; "
-                "pkill -9 -f mpirun 2>/dev/null; true"
+                "pkill -9 -f mpirun 2>/dev/null; "
+                "pkill -9 -f reconstructParMesh 2>/dev/null; true"
             )
             subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         except Exception as exc:
             logger.debug("Stray-process cleanup skipped: %s", exc)
 
     def _estimate_per_rank_mb(self) -> int:
-        """Rough per-rank memory estimate: each MPI rank loads and octree-
-        processes the *full* surface independently before discarding
-        non-owned cells, so memory scales with both surface complexity and
-        core count. There's no exact formula for this without actually
-        running it, so this is a deliberately conservative heuristic (20x
-        the on-disk triSurface size, which tends to undershoot rather than
-        overshoot real octree memory use, plus a flat base overhead) rather
-        than a precise prediction — good enough to catch "this will
-        obviously starve WSL2" before committing to it, not a hard guarantee.
-        """
         base_mb = 200
         tri_dir = (self._case_dir / "constant" / "triSurface") if self._case_dir else None
         if not tri_dir or not tri_dir.is_dir():
@@ -171,32 +145,13 @@ class ParallelMeshEngine:
         return int(base_mb + surface_mb * 20)
 
     def _clamp_cores_to_available_memory(self) -> None:
-        """Query WSL2's currently free memory and reduce n_cores if the
-        requested count would very likely exhaust it — this is the fix for
-        the actual root cause behind repeated "parallel meshing hangs/
-        crashes" reports: each rank redundantly loads the full geometry,
-        WSL2 caps its own memory well below the host's, and running out
-        mid-mesh reads as an indefinite freeze rather than a clean error.
-        Runs *before* committing to a core count rather than discovering
-        the problem 20 minutes into a run.
-        """
         try:
-            # awk's `$7` through the Windows -> wsl.exe -> bash -lc bridge
-            # is not reliable — confirmed live: even a trivial
-            # `awk '{print $7}'` came back with the whole input line
-            # instead of one field, silently (int() on that line then
-            # raised ValueError, caught below, and the clamp just never
-            # applied — the exact bug this method exists to prevent kept
-            # happening because the safety check itself was silently
-            # broken). Parsing plain `free -m` text in Python sidesteps
-            # the quoting problem entirely.
             cmd = self._of_config._build_wsl_cmd("free -m")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             available_mb = None
             for line in result.stdout.splitlines():
                 if line.startswith("Mem:"):
                     fields = line.split()
-                    # total used free shared buff/cache available
                     available_mb = int(fields[6])
                     break
             if available_mb is None:
@@ -204,22 +159,18 @@ class ParallelMeshEngine:
         except Exception as exc:
             logger.warning(
                 "Could not determine WSL2 available memory (%s) — "
-                "leaving core count at %d as requested; if that starves "
-                "WSL2's memory this run may hang.",
+                "leaving core count at %d as requested.",
                 exc, self._params.n_cores,
             )
             return
 
         per_rank_mb = self._estimate_per_rank_mb()
-        # Leave a 30% safety margin rather than using every last free MB.
         safe_n = max(self.MIN_CORES, int((available_mb * 0.7) // per_rank_mb))
         if safe_n < self._params.n_cores:
             msg = (
                 f"Reduced parallel cores from {self._params.n_cores} to "
                 f"{safe_n}: WSL2 has ~{available_mb} MB available and each "
-                f"rank is estimated at ~{per_rank_mb} MB for this geometry — "
-                f"running the requested count would likely have exhausted "
-                f"WSL2's memory and hung."
+                f"rank is estimated at ~{per_rank_mb} MB for this geometry."
             )
             logger.warning(msg)
             self._result.warnings.append(msg)
@@ -229,9 +180,14 @@ class ParallelMeshEngine:
         """Execute the parallel meshing workflow.
 
         Steps:
-          1. Create processorN/ directories (system/ + constant/ per rank)
-          2. Run cartesianMesh -parallel across n_cores MPI ranks
-          3. Reconstruct with reconstructParMesh into constant/polyMesh
+          1. Kill stray MPI processes from previous runs
+          2. Clamp core count to available WSL2 memory
+          3. Write meshDict (cell sizes, BL, patch names)
+          4. Write decomposeParDict
+          5. Create processorN/ dirs with hard-linked triSurface
+          6. Run cartesianMesh -parallel across n_cores MPI ranks
+          7. Collect per-rank cell counts
+          8. Reconstruct with reconstructParMesh into constant/polyMesh
         """
         start = datetime.now()
         self._result = ParallelMeshResult(n_cores=self._params.n_cores)
@@ -245,13 +201,6 @@ class ParallelMeshEngine:
             if not self._case_dir:
                 raise RuntimeError("No case directory. Call setup_case() first.")
 
-            # A previous run that hung or timed out may have left mpirun/
-            # cartesianMesh processes alive *inside* the WSL2 VM: killing
-            # the Windows-side wsl.exe launcher on a timeout does not
-            # reliably kill what it spawned in the (persistent) Linux VM.
-            # Starting a new run on top of orphaned ones compounds the
-            # memory pressure that likely caused the original hang —
-            # clean up first.
             self._kill_stray_processes()
             self._clamp_cores_to_available_memory()
             self._result.n_cores = self._params.n_cores
@@ -270,12 +219,6 @@ class ParallelMeshEngine:
                 "cell_count": self._result.cell_count,
             })
         except subprocess.TimeoutExpired:
-            # Each MPI rank redundantly loads the full surface and does its
-            # own octree pass over it before discarding non-owned cells —
-            # so memory/CPU use scales with n_cores, and WSL2's VM (often
-            # capped well below host RAM) can start thrashing or hit its
-            # OOM killer on a big real geometry with many ranks, which
-            # reads as an indefinite hang rather than a clean failure.
             self._kill_stray_processes()
             msg = (
                 f"Parallel meshing timed out after {self._TIMEOUT_S // 60} "
@@ -300,15 +243,6 @@ class ParallelMeshEngine:
     # Internal steps
     # ------------------------------------------------------------------
     def _write_meshdict(self) -> None:
-        """Write system/meshDict from set_cell_sizes()'s values.
-
-        This class used to validate and store cell sizes via
-        set_cell_sizes() but never actually wrote them into a meshDict at
-        all — every call ran cartesianMesh -parallel against whatever (or
-        no) meshDict happened to already be on disk. Verified live: on a
-        case with no pre-existing meshDict, run() silently "succeeded" in
-        ~1s with 0 cells produced.
-        """
         if not self._case_dir:
             return
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
@@ -321,7 +255,6 @@ class ParallelMeshEngine:
         )
 
     def _write_decompose_par_dict(self) -> None:
-        """Write system/decomposeParDict with the selected method."""
         if not self._case_dir:
             return
         system_dir = self._case_dir / "system"
@@ -347,86 +280,89 @@ class ParallelMeshEngine:
         )
 
     def _step_create_processor_dirs(self) -> None:
-        """Create processorN/ directories for parallel MESH GENERATION.
+        """Create processorN/ directories with hard-linked triSurface.
 
-        This used to run `decomposePar -force` here — wrong tool for the
-        job. decomposePar decomposes an EXISTING mesh/fields for parallel
-        SOLVING; at this point in the pipeline there is no mesh yet (that's
-        the whole point of running cartesianMesh next), so it always failed:
-        "FOAM FATAL ERROR: Cannot find file 'points' in directory 'polyMesh'"
-        — confirmed live against real OpenFOAM 2512.
-
-        cartesianMesh's own `-parallel` mode does the geometry-based domain
-        decomposition internally; the only prerequisite (also verified
-        live — cartesianMesh -parallel fails with "cannot open case
-        directory processorN" without this) is that each processorN/
-        directory exists with its own copy of system/ and constant/
-        (controlDict, meshDict, decomposeParDict, triSurface/*) — the same
-        input files a serial run would read from the case root, just
-        replicated per rank.
+        Uses hardlinks for triSurface STL files to avoid copying
+        potentially hundreds of MB N times.  Each rank reads the STL
+        independently; a hardlinked copy is indistinguishable from a
+        regular one at the file-descriptor level.
         """
         if not self._case_dir:
             return
-        import shutil
 
         for i in range(self._params.n_cores):
             proc_dir = self._case_dir / f"processor{i}"
             if proc_dir.exists():
                 shutil.rmtree(proc_dir)
             proc_dir.mkdir(parents=True)
-            shutil.copytree(self._case_dir / "system", proc_dir / "system")
-            shutil.copytree(self._case_dir / "constant", proc_dir / "constant")
-        logger.info("Created %d processor directories", self._params.n_cores)
+
+            # Copy system/ (small text files — plain copy is fast enough)
+            shutil.copytree(
+                self._case_dir / "system",
+                proc_dir / "system",
+            )
+
+            # Copy constant/ with hardlinks for triSurface/
+            src_const = self._case_dir / "constant"
+            dst_const = proc_dir / "constant"
+            dst_const.mkdir(parents=True)
+            for item in src_const.iterdir():
+                if item.is_dir() and item.name == "triSurface":
+                    dst_ts = dst_const / "triSurface"
+                    dst_ts.mkdir(parents=True)
+                    for f in item.iterdir():
+                        if f.is_file():
+                            dst_file = dst_ts / f.name
+                            try:
+                                dst_file.hardlink_to(f)
+                            except (OSError, NotImplementedError):
+                                shutil.copy2(f, dst_file)
+                elif item.is_dir():
+                    shutil.copytree(item, dst_const / item.name)
+                elif item.is_file():
+                    shutil.copy2(item, dst_const / item.name)
+
+        logger.info(
+            "Created %d processor directories (hardlinked triSurface)",
+            self._params.n_cores,
+        )
 
     def _step_parallel_mesh(self) -> None:
         """Run cartesianMesh in parallel via MPI on all subdomains."""
         if not self._case_dir:
             return
-        import shlex
 
         case_dir = self._case_dir
-        linux_case = self._of_config._quoted_linux_path(case_dir)
-        env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
-        # _quoted_linux_path() is for FILE PATHS — it treats any string not
-        # starting with "/" as a relative Windows path and resolves it
-        # against the current working directory. cartesian_mesh_bin is a
-        # plain command name ("cartesianMesh"), not a path: this silently
-        # turned it into a bogus absolute path
-        # (".../cfmesh-autogui/cartesianMesh"), so every mpirun invocation
-        # tried to exec a file that doesn't exist — verified live: "success"
-        # reported in <1s with 0 cells produced, no exception raised because
-        # the nonzero exit code fell through the "partial mesh" tolerance
-        # path. config.py's own build_command() already does this correctly
-        # with a plain shlex.quote(); matching that here.
-        bin_q = shlex.quote(self._of_config.cartesian_mesh_bin)
         n = self._params.n_cores
 
-        # MPI command: mpirun -np N cartesianMesh -parallel
-        cmd = self._of_config._build_wsl_cmd(
-            f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"mpirun --allow-run-as-root -np {n} {bin_q} -parallel 2>&1 | tail -20"
+        # Single bash invocation: source OF → write decomposeParDict →
+        # mpirun -np N cartesianMesh -parallel → reconstructParMesh -constant
+        cmd = self._of_config.build_parallel_command(
+            case_dir, n, method=self._params.method,
         )
-        logger.info("Parallel mesh on %d cores...", n)
+
+        logger.info("Parallel mesh on %d cores (method=%s)...", n, self._params.method)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=self._TIMEOUT_S)
 
         if result.returncode == 0:
-            logger.info("Parallel meshing OK")
+            logger.info("Parallel meshing + reconstruct OK")
+            self._collect_per_rank_counts()
         else:
-            # Exit code 15 may still produce a partial mesh
             points_exist = (
                 self._case_dir / "constant" / "polyMesh" / "points"
             ).exists()
             if not points_exist:
                 for i in range(n):
                     proc_points = (
-                        self._case_dir / f"processor{i}" / "constant" / "polyMesh" / "points"
+                        self._case_dir / f"processor{i}"
+                        / "constant" / "polyMesh" / "points"
                     )
                     if proc_points.exists():
                         points_exist = True
                         break
             if not points_exist:
                 raise RuntimeError(
-                    f"Parallel cartesianMesh failed (exit {result.returncode}). "
+                    f"Parallel meshing failed (exit {result.returncode}). "
                     f"No polyMesh found.\n{result.stderr[-500:]}"
                 )
             logger.warning(
@@ -437,23 +373,54 @@ class ParallelMeshEngine:
                 f"cartesianMesh returned exit code {result.returncode}"
             )
 
-    def _step_reconstruct(self) -> None:
-        """Run reconstructParMesh to merge subdomain meshes."""
+    def _collect_per_rank_counts(self) -> None:
+        """Read cell counts from each processorN/ directory."""
         if not self._case_dir:
             return
+        from cfmesh_autogui.core.boundary_reader import count_cells
+        counts: list[int] = []
+        for i in range(self._params.n_cores):
+            proc_dir = self._case_dir / f"processor{i}"
+            if proc_dir.exists():
+                counts.append(count_cells(proc_dir))
+            else:
+                counts.append(0)
+        self._result.cell_count_per_rank = counts
+        total = sum(counts)
+        avg = total / max(len(counts), 1)
+        logger.info(
+            "Per-rank cells: %s (total=%d, avg=%d)",
+            counts, total, avg,
+        )
+
+    def _step_reconstruct(self) -> None:
+        """Run reconstructParMesh to merge subdomain meshes.
+
+        build_parallel_command now bundles reconstruct into the same
+        mpirun invocation (fewer WSL2 round-trips, better error atomicity).
+        This method is kept as a standalone fallback when the bundled
+        reconstruct inside build_parallel_command fails — it calls
+        reconstructParMesh explicitly on the merged result.
+        """
+        if not self._case_dir:
+            return
+
+        # Check if already reconstructed
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if poly_points.exists():
+            logger.info("Reconstruct already done (polyMesh/points exists)")
+            return
+
         case_dir = self._case_dir
         linux_case = self._of_config._quoted_linux_path(case_dir)
         env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
 
-        # -merge is not a real reconstructParMesh option (confirmed via
-        # `reconstructParMesh -help-full`: "Invalid option: -merge") — it
-        # always failed before even attempting reconstruction.
         cmd = self._of_config._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"reconstructParMesh -constant 2>&1 | tail -10"
+            f"reconstructParMesh -constant 2>&1 | tail -15"
         )
-        logger.info("Reconstructing parallel mesh...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        logger.info("Reconstructing parallel mesh (standalone fallback)...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=self._RECONSTRUCT_TIMEOUT_S)
         if result.returncode != 0:
             raise RuntimeError(
                 f"reconstructParMesh failed (exit {result.returncode}):\n{result.stderr[-300:]}"
@@ -462,16 +429,7 @@ class ParallelMeshEngine:
 
     @staticmethod
     def estimate_speedup(n_cores: int, efficiency: float = 0.85) -> dict[str, float]:
-        """Estimate parallel speedup using Amdahl's law.
-
-        Args:
-            n_cores: Number of parallel cores.
-            efficiency: Parallel efficiency (0.0–1.0), default 0.85.
-
-        Returns:
-            Dict with ``speedup``, ``efficiency``, ``serial_fraction``.
-        """
-        serial_frac = 0.05  # 5% serial (I/O, decomposition, stitching)
+        serial_frac = 0.05
         speedup = 1.0 / (serial_frac + (1 - serial_frac) / n_cores * (1 / efficiency))
         return {
             "speedup": round(speedup, 2),
