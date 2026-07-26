@@ -367,14 +367,24 @@ class MeshEngine:
             logger.warning("WSL not found for cartesianMesh")
             return False
 
-    def _run_polyhedral(self, case_dir: Path) -> None:
-        """Convert hex mesh to polyhedral via polyDualMesh."""
+    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 30.0) -> None:
+        """Convert hex mesh to polyhedral via polyDualMesh.
+
+        Args:
+            case_dir: Case directory containing hex mesh.
+            feature_angle: Feature angle in degrees [0-180].
+                30 mimics Star-CCM+ polyhedral quality.  Lower values
+                merge more aggressively (fewer cells, smoother).
+        """
         import subprocess
-        cmd = self._of_config.build_poly_dual_cmd(case_dir)
+        cmd = self._of_config.build_poly_dual_cmd(
+            case_dir, feature_angle=feature_angle,
+            concave_multi=True,  # better handling of concave edges
+        )
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise RuntimeError(f"polyDualMesh failed (exit {r.returncode})")
-        logger.info("Polyhedral conversion OK")
+        logger.info("Polyhedral conversion OK (featureAngle=%g)", feature_angle)
 
     def _run_tetrahedral(self, case_dir: Path, geometry_path: str) -> None:
         """Run GMSH tetrahedral meshing (no WSL required)."""

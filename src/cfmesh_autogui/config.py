@@ -233,17 +233,51 @@ class OFConfig:
         )
         return self._build_wsl_cmd(cmd)
 
-    def build_poly_dual_cmd(self, case_dir: Path | str) -> list[str]:
+    def build_poly_dual_cmd(
+        self, case_dir: Path | str,
+        feature_angle: float = 30.0,
+        concave_multi: bool = False,
+        split_all_faces: bool = False,
+    ) -> list[str]:
+        """Build WSL command to run polyDualMesh.
+
+        polyDualMesh REQUIRES a featureAngle (positional arg, 0-180).
+        The old ``-constant`` flag does NOT exist — it was silently ignored
+        (exit 0, but did nothing), so every poly conversion before this fix
+        was a no-op.
+
+        Args:
+            case_dir: Case directory
+            feature_angle: Feature angle in degrees [0-180].
+                Lower = more aggressive merging, fewer cells.
+                30 is the Star-CCM+ default for polyhedral meshing.
+            concave_multi: Split cells on concave boundary edges.
+            split_all_faces: Have multiple faces between cells.
+        """
         case_dir = Path(case_dir).resolve()
-        linux_case = self._quoted_linux_path(case_dir)
+        linux_case_raw = self.wsl_linux_case_path(case_dir)
+        linux_case_q = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         n_threads = os.cpu_count() or 4
+
+        extra = ""
+        if concave_multi:
+            extra += " -concaveMultiCells"
+        if split_all_faces:
+            extra += " -splitAllFaces"
+
+        # Use single-quoted paths inside bash to avoid conflicts with
+        # the outer double-quoting that _build_wsl_cmd applies.
         cmd = (
             f"set -o pipefail; "
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
             f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
-            f"cd {linux_case}; "
-            f"polyDualMesh -constant 2>&1 | tail -20"
+            f"cd {linux_case_q}; "
+            f"polyDualMesh {feature_angle} -overwrite{extra} 2>&1 | tail -20 && "
+            f"cpath='{linux_case_raw}'; "
+            f"if [ -d \"$cpath/0/polyMesh\" ]; then "
+            f"  cp -r \"$cpath/0/polyMesh/.\" \"$cpath/constant/polyMesh/\"; "
+            f"fi"
         )
         return self._build_wsl_cmd(cmd)
