@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer, Signal, QProcess
 
 from cfmesh_autogui.core.boundary_reader import parse_boundary as _core_parse_boundary  # ✅ F-012
+from cfmesh_autogui.core.of_reader import read_of_text, of_list_count
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def _strip_of_comments(text: str) -> str:
 
 
 def _read_of_block(path: Path) -> str:
-    text = _strip_of_comments(path.read_text(encoding="ascii", errors="replace"))
+    text = _strip_of_comments(read_of_text(path))
     match = re.search(r"\(\s*(.*)\s*\)", text, flags=re.DOTALL)
     if not match:
         raise ValueError(f"Cannot parse OF block in {path}")
@@ -829,13 +830,26 @@ class ViewerWidget(QWidget):
             )
             self._plotter.render()
             return
+        total_faces = sum(pd.n_cells for pd in patches.values())
+        show_decimated = total_faces > self.DECIMATE_THRESHOLD
         self._plotter.clear()
         ec = self._edge_color()
         for i, (name, pd) in enumerate(patches.items()):
             color = PATCH_COLORS[i % len(PATCH_COLORS)]
+            if show_decimated:
+                try:
+                    pd = pd.decimate_pro(self.DECIMATE_TARGET)
+                except Exception:
+                    pass
             self._plotter.add_mesh(
                 pd, scalars="color", rgb=True,
-                show_edges=True, edge_color=ec, label=name,
+                show_edges=not show_decimated, edge_color=ec, label=name,
+            )
+        if show_decimated:
+            self._plotter.add_text(
+                f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
+                "Il file di mesh reale \u00e8 invariato.",
+                color=self._text_color, font_size=10,
             )
         self._plotter.view_isometric()
         self._plotter.render()
@@ -868,6 +882,11 @@ class ViewerWidget(QWidget):
     # foamToVTK + cached VTU reading.  The manual parser fallback
     # is only used when foamToVTK hasn't run yet (first view).
     MAX_VIEWER_CELLS = 10_000_000
+    # When cells > this threshold, show a decimated surface mesh instead
+    # of the full volume.  The real mesh file is never touched.
+    DECIMATE_THRESHOLD = 2_000_000
+    # Target fraction of original cells after decimation
+    DECIMATE_TARGET = 0.2
 
     def _load_stats_async(self, case_dir: Path):
         """Load mesh stats in the background (deferred via timer)."""
