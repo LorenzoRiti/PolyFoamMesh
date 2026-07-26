@@ -78,14 +78,14 @@ def of_list_count(path: Path) -> int:
 def _is_binary_format(path: Path) -> bool:
     """Quick check if the OpenFOAM file is in binary format."""
     try:
-        header_bytes = path.read_bytes()[:512]
+        header_bytes = path.read_bytes()[:1024]
     except Exception:
         return False
     try:
         text = header_bytes.decode("ascii", errors="replace")
     except Exception:
         return False
-    return '"binary"' in text or 'format      binary;' in text
+    return bool(re.search(r'format\s+ binary\s*;', text))
 
 
 def of_label_list(path: Path) -> list[int]:
@@ -122,7 +122,7 @@ def of_label_list(path: Path) -> list[int]:
             data_start += 1
         data = binary_body[data_start:data_start + count * 4]
         return list(struct.unpack(f"<{count}i", data[:count * 4]))
-    # ASCII format
+    # ASCII format — handle gracefully if binary data leaks through
     try:
         text = raw.decode("ascii", errors="replace")
     except Exception:
@@ -138,7 +138,10 @@ def of_label_list(path: Path) -> list[int]:
     end = body.find(")", start)
     if end == -1:
         return []
-    return [int(tok) for tok in body[start:end].split()]
+    try:
+        return [int(tok) for tok in body[start:end].split()]
+    except ValueError:
+        return []
 
 
 def _re_search_bytes(pattern: bytes, data: bytes):
@@ -153,8 +156,10 @@ def of_ncells_from_header(path: Path) -> int | None:
     """Try to read ``nCells: N`` from the FoamFile header comment.
 
     cfMesh's cartesianMesh writes ``nPoints:X nCells:Y nFaces:Z`` into
-    the ``owner`` file's header.  Returns ``None`` when absent (fall
-    back to ``of_label_list``-based counting).
+    the ``owner`` file's header — also handles ``nCells = N`` and
+    ``nCells=N`` variants from different OpenFOAM versions.
+    Returns ``None`` when absent (fall back to ``of_label_list``-based
+    counting).
     """
     if not path.exists():
         return None
@@ -163,5 +168,5 @@ def of_ncells_from_header(path: Path) -> int | None:
     except Exception:
         return None
     text = raw.decode("ascii", errors="replace")
-    m = re.search(r"nCells:\s*(\d+)", text)
+    m = re.search(r"nCells\s*[:=]\s*(\d+)", text)
     return int(m.group(1)) if m else None

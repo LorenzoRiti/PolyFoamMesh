@@ -57,7 +57,7 @@ def _strip_of_comments(text: str) -> str:
 
 def _is_binary_of(path: Path) -> bool:
     """Check if an OpenFOAM file is in binary format."""
-    raw = _read_of_body(path)
+    raw = _read_of_bytes(path)
     return b'format      binary;' in raw[:512]
 
 
