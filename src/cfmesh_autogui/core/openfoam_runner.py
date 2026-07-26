@@ -50,7 +50,7 @@ except ImportError:
 from cfmesh_autogui.config import OFConfig
 from cfmesh_autogui.octopoda_local import octo
 
-OF_BASHRC = "/usr/lib/openfoam/openfoam2512/etc/bashrc"
+OF_BASHRC = OFConfig().env_script
 
 
 
@@ -89,7 +89,7 @@ class ErrorInfo:
 
 
 def analyze_error(full_output: str) -> ErrorInfo:
-    """Classifica l'errore di cartesianMesh usando pattern cfMesh specifici."""
+    """Classify cartesianMesh errors using cfMesh-specific patterns."""
     lo = full_output.lower()
     detail = _extract_detail(full_output)
 

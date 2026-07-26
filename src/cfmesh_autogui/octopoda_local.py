@@ -1,6 +1,7 @@
 """Lightweight local Octopoda runtime — zero external dependencies."""
 from __future__ import annotations
 import json, os, datetime
+from datetime import timezone
 from pathlib import Path
 
 _OCTO_DIR = Path(os.environ.get("APPDATA", os.path.expanduser("~"))) / "cfmesh-autogui" / "octopoda"
@@ -18,7 +19,7 @@ class OctopodaRuntime:
 
     def remember(self, key: str, value: dict) -> None:
         p = self._path(key)
-        p.write_text(json.dumps({"key": key, "value": value, "ts": datetime.datetime.utcnow().isoformat()}, indent=2))
+        p.write_text(json.dumps({"key": key, "value": value, "ts": datetime.datetime.now(timezone.utc).isoformat()}, indent=2))
 
     def recall(self, key: str) -> dict | None:
         p = self._path(key)
@@ -29,7 +30,7 @@ class OctopodaRuntime:
     def log_event(self, agent: str, step: str, details: str) -> None:
         log = _OCTO_DIR / "events.jsonl"
         with open(log, "a") as f:
-            f.write(json.dumps({"agent": agent, "step": step, "details": details, "ts": datetime.datetime.utcnow().isoformat()}) + "\n")
+            f.write(json.dumps({"agent": agent, "step": step, "details": details, "ts": datetime.datetime.now(timezone.utc).isoformat()}) + "\n")
         self._trim_events(log)
 
     def _trim_events(self, log: Path) -> None:
