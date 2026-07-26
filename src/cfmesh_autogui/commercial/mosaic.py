@@ -131,18 +131,29 @@ class MosaicEngine:
         return self._result
 
     def _step_poly_conversion(self) -> None:
-        """Run polyDualMesh via WSL2."""
+        """Run polyDualMesh via WSL2.
+
+        polyDualMesh requires a featureAngle (positional arg, 0-180 deg).
+        The old ``-constant`` flag does NOT exist — using it means the
+        command silently does nothing.  This fix uses featureAngle=30 by
+        default (Star-CCM+ style) and copies the result from time ``0/``
+        back to ``constant/polyMesh/``.
+        """
         if not self._case_dir:
             return
-        case_dir = self._case_dir
-        linux_case = self._of_config._quoted_linux_path(case_dir)
+        linux_case_raw = self._of_config.wsl_linux_case_path(self._case_dir)
         env_q = self._of_config._quoted_linux_path(self._of_config.env_script)
 
         cmd = self._of_config._build_wsl_cmd(
-            f"source {env_q} 2>/dev/null; cd {linux_case} && "
-            f"polyDualMesh -constant 2>&1 | tail -15"
+            f"source {env_q} 2>/dev/null; "
+            f"cd {linux_case_raw} && "
+            f"polyDualMesh 30 -overwrite -concaveMultiCells 2>&1 | tail -15 && "
+            f"if [ -d \"{linux_case_raw}/0/polyMesh\" ]; then "
+            f"  cp -r \"{linux_case_raw}/0/polyMesh/.\" "
+            f"        \"{linux_case_raw}/constant/polyMesh/\"; "
+            f"fi"
         )
-        logger.info("Running polyDualMesh (mosaic conversion)...")
+        logger.info("Running polyDualMesh (mosaic conversion, featureAngle=30)...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
@@ -150,10 +161,8 @@ class MosaicEngine:
                 f"polyDualMesh failed (exit {result.returncode}):\n{result.stderr[-300:]}"
             )
 
-        # Parse output for statistics
-        cells_match = re.search(r"(\d+)\s+cells", result.stdout)
-        if cells_match:
-            self._result.poly_cells = int(cells_match.group(1))
+        # Count cells after conversion (now in constant/polyMesh)
+        self._result.poly_cells = self._count_cells("poly")
 
         logger.info("polyDualMesh conversion OK")
 

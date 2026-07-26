@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import re
+import struct
 from pathlib import Path
 
 
@@ -74,11 +75,24 @@ def of_list_count(path: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _is_binary_format(path: Path) -> bool:
+    """Quick check if the OpenFOAM file is in binary format."""
+    try:
+        header_bytes = path.read_bytes()[:512]
+    except Exception:
+        return False
+    try:
+        text = header_bytes.decode("ascii", errors="replace")
+    except Exception:
+        return False
+    return '"binary"' in text or 'format      binary;' in text
+
+
 def of_label_list(path: Path) -> list[int]:
     """Return the integer values of a flat OpenFOAM ``labelList`` file
     (``owner``, ``neighbour``).
 
-    Handles both plain and gzip-compressed files.
+    Handles ASCII, binary, and gzip-compressed files of both formats.
     """
     if not path.exists():
         return []
@@ -86,12 +100,38 @@ def of_label_list(path: Path) -> list[int]:
         raw = _read_of_bytes(path)
     except Exception:
         return []
-    text = raw.decode("ascii", errors="replace")
+    is_binary = _is_binary_format(path)
+    if is_binary:
+        # Binary format: header is ASCII until '}', then N ints as 4-byte LE
+        try:
+            text_part = raw.decode("ascii", errors="replace")
+        except Exception:
+            return []
+        text_part = re.sub(r"/\*.*?\*/", "", text_part, flags=re.DOTALL)
+        text_part = re.sub(r"//[^\n]*", "", text_part)
+        header_end = text_part.find("}")
+        binary_body = raw[header_end + 1:] if header_end != -1 else raw
+        m = _re_search_bytes(rb"(\d+)\s*\(", binary_body)
+        if not m:
+            return []
+        count = int(m.group(1))
+        start = m.end()
+        # Skip '(' byte, read count * 4 bytes as int32
+        data_start = start
+        if data_start < len(binary_body) and binary_body[data_start:data_start + 1] == b'(':
+            data_start += 1
+        data = binary_body[data_start:data_start + count * 4]
+        return list(struct.unpack(f"<{count}i", data[:count * 4]))
+    # ASCII format
+    try:
+        text = raw.decode("ascii", errors="replace")
+    except Exception:
+        return []
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     text = re.sub(r"//[^\n]*", "", text)
     header_end = text.find("}")
     body = text[header_end + 1:] if header_end != -1 else text
-    m = re.search(r"\d+\s*\n\s*\(", body)
+    m = _re_search_str(r"(\d+)\s*\n\s*\(", body)
     if not m:
         return []
     start = m.end()
@@ -99,6 +139,14 @@ def of_label_list(path: Path) -> list[int]:
     if end == -1:
         return []
     return [int(tok) for tok in body[start:end].split()]
+
+
+def _re_search_bytes(pattern: bytes, data: bytes):
+    return re.search(pattern, data)
+
+
+def _re_search_str(pattern: str, data: str):
+    return re.search(pattern, data)
 
 
 def of_ncells_from_header(path: Path) -> int | None:

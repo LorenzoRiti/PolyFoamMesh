@@ -2472,7 +2472,9 @@ class MainWindow(QMainWindow):
         self._log.append_log("[poly] Converting hex \u2192 polyhedral mesh (polyDualMesh)...")
         self._status.showMessage("Polyhedral conversion...")
         t = QThread()
-        w = PolyDualWorker(self._case_dir, self._of_config)
+        feature_angle = 30.0  # Star-CCM+ style polyhedral default
+        w = PolyDualWorker(self._case_dir, self._of_config,
+                           feature_angle=feature_angle)
         w.moveToThread(t)
         w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
         w.finished.connect(self._on_polydual_finished, Qt.QueuedConnection)

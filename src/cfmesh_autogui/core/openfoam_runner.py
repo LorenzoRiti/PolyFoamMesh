@@ -974,14 +974,19 @@ class PolyDualWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, case_dir: Path | str, of_config: OFConfig, parent=None):
+    def __init__(self, case_dir: Path | str, of_config: OFConfig,
+                 feature_angle: float = 30.0, parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._of_config = of_config
+        self._feature_angle = feature_angle
 
     @Slot()
     def run(self):
-        cmd = self._of_config.build_poly_dual_cmd(self._case_dir)
+        cmd = self._of_config.build_poly_dual_cmd(
+            self._case_dir, feature_angle=self._feature_angle,
+            concave_multi=True,
+        )
 
         self.log_line.emit(f"[polyDualMesh] {' '.join(cmd)}")
 
@@ -990,17 +995,19 @@ class PolyDualWorker(QObject):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=180,
+                timeout=300,
             )
             if result.returncode == 0:
-                self.log_line.emit("[polyDualMesh] Conversion OK")
+                self.log_line.emit(
+                    f"[polyDualMesh] Conversion OK (featureAngle={self._feature_angle})"
+                )
                 self.finished.emit(self._case_dir)
             else:
                 self.log_line.emit(f"[polyDualMesh] Return code {result.returncode}")
                 self.failed.emit(f"polyDualMesh returned {result.returncode}")
         except subprocess.TimeoutExpired:
-            self.log_line.emit("[polyDualMesh] TIMEOUT (180s)")
-            self.failed.emit("polyDualMesh timed out after 180s")
+            self.log_line.emit("[polyDualMesh] TIMEOUT (300s)")
+            self.failed.emit("polyDualMesh timed out after 300s")
         except FileNotFoundError:
             self.log_line.emit("[polyDualMesh] WSL not found")
             self.failed.emit("WSL not found")

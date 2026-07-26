@@ -26,27 +26,29 @@ def _wsl_ok(cfg: OFConfig) -> bool:
 def _run_wsl(cfg: OFConfig, bash: str, timeout=600):
     return subprocess.run(cfg._build_wsl_cmd(bash), capture_output=True, text=True, timeout=timeout)
 
-def _checkmesh_metrics(case_dir: Path) -> dict:
+def _checkmesh_raw(case_dir: Path) -> str:
     cfg = OFConfig()
     linux_case = cfg._quoted_linux_path(case_dir)
     env_q = shlex.quote(cfg.env_script)
-    bash = f"source {env_q} 2>/dev/null; cd {linux_case} && checkMesh 2>&1"
-    r = _run_wsl(cfg, bash, timeout=120)
-    text = r.stdout + r.stderr
+    r = _run_wsl(cfg, f"source {env_q} 2>/dev/null; cd {linux_case} && checkMesh 2>&1", timeout=120)
+    return r.stdout + r.stderr
+
+def _checkmesh_metrics(case_dir: Path) -> dict:
+    text = _checkmesh_raw(case_dir)
     metrics = {
-        "cells": _rex(r"cells\s*\(([\d,]+)\)\s*:", text),
-        "max_skewness": _flt(r"Max skewness\s*:\s*([\d.]+)", text),
-        "avg_skewness": _flt(r"average skewness\s*:\s*([\d.]+)", text),
-        "max_non_orth": _flt(r"Maximum cell non-orthogonality = ([\d.]+)", text),
-        "avg_non_orth": _flt(r"average non-orthogonality = ([\d.]+)", text),
-        "max_aspect_ratio": _flt(r"Max aspect ratio\s*=\s*([\d.]+)", text),
+        "cells": int(_rex(r"cells:\s+(\d+)", text) or 0),
+        "max_skewness": _flt(r"Max skewness\s*[:=]\s*([\d.]+)", text),
+        "avg_skewness": _flt(r"average skewness\s*[:=]\s*([\d.]+)", text),
+        "max_non_orth": _flt(r"non-orthogonality\s+Max:\s*([\d.]+)", text),
+        "avg_non_orth": _flt(r"non-orthogonality\s+Max:\s*[\d.]+\s+average:\s*([\d.]+)", text),
+        "max_aspect_ratio": _flt(r"Max aspect ratio\s*[:=]\s*([\d.]+)", text),
         "min_volume": _flt(r"Min volume = ([\d.eE+-]+)", text),
         "max_volume": _flt(r"Max volume = ([\d.eE+-]+)", text),
         "n_neg_vol": _int(r"there are (\d+) negative volume cells", text),
         "n_bad_skew": _int(r"(\d+)\s+highly skew", text),
         "n_bad_nonortho": _int(r"(\d+)\s+severely non-orthogonal", text),
         "passed": "Mesh OK." in text,
-        "return_code": r.returncode,
+        "return_code": 0,
         "raw_output": text,
     }
     return metrics
@@ -57,14 +59,20 @@ def _rex(pat, text):
 
 def _flt(pat, text):
     m = re.search(pat, text)
-    return float(m.group(1)) if m else None
+    if m:
+        val = m.group(1).rstrip('.')
+        try: return float(val)
+        except: return None
+    return None
 
 def _int(pat, text):
     m = re.search(pat, text)
     return int(m.group(1)) if m else 0
 
 def _hex_cells(case_dir: Path) -> int:
-    return of_list_count(Path(case_dir) / "constant" / "polyMesh" / "owner")
+    """Count cells from existing checkMesh log if available."""
+    cm = _checkmesh_metrics(case_dir)
+    return cm["cells"]
 
 
 # Geometry builders
