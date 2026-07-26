@@ -100,8 +100,8 @@ startFrom startTime; startTime 0;
 stopAt endTime; endTime 1000;
 deltaT 1;
 writeControl timeStep; writeInterval 1;
-purgeWrite 0; writeFormat ascii; writePrecision 6;
-writeCompression off; timeFormat general; timePrecision 6;
+purgeWrite 0; writeFormat binary; writePrecision 6;
+writeCompression on; timeFormat general; timePrecision 6;
 runTimeModifiable true;
 """
     (case_dir / "system" / "controlDict").write_text(ctrl)

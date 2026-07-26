@@ -52,8 +52,8 @@ CONTROL_DICT = """\
 FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }
 application cartesianMesh;
 startFrom startTime; startTime 0; stopAt endTime; endTime 1000; deltaT 1;
-writeControl timeStep; writeInterval 1; purgeWrite 0; writeFormat ascii;
-writePrecision 6; writeCompression off; timeFormat general; timePrecision 6;
+writeControl timeStep; writeInterval 1; purgeWrite 0; writeFormat binary;
+writePrecision 6; writeCompression on; timeFormat general; timePrecision 6;
 runTimeModifiable true;
 """
 

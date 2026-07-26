@@ -29,6 +29,7 @@ def load_commercial_module(module_name: str) -> types.ModuleType:
         ("cfmesh_autogui.core.session", "cfmesh_autogui/core/session.py"),
         ("cfmesh_autogui.core.meshdict_gen", "cfmesh_autogui/core/meshdict_gen.py"),
         ("cfmesh_autogui.core.stl_writer", "cfmesh_autogui/core/stl_writer.py"),
+        ("cfmesh_autogui.core.of_reader", "cfmesh_autogui/core/of_reader.py"),
         ("cfmesh_autogui.core.boundary_reader", "cfmesh_autogui/core/boundary_reader.py"),
     ]:
         pkg = ".".join(mod_name.split(".")[:-1])
