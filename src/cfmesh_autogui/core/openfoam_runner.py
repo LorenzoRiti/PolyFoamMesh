@@ -1414,3 +1414,51 @@ class GmshVolumeWorker(QObject):
 
         self.finished.emit(result)
 
+
+class WatertightWorker(QObject):
+    """Runs watertight check + optional pymeshfix repair in a subprocess."""
+
+    finished = Signal(object)
+    log_line = Signal(str)
+    failed = Signal(str)
+    TIMEOUT_S = 180
+
+    def __init__(self, stl_paths: list[Path], parent=None):
+        super().__init__(parent)
+        self._stl_paths = stl_paths
+
+    @Slot()
+    def run(self):
+        import sys, subprocess, json
+        frozen = getattr(sys, "frozen", False)
+        args = ["check"] + [str(p) for p in self._stl_paths]
+        if frozen:
+            cmd = [sys.executable, "--watertight"] + args[1:]
+        else:
+            cmd = [sys.executable, "-m", "cfmesh_autogui.core.geometry_repair"] + args
+        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+        self.log_line.emit("[watertight] Checking geometry...")
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=self.TIMEOUT_S, cwd=run_cwd,
+            )
+        except subprocess.TimeoutExpired:
+            self.failed.emit(f"Watertight check exceeded {self.TIMEOUT_S}s")
+            return
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        if proc.returncode != 0:
+            self.failed.emit(proc.stderr.strip() or f"Check failed (exit {proc.returncode})")
+            return
+        try:
+            result = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            self.failed.emit(f"Watertight: invalid JSON: {e}")
+            return
+        if not result.get("success"):
+            self.failed.emit(result.get("error", "Unknown error"))
+            return
+        self.finished.emit(result)
+

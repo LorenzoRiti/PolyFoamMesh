@@ -121,6 +121,10 @@ def main():
         from cfmesh_autogui.core.feature_detector import _main as _feature_detect_main
         _sys.exit(_feature_detect_main(_sys.argv[2:]))
 
+    if len(_sys.argv) > 1 and _sys.argv[1] == "--watertight":
+        from cfmesh_autogui.core.geometry_repair import _main as _watertight_main
+        _sys.exit(_watertight_main(_sys.argv[2:]))
+
     # Global exception hooks: catch unhandled exceptions and show them
     # in a dialog instead of crashing silently.
     _orig_excepthook = _sys.excepthook

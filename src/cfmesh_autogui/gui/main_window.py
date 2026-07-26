@@ -644,7 +644,7 @@ class MainWindow(QMainWindow):
 
         # Geometry loaded and auto-sized; the watertight result is set inside.
         self._refresh_workflow(geometry_loaded=True, sizing_ready=True)
-        self._check_watertight(self._unscaled_meshes)
+        self._start_watertight_check(self._unscaled_meshes)
 
     def _prepare_surface_with_features(self) -> str:
         """Return the surface file for cfMesh.
@@ -772,23 +772,88 @@ class MainWindow(QMainWindow):
                     f"{Tag.GEOM} Healed '{name}': {', '.join(report.operations)}"
                 )
 
-    def _check_watertight(self, meshes: list[trimesh.Trimesh]) -> None:
-        """Warn early if the assembled patches don't form a closed volume,
-        and automatically attempt to fix it.
+    def _start_watertight_check(self, meshes: list[trimesh.Trimesh]) -> None:
+        """Check watertightness in a background subprocess to avoid GUI freeze
+        during pymeshfix repair.
 
-        cfMesh/cartesianMesh needs a watertight domain \u2014 running the mesher
-        on an open/leaky geometry fails only after minutes of WSL2 work,
-        with a cryptic cfMesh error. Checking right after load surfaces the
-        problem immediately, before the user commits to a full mesh run.
-
-        The overwhelming majority of "open boundary edges" on a geometry
-        that looks fine are not a real hole \u2014 they're each patch having
-        been tessellated independently, so vertices meant to sit on a
-        shared boundary are a tiny floating-point distance apart. A user
-        seeing only "506 open boundary edges" with no next step has no way
-        to tell that apart from a genuinely broken CAD file, and no tool to
-        do anything about either case. See core/geometry_repair.py.
+        Falls back to synchronous check if the subprocess cannot be launched
+        (e.g. trimesh not in PATH for the subprocess Python).
         """
+        if not meshes:
+            return
+        from cfmesh_autogui.core.stl_writer import export_multisolid_stl
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp(prefix="cfmesh_watertight_"))
+        stl_paths = []
+        try:
+            for i, m in enumerate(meshes):
+                p = tmp_dir / f"patch_{i}.stl"
+                m.export(str(p))
+                stl_paths.append(p)
+        except Exception as exc:
+            logger.debug("Watertight STL export failed, using sync path: %s", exc)
+            self._check_watertight_sync(meshes)
+            return
+
+        from cfmesh_autogui.core.openfoam_runner import WatertightWorker
+        self._cleanup_thread("_watertight_thread", "_watertight_worker")
+        t = QThread()
+        w = WatertightWorker(stl_paths)
+        w.moveToThread(t)
+        self._watertight_thread = t
+        self._watertight_worker = w
+        self._log.append_log(f"{Tag.GEOM} Checking watertightness...")
+
+        def on_watertight_result(result: dict):
+            watertight = result.get("watertight", False)
+            n_open = result.get("n_open_edges", 0)
+            reports_data = result.get("reports", [])
+            repaired_paths = result.get("repaired_paths", [])
+
+            if watertight:
+                self._log.append_log(f"{Tag.GEOM} Watertight check: OK (closed volume).")
+                self._refresh_workflow(watertight=True)
+            else:
+                self._log.append_log(
+                    f"{Tag.WARN} Watertight check: {n_open} open boundary edges."
+                )
+                for r in reports_data:
+                    for op in r.get("operations", []):
+                        self._log.append_log(f"{Tag.GEOM} [auto-fix/{r.get('method','?')}] {op}")
+                if repaired_paths:
+                    try:
+                        import trimesh
+                        repaired = [trimesh.load(p) for p in repaired_paths]
+                        self._unscaled_meshes = repaired
+                        self._rebuild_scaled_meshes()
+                        self._params.set_patches(
+                            [m.metadata.get("name", "?") for m in self._meshes]
+                        )
+                    except Exception as exc:
+                        logger.debug("Could not load repaired meshes: %s", exc)
+                if watertight:
+                    self._log.append_log(
+                        f"{Tag.GEOM} Watertight check: closed by auto-repair."
+                    )
+                self._refresh_workflow(watertight=watertight)
+
+        def on_watertight_failed(msg: str):
+            self._log.append_log(f"{Tag.WARN} Watertight check failed (background): {msg}")
+            self._log.append_log(f"{Tag.GEOM} Watertight check: running synchronously...")
+            self._check_watertight_sync(meshes)
+
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.finished.connect(on_watertight_result, Qt.QueuedConnection)
+        w.failed.connect(on_watertight_failed, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        t.start()
+
+    def _check_watertight_sync(self, meshes: list[trimesh.Trimesh]) -> None:
+        """Synchronous fallback for watertight check (if subprocess unavailable)."""
         if not meshes:
             return
         try:
@@ -3292,6 +3357,7 @@ class MainWindow(QMainWindow):
             ("_checkmesh_thread", "_checkmesh_worker"),
             ("_quality_fix_thread", "_quality_fix_worker"),
             ("_decompose_thread", "_decompose_worker"),
+            ("_watertight_thread", "_watertight_worker"),
         ]:
             self._cleanup_thread(attr_t, attr_w)
         from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
