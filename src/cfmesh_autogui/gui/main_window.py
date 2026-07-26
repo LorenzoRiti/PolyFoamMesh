@@ -2270,6 +2270,10 @@ class MainWindow(QMainWindow):
 
     def _on_cancel_meshing(self):
         self._run_id += 1
+        # Kill WSL subprocesses FIRST, before terminating QThreads.
+        # QThread.terminate() does not execute Python finally blocks,
+        # which would orphan the subprocess.
+        self._kill_wsl_processes()
         if getattr(self._runner, "is_running", False):
             self._runner.terminate()
         parallel_worker = getattr(self, "_parallel_worker", None)
@@ -2281,7 +2285,6 @@ class MainWindow(QMainWindow):
             if not parallel_thread.wait(5000):
                 parallel_thread.terminate()
                 parallel_thread.wait(3000)
-        self._kill_wsl_processes()
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
@@ -3198,6 +3201,10 @@ class MainWindow(QMainWindow):
                             pass
             thread.quit()
             if not thread.wait(timeout_ms):
+                # Kill WSL subprocesses BEFORE terminating the QThread, otherwise
+                # the thread's finally block (which kills the process) never runs
+                # and WSL processes become orphaned.
+                self._kill_wsl_processes()
                 thread.terminate()
                 thread.wait(1000)
             if worker:

@@ -251,7 +251,7 @@ def _run_foamtovtk_async(case_dir: Path, vtk_subdir: str, state: float) -> Path 
             proc.wait(5)
             logger.error("foamToVTK timed out after 60s")
             return None
-        _time.sleep(0.1)
+        QApplication.processEvents()
     stdout, stderr = proc.communicate()
     if proc.returncode != 0:
         stderr_detail = (stderr or stdout or "")[-500:]
