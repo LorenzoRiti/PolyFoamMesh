@@ -377,7 +377,12 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
             if fi > 0 and fi % 500 == 0:
                 QApplication.processEvents()
             n = len(face_indices)
-            verts_arr[v_offset:v_offset + n] = points[face_indices]
+            try:
+                verts_arr[v_offset:v_offset + n] = points[face_indices]
+            except IndexError:
+                logger.warning("Patch '%s' face %d: index out of bounds (points=%d, max_idx=%d). Mesh parsing incomplete.",
+                               p["name"], fi, len(points), max(face_indices))
+                return None
             if n == 3:
                 tris_arr[t_offset] = [v_offset, v_offset + 1, v_offset + 2]
                 t_offset += 1

@@ -1462,3 +1462,29 @@ class WatertightWorker(QObject):
             return
         self.finished.emit(result)
 
+
+class ExportWorker(QObject):
+    """Export mesh to a format in a background thread.
+
+    Signals:
+        finished(str): emitted with the output path on success.
+        error_occurred(str): emitted with the error message on failure.
+    """
+    finished = Signal(str)
+    error_occurred = Signal(str)
+
+    def __init__(self, case_dir: Path, fmt: str, output_path: str, of_config=None):
+        super().__init__()
+        self._case_dir = case_dir
+        self._fmt = fmt
+        self._output_path = output_path
+        self._of_config = of_config
+
+    def run(self):
+        try:
+            from cfmesh_autogui.core.mesh_export import export_mesh
+            out = export_mesh(self._case_dir, self._fmt, self._output_path, of_config=self._of_config)
+            self.finished.emit(str(out))
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+

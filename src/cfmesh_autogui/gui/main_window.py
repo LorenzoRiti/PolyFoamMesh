@@ -133,14 +133,8 @@ class MainWindow(QMainWindow):
             lambda msg: self._log.append_log(f"[measure] {msg}")
         )
 
-        if not self._of_config.validate():
-            logger.warning("OpenFOAM not detected via WSL2.")
-            self._log.append_log(f"{Tag.WARN} OpenFOAM not detected via WSL.")
-            self._log.append_log(f"{Tag.WARN} Ensure WSL2 + OpenFOAM v2512 are installed.")
-            self._status.showMessage("OpenFOAM not found — meshing disabled")
-        else:
-            logger.info("OpenFOAM v2512 detected via WSL2.")
-            self._status.showMessage("Ready — OpenFOAM v2512 via WSL2")
+        self._status.showMessage("Checking OpenFOAM environment...")
+        QTimer.singleShot(100, self._deferred_wsl_check)
 
         from cfmesh_autogui.core.disk_cleanup import auto_cleanup
         try:
@@ -1326,9 +1320,20 @@ class MainWindow(QMainWindow):
         self._wsl_check_thread.start()
 
     def _on_wsl_check_finished(self, of_available: bool) -> None:
-        my_id = self._wsl_check_run_id
-        if my_id != self._run_id:
+        my_id = getattr(self, "_wsl_check_run_id", -1)
+        if my_id not in (0, self._run_id):
             logger.debug("Stale WSL-check callback ignored (got %d, current %d).", my_id, self._run_id)
+            return
+        if my_id == 0:
+            # Deferred startup check — no message box
+            if of_available:
+                logger.info("OpenFOAM v2512 detected via WSL2.")
+                self._status.showMessage("Ready — OpenFOAM v2512 via WSL2")
+            else:
+                logger.warning("OpenFOAM not detected via WSL2.")
+                self._log.append_log(f"{Tag.WARN} OpenFOAM not detected via WSL.")
+                self._log.append_log(f"{Tag.WARN} Ensure WSL2 + OpenFOAM v2512 are installed.")
+                self._status.showMessage("OpenFOAM not found — meshing disabled")
             return
         if not of_available:
             QMessageBox.warning(
@@ -2038,100 +2043,6 @@ class MainWindow(QMainWindow):
             encoding="ascii",
         )
 
-    def _on_run_meshing_gmsh_hybrid(self, geom_path: str):
-        self._run_id += 1
-        my_id = self._run_id
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = Path.home() / "cfmesh_cases"
-        if " " in str(root):
-            root = Path("C:/cfmesh_cases")
-        self._case_dir = root / f"gmsh_hybrid_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
-        self._params.set_case_dir(str(self._case_dir))
-        self._log.clear_log()
-        self._log.append_log(f"{Tag.CASE} {self._case_dir} (GMSH hybrid)")
-
-        detail = self._params.get_detail_level()
-        bl_params = self._params.get_bl_params()
-        self._log.append_log("[gmsh] Generating curvature-aware surface STL...")
-        self._status.showMessage("GMSH: surface mesh...")
-        QApplication.processEvents()
-
-        try:
-            tri_dir = self._case_dir / "constant" / "triSurface"
-            tri_dir.mkdir(parents=True, exist_ok=True)
-            stl_out = tri_dir / "surface.stl"
-            names = gmsh_generate_surface_stl(
-                geom_path, stl_out, detail=detail,
-            )
-            self._log.append_log(
-                f"[gmsh] Surface STL: {stl_out} — patches: {names}"
-            )
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.error("GMSH surface failed: %s\n%s", e, tb)
-            self._log.append_log(f"[ERROR] GMSH surface: {e}")
-            self._params.set_all_enabled(True)
-            return
-
-        self._log.append_log("[gmsh] Volume fill via cfMesh...")
-        self._status.showMessage("cfMesh: volume fill...")
-        QApplication.processEvents()
-
-        sizing = gmsh_compute_sizing(geom_path, detail=detail)
-        safe_max = max(sizing.suggested_volume_size, 0.001)
-        safe_min = max(sizing.suggested_surface_size, 0.0001)
-
-        try:
-            from cfmesh_autogui.core.meshdict_gen import write_meshdict
-            write_meshdict(
-                self._case_dir, safe_max, safe_min,
-                patch_cell_size=sizing.patch_sizes or None,
-                boundary_cell_size=sizing.suggested_surface_size,
-                boundary_refinement_thickness=sizing.min_curvature_radius * 2,
-                bl_params=bl_params,
-                patch_names=names,
-            )
-        except Exception as e:
-            logger.error("meshDict failed: %s", e)
-            self._log.append_log(f"{Tag.ERROR} meshDict: {e}")
-            self._params.set_all_enabled(True)
-            return
-
-        (self._case_dir / "system" / "controlDict").write_text(
-            "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
-            "application cartesianMesh;\n"
-            "startFrom startTime; startTime 0;\n"
-            "stopAt endTime; endTime 1000;\n"
-            "deltaT 1;\n"
-            "writeControl timeStep; writeInterval 1;\n"
-            "writeFrequency 1;\n"
-            "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
-            "writeCompression on; timeFormat general; timePrecision 6;\n"
-            "runTimeModifiable true;\n",
-            encoding="ascii",
-        )
-
-        self._runner = RetryRunner(self._of_config)
-        self._connect_runner_signals()
-
-        def guarded_finished(exit_code, output, attempts):
-            if my_id != self._run_id:
-                logger.debug("Stale gmsh_hybrid callback ignored")
-                return
-            self._on_meshing_finished(exit_code, output, attempts)
-
-        self._runner.run(
-            self._case_dir,
-            on_log=self._log.append_log,
-            on_finished=guarded_finished,
-            bl_params=bl_params,
-            max_cell=safe_max,
-            min_cell=safe_min,
-            patch_names=names,
-        )
-
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
         from cfmesh_autogui.core.openfoam_runner import GmshVolumeWorker
         self._log.append_log("[gmsh] Starting volume mesh generation in background...")
@@ -2233,121 +2144,6 @@ class MainWindow(QMainWindow):
         if poly_points.exists() and poly_faces.exists():
             self._launch_checkmesh()
 
-    def _on_run_meshing_gmsh_direct(self, step_path: str):
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = Path.home() / "cfmesh_cases"
-        if " " in str(root):
-            root = Path("C:/cfmesh_cases")
-        self._case_dir = root / f"gmsh_direct_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
-        self._params.set_case_dir(str(self._case_dir))
-        self._log.clear_log()
-        self._log.append_log(f"{Tag.CASE} {self._case_dir} (GMSH direct)")
-
-        detail = self._params.get_detail_level()
-        bl_params = self._params.get_bl_params()
-        # get_bl_params()'s real keys are nLayers/thicknessRatio (the
-        # growth ratio)/firstLayerThickness (absolute metres) — this used
-        # to read "thicknessRatio" for the absolute thickness and a
-        # nonexistent "expansionRatio" for the growth ratio, so the user's
-        # actual BL settings were silently ignored on the GMSH-direct path
-        # (same key-name bug that crashed the cfMesh path with KeyError).
-        n_layers = bl_params.get("nLayers", 0) if bl_params else 0
-        bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
-        bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
-
-        self._log.append_log("[gmsh] Generating volume mesh (tetra + BL)...")
-        self._status.showMessage("GMSH: volume mesh...")
-        QApplication.processEvents()
-
-        bl_retried = False
-        while True:
-            try:
-                msh_path = self._case_dir / "mesh.msh"
-                msh_path, names = gmsh_generate_volume_mesh(
-                    step_path, msh_path,
-                    detail=detail,
-                    n_layers=n_layers,
-                    bl_thickness=bl_thickness,
-                    bl_expansion=bl_expansion,
-                )
-                self._log.append_log(
-                    f"[gmsh] Volume mesh: {msh_path} — patches: {names}"
-                )
-                break
-            except Exception as e:
-                if not bl_retried and bl_params and n_layers > 0:
-                    bl_retried = True
-                    self._log.append_log(
-                        f"{Tag.WARN} GMSH volume mesh failed with BL — "
-                        "retrying without boundary layers."
-                    )
-                    n_layers = 0
-                    bl_thickness = None
-                    bl_expansion = 1.2
-                    continue
-                import traceback
-                tb = traceback.format_exc()
-                logger.error("GMSH volume mesh failed: %s\n%s", e, tb)
-                self._log.append_log(f"[ERROR] GMSH volume: {e}")
-                self._params.set_all_enabled(True)
-                return
-
-        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
-        self._status.showMessage("GMSH: conversion...")
-        QApplication.processEvents()
-        try:
-            from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
-            poly_dir = msh_to_of_polymesh(msh_path, self._case_dir)
-            self._log.append_log(
-                f"[gmsh] polyMesh: {poly_dir}"
-            )
-            try:
-                from cfmesh_autogui.core.boundary_reader import (
-                    count_cells, count_faces, count_points,
-                )
-                n_points = count_points(self._case_dir)
-                n_faces = count_faces(self._case_dir)
-                n_cells = count_cells(self._case_dir)
-                self._log.append_log(
-                    f"[gmsh] Stats: {n_points:,} points, {n_faces:,} faces, "
-                    f"{n_cells:,} cells"
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.error("MSH conversion failed: %s\n%s", e, tb)
-            self._log.append_log(f"[ERROR] MSH conversion: {e}")
-            self._params.set_all_enabled(True)
-            return
-
-        from cfmesh_autogui.core.boundary_reader import parse_boundary
-        from cfmesh_autogui.core.case_setup import setup_case
-        boundary_path = self._case_dir / "constant" / "polyMesh" / "boundary"
-        if boundary_path.exists():
-            try:
-                patches = parse_boundary(boundary_path)
-                setup_case(self._case_dir, patches, **self._case_setup_kwargs())
-                self._log.append_log("[setup] Case files generated (0/, system/).")
-            except Exception as e:
-                logger.error("Case setup failed: %s", e)
-                self._log.append_log(f"[ERROR] Case setup: {e}")
-                self._params.set_all_enabled(True)
-                return
-
-        self._log.append_log(f"{Tag.DONE} Case: {self._case_dir}")
-        self._viewer.show_mesh(self._case_dir)
-        self._status.showMessage("GMSH direct mesh ready")
-        self._params.set_all_enabled(True)
-
-        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
-        poly_faces = self._case_dir / "constant" / "polyMesh" / "faces"
-        if poly_points.exists() and poly_faces.exists():
-            self._launch_checkmesh()
-
-    @Slot(int)
     def _on_cell_count_found(self, count: int):
         from cfmesh_autogui.gui.design_tokens import SUCCESS
         self._cell_count_label.setText(f"Mesh cells: {count:,}")
@@ -2964,14 +2760,36 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        try:
-            from cfmesh_autogui.core.mesh_export import export_mesh
-            out = export_mesh(self._case_dir, fmt, path, of_config=self._of_config)
-            self._log.append_log(f"{Tag.EXPORT} Mesh exported ({fmt.upper()}): {out}")
-            QMessageBox.information(self, "Export Complete", f"Mesh exported to:\n{out}")
-        except Exception as e:
-            logger.error("Export failed: %s", e)
-            QMessageBox.critical(self, "Export Error", str(e))
+
+        self._export_result_path = path
+        self._export_format = fmt
+        self._status.showMessage(f"Exporting mesh ({fmt})...")
+        self._log.append_log(f"{Tag.EXPORT} Starting mesh export ({fmt})...")
+        self._progress.setRange(0, 0)
+        self._progress.setVisible(True)
+
+        from cfmesh_autogui.core.openfoam_runner import ExportWorker
+        self._export_thread = QThread()
+        self._export_worker = ExportWorker(self._case_dir, fmt, path, self._of_config)
+        self._export_worker.moveToThread(self._export_thread)
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.finished.connect(self._on_export_finished, Qt.QueuedConnection)
+        self._export_worker.finished.connect(self._export_thread.quit, Qt.QueuedConnection)
+        self._export_worker.finished.connect(self._export_worker.deleteLater, Qt.QueuedConnection)
+        self._export_worker.error_occurred.connect(self._on_export_error, Qt.QueuedConnection)
+        self._export_thread.start()
+
+    def _on_export_finished(self, out_path: str):
+        self._progress.setVisible(False)
+        self._status.showMessage("Export complete")
+        self._log.append_log(f"{Tag.EXPORT} Mesh exported ({self._export_format.upper()}): {out_path}")
+        QMessageBox.information(self, "Export Complete", f"Mesh exported to:\n{out_path}")
+
+    def _on_export_error(self, msg: str):
+        self._progress.setVisible(False)
+        self._status.showMessage("Export failed")
+        logger.error("Export failed: %s", msg)
+        QMessageBox.critical(self, "Export Error", msg)
 
     def _on_export_baramflow(self):
         """Export a self-contained OpenFOAM case folder ready to open in BaramFlow.
@@ -3257,17 +3075,22 @@ class MainWindow(QMainWindow):
         if getattr(self, '_quality_fix_thread', None) and self._quality_fix_thread and self._quality_fix_thread.isRunning():
             QMessageBox.information(self, "Already Running", "A quality fix cycle is already in progress.")
             return
+        my_id = self._run_id
         self._quality_fix_thread = QThread()
         self._quality_fix_worker = QualityFixWorker(self._of_config)
         self._quality_fix_worker.moveToThread(self._quality_fix_thread)
         self._quality_fix_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
 
         def _on_qf_finished(code: int):
+            if my_id != self._run_id:
+                return
             self._log.append_log(f"[quality-fix] Completed (exit {code})")
             self._set_workflow_stage("quality", "done")
             self._launch_checkmesh()
 
         def _on_qf_failed(msg: str):
+            if my_id != self._run_id:
+                return
             self._log.append_log(f"[quality-fix] FAILED: {msg}")
             self._set_workflow_stage("quality", "error")
 
