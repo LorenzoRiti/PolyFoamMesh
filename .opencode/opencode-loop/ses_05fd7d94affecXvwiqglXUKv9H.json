@@ -50,7 +50,8 @@
         "providerID": "deepseek",
         "modelID": "deepseek-v4-flash"
       },
-      "activeRecoveryMs": 45000
+      "activeRecoveryMs": 45000,
+      "lastFinishedAt": 1785098634135
     }
   ]
 }

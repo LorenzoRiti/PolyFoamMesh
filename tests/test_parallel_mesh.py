@@ -223,7 +223,7 @@ def test_run_actually_meshes_in_parallel_on_real_wsl():
         "startFrom startTime; startTime 0; stopAt endTime; endTime 1000; "
         "deltaT 1;\n"
         "writeControl timeStep; writeInterval 1; purgeWrite 0; "
-        "writeFormat ascii;\nwritePrecision 6; writeCompression off; "
+        "writeFormat binary;\nwritePrecision 6; writeCompression on; "
         "timeFormat general; timePrecision 6;\nrunTimeModifiable true;\n",
         encoding="ascii",
     )
