@@ -158,6 +158,20 @@ class BLEngine:
         # First layer height from y+ definition
         first_layer = target_yplus * flow.kinematic_viscosity / u_tau
 
+        # Clamp first_layer to a physically sensible range: min 1nm (numerical
+        # limit for double-precision on mm-scale geometries), max 10% of ref
+        # length (otherwise the first layer alone would be huge).
+        if first_layer < 1e-9:
+            logger.warning("first_layer=%.2e too small, clamped to 1e-9", first_layer)
+            first_layer = 1e-9
+        max_allowed_fl = flow.reference_length * 0.1
+        if first_layer > max_allowed_fl:
+            logger.warning(
+                "first_layer=%.6f exceeds 10%% of ref_length (%.4f), clamped to %.6f",
+                first_layer, flow.reference_length, max_allowed_fl,
+            )
+            first_layer = max_allowed_fl
+
         # Total BL thickness estimate (99% of free-stream)
         delta_99 = 0.37 * flow.reference_length / (Re ** 0.2)
 
@@ -172,16 +186,29 @@ class BLEngine:
             n_layers = int(
                 math.ceil(math.log1p(delta_99 * (r - 1.0) / first_layer) / math.log(r))
             )
-            n_layers = max(1, min(n_layers, 40))
+            n_layers = max(1, min(n_layers, 20))  # cap at 20 for reliability
         else:
             n_layers = 1
 
         total = first_layer * (r ** n_layers - 1) / (r - 1) if r > 1 else first_layer * n_layers
 
+        # Final sanity: total BL should not exceed 30% of ref length
+        max_total = flow.reference_length * 0.3
+        if total > max_total:
+            # Reduce n_layers until total fits or n_layers==1
+            while n_layers > 1 and total > max_total:
+                n_layers -= 1
+                total = first_layer * (r ** n_layers - 1) / (r - 1) if r > 1 else first_layer * n_layers
+            logger.warning(
+                "Total BL thickness reduced to %d layers = %.6fm (cap at 30%% of ref_length=%.4f)",
+                n_layers, total, flow.reference_length,
+            )
+
         octo.log_event("bl_engine", "calculate_from_flow", {
             "Re": Re, "target_y+": target_yplus,
             "first_layer_m": round(first_layer, 8),
             "n_layers": n_layers,
+            "total_bl_m": round(total, 6),
         })
 
         return BLParameters(

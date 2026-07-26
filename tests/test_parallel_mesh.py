@@ -228,6 +228,10 @@ def test_run_actually_meshes_in_parallel_on_real_wsl():
         encoding="ascii",
     )
 
+    from cfmesh_autogui.core.meshdict_gen import write_meshdict
+    write_meshdict(case, 0.08, 0.02, patch_names=["wall"],
+                   surface_file="constant/triSurface/surface.stl")
+
     pe = ParallelMeshEngine()
     pe.setup_case(case, n_cores=4, method="scotch")
     pe.set_cell_sizes(0.08, 0.02)
@@ -289,10 +293,10 @@ def test_clamp_cores_reduces_when_memory_insufficient(monkeypatch):
 
     monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _FakeResult())
 
-    pe._clamp_cores_to_available_memory()
+    clamped = pe._clamp_cores_to_available_memory()
 
-    assert pe._params.n_cores < 64
-    assert pe._params.n_cores >= pe.MIN_CORES
+    assert clamped < 64
+    assert clamped >= pe.MIN_CORES
     assert len(pe._result.warnings) == 1
     assert "14794" in pe._result.warnings[0]
 
@@ -316,9 +320,9 @@ def test_clamp_cores_leaves_reasonable_request_untouched(monkeypatch):
 
     monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _FakeResult())
 
-    pe._clamp_cores_to_available_memory()
+    clamped = pe._clamp_cores_to_available_memory()
 
-    assert pe._params.n_cores == 4
+    assert clamped == 4
     assert pe._result.warnings == []
 
 
@@ -338,6 +342,6 @@ def test_clamp_cores_handles_query_failure_gracefully(monkeypatch):
 
     monkeypatch.setattr(_subprocess, "run", _raise)
 
-    pe._clamp_cores_to_available_memory()  # must not raise
+    clamped = pe._clamp_cores_to_available_memory()  # must not raise
 
-    assert pe._params.n_cores == 4  # left as requested when the query itself fails
+    assert clamped == 4  # left as requested when the query itself fails

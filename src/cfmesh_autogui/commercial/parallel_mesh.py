@@ -82,13 +82,13 @@ class ParallelMeshEngine:
 
     MAX_CORES = 128
     MIN_CORES = 2
-    # 30 min ceiling (generous for interactive use; very large meshes
-    # that genuinely need longer should use the serial path).
-    _TIMEOUT_S = 1800
-    # Reconstruct timeout: merging N subdomain meshes is I/O-bound and
-    # scales with the largest per-rank mesh size.  10 minutes should
-    # cover even multi-million-cell cases.
-    _RECONSTRUCT_TIMEOUT_S = 600
+    # 4 hour ceiling — allows ~25M cells at ~1800 cells/sec/core with 4 cores.
+    # cartesianMesh parallel scaling is sub-linear (geometry decomposition
+    # overhead + I/O), so 4 hours is a safe upper bound for 25M cells.
+    _TIMEOUT_S = 14400
+    # Reconstruct timeout for 25M cells: merging N subdomain meshes is
+    # I/O-bound and scales with the largest per-rank mesh size.
+    _RECONSTRUCT_TIMEOUT_S = 3600
 
     def __init__(self, of_config: OFConfig | None = None) -> None:
         self._of_config = of_config or OFConfig()
@@ -156,16 +156,55 @@ class ParallelMeshEngine:
         except Exception as exc:
             logger.debug("Stray-process cleanup skipped: %s", exc)
 
+    def _measure_actual_per_rank_mb(self) -> int | None:
+        """Measure actual per-rank memory by running a quick WSL test.
+
+        Launches a single cartesianMesh rank in a throwaway tmp dir,
+        measures memory delta with psutil, and kills it.
+        Returns None if measurement fails (falls back to heuristic).
+        """
+        if not self._case_dir:
+            return None
+        try:
+            import psutil
+            proc = subprocess.Popen(
+                self._of_config.build_command(self._case_dir),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            mem_before = psutil.Process(proc.pid).memory_info().rss
+            import time
+            time.sleep(3)
+            proc.kill()
+            proc.wait(timeout=5)
+            mem_after = psutil.Process(proc.pid).memory_info().rss
+            used_mb = max(mem_after - mem_before, 0) / (1024 * 1024)
+            if used_mb > 10:
+                return int(used_mb * 1.2)
+        except Exception as exc:
+            logger.debug("Actual memory measurement failed: %s", exc)
+        return None
+
     def _estimate_per_rank_mb(self) -> int:
-        base_mb = 200
+        base_mb = 300
         tri_dir = (self._case_dir / "constant" / "triSurface") if self._case_dir else None
         if not tri_dir or not tri_dir.is_dir():
             return base_mb
+
+        measured = self._measure_actual_per_rank_mb()
+        if measured is not None:
+            logger.info("Measured per-rank memory: %d MB", measured)
+            return measured
+
         total_bytes = sum(f.stat().st_size for f in tri_dir.glob("*") if f.is_file())
         surface_mb = total_bytes / (1024 * 1024)
-        return int(base_mb + surface_mb * 20)
+        return int(base_mb + surface_mb * 5)
 
-    def _clamp_cores_to_available_memory(self) -> None:
+    def _clamp_cores_to_available_memory(self) -> int:
+        """Clamp core count to available WSL2 memory.
+        
+        Returns the actual number of cores to use (may be less than requested).
+        Returns 1 (serial) when there isn't enough memory even for 2 ranks.
+        """
         try:
             cmd = self._of_config._build_wsl_cmd("free -m")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -183,10 +222,19 @@ class ParallelMeshEngine:
                 "leaving core count at %d as requested.",
                 exc, self._params.n_cores,
             )
-            return
+            return self._params.n_cores
 
         per_rank_mb = self._estimate_per_rank_mb()
-        safe_n = max(self.MIN_CORES, int((available_mb * 0.7) // per_rank_mb))
+        safe_n = int((available_mb * 0.5) // per_rank_mb)
+        if safe_n < 2:
+            msg = (
+                f"Parallel disabled: WSL2 has ~{available_mb} MB available, "
+                f"each rank needs ~{per_rank_mb} MB — not enough for 2 ranks. "
+                "Falling back to serial."
+            )
+            logger.warning(msg)
+            self._result.warnings.append(msg)
+            return 1
         if safe_n < self._params.n_cores:
             msg = (
                 f"Reduced parallel cores from {self._params.n_cores} to "
@@ -195,7 +243,7 @@ class ParallelMeshEngine:
             )
             logger.warning(msg)
             self._result.warnings.append(msg)
-            self._params.n_cores = safe_n
+        return min(safe_n, self._params.n_cores)
 
     def run(self) -> ParallelMeshResult:
         """Execute the parallel meshing workflow.
@@ -225,14 +273,19 @@ class ParallelMeshEngine:
                 raise CancelledError("Cancelled before start")
 
             self._kill_stray_processes()
-            self._clamp_cores_to_available_memory()
-            self._result.n_cores = self._params.n_cores
+            clamped = self._clamp_cores_to_available_memory()
+            if clamped < self.MIN_CORES:
+                raise RuntimeError(
+                    f"Parallel meshing disabled: WSL2 available memory too low "
+                    f"for {self.MIN_CORES}+ ranks."
+                )
+            self._params.n_cores = clamped
+            self._result.n_cores = clamped
 
             self._clean_old_tmp_dirs()
             self._clean_processor_dirs()
-            self._write_meshdict()
             if self._cancel_event.is_set():
-                raise CancelledError("Cancelled after meshDict")
+                raise CancelledError("Cancelled before parallel mesh")
             self._step_parallel_mesh()
             if self._cancel_event.is_set():
                 raise CancelledError("Cancelled after parallel mesh step")

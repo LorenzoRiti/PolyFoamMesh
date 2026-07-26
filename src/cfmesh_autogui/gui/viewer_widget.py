@@ -9,9 +9,9 @@ import trimesh
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QCheckBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QCheckBox, QApplication,
 )
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QTimer, Signal, QProcess
 
 from cfmesh_autogui.core.boundary_reader import parse_boundary as _core_parse_boundary  # ✅ F-012
 
@@ -64,13 +64,9 @@ def _read_of_block(path: Path) -> str:
 def _parse_of_points(path: Path) -> np.ndarray:
     text = _read_of_block(path)
     text = re.sub(r"^\d+\s*", "", text, count=1)
-    points = []
-    for line in text.strip().split("\n"):
-        line = line.strip().strip("()")
-        parts = line.replace("(", "").replace(")", "").split()
-        if len(parts) >= 3:
-            points.append((float(parts[0]), float(parts[1]), float(parts[2])))
-    return np.array(points, dtype=np.float64)
+    text = text.replace("(", " ").replace(")", " ")
+    arr = np.fromstring(text, sep=" ", dtype=np.float64)
+    return arr.reshape(-1, 3)
 
 
 def _parse_of_faces(path: Path) -> list[list[int]]:
@@ -80,7 +76,7 @@ def _parse_of_faces(path: Path) -> list[list[int]]:
     entry_re = re.compile(r"(\d+)\s*\(([^)]*)\)")
     for entry in entry_re.finditer(text):
         idx_str = entry.group(2)
-        indices = [int(x) for x in idx_str.split() if x.strip()]
+        indices = list(map(int, idx_str.split()))
         faces.append(indices)
     return faces
 
@@ -108,7 +104,7 @@ def _triangulate_face(indices: list[int]) -> list[tuple[int, int, int]]:
 
 # ✅ F-013: LRU cache con max 5 entries per evitare memory leak
 _MESH_CACHE: dict[tuple[str, float], dict[str, pv.PolyData]] = {}
-_MAX_CACHE_SIZE = 5
+_MAX_CACHE_SIZE = 20
 
 
 def _cache_set(key: tuple[str, float], value: dict[str, pv.PolyData]) -> None:
@@ -129,6 +125,46 @@ def _poly_dir_state(poly_dir: Path) -> float | None:
     return max(mtimes)
 
 
+def _run_foamtovtk_async(case_dir: Path, vtk_subdir: str, state: float) -> Path | None:
+    """Run foamToVTK via Popen with polling loop to keep UI responsive."""
+    import subprocess, shlex, time as _time
+    from cfmesh_autogui.config import OFConfig
+
+    cfg = OFConfig()
+    linux_case = cfg._quoted_linux_path(case_dir)
+    env_quoted = shlex.quote(cfg.env_script)
+    cmd = cfg._build_wsl_cmd(
+        f"source {env_quoted} 2>/dev/null; cd {linux_case} && "
+        f"foamToVTK -constant -noZero -no-fields -overwrite -name {vtk_subdir}"
+    )
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=4096,
+    )
+    deadline = _time.monotonic() + 60
+    while proc.poll() is None:
+        QApplication.processEvents()
+        if _time.monotonic() > deadline:
+            proc.kill()
+            proc.wait(5)
+            logger.error("foamToVTK timed out after 60s")
+            return None
+        _time.sleep(0.1)
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        stderr_detail = (stderr or stdout or "")[-500:]
+        logger.warning("foamToVTK failed (rc=%d): %s", proc.returncode, stderr_detail)
+        return None
+    matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
+    if matches:
+        try:
+            (case_dir / vtk_subdir / ".source_mtime").write_text(str(state))
+        except OSError:
+            pass
+        return matches[0]
+    return None
+
+
 def build_internal_volume_vtu(case_dir: Path) -> Path | None:
     """Run OpenFOAM's own `foamToVTK` to get the real internal volume cells.
 
@@ -140,11 +176,9 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
     them fine, so foamToVTK -> PyVista is the reliable path here.
 
     Cached under <case_dir>/VTK_view, regenerated only when polyMesh changed.
+    Uses Popen with a polling loop so QApplication.processEvents() keeps
+    the UI responsive during the 30-60s WSL2 call.
     """
-    import subprocess
-    import shlex
-    from cfmesh_autogui.config import OFConfig
-
     case_dir = Path(case_dir)
     poly_dir = case_dir / "constant" / "polyMesh"
     state = _poly_dir_state(poly_dir)
@@ -161,30 +195,7 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
         except (ValueError, OSError):
             pass
 
-    cfg = OFConfig()
-    try:
-        linux_case = cfg._quoted_linux_path(case_dir)
-        env_quoted = shlex.quote(cfg.env_script)
-        cmd = cfg._build_wsl_cmd(
-            f"source {env_quoted} 2>/dev/null; cd {linux_case} && "
-            f"foamToVTK -constant -noZero -no-fields -overwrite -name {vtk_subdir}"
-        )
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            logger.warning("foamToVTK failed: %s", (result.stderr or result.stdout)[-300:])
-            return None
-    except Exception as exc:
-        logger.warning("foamToVTK invocation failed: %s", exc)
-        return None
-
-    matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
-    if not matches:
-        return None
-    try:
-        marker.write_text(str(state))
-    except OSError:
-        pass
-    return matches[0]
+    return _run_foamtovtk_async(case_dir, vtk_subdir, state)
 
 
 def read_openfoam_mesh_stats(case_dir: Path) -> dict:
@@ -205,6 +216,28 @@ def read_openfoam_mesh_stats(case_dir: Path) -> dict:
     }
 
 
+def _load_vtk_patches(case_dir: Path, vtk_subdir: str) -> dict[str, pv.PolyData] | None:
+    """Load boundary patches from foamToVTK-generated VTU files (fast path)."""
+    vtk_dir = case_dir / vtk_subdir
+    time_dirs = sorted(vtk_dir.glob("*_0")) if vtk_dir.exists() else []
+    if not time_dirs:
+        return None
+    boundary_dir = time_dirs[0] / "boundary"
+    if not boundary_dir.is_dir():
+        return None
+    result: dict[str, pv.PolyData] = {}
+    for i, vtu in enumerate(sorted(boundary_dir.glob("*.vtu"))):
+        try:
+            pd = pv.read(str(vtu))
+            name = vtu.stem
+            color = PATCH_COLORS[i % len(PATCH_COLORS)]
+            pd.cell_data["color"] = np.tile(color, (pd.n_cells, 1))
+            result[name] = pd
+        except Exception:
+            continue
+    return result or None
+
+
 def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] | None:
     case_dir = Path(case_dir)
     poly_dir = case_dir / "constant" / "polyMesh"
@@ -216,32 +249,52 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
     if cached is not None:
         return cached
 
+    # Fast path: try loading from foamToVTK-generated VTU files
+    vtk_patches = _load_vtk_patches(case_dir, "VTK_view")
+    if vtk_patches is not None:
+        _cache_set(cache_key, vtk_patches)
+        return vtk_patches
+
+    # Slow path: manual parsing of OpenFOAM text files (for small meshes
+    # where foamToVTK hasn't been run yet).
     try:
         points = _parse_of_points(poly_dir / "points")
         all_faces = _parse_of_faces(poly_dir / "faces")
         patches = _parse_boundary(poly_dir / "boundary")
-    except (ValueError, IndexError, OSError):
+    except (ValueError, IndexError, OSError) as exc:
+        logger.warning("Manual mesh parsing failed for %s: %s", poly_dir, exc)
         return None
     result: dict[str, pv.PolyData] = {}
     for i, p in enumerate(patches):
         start = p["startFace"]
         end = start + p["nFaces"]
         patch_faces = all_faces[start:end]
-        verts_out = []
-        tris_idx = []
-        v_offset = 0
-        for face_indices in patch_faces:
-            for idx in face_indices:
-                pt = points[idx]
-                verts_out.append([pt[0], pt[1], pt[2]])
-            for tri in _triangulate_face(list(range(len(face_indices)))):
-                tris_idx.append([v_offset + tri[0], v_offset + tri[1], v_offset + tri[2]])
-            v_offset += len(face_indices)
-        if not tris_idx:
+        total_verts = sum(len(f) for f in patch_faces)
+        total_tris = sum(max(1, len(f) - 2) for f in patch_faces)
+        if total_tris == 0:
             continue
-        verts_arr = np.array(verts_out, dtype=np.float64)
-        tris_arr = np.array(tris_idx, dtype=np.int32)
-        faces_pv = np.hstack([np.full((len(tris_arr), 1), 3), tris_arr]).astype(np.int32)
+        verts_arr = np.empty((total_verts, 3), dtype=np.float64)
+        tris_arr = np.empty((total_tris, 3), dtype=np.int32)
+        v_offset = 0
+        t_offset = 0
+        for fi, face_indices in enumerate(patch_faces):
+            if fi > 0 and fi % 500 == 0:
+                QApplication.processEvents()
+            n = len(face_indices)
+            verts_arr[v_offset:v_offset + n] = points[face_indices]
+            if n == 3:
+                tris_arr[t_offset] = [v_offset, v_offset + 1, v_offset + 2]
+                t_offset += 1
+            elif n == 4:
+                tris_arr[t_offset] = [v_offset, v_offset + 1, v_offset + 2]
+                tris_arr[t_offset + 1] = [v_offset, v_offset + 2, v_offset + 3]
+                t_offset += 2
+            elif n > 4:
+                for j in range(1, n - 1):
+                    tris_arr[t_offset] = [v_offset, v_offset + j, v_offset + j + 1]
+                    t_offset += 1
+            v_offset += n
+        faces_pv = np.hstack([np.full((total_tris, 1), 3), tris_arr]).astype(np.int32)
         pd = pv.PolyData(verts_arr, faces_pv)
         color = PATCH_COLORS[i % len(PATCH_COLORS)]
         pd.cell_data["color"] = np.tile(color, (pd.n_cells, 1))
@@ -610,33 +663,171 @@ class ViewerWidget(QWidget):
         self._plotter.view_isometric()
         self._plotter.render()
 
+    def _cancel_vtk_process(self):
+        """Kill any running foamToVTK QProcess and its timeout timer."""
+        if hasattr(self, "_vtk_timeout_timer") and self._vtk_timeout_timer:
+            self._vtk_timeout_timer.stop()
+            self._vtk_timeout_timer.deleteLater()
+            self._vtk_timeout_timer = None
+        if hasattr(self, "_vtk_process") and self._vtk_process:
+            if self._vtk_process.state() != QProcess.NotRunning:
+                self._vtk_process.kill()
+                self._vtk_process.waitForFinished(3000)
+            self._vtk_process.deleteLater()
+            self._vtk_process = None
+
+    def _start_vtk_qprocess(self, case_dir: Path, vtk_subdir: str,
+                             on_finished: callable) -> None:
+        """Start foamToVTK via QProcess. Calls ``on_finished(ok)`` when done."""
+        self._cancel_vtk_process()
+        from cfmesh_autogui.config import OFConfig
+        cfg = OFConfig()
+        linux_case = cfg._quoted_linux_path(case_dir)
+        import shlex
+        env_quoted = shlex.quote(cfg.env_script)
+        cmd = cfg._build_wsl_cmd(
+            f"source {env_quoted} 2>/dev/null; cd {linux_case} && "
+            f"foamToVTK -constant -noZero -no-fields -overwrite -name {vtk_subdir}"
+        )
+        self._vtk_process = QProcess(self)
+        self._vtk_process.setProcessChannelMode(QProcess.MergedChannels)
+        self._vtk_process.finished.connect(
+            lambda ec, _exit_status: self._on_vtk_finished(
+                ec, case_dir, vtk_subdir, on_finished,
+            ),
+        )
+        self._vtk_process.started.connect(lambda: logger.debug("foamToVTK QProcess started"))
+        program = cmd[0]
+        args = cmd[1:]
+        self._vtk_process.start(program, args)
+        self._vtk_timeout_timer = QTimer(self)
+        self._vtk_timeout_timer.setSingleShot(True)
+        self._vtk_timeout_timer.timeout.connect(self._on_vtk_timeout)
+        self._vtk_timeout_timer.start(70000)
+
+    def _on_vtk_timeout(self):
+        logger.error("foamToVTK QProcess timed out after 70s")
+        self._cancel_vtk_process()
+
+    def _on_vtk_finished(self, exit_code: int, case_dir: Path,
+                          vtk_subdir: str, on_finished: callable) -> None:
+        if self._vtk_timeout_timer:
+            self._vtk_timeout_timer.stop()
+        if exit_code == 0:
+            matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
+            if matches:
+                poly_dir = case_dir / "constant" / "polyMesh"
+                state = _poly_dir_state(poly_dir)
+                if state is not None:
+                    try:
+                        (case_dir / vtk_subdir / ".source_mtime").write_text(str(state))
+                    except OSError:
+                        pass
+        else:
+            stderr = bytes(self._vtk_process.readAllStandardError()).decode("utf-8", errors="replace")[-300:] if self._vtk_process else ""
+            logger.warning("foamToVTK QProcess failed (rc=%d): %s", exit_code, stderr)
+        on_finished(exit_code == 0)
+
     def _display_mesh(self):
         if self._plotter is None or not self._mesh_case_dir:
             return
-
         if self._section_enabled:
-            # Boundary patches (constant/polyMesh/boundary) are the outer
-            # surface only — clipping them shows nothing "inside" because
-            # there IS nothing inside that data. Seeing the actual internal
-            # cells needs the real volumetric grid, built via foamToVTK.
-            self._plotter.clear()
-            ec = self._edge_color()
-            grid = self._get_internal_volume_grid()
-            if grid is not None:
-                self._plotter.add_mesh_clip_box(
-                    grid, show_edges=True, edge_color=ec, crinkle=False,
-                )
-            else:
-                self._plotter.add_text(
-                    "Internal mesh unavailable (foamToVTK failed — see log)",
-                    color=self._text_color, font_size=10,
-                )
-            self._plotter.view_isometric()
-            self._plotter.render()
+            self._display_mesh_section()
             return
+        # Show "Loading..." immediately, then chain async operations
+        self._plotter.clear()
+        self._plotter.add_text(
+            "Loading mesh...",
+            color=self._text_color, font_size=14,
+        )
+        self._plotter.render()
+        QApplication.processEvents()
+        QTimer.singleShot(0, self._step_vtu_for_mesh)
 
+    def _display_mesh_section(self):
+        self._plotter.clear()
+        self._plotter.add_text(
+            "Loading mesh for section cut...",
+            color=self._text_color, font_size=12,
+        )
+        self._plotter.render()
+        QApplication.processEvents()
+        QTimer.singleShot(0, self._step_vtu_for_section)
+
+    def _step_vtu_for_mesh(self):
+        """Step 1: ensure VTU exists (async QProcess if needed), then load patches."""
+        self._do_step_vtu(
+            on_vtu_ready=lambda ok: QTimer.singleShot(0, self._step_mesh_patches),
+        )
+
+    def _step_vtu_for_section(self):
+        """Step 1: ensure VTU exists (async QProcess if needed), then show section."""
+        self._do_step_vtu(
+            on_vtu_ready=lambda ok: QTimer.singleShot(0, self._step_section_display),
+        )
+
+    def _do_step_vtu(self, on_vtu_ready: callable) -> None:
+        """Check VTU cache; if stale/missing, start QProcess, else callback immediately."""
+        if self._plotter is None or not self._mesh_case_dir:
+            return
+        case_dir = Path(self._mesh_case_dir)
+        poly_dir = case_dir / "constant" / "polyMesh"
+        state = _poly_dir_state(poly_dir)
+        if state is None:
+            on_vtu_ready(False)
+            return
+        vtk_subdir = "VTK_view"
+        marker = case_dir / vtk_subdir / ".source_mtime"
+        existing = list((case_dir / vtk_subdir).glob("*_0/internal.vtu")) if (case_dir / vtk_subdir).exists() else []
+        if existing and marker.exists():
+            try:
+                if float(marker.read_text().strip()) == state:
+                    on_vtu_ready(True)
+                    return
+            except (ValueError, OSError):
+                pass
+        self._start_vtk_qprocess(case_dir, vtk_subdir, on_vtu_ready)
+
+    def _step_mesh_patches(self):
+        """Step 2: load mesh patches via fast path (VTU already generated) and display."""
+        if self._plotter is None or not self._mesh_case_dir:
+            return
+        QTimer.singleShot(0, lambda: self._do_load_patches(False))
+
+    def _step_section_display(self):
+        """Step 2: load internal volume grid and show section cut."""
+        if self._plotter is None:
+            return
+        QTimer.singleShot(0, self._do_show_section)
+
+    def _do_show_section(self):
+        if self._plotter is None:
+            return
+        ec = self._edge_color()
+        grid = self._get_internal_volume_grid()
+        self._plotter.clear()
+        if grid is not None:
+            self._plotter.add_mesh_clip_box(
+                grid, show_edges=True, edge_color=ec, crinkle=False,
+            )
+        else:
+            self._plotter.add_text(
+                "Internal mesh unavailable (foamToVTK failed — see log)",
+                color=self._text_color, font_size=10,
+            )
+        self._plotter.view_isometric()
+        self._plotter.render()
+
+    def _do_load_patches(self, _unused: bool = False):
+        """Load and display mesh patches (already deferred via QTimer)."""
         patches = read_openfoam_mesh_patches(self._mesh_case_dir)
         if not patches:
+            self._plotter.clear()
+            self._plotter.add_text(
+                "No mesh data to display.",
+                color=self._text_color, font_size=12,
+            )
+            self._plotter.render()
             return
         self._plotter.clear()
         ec = self._edge_color()
@@ -673,9 +864,14 @@ class ViewerWidget(QWidget):
         if self._plotter:
             self._plotter.reset_camera()
 
-    def show_mesh(self, case_dir: Path | str):
-        self._mesh_case_dir = str(case_dir)
-        stats = read_openfoam_mesh_stats(Path(case_dir))
+    # Keep this high (10M) — meshes under 10M cells load fine via
+    # foamToVTK + cached VTU reading.  The manual parser fallback
+    # is only used when foamToVTK hasn't run yet (first view).
+    MAX_VIEWER_CELLS = 10_000_000
+
+    def _load_stats_async(self, case_dir: Path):
+        """Load mesh stats in the background (deferred via timer)."""
+        stats = read_openfoam_mesh_stats(case_dir)
         total = stats["points"] + stats["faces"] + stats["cells"]
         if total > 0:
             self._stats_label.setText(
@@ -685,13 +881,44 @@ class ViewerWidget(QWidget):
             self._stats_label.setText("")
         if not self._plotter_ready:
             return
+        if stats["cells"] > self.MAX_VIEWER_CELLS:
+            self._view_selector.setEnabled(False)
+            self._view_selector.blockSignals(True)
+            self._view_selector.setCurrentIndex(-1)
+            self._view_selector.blockSignals(False)
+            self._plotter.clear()
+            self._plotter.add_text(
+                f"Mesh too large for viewer ({stats['cells']:,} cells, "
+                f"max={self.MAX_VIEWER_CELLS:,}).\n"
+                "Use ParaView or another external tool for visualization.",
+                color=self._text_color, font_size=12,
+            )
+            self._plotter.show_axes()
+            self._plotter.render()
+            return
+
         self._view_selector.setEnabled(True)
         self._view_selector.blockSignals(True)
         self._view_selector.setCurrentIndex(-1)
         self._view_selector.blockSignals(False)
         self._view_selector.setCurrentIndex(1)
-        if self._plotter:
-            self._plotter.reset_camera()
+
+    def show_mesh(self, case_dir: Path | str):
+        self._mesh_case_dir = str(case_dir)
+
+        # Show loading text immediately, then load stats + mesh deferred
+        if self._plotter_ready:
+            self._plotter.clear()
+            self._plotter.add_text(
+                "Loading mesh...",
+                color=self._text_color, font_size=14,
+            )
+            self._plotter.show_axes()
+            self._plotter.render()
+            QApplication.processEvents()
+
+        QTimer.singleShot(0, lambda: self._load_stats_async(Path(case_dir)))
+        QTimer.singleShot(50, self._do_display_mesh)  # let stats load first
 
     def clear(self):
         self._cad_meshes = []

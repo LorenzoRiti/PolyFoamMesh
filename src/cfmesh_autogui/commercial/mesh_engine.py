@@ -254,29 +254,20 @@ class MeshEngine:
     # Algorithm implementations
     # ------------------------------------------------------------------
     def _run_cartesian_hex(self, case_dir: Path, meshes: list | None) -> None:
-        """Run cfMesh cartesianMesh via WSL2 — parallel when n_cores > 1."""
+        """Run cfMesh cartesianMesh via WSL2 — parallel when n_cores > 1.
+
+        Avoids overwriting meshDict if already present (written by caller or
+        auto-sizer), so user-tuned cell sizes / BL settings survive.
+        """
         from cfmesh_autogui.core.stl_writer import export_surface_file
-        from cfmesh_autogui.core.meshdict_gen import write_meshdict
 
         if meshes:
             export_surface_file(meshes, case_dir)
 
-        bbox_dim = 1.0
-        if meshes:
-            from cfmesh_autogui.core.geometry import compute_bbox_dim
-            bbox_dim = compute_bbox_dim(meshes)
-
-        cell_mult = self._params.cell_size_multiplier
-        max_cell = self._params.max_cell * cell_mult
-        min_cell = self._params.min_cell * cell_mult
-        safe_max, safe_min, size_warns = _validate_sizes(bbox_dim, max_cell, min_cell)
-        for w in size_warns:
-            logger.info("Cell size adjusted: %s", w)
-
         bl_params = {
             "nLayers": self._params.bl_n_layers,
             "thicknessRatio": 1.2,
-            "firstLayerThickness": 0.005 * safe_max,
+            "firstLayerThickness": 0.005 * self._params.max_cell,
         } if self._params.bl_enabled else None
 
         patch_names = (
@@ -284,19 +275,26 @@ class MeshEngine:
             if meshes else None
         )
 
-        write_meshdict(case_dir, safe_max, safe_min, bl_params=bl_params, patch_names=patch_names)
         _write_control_dict(case_dir)
+
+        mesh_dict_path = case_dir / "system" / "meshDict"
+        if not mesh_dict_path.exists():
+            from cfmesh_autogui.core.meshdict_gen import write_meshdict
+            write_meshdict(case_dir, self._params.max_cell, self._params.min_cell,
+                           bl_params=bl_params, patch_names=patch_names)
 
         # Dispatch to parallel engine when n_cores > 1
         n_cores = getattr(self._params, 'n_cores', 1)
         if n_cores > 1:
-            self._run_parallel_mesh(case_dir, safe_max, safe_min, bl_params, patch_names, n_cores)
+            self._run_parallel_mesh(case_dir, self._params.max_cell, self._params.min_cell,
+                                     bl_params, patch_names, n_cores)
         else:
-            self._run_serial_mesh(case_dir, safe_max, safe_min, bl_params, patch_names)
+            self._run_serial_mesh(case_dir, self._params.max_cell, self._params.min_cell,
+                                   bl_params, patch_names)
 
     def _run_parallel_mesh(
         self, case_dir: Path,
-        safe_max: float, safe_min: float,
+        raw_max: float, raw_min: float,
         bl_params: dict | None, patch_names: list[str] | None,
         n_cores: int = 2,
     ) -> None:
@@ -305,7 +303,7 @@ class MeshEngine:
 
         pe = ParallelMeshEngine(self._of_config)
         pe.setup_case(case_dir, n_cores=n_cores)
-        pe.set_cell_sizes(safe_max, safe_min)
+        pe.set_cell_sizes(raw_max, raw_min)
         pe.set_patch_names(patch_names)
 
         result = pe.run()
@@ -321,11 +319,11 @@ class MeshEngine:
         if bl_params:
             logger.warning("Parallel mesh failed with BL, retrying without BL")
             from cfmesh_autogui.core.meshdict_gen import write_meshdict
-            write_meshdict(case_dir, safe_max, safe_min, patch_names=patch_names)
+            write_meshdict(case_dir, raw_max, raw_min, patch_names=patch_names)
             _write_control_dict(case_dir)
             pe2 = ParallelMeshEngine(self._of_config)
             pe2.setup_case(case_dir, n_cores=n_cores)
-            pe2.set_cell_sizes(safe_max, safe_min)
+            pe2.set_cell_sizes(raw_max, raw_min)
             pe2.set_patch_names(patch_names)
             result2 = pe2.run()
             if result2.success:
@@ -335,11 +333,11 @@ class MeshEngine:
         # Final fallback: try serial
         logger.warning("Parallel mesh failed — falling back to serial")
         self._params.n_cores = 1
-        self._run_serial_mesh(case_dir, safe_max, safe_min, None, patch_names)
+        self._run_serial_mesh(case_dir, raw_max, raw_min, None, patch_names)
 
     def _run_serial_mesh(
         self, case_dir: Path,
-        safe_max: float, safe_min: float,
+        raw_max: float, raw_min: float,
         bl_params: dict | None, patch_names: list[str] | None,
     ) -> None:
         """Run serial cartesianMesh synchronously, with BL fallback."""
@@ -347,12 +345,12 @@ class MeshEngine:
             if bl_params:
                 logger.warning("CartesianHex: failed with boundary layers, retrying without BL")
                 from cfmesh_autogui.core.meshdict_gen import write_meshdict
-                write_meshdict(case_dir, safe_max, safe_min, patch_names=patch_names)
+                write_meshdict(case_dir, raw_max, raw_min, patch_names=patch_names)
                 if not self._run_cartesian_mesh_sync(case_dir):
                     raise RuntimeError("cartesianMesh failed (with and without boundary layers)")
             else:
                 raise RuntimeError("cartesianMesh failed")
-        logger.info("CartesianHex (serial): OK (max=%s min=%s)", safe_max, safe_min)
+        logger.info("CartesianHex (serial): OK (max=%s min=%s)", raw_max, raw_min)
 
     def _run_cartesian_mesh_sync(self, case_dir: Path) -> bool:
         """Run cartesianMesh synchronously and wait for it to actually finish."""
@@ -360,7 +358,7 @@ class MeshEngine:
 
         try:
             cmd = self._of_config.build_command(case_dir)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=14400)
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             logger.warning("cartesianMesh timed out for %s", case_dir)

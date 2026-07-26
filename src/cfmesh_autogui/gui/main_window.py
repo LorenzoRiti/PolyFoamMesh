@@ -52,10 +52,10 @@ from cfmesh_autogui.gui.quality_panel import QualityPanel
 from cfmesh_autogui.gui.viewer_widget import ViewerWidget
 from cfmesh_autogui.gui.params_panel import ParamsPanel
 from cfmesh_autogui.gui.log_panel import LogPanel
-from cfmesh_autogui.gui.style import COLOR_TEXT_DISABLED, COLOR_DANGER
+from cfmesh_autogui.gui.style import COLOR_TEXT_DISABLED, COLOR_DANGER, COLOR_PASS
 from cfmesh_autogui.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
 from cfmesh_autogui.gui.log_tags import Tag
-from cfmesh_autogui.gui.design_tokens import ORANGE_500, ORANGE_600, ORANGE_400, APP_VERSION
+from cfmesh_autogui.gui.design_tokens import ORANGE_500, ORANGE_600, ORANGE_400, APP_VERSION, STATUS_READY
 from cfmesh_autogui.octopoda_local import octo
 from cfmesh_autogui.gui.settings_migration import AppSettings
 
@@ -64,18 +64,24 @@ logger = logging.getLogger(__name__)
 
 def _is_wall_patch(name: str) -> bool:
     """Heuristic: a patch is a wall if its name does NOT match known
-    non-wall boundary types (inlet/outlet/symmetry/opening/farfield/empty).
+    non-wall boundary types.
 
-    This catches real-world CAD naming like 'body', 'fixed', 'blade',
-    'casing', 'housing' etc., while excluding patches that should never
-    get boundary layers.
+    Handles Italian names (ingresso/uscita), mixed case (Inlet, WALL_1),
+    numeric suffixes (wall_1, inlet-02), and dotted prefixes (patch.wall).
+    Anything that doesn't match a known non-wall keyword is treated as wall
+    (body, fixed, blade, casing, housing, etc.).
     """
-    name_lower = name.lower()
+    name_lower = name.lower().replace("-", "_").replace(".", "_")
+    # Strip trailing numeric suffixes: wall_1, wall_02, wall-003
+    name_stripped = name_lower.rstrip("_0123456789")
     non_wall_keywords = (
-        "inlet", "outlet", "symmetry", "opening", "farfield",
+        "inlet", "outlet", "ingresso", "uscita", "entrance", "exit",
+        "symmetry", "opening", "farfield",
         "empty", "porous", "interface",
+        "periodic", "cyclic", "freestream",
+        "pressure", "velocity",
     )
-    if any(kw in name_lower for kw in non_wall_keywords):
+    if any(kw in name_stripped for kw in non_wall_keywords):
         return False
     return True
 
@@ -269,6 +275,11 @@ class MainWindow(QMainWindow):
             "in one flow. Use File > Load Geometry instead if you just "
             "want to swap the geometry in an existing case."
         )
+        self._ribbon_btns["template"] = _make_ribbon_btn("From Template", "template", self._on_template_selector, checkable=False)
+        self._ribbon_btns["template"].setToolTip(
+            "Start from a predefined case template (internal flow, "
+            "external aero, CHT, etc.) with pre-configured settings."
+        )
         self._ribbon_btns["quick"] = _make_ribbon_btn("Quick Mesh", "quick", self._on_quick_mesh, checkable=False)
         qm = self._ribbon_btns["quick"]
         qm.setCheckable(False)
@@ -309,6 +320,32 @@ class MainWindow(QMainWindow):
             "Off: just cell sizes and Generate Mesh — enough for most cases.\n"
             "On: also shows boundary layers, mesher choice, and multi-core/"
             "polyhedral options."
+        )
+        ribbon.addSeparator()
+        self._ribbon_btns["bc"] = _make_ribbon_btn(
+            "BC Editor", "bc", self._on_bc_editor, checkable=False,
+        )
+        self._ribbon_btns["bc"].setToolTip("Edit boundary conditions and export 0/ fields.")
+        self._ribbon_btns["bc"].setAutoExclusive(False)
+
+        self._ribbon_btns["solver"] = _make_ribbon_btn(
+            "Solver Setup", "solver", self._on_solver_setup, checkable=False,
+        )
+        self._ribbon_btns["solver"].setToolTip("Configure solver, schemes, and turbulence model.")
+        self._ribbon_btns["solver"].setAutoExclusive(False)
+
+        self._ribbon_btns["fullauto"] = _make_ribbon_btn(
+            "Full Auto", "run", self._on_full_auto, checkable=False,
+        )
+        fullauto = self._ribbon_btns["fullauto"]
+        fullauto.setAutoExclusive(False)
+        fullauto.setStyleSheet(
+            f"QToolButton {{ background:{COLOR_PASS}; color:white; border:1px solid green; "
+            "border-radius:4px; padding:4px 16px; font-weight:700; }"
+            f"QToolButton:hover {{ background:{STATUS_READY}; }}"
+        )
+        fullauto.setToolTip(
+            "Geometry -> Mesh -> BC -> Solver Setup -> Run — all in one click."
         )
         self.addToolBar(Qt.TopToolBarArea, ribbon)
         self._ribbon = ribbon
@@ -608,33 +645,51 @@ class MainWindow(QMainWindow):
         return "constant/triSurface/surface.stl"
 
     # Above either of these, ask before committing the user to a long run.
+    # For 25M-cell support: confirm at 2M+ cells, or if the estimate says
+    # it will take more than 10 minutes.
     LARGE_MESH_CELLS = 2_000_000
-    LARGE_MESH_SECONDS = 300
+    LARGE_MESH_SECONDS = 600
 
     def _confirm_large_mesh(
         self, est_cells: int, est_seconds: float, max_cell: float, min_cell: float,
     ) -> bool:
         """Ask before starting a mesh that will take a long time.
 
-        cartesianMesh gives no progress feedback for minutes at a time, so an
-        accidental fine setting looks like a hang. Surfacing the estimate as a
-        decision — with the knob that actually controls it — is cheaper than
-        letting the user wait and then cancel.
+        For meshes under 2M cells or 10 min estimate, proceeds silently.
+        For 2M-25M cells, asks with a clear time estimate.
+        For 25M+ cells, warns that this may exceed available resources.
         """
         if est_cells < self.LARGE_MESH_CELLS and est_seconds < self.LARGE_MESH_SECONDS:
             return True
 
         minutes = est_seconds / 60.0
+        hours = minutes / 60.0
+
+        if est_cells >= 25_000_000:
+            msg = (
+                f"Mesh molto grande: ~{est_cells:,} celle "
+                f"(~{hours:.1f} ore stimate).\n\n"
+                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.\n\n"
+                "Questa mesh potrebbe richiedere più di 8 GB di RAM e diverse ore. "
+                "Assicurati che WSL2 abbia memoria sufficiente "
+                "(esegui 'wsl --set-memory Ubuntu <quantità>' in PowerShell).\n\n"
+                "Procedere?"
+            )
+        else:
+            msg = (
+                f"Questa mesh è stimata in ~{est_cells:,} celle "
+                f"(~{minutes:.0f} min).\n\n"
+                f"Dimensioni cella attuali: max={max_cell:.4g} m, min={min_cell:.4g} m.\n"
+                "Aumentare la dimensione minima (o scegliere un livello di dettaglio "
+                "più grossolano) riduce molto il tempo.\n\n"
+                "Procedere comunque?"
+            )
+
         reply = QMessageBox.question(
             self, "Large Mesh",
-            f"Questa mesh è stimata in ~{est_cells:,} celle "
-            f"(~{minutes:.0f} min).\n\n"
-            f"Dimensioni cella attuali: max={max_cell:.4g} m, min={min_cell:.4g} m.\n"
-            "Aumentare la dimensione minima (o scegliere un livello di dettaglio "
-            "più grossolano) riduce molto il tempo.\n\n"
-            "Procedere comunque?",
+            msg,
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.Yes if est_cells < 25_000_000 else QMessageBox.No,
         )
         return reply == QMessageBox.Yes
 
@@ -1052,7 +1107,13 @@ class MainWindow(QMainWindow):
                 self._on_run_meshing_gmsh_direct(orig)
             return
 
-        # ✅ F-006: rimosso blocco duplicato (era identico a righe 650-658)
+        # Clean up previous runner's thread before creating a new one,
+        # otherwise the old QThread may still be running when the runner
+        # gets garbage-collected, causing "QThread: Destroyed while
+        # thread '' is still running" and potential crashes on subsequent
+        # meshing runs.
+        self._cleanup_runner()
+
         self._params.set_meshing_enabled(False)
         self._params.set_all_enabled(False)
         self._runner = RetryRunner(self._of_config)
@@ -1209,16 +1270,11 @@ class MainWindow(QMainWindow):
             suggested_min = feature_map.suggested_min_cell
             self._log.append_log(
                 f"[feature] Feature-based cell sizes: max={suggested_max:.4f} "
-                f"min={suggested_min:.4f}"
+                f"min={suggested_min:.4f} (logged only — user's values preserved)"
             )
-            self._params._max_cell.setValue(suggested_max)
-            self._params._min_cell.setValue(suggested_min)
-            # ✅ F-007: validate feature detection values against bbox
-            bbox_dim = compute_bbox_dim(self._meshes)
-            p = self._params.get_mesh_params()
-            safe_max, safe_min, _ = validate_cell_sizes(bbox_dim, p["max_cell_size"], p["min_cell_size"])
-            self._params._max_cell.setValue(safe_max)
-            self._params._min_cell.setValue(safe_min)
+            # Feature detection values are logged for reference only.
+            # Do NOT overwrite the user's spinbox values — they were already
+            # set by Auto Suggest or manual input before the mesh started.
 
         self._continue_run_meshing_after_feature_detect(my_id, surface_file, bbox_dim)
 
@@ -1231,6 +1287,32 @@ class MainWindow(QMainWindow):
                 my_id, self._run_id,
             )
             return
+
+        # Local refinement: detect narrow passages via local thickness field
+        self._throat_zones = None
+        if self._params.get_auto_refine_enabled() and self._meshes:
+            try:
+                from cfmesh_autogui.core.throat_detector import detect_refinement_regions
+                detail = self._params.get_detail_level()
+                raw_max = self._params.get_mesh_params().get("max_cell_size", 0.05)
+                zones = detect_refinement_regions(self._meshes, detail=detail, global_max_cell=raw_max)
+                if zones:
+                    self._throat_zones = zones
+                    for z in zones:
+                        self._log.append_log(
+                            f"{Tag.DICT} Narrow passage at "
+                            f"({z.centre[0]:.3f},{z.centre[1]:.3f},{z.centre[2]:.3f}), "
+                            f"thickness={z.local_thickness:.4f}m, "
+                            f"cellSize={z.cell_size:.5f}m (radius={z.radius:.4f}m)"
+                        )
+                    self._log.append_log(
+                        f"{Tag.DICT} {len(zones)} auto refinement zone(s) detected."
+                    )
+                else:
+                    logger.debug("Refinement detection: no narrow passages found.")
+            except Exception as exc:
+                logger.warning("Refinement detection skipped: %s", exc)
+
         try:
             self._do_meshing_pipeline(my_id, surface_file, bbox_dim)
         except Exception as e:
@@ -1277,10 +1359,13 @@ class MainWindow(QMainWindow):
                 self._log.append_log(
                     f"{Tag.SAFEGUARD} min_cell {p['min_cell_size']:.4f} was "
                     f"marginally over 50% of max_cell after rounding — "
-                    f"auto-corrected to {fixed_min:.4f}."
+                    f"correcting in meshDict only, UI spinbox preserved."
                 )
-                self._params._min_cell.setValue(fixed_min)
                 p = self._params.get_mesh_params()
+                # Use corrected min for meshDict, keep UI spinbox unchanged
+                user_min = p["min_cell_size"]
+                if p["max_cell_size"] > user_min:
+                    p["min_cell_size"] = fixed_min
             else:
                 logger.error("Cell size validation failed: %s", validation_result.message)
                 QMessageBox.critical(self, "Cell Size Error", validation_result.message)
@@ -1289,9 +1374,16 @@ class MainWindow(QMainWindow):
         for w in validation_result.warnings:
             self._log.append_log(f"{Tag.SAFEGUARD} {w}")
 
+        # Use the user's EXACT values for the meshDict — no clamping, no
+        # auto-correction beyond what validate_cell_size already enforced.
+        # validate_cell_sizes is called only for estimation/warnings, NOT
+        # for the actual meshDict write, so the user's settings survive.
+        raw_max = p["max_cell_size"]
+        raw_min = p["min_cell_size"]
+
         try:
             safe_max, safe_min, warnings = validate_cell_sizes(
-                bbox_dim, p["max_cell_size"], p["min_cell_size"],
+                bbox_dim, raw_max, raw_min,
             )
         except ValueError as e:
             logger.error("Cell size validation failed: %s", e)
@@ -1302,15 +1394,35 @@ class MainWindow(QMainWindow):
         for w in warnings:
             self._log.append_log(f"{Tag.SAFEGUARD} {w}")
 
-        self._log.append_log(f"{Tag.GEOM} Bbox: {bbox_dim:.4f} m, cells: {safe_max:.4f}/{safe_min:.4f} m")
+        self._log.append_log(f"{Tag.GEOM} Bbox: {bbox_dim:.4f} m, cells: {raw_max:.4f}/{raw_min:.4f} m")
 
+        # Compute per-patch cell sizes EARLY so the estimate accounts for
+        # local refinement (otherwise a mesh with wall=0.04 on a 3m bbox
+        # gets estimated at 19K cells but actually produces 2.3M).
+        detail = self._params.get_detail_level()
+        patch_sizes, bc_size, bc_thick = compute_patch_cell_sizes(
+            self._meshes, detail=detail,
+        )
+        if patch_sizes:
+            self._log.append_log(
+                f"{Tag.DICT} Per-patch cell sizes: "
+                + ", ".join(f"{n}={s:.4f}" for n, s in patch_sizes.items())
+            )
+
+        # Use the smallest effective cell size for estimation
+        eff_min = safe_min
+        if patch_sizes:
+            eff_min = min(eff_min, min(patch_sizes.values()))
         volume = compute_volume(self._meshes)
-        lo, est, hi = estimate_cell_count(volume, safe_max, safe_min)
+        lo, est, hi = estimate_cell_count(volume, safe_max, eff_min)
         logger.info(
             "Cell estimate: volume=%.4e, nominal=%d (range %d-%d).", volume, est, lo, hi
         )
-        # Estimate meshing time: ~5000 cells/sec for cartesianMesh
-        est_secs = est / 5000
+        # Estimate meshing time: cartesianMesh throughput scales with
+        # geometry complexity.  Simple boxes/pipe reach ~5000 cells/sec;
+        # complex assemblies may drop to ~1000 cells/sec.
+        rate = 5000 if est < 1_000_000 else 1800
+        est_secs = est / rate
         if est_secs < 60:
             time_str = f"{est_secs:.0f}s"
         elif est_secs < 3600:
@@ -1373,16 +1485,38 @@ class MainWindow(QMainWindow):
         else:
             self._log.append_log(f"{Tag.BL} Boundary layers: disabled.")
 
+        # Build objectRefinements from auto-detected throats + manual zones
+        object_refinements = None
+        throat_zones = getattr(self, "_throat_zones", None)
+        if throat_zones:
+            object_refinements = [
+                {"centre": z.centre, "radius": z.radius, "cell_size": z.cell_size}
+                for z in throat_zones
+            ]
+            # BL throat compatibility check — auto-reduces nLayers/firstLayerThickness
+            # when there isn't enough space in the narrowest passage, preventing
+            # cfMesh from crashing or producing degenerate cells.
+            if bl_params:
+                try:
+                    from cfmesh_autogui.core.throat_detector import check_bl_throat_compatibility
+                    bl_warnings, adjusted_bl = check_bl_throat_compatibility(bl_params, throat_zones)
+                    for w in bl_warnings:
+                        self._log.append_log(f"{Tag.WARN} {w}")
+                    # Apply auto-reduced BL params and update UI spinbox
+                    if adjusted_bl.get("nLayers", bl_params.get("nLayers")) != bl_params.get("nLayers"):
+                        self._params._bl_n_layers.setValue(adjusted_bl["nLayers"])
+                    if adjusted_bl.get("firstLayerThickness", bl_params.get("firstLayerThickness")) != bl_params.get("firstLayerThickness"):
+                        max_cell_val = self._params.get_max_cell()
+                        if max_cell_val > 0:
+                            self._params._bl_thick.setValue(adjusted_bl["firstLayerThickness"] / max_cell_val)
+                    bl_params = adjusted_bl
+                except Exception as exc:
+                    logger.debug("BL throat check skipped: %s", exc)
+        manual_refs = self._params.get_manual_refinements()
+        if manual_refs:
+            object_refinements = list(object_refinements or []) + manual_refs
+
         self._log.append_log(f"{Tag.DICT} Writing meshDict...")
-        detail = self._params.get_detail_level()
-        patch_sizes, bc_size, bc_thick = compute_patch_cell_sizes(
-            self._meshes, detail=detail,
-        )
-        if patch_sizes:
-            self._log.append_log(
-                f"{Tag.DICT} Per-patch cell sizes: "
-                + ", ".join(f"{n}={s:.4f}" for n, s in patch_sizes.items())
-            )
         try:
             # Don't emit boundaryCellSize + patchCellSize simultaneously:
             # cfMesh can crash when both are specified because they both
@@ -1390,14 +1524,19 @@ class MainWindow(QMainWindow):
             if patch_sizes:
                 bc_size = None
                 bc_thick = None
+            from cfmesh_autogui.core.meshdict_gen import write_meshdict
+            self._log.append_log(
+                f"[DEBUG] Writing meshDict with raw values: max={raw_max:.6f} min={raw_min:.6f}"
+            )
             write_meshdict(
-                self._case_dir, safe_max, safe_min,
+                self._case_dir, raw_max, raw_min,
                 patch_cell_size=patch_sizes or None,
                 boundary_cell_size=bc_size,
                 boundary_refinement_thickness=bc_thick,
                 bl_params=bl_params,
                 patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
                 surface_file=surface_file,
+                object_refinements=object_refinements,
             )
         except Exception as e:
             logger.error("meshDict failed: %s", e)
@@ -1424,6 +1563,7 @@ class MainWindow(QMainWindow):
             self._params.set_all_enabled(True)
             return
 
+        self._meshing_run_id = my_id
         self._status.showMessage("Meshing...")
 
         def guarded_finished(exit_code, output, attempts):
@@ -1440,6 +1580,15 @@ class MainWindow(QMainWindow):
             self._ribbon_btns["cancel"].setVisible(True)
 
             parallel_enabled, n_cores = self._params.get_parallel_params()
+            # For small meshes (< 500K cells), MPI overhead dwarfs any
+            # parallel speedup — force serial.
+            if est < 500_000:
+                if parallel_enabled:
+                    self._log.append_log(
+                        f"{Tag.MESHING} Mesh too small for parallel "
+                        f"(<500K cells, est={est}) — using serial."
+                    )
+                parallel_enabled = False
             if parallel_enabled and n_cores >= 2:
                 self._log.append_log(
                     f"{Tag.MESHING} Running cartesianMesh across {n_cores} cores..."
@@ -1448,11 +1597,11 @@ class MainWindow(QMainWindow):
                 # SAME settings the parallel run was configured with,
                 # not whatever the user changed in the UI during meshing.
                 self._fallback_mesh_params = dict(p)
-                self._fallback_safe_max = safe_max
-                self._fallback_safe_min = safe_min
+                self._fallback_safe_max = raw_max
+                self._fallback_safe_min = raw_min
                 self._fallback_bl_params = bl_params
                 self._run_parallel_mesh(
-                    safe_max, safe_min, n_cores, guarded_finished, bl_params,
+                    raw_max, raw_min, n_cores, guarded_finished, bl_params,
                 )
                 return
 
@@ -1464,8 +1613,8 @@ class MainWindow(QMainWindow):
                 on_finished=guarded_finished,
                 fix_action=self._make_fix_action(),
                 bl_params=bl_params,
-                max_cell=safe_max,
-                min_cell=safe_min,
+                max_cell=raw_max,
+                min_cell=raw_min,
                 patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
             )
         except Exception as e:
@@ -1498,10 +1647,25 @@ class MainWindow(QMainWindow):
         the multi-core path hit trouble their geometry/machine couldn't
         support this time.
         """
+        # Disconnect old worker signals BEFORE creating a new one, so a
+        # delayed finished/failed signal from the previous run can't
+        # interfere with the current mesh.
+        old_worker = getattr(self, "_parallel_worker", None)
+        if old_worker is not None:
+            try:
+                old_worker.log_line.disconnect()
+                old_worker.finished.disconnect()
+                old_worker.failed.disconnect()
+                old_worker.cancelled.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            old_worker.deleteLater()
+
         if getattr(self, "_parallel_thread", None) and self._parallel_thread.isRunning():
             self._parallel_thread.quit()
-            self._parallel_thread.wait(3000)
+            self._parallel_thread.wait(5000)
 
+        my_id = self._run_id
         self._parallel_thread = QThread()
         self._parallel_worker = ParallelMeshWorker(
             self._case_dir, self._of_config,
@@ -1513,6 +1677,8 @@ class MainWindow(QMainWindow):
         self._parallel_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
 
         def on_finished(result):
+            if my_id != self._run_id:
+                return
             if result.cell_count == 0:
                 QMetaObject.invokeMethod(
                     self, "_parallel_fallback",
@@ -1523,9 +1689,12 @@ class MainWindow(QMainWindow):
             QMetaObject.invokeMethod(
                 self, "_on_parallel_mesh_success",
                 Qt.QueuedConnection,
+                Q_ARG(int, my_id),
             )
 
         def on_failed(msg: str):
+            if my_id != self._run_id:
+                return
             QMetaObject.invokeMethod(
                 self, "_parallel_fallback",
                 Qt.QueuedConnection,
@@ -1533,24 +1702,28 @@ class MainWindow(QMainWindow):
             )
 
         def _cleanup():
+            if self._parallel_thread:
+                self._parallel_thread.quit()
+                self._parallel_thread.wait(5000)
             self._parallel_worker.deleteLater()
             self._parallel_worker = None
-            self._parallel_thread.deleteLater()
-            self._parallel_thread = None
+            if self._parallel_thread:
+                self._parallel_thread.deleteLater()
+                self._parallel_thread = None
 
         def on_cancelled():
             self._log.append_log(f"{Tag.CANCELLED} Parallel meshing stopped.")
             _cleanup()
 
-        def _on_any_finished():
+        def _on_thread_finished():
+            """Called when the QThread has fully exited."""
             _cleanup()
 
         self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
         self._parallel_worker.finished.connect(self._parallel_thread.quit, Qt.QueuedConnection)
-        self._parallel_worker.finished.connect(_on_any_finished, Qt.QueuedConnection)
+        self._parallel_thread.finished.connect(_on_thread_finished, Qt.QueuedConnection)
         self._parallel_worker.failed.connect(on_failed, Qt.QueuedConnection)
         self._parallel_worker.failed.connect(self._parallel_thread.quit, Qt.QueuedConnection)
-        self._parallel_worker.failed.connect(_on_any_finished, Qt.QueuedConnection)
         self._parallel_worker.cancelled.connect(on_cancelled, Qt.QueuedConnection)
         self._parallel_worker.cancelled.connect(self._parallel_thread.quit, Qt.QueuedConnection)
         self._parallel_thread.started.connect(self._parallel_worker.run)
@@ -1703,25 +1876,38 @@ class MainWindow(QMainWindow):
         self._log.append_log("[gmsh] Generating volume mesh (tetra + BL)...")
         self._status.showMessage("GMSH: volume mesh...")
 
-        try:
-            msh_path = self._case_dir / "mesh.msh"
-            msh_path, names = gmsh_generate_volume_mesh(
-                step_path, msh_path,
-                detail=detail,
-                n_layers=n_layers,
-                bl_thickness=bl_thickness,
-                bl_expansion=bl_expansion,
-            )
-            self._log.append_log(
-                f"[gmsh] Volume mesh: {msh_path} — patches: {names}"
-            )
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.error("GMSH volume mesh failed: %s\n%s", e, tb)
-            self._log.append_log(f"[ERROR] GMSH volume: {e}")
-            self._params.set_all_enabled(True)
-            return
+        bl_retried = False
+        while True:
+            try:
+                msh_path = self._case_dir / "mesh.msh"
+                msh_path, names = gmsh_generate_volume_mesh(
+                    step_path, msh_path,
+                    detail=detail,
+                    n_layers=n_layers,
+                    bl_thickness=bl_thickness,
+                    bl_expansion=bl_expansion,
+                )
+                self._log.append_log(
+                    f"[gmsh] Volume mesh: {msh_path} — patches: {names}"
+                )
+                break
+            except Exception as e:
+                if not bl_retried and bl_params and n_layers > 0:
+                    bl_retried = True
+                    self._log.append_log(
+                        f"{Tag.WARN} GMSH volume mesh failed with BL — "
+                        "retrying without boundary layers."
+                    )
+                    n_layers = 0
+                    bl_thickness = None
+                    bl_expansion = 1.2
+                    continue
+                import traceback
+                tb = traceback.format_exc()
+                logger.error("GMSH volume mesh failed: %s\n%s", e, tb)
+                self._log.append_log(f"[ERROR] GMSH volume: {e}")
+                self._params.set_all_enabled(True)
+                return
 
         self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
         self._status.showMessage("GMSH: conversion...")
@@ -1797,6 +1983,15 @@ class MainWindow(QMainWindow):
         if value == 100:
             self._progress.setVisible(False)
 
+    def _cleanup_runner(self) -> None:
+        """Stop and clean up the current RetryRunner's thread."""
+        runner = getattr(self, "_runner", None)
+        if runner is not None and hasattr(runner, '_cleanup_previous'):
+            try:
+                runner._cleanup_previous()
+            except Exception:
+                pass
+
     def _kill_wsl_processes(self) -> None:
         """Best-effort kill of WSL2 mpirun/cartesianMesh processes.
         Called on cancel to ensure no orphaned ranks continue running."""
@@ -1814,10 +2009,12 @@ class MainWindow(QMainWindow):
             logger.debug("WSL process kill skipped: %s", exc)
 
     @Slot()
-    def _on_parallel_mesh_success(self) -> None:
+    @Slot(int)
+    def _on_parallel_mesh_success(self, my_id: int = 0) -> None:
         """Called on the GUI thread when parallel meshing succeeds.
         Dispatched via QMetaObject.invokeMethod from the QThread."""
-        my_id = self._run_id
+        if my_id != self._run_id:
+            return
         def guarded(exit_code, output, attempts):
             if my_id != self._run_id:
                 return
@@ -1838,12 +2035,20 @@ class MainWindow(QMainWindow):
         self._runner.progress_update.connect(self._on_progress_update)
 
     @Slot(str)
+    @Slot(str)
     def _parallel_fallback(self, msg: str) -> None:
         """Serial fallback for parallel meshing. Runs on GUI thread
         via QMetaObject.invokeMethod so QObject creation is safe."""
+        logger.warning("Parallel meshing failed (%s) — falling back to serial", msg)
         self._log.append_log(
             f"{Tag.WARN} Parallel meshing failed ({msg}) — "
             "falling back to single-core meshing for this run."
+        )
+        QMessageBox.information(
+            self, "Parallel Meshing Fallback",
+            f"Parallel meshing failed ({msg}).\n\n"
+            "Falling back to single-core (serial) meshing automatically.\n"
+            "The mesh will still be generated, it will just take longer.",
         )
         if self._case_dir:
             import glob as _glob
@@ -1905,6 +2110,11 @@ class MainWindow(QMainWindow):
 
     @Slot(int, str, int)
     def _on_meshing_finished(self, exit_code: int, output: str, attempts: int = 1):
+        # Guard against stale callbacks from previous meshing runs
+        meshing_id = getattr(self, "_meshing_run_id", None)
+        if meshing_id is not None and meshing_id != self._run_id:
+            logger.debug("Stale _on_meshing_finished ignored (meshing_id=%d, run_id=%d)", meshing_id, self._run_id)
+            return
         self._params.set_meshing_state(False)
         self._progress.setVisible(False)
         self._ribbon_btns["cancel"].setVisible(False)
@@ -1991,15 +2201,13 @@ class MainWindow(QMainWindow):
             return
         self._run_id += 1
         my_id = self._run_id
+        self._meshing_run_id = my_id
         logger.info("Direct re-mesh run #%d (quality fix).", my_id)
-        from cfmesh_autogui.core.geometry import compute_bbox_dim, validate_cell_sizes
         from cfmesh_autogui.core.stl_writer import export_surface_file
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
-        bbox_dim = compute_bbox_dim(self._meshes)
         p = self._params.get_mesh_params()
-        safe_max, safe_min, _ = validate_cell_sizes(
-            bbox_dim, p["max_cell_size"], p["min_cell_size"],
-        )
+        raw_max = p["max_cell_size"]
+        raw_min = p["min_cell_size"]
         bl_params = self._params.get_bl_params()
         all_names = [m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)]
         if bl_params is not None:
@@ -2014,7 +2222,7 @@ class MainWindow(QMainWindow):
             # Detect if FMS feature edges were previously generated
             fms_path = self._case_dir / "constant" / "triSurface" / "surface.fms"
             surface_file = "constant/triSurface/surface.fms" if fms_path.exists() else "constant/triSurface/surface.stl"
-            write_meshdict(self._case_dir, safe_max, safe_min, bl_params=bl_params,
+            write_meshdict(self._case_dir, raw_max, raw_min, bl_params=bl_params,
                            patch_names=all_names, surface_file=surface_file)
             from cfmesh_autogui.commercial.mesh_engine import _write_control_dict
             _write_control_dict(self._case_dir)
@@ -2037,16 +2245,16 @@ class MainWindow(QMainWindow):
             parallel_enabled, n_cores = self._params.get_parallel_params()
             if parallel_enabled and n_cores >= 2:
                 self._fallback_mesh_params = dict(p)
-                self._fallback_safe_max = safe_max
-                self._fallback_safe_min = safe_min
+                self._fallback_safe_max = raw_max
+                self._fallback_safe_min = raw_min
                 self._fallback_bl_params = bl_params
-                self._run_parallel_mesh(safe_max, safe_min, n_cores, guarded, bl_params)
+                self._run_parallel_mesh(raw_max, raw_min, n_cores, guarded, bl_params)
                 return
             self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (direct re-mesh)...")
             self._connect_runner_signals()
             self._runner.run(self._case_dir, on_log=self._log.append_log,
                              on_finished=guarded, fix_action=self._make_fix_action(),
-                             bl_params=bl_params, max_cell=safe_max, min_cell=safe_min,
+                             bl_params=bl_params, max_cell=raw_max, min_cell=raw_min,
                              patch_names=all_names)
         except Exception as e:
             logger.error("Direct remesh launch failed: %s", e)
@@ -2426,15 +2634,102 @@ class MainWindow(QMainWindow):
             logger.error("PDF export failed: %s", e)
             QMessageBox.critical(self, "PDF Error", str(e))
 
+    def _on_bc_editor(self):
+        if not self._case_dir:
+            QMessageBox.warning(self, "No Case", "Generate a mesh first.")
+            return
+        from cfmesh_autogui.gui.bc_dialog import BCEditorDialog
+        dlg = BCEditorDialog(self._case_dir, self)
+        dlg.bc_applied.connect(lambda: self._log.append_log("[bc] Fields exported."))
+        dlg.exec()
+        self._set_workflow_stage("export", "active")
+
+    def _on_solver_setup(self):
+        if not self._case_dir:
+            QMessageBox.warning(self, "No Case", "Generate a mesh first.")
+            return
+        from cfmesh_autogui.commercial.solver_setup import SolverSetup, SolverConfig, SolverType
+        from cfmesh_autogui.commercial.bc_editor import BCEditor
+        bce = BCEditor()
+        solver = SolverSetup()
+        patches = []
+        try:
+            patches = bce.read_boundary(self._case_dir)
+        except FileNotFoundError:
+            pass
+        cfg = SolverConfig(
+            solver_type=SolverType.SIMPLE_FOAM,
+            turbulence_model="kOmegaSST",
+            scheme_preset="bilanciato",
+        )
+        solver.configure(cfg)
+        solver.write_all(self._case_dir, patches)
+        self._log.append_log(
+            f"[solver] Setup complete: simpleFoam, kOmegaSST, bilanciato"
+        )
+        QMessageBox.information(
+            self, "Solver Setup",
+            f"Solver configuration written to {self._case_dir / 'system'}"
+        )
+        self._set_workflow_stage("export", "active")
+
+    def _on_full_auto(self):
+        if not self._meshes:
+            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
+            return
+        self._log.append_log("[fullauto] Starting Full Auto pipeline...")
+        self._set_workflow_stage("generate", "active")
+        self._on_quick_mesh()
+
+    def _on_template_selector(self):
+        from cfmesh_autogui.gui.template_selector import TemplateSelectorDialog
+        dlg = TemplateSelectorDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            preset = dlg.get_selected_template()
+            if preset is None:
+                return
+            self._log.append_log(
+                f"[template] Selected: {preset.metadata.name} "
+                f"({preset.metadata.category})"
+            )
+            self._apply_template_preset(preset)
+
+    def _apply_template_preset(self, preset):
+        self._params._detail_slider.setValue(
+            {"coarse": 1, "medium": 2, "fine": 3, "very_fine": 4}.get(
+                preset.detail, 2
+            )
+        )
+        if hasattr(self._params, '_algorithm_combo'):
+            algo_map = {
+                "CartesianHex": 0, "Tetrahedral": 1,
+                "Polyhedral": 2, "HexCorePoly": 3,
+            }
+            idx = algo_map.get(preset.metadata.solver, 0)
+            self._params._algorithm_combo.setCurrentIndex(idx)
+        if hasattr(self._params, '_bl_checkbox'):
+            self._params._bl_checkbox.setChecked(preset.bl_enabled)
+        if hasattr(self._params, '_bl_n_layers'):
+            self._params._bl_n_layers.setValue(preset.bl_n_layers)
+        if preset.geometry_hint:
+            self._log.append_log(
+                f"[template] Geometry hint: {preset.geometry_hint}"
+            )
+        self._log.append_log(
+            f"[template] Applied: {preset.metadata.solver} / "
+            f"{preset.metadata.turbulence}"
+        )
+
     def _on_new_case_wizard(self):
         from cfmesh_autogui.gui.new_case_wizard import NewCaseWizard
         wiz = NewCaseWizard(self)
         if wiz.exec() == QDialog.Accepted:
             params = wiz.get_params()
-            if "geometry_path" in params and params["geometry_path"]:
-                self._load_geometry_from_path(params["geometry_path"])
+            geo_path = params.get("geometry_path", "")
+            if geo_path:
+                self._load_geometry_from_path(geo_path)
             # Apply wizard mesh settings to ParamsPanel
-            detail_map = {"Coarse": 1, "Medium": 2, "Fine": 3}
+            detail_map = {"Coarse": 1, "Medium": 2, "Fine": 3, "Very Fine": 4}
             detail_str = params.get("detail", "Medium")
             if detail_str in detail_map:
                 self._params._detail_slider.setValue(detail_map[detail_str])
@@ -2450,20 +2745,73 @@ class MainWindow(QMainWindow):
                 self._params._bl_thick.setValue(float(params["bl_thick"]))
             if "bl_exp" in params:
                 self._params._bl_exp.setValue(float(params["bl_exp"]))
-            self._set_workflow_stage("mesh", "active")
+            # If pipeline result available, log feature info
+            pipe_result = params.get("pipeline_result")
+            if pipe_result and pipe_result.success:
+                g = pipe_result.geometry
+                self._log.append_log(
+                    f"[wizard] Geometry: {g.n_patches} patches, "
+                    f"watertight={g.watertight}, unit={g.detected_unit}, "
+                    f"bbox={g.bbox_max:.3f}m"
+                )
+                if pipe_result.healing:
+                    h = pipe_result.healing
+                    if h.holes_filled or h.gaps_stitched or h.slivers_removed:
+                        self._log.append_log(
+                            f"[wizard] Healing: {h.holes_filled} holes, "
+                            f"{h.gaps_stitched} gaps, {h.slivers_removed} slivers"
+                        )
+                if pipe_result.features:
+                    f = pipe_result.features
+                    self._log.append_log(
+                        f"[wizard] Features: {f.n_sharp_edges} sharp edges, "
+                        f"curvature={f.min_curvature_radius:.4f}m"
+                    )
+            # Trigger Quick Mesh if user selected it
+            if params.get("use_quick_mesh") and geo_path:
+                self._log.append_log("[wizard] Starting Quick Mesh...")
+                self._on_quick_mesh()
+            else:
+                self._set_workflow_stage("mesh", "active")
 
     def _on_quick_mesh(self):
         if not self._meshes:
             QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
             return
-        self._log.append_log("[quick] Auto-suggesting cell sizes...")
+        self._log.append_log("[quick] Running Quick Mesh...")
         self._set_workflow_stage("generate", "active")
-        from cfmesh_autogui.core.geometry import suggest_cell_sizes
+        from cfmesh_autogui.commercial.quick_mesh import QuickMesh
+        from cfmesh_autogui.commercial.mesh_engine import MeshEngine
+        from cfmesh_autogui.core.geometry import suggest_cell_sizes, compute_bbox_dim
         detail = self._params.get_detail_level()
+        # Auto-select algorithm via MeshEngine
+        has_wsl = self._of_config.validate()
+        n_wt = sum(1 for m in self._meshes if m.is_watertight)
+        all_wt = n_wt == len(self._meshes)
+        engine = MeshEngine()
+        algo = engine.auto_select(
+            patch_count=len(self._meshes), watertight=all_wt, has_wsl=has_wsl,
+        )
+        self._log.append_log(f"[quick] Algorithm: {algo.value}")
+        # Auto cell sizes via QuickMesh helper
+        bbox_dim = compute_bbox_dim(self._meshes)
         s_max, s_min = suggest_cell_sizes(self._meshes, detail=detail)
+        quality_mult = {"coarse": 1.5, "medium": 1.0, "fine": 0.6, "very_fine": 0.4}
+        detail_key = detail if detail in quality_mult else "medium"
+        s_max *= quality_mult[detail_key]
+        s_min *= quality_mult[detail_key]
         self._params._max_cell.setValue(s_max)
         self._params._min_cell.setValue(s_min)
-        bbox_dim = compute_bbox_dim(self._meshes)
+        # Auto BL via QuickMesh
+        qm = QuickMesh()
+        bl_params = qm._auto_bl_params(self._meshes, bbox_dim, all_wt)
+        if bl_params:
+            self._params._bl_checkbox.setChecked(True)
+            self._params._bl_n_layers.setValue(bl_params.get("nLayers", 3))
+            self._log.append_log(
+                f"[quick] Auto BL: {bl_params.get('nLayers')} layers, "
+                f"growth {bl_params.get('thicknessRatio', 1.2):.2f}"
+            )
         self._log.append_log(
             f"[quick] Suggested: max={s_max:.4f} min={s_min:.4f} "
             f"(bbox={bbox_dim:.4f})"

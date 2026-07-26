@@ -9,8 +9,9 @@ import trimesh  # ✅ F-017
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox, QSpinBox,
-    QPushButton, QListWidget, QLabel, QGroupBox, QMessageBox, QCheckBox,
+    QPushButton, QListWidget, QListWidgetItem, QLabel, QGroupBox, QMessageBox, QCheckBox,
     QComboBox, QScrollArea, QTabWidget, QHBoxLayout, QSlider, QFrame,
+    QInputDialog,
 )
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QUndoCommand, QUndoStack
@@ -373,14 +374,58 @@ class ParamsPanel(QWidget):
         self._bl_group = bl_group
         self._mesher_group = mesher_group
 
+        self._refine_group = QGroupBox("Local Refinement")
+        refine_layout = QVBoxLayout(self._refine_group)
+        self._auto_refine_check = QCheckBox("Auto-refine narrow sections")
+        self._auto_refine_check.setChecked(True)
+        self._auto_refine_check.setToolTip(
+            "Automatically detect throats/constrictions in duct-like geometries "
+            "and create local refinement zones with finer cells."
+        )
+        refine_layout.addWidget(self._auto_refine_check)
+        self._refine_list_label = QLabel("Manual refinement zones (box/sphere):")
+        refine_layout.addWidget(self._refine_list_label)
+        self._refine_list = QListWidget()
+        self._refine_list.setMaximumHeight(80)
+        refine_layout.addWidget(self._refine_list)
+        refine_btn_row = QHBoxLayout()
+        self._add_refine_btn = QPushButton("+")
+        self._add_refine_btn.setMaximumWidth(32)
+        self._add_refine_btn.setToolTip("Add a manual refinement zone (opens dialog)")
+        self._add_refine_btn.clicked.connect(self._on_add_refinement)
+        self._remove_refine_btn = QPushButton("−")
+        self._remove_refine_btn.setMaximumWidth(32)
+        self._remove_refine_btn.setToolTip("Remove selected refinement zone")
+        self._remove_refine_btn.clicked.connect(self._on_remove_refinement)
+        refine_btn_row.addWidget(self._add_refine_btn)
+        refine_btn_row.addWidget(self._remove_refine_btn)
+        refine_btn_row.addStretch()
+        refine_layout.addLayout(refine_btn_row)
+        mesh_layout.addWidget(self._refine_group)
+
         mesh_layout.addStretch()
         self._tabs.addTab(mesh_tab, "Mesh")
 
         adv_tab = QWidget()
         adv_layout = QVBoxLayout(adv_tab)
 
+        exp_label = QLabel(
+            "Experimental — queste funzioni sono ancora in fase di "
+            "ottimizzazione e potrebbero non funzionare con tutte le "
+            "geometrie o configurazioni."
+        )
+        exp_label.setWordWrap(True)
+        exp_label.setStyleSheet(
+            f"color: {ORANGE_500}; font-weight: bold; padding: 4px;"
+        )
+        adv_layout.addWidget(exp_label)
+        adv_layout.addSpacing(8)
+
         self._poly_check = QCheckBox("Convert to polyhedral mesh")
         adv_layout.addWidget(self._poly_check)
+
+        parallel_group = QGroupBox("Parallel Meshing (Experimental)")
+        parallel_group_layout = QVBoxLayout(parallel_group)
 
         parallel_row = QHBoxLayout()
         self._parallel_check = QCheckBox("Parallel meshing (multi-core)")
@@ -410,7 +455,8 @@ class ParamsPanel(QWidget):
         self._parallel_cores.setSuffix(" cores")
         self._parallel_cores.setEnabled(False)
         parallel_row.addWidget(self._parallel_cores)
-        adv_layout.addLayout(parallel_row)
+        parallel_group_layout.addLayout(parallel_row)
+        adv_layout.addWidget(parallel_group)
 
         adv_layout.addStretch()
         self._adv_tab = adv_tab
@@ -749,6 +795,53 @@ class ParamsPanel(QWidget):
 
     def set_poly_enabled(self, enabled: bool) -> None:
         self._poly_check.setEnabled(enabled)
+
+    def get_auto_refine_enabled(self) -> bool:
+        return getattr(self, "_auto_refine_check", None) is not None and self._auto_refine_check.isChecked()
+
+    def get_manual_refinements(self) -> list[dict]:
+        """Return list of {centre, radius, cell_size} from manual zone entries."""
+        refs: list[dict] = []
+        for i in range(self._refine_list.count()):
+            item = self._refine_list.item(i)
+            data = item.data(Qt.UserRole)
+            if isinstance(data, dict):
+                refs.append(data)
+        return refs
+
+    def _on_add_refinement(self):
+        """Open a dialog to add a manual refinement zone (box)."""
+        cx, ok = QInputDialog.getDouble(self, "Refinement Zone Centre X",
+                                         "X coordinate (m):", 0.0, -1000, 1000, 4)
+        if not ok:
+            return
+        cy, ok = QInputDialog.getDouble(self, "Refinement Zone Centre Y",
+                                         "Y coordinate (m):", 0.0, -1000, 1000, 4)
+        if not ok:
+            return
+        cz, ok = QInputDialog.getDouble(self, "Refinement Zone Centre Z",
+                                         "Z coordinate (m):", 0.0, -1000, 1000, 4)
+        if not ok:
+            return
+        radius, ok = QInputDialog.getDouble(self, "Refinement Zone Radius",
+                                             "Radius (half-diagonal, m):", 0.1, 0.001, 100, 4)
+        if not ok:
+            return
+        cell_size, ok = QInputDialog.getDouble(self, "Refinement Cell Size",
+                                                "Target cell size inside zone (m):",
+                                                0.01, 0.0001, 10, 5)
+        if not ok:
+            return
+        entry = {"centre": (cx, cy, cz), "radius": radius, "cell_size": cell_size}
+        label = f"Box ({cx:.3f},{cy:.3f},{cz:.3f}) r={radius:.3f} cs={cell_size:.5f}"
+        item = QListWidgetItem(label)
+        item.setData(Qt.UserRole, entry)
+        self._refine_list.addItem(item)
+
+    def _on_remove_refinement(self):
+        row = self._refine_list.currentRow()
+        if row >= 0:
+            self._refine_list.takeItem(row)
 
     def get_parallel_params(self) -> tuple[bool, int]:
         """(enabled, n_cores) for MPI-parallel cartesianMesh."""
