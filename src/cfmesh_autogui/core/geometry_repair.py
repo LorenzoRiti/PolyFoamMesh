@@ -245,3 +245,50 @@ def attempt_auto_repair(
     fixed, mf_report = repair_with_meshfix(snapped)
     reports.append(mf_report)
     return fixed, reports
+
+
+if __name__ == "__main__":
+    import sys, json, pickle
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "check":
+        case_dir = Path(sys.argv[2])
+        from cfmesh_autogui.core.stl_writer import export_multisolid_stl
+        from cfmesh_autogui.core.geometry import compute_bbox_dim
+        stl_paths = []
+        i = 3
+        while i < len(sys.argv):
+            stl_paths.append(sys.argv[i])
+            i += 1
+        meshes = []
+        for sp in stl_paths:
+            import trimesh
+            m = trimesh.load(sp)
+            meshes.append(m)
+        try:
+            combined = trimesh.util.concatenate(meshes)
+            combined.merge_vertices()
+            watertight = combined.is_watertight
+            n_edges = 0
+            reports = []
+            if not watertight:
+                bbox_dim = compute_bbox_dim(meshes)
+                repaired, reports_list = attempt_auto_repair(meshes, bbox_dim)
+                reports = [{"method": r.method, "operations": r.operations,
+                            "warnings": r.warnings,
+                            "watertight_after": r.watertight_after}
+                           for r in reports_list]
+                watertight = reports_list[-1].watertight_after if reports_list else False
+                repaired_paths = []
+                for i, m in enumerate(repaired):
+                    p = Path(sys.argv[2]) / f"repaired_{i}.stl"
+                    m.export(str(p))
+                    repaired_paths.append(str(p))
+            print(json.dumps({
+                "success": True,
+                "watertight": watertight,
+                "n_open_edges": n_edges,
+                "reports": reports,
+            }))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
+            sys.exit(1)
