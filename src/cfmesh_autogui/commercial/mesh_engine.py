@@ -202,12 +202,22 @@ class MeshEngine:
                 self._run_cartesian_hex(case_dir, meshes)
             elif algo == MeshingAlgorithm.POLYHEDRAL:
                 self._run_cartesian_hex(case_dir, meshes)
-                self._run_polyhedral(case_dir)
+                try:
+                    self._run_polyhedral(case_dir)
+                except Exception as poly_exc:
+                    logger.warning("polyDualMesh failed, keeping hex mesh: %s", poly_exc)
+                    result.warnings.append(f"Polyhedral conversion unavailable, using hex mesh: {poly_exc}")
+                    result.algorithm = MeshingAlgorithm.CARTESIAN_HEX.value
             elif algo == MeshingAlgorithm.TETRAHEDRAL:
                 self._run_tetrahedral(case_dir, geometry_path)
             elif algo == MeshingAlgorithm.HEX_CORE_POLY:
                 self._run_cartesian_hex(case_dir, meshes)
-                self._run_polyhedral(case_dir)
+                try:
+                    self._run_polyhedral(case_dir)
+                except Exception as poly_exc:
+                    logger.warning("polyDualMesh failed, keeping hex core mesh: %s", poly_exc)
+                    result.warnings.append(f"Polyhedral conversion unavailable, using hex core: {poly_exc}")
+                    result.algorithm = MeshingAlgorithm.CARTESIAN_HEX.value
             elif algo == MeshingAlgorithm.CARTESIAN_CUT:
                 self._run_cartesian_hex(case_dir, meshes)
 
