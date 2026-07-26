@@ -385,8 +385,12 @@ class ParamsPanel(QWidget):
         refine_layout.addWidget(self._auto_refine_check)
         self._refine_list_label = QLabel("Manual refinement zones (box/sphere):")
         refine_layout.addWidget(self._refine_list_label)
+        self._refine_placeholder = QLabel("Nessun raffinamento — aggiungi usando il pulsante +")
+        self._refine_placeholder.setStyleSheet("color: gray; font-style: italic; padding: 4px;")
+        refine_layout.addWidget(self._refine_placeholder)
         self._refine_list = QListWidget()
         self._refine_list.setMaximumHeight(80)
+        self._refine_list.setVisible(False)
         refine_layout.addWidget(self._refine_list)
         refine_btn_row = QHBoxLayout()
         self._add_refine_btn = QPushButton("+")
@@ -422,6 +426,18 @@ class ParamsPanel(QWidget):
         adv_layout.addSpacing(8)
 
         self._poly_check = QCheckBox("Convert to polyhedral mesh")
+        self._poly_check.setToolTip(
+            "Post-process: converts the hex-dominant mesh into an arbitrary\n"
+            "polyhedral mesh using cfMesh's polyDualMesh utility.\n\n"
+            "Effects:\n"
+            "  • Cell count INCREASES 15-30% (dual mesh operation)\n"
+            "  • Non-orthogonality improves (smoother cells)\n"
+            "  • Boundary layers preserved as prism cells\n"
+            "  • Mesh becomes more suitable for some solvers\n\n"
+            "Not the same as STAR-CCM+ polyhedral meshing\n"
+            "(which reduces cell count vs tetrahedral).\n"
+            "Use only when a polyhedral topology is required."
+        )
         adv_layout.addWidget(self._poly_check)
 
         parallel_group = QGroupBox("Parallel Meshing (Experimental)")
@@ -837,11 +853,18 @@ class ParamsPanel(QWidget):
         item = QListWidgetItem(label)
         item.setData(Qt.UserRole, entry)
         self._refine_list.addItem(item)
+        self._refresh_refine_placeholder()
 
     def _on_remove_refinement(self):
         row = self._refine_list.currentRow()
         if row >= 0:
             self._refine_list.takeItem(row)
+            self._refresh_refine_placeholder()
+
+    def _refresh_refine_placeholder(self):
+        has_items = self._refine_list.count() > 0
+        self._refine_placeholder.setVisible(not has_items)
+        self._refine_list.setVisible(has_items)
 
     def get_parallel_params(self) -> tuple[bool, int]:
         """(enabled, n_cores) for MPI-parallel cartesianMesh."""

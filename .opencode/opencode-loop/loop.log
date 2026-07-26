@@ -766,3 +766,8 @@
 {"time":"2026-07-26T22:32:46.474Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":12}
 {"time":"2026-07-26T22:32:49.225Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785104893278}
 {"time":"2026-07-26T22:33:31.802Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785105166476}
+{"time":"2026-07-26T22:34:16.844Z","line":"run","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","runCount":12}
+{"time":"2026-07-26T22:34:37.433Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":13}
+{"time":"2026-07-26T22:35:23.123Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785105277442}
+{"time":"2026-07-26T22:35:34.577Z","line":"active-stale-recovery","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","startedAt":1785105256845}
+{"time":"2026-07-26T22:35:48.736Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785105348675.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
