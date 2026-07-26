@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
         )
 
         self._status.showMessage("Checking OpenFOAM environment...")
-        QTimer.singleShot(100, self._deferred_wsl_check)
+        QTimer.singleShot(100, self._start_deferred_wsl_check)
 
         from cfmesh_autogui.core.disk_cleanup import auto_cleanup
         try:
@@ -1291,6 +1291,10 @@ class MainWindow(QMainWindow):
         )
         self._status.showMessage("Checking OpenFOAM environment (WSL2)...")
         self._start_wsl_check(my_id)
+
+    def _start_deferred_wsl_check(self) -> None:
+        """Deferred WSL check on startup — allows UI to render first."""
+        self._start_wsl_check(self._run_id)
 
     def _start_wsl_check(self, my_id: int) -> None:
         if getattr(self, "_wsl_check_thread", None) and self._wsl_check_thread.isRunning():
