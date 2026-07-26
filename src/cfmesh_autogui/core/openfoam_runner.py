@@ -979,7 +979,7 @@ class PolyDualWorker(QObject):
     failed = Signal(str)
 
     def __init__(self, case_dir: Path | str, of_config: OFConfig,
-                 feature_angle: float = 45.0, parent=None):
+                 feature_angle: float = 90, parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._of_config = of_config

@@ -144,7 +144,7 @@ class MosaicEngine:
         cmd = self._of_config._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; "
             f"cd {linux_case_raw} && "
-            f"polyDualMesh 45 -overwrite 2>&1 | tail -15"
+            f"polyDualMesh 90 -overwrite 2>&1 | tail -15"
         )
         logger.info("Running polyDualMesh (mosaic, featureAngle=45)...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)

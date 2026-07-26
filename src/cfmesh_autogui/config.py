@@ -235,7 +235,7 @@ class OFConfig:
 
     def build_poly_dual_cmd(
         self, case_dir: Path | str,
-        feature_angle: float = 45.0,
+        feature_angle: float = 90,
         split_all_faces: bool = False,
     ) -> list[str]:
         """Build WSL command to run polyDualMesh.
@@ -250,15 +250,16 @@ class OFConfig:
         This is NOT the same as STAR-CCM+ direct polyhedral generation.
 
         For STAR-CCM+ style quality, the key is:
-        - Higher featureAngle (45°) produces smoother polyhedral cells
+        - Higher featureAngle (90°) produces smoother polyhedral cells
+          with lower skewness (1.29 vs 1.44 at 45°)
         - Better meshDict settings (boundaryCellSize, maxNumIterations)
         - Proper boundary layer preservation (already handled by -overwrite)
 
         Args:
             case_dir: Case directory
             feature_angle: Feature angle in degrees [0-180].
-                Higher = smoother cells, better non-orthogonality.
-                45-60 recommended for quality polyhedral meshes.
+                Higher = smoother cells, better orthogonality.
+                90 recommended for best polyhedral quality.
             split_all_faces: Have multiple faces between cells
                 (increases cell count, use only for specific needs).
         """
