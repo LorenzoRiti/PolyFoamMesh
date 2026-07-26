@@ -34,7 +34,7 @@ from cfmesh_autogui.commercial.batch_mesh import (
     BatchMesher, BatchConfig, BatchReport, BatchEntry,
 )
 from cfmesh_autogui.commercial.exporter import (
-    MeshExporter, ExportResult, EXPORT_FORMATS,
+    MeshExporter, ExportResult, EXPORT_FORMAT_REGISTRY,
 )
 from cfmesh_autogui.commercial.monitor import (
     QualityMonitor, QualityMetric, QualitySnapshot, WorstCell,
@@ -69,7 +69,7 @@ from cfmesh_autogui.commercial.quality_engine import (
     QualityEngine, QualityReport, QualityMetrics,
 )
 from cfmesh_autogui.commercial.bc_editor import (
-    BCEditor, PatchInfo,
+    BCEditor, BcPatchInfo,
 )
 from cfmesh_autogui.commercial.one_click_run import (
     FullAutoPipeline, FullAutoResult,
@@ -84,7 +84,7 @@ __all__ = [
     "ParallelMeshEngine", "DecomposeParams", "ParallelMeshResult",
     "MosaicEngine", "MosaicParams", "MosaicResult",
     "BatchMesher", "BatchConfig", "BatchReport", "BatchEntry",
-    "MeshExporter", "ExportResult", "EXPORT_FORMATS",
+    "MeshExporter", "ExportResult", "EXPORT_FORMAT_REGISTRY", "EXPORT_FORMATS",
     "QualityMonitor", "QualityMetric", "QualitySnapshot", "WorstCell",
     "CloudMesher", "MeshJob", "JobStatus", "ShareLink",
     "Journal", "JournalEntry", "JournalPlayer",

@@ -11,15 +11,15 @@ from _test_helpers import load_commercial_module
 _mod = load_commercial_module("exporter")
 ExportResult = _mod.ExportResult
 MeshExporter = _mod.MeshExporter
-EXPORT_FORMATS = _mod.EXPORT_FORMATS
+EXPORT_FORMAT_REGISTRY = _mod.EXPORT_FORMAT_REGISTRY
 
 
 def test_export_formats_available():
-    assert "openfoam" in EXPORT_FORMATS
-    assert "cgns" in EXPORT_FORMATS
-    assert "vtu" in EXPORT_FORMATS
-    assert "stl" in EXPORT_FORMATS
-    assert len(EXPORT_FORMATS) >= 6
+    assert "openfoam" in EXPORT_FORMAT_REGISTRY
+    assert "cgns" in EXPORT_FORMAT_REGISTRY
+    assert "vtu" in EXPORT_FORMAT_REGISTRY
+    assert "stl" in EXPORT_FORMAT_REGISTRY
+    assert len(EXPORT_FORMAT_REGISTRY) >= 6
 
 
 def test_export_result_defaults():
@@ -69,7 +69,7 @@ def test_exporter_vtu_nonexistent():
 
 
 def test_export_format_descriptions():
-    for key, info in EXPORT_FORMATS.items():
+    for key, info in EXPORT_FORMAT_REGISTRY.items():
         assert "desc" in info
         assert "ext" in info
         assert "requires_wsl" in info

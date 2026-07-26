@@ -73,8 +73,13 @@ BC_PRESETS: dict[str, dict[str, dict[str, Any]]] = {
 
 
 @dataclass
-class PatchInfo:
-    """Information about a single boundary patch."""
+@dataclass
+class BcPatchInfo:
+    """Boundary patch info for the BC editor (extends core BcPatchInfo).
+    
+    Adds BC type, colour, centroid, normal, and area to the basic
+    (name, nFaces, startFace) from core.boundary_reader.BcPatchInfo.
+    """
     name: str = ""
     orig_name: str = ""
     n_faces: int = 0
@@ -98,14 +103,14 @@ class BCEditor:
         editor.export_fields(case_dir, patches)
     """
 
-    def read_boundary(self, case_dir: Path | str) -> list[PatchInfo]:
+    def read_boundary(self, case_dir: Path | str) -> list[BcPatchInfo]:
         """Read ``constant/polyMesh/boundary`` and return patch list.
 
         Args:
             case_dir: OpenFOAM case directory.
 
         Returns:
-            List of ``PatchInfo`` with name, type, nFaces, startFace.
+            List of ``BcPatchInfo`` with name, type, nFaces, startFace.
         """
         from cfmesh_autogui.core.boundary_reader import parse_boundary
 
@@ -115,10 +120,10 @@ class BCEditor:
             raise FileNotFoundError(f"Boundary file not found: {boundary_path}")
 
         raw_patches = parse_boundary(boundary_path)
-        patches: list[PatchInfo] = []
+        patches: list[BcPatchInfo] = []
 
         for rp in raw_patches:
-            patches.append(PatchInfo(
+            patches.append(BcPatchInfo(
                 name=rp.name,
                 orig_name=rp.name,
                 n_faces=rp.n_faces,
@@ -134,7 +139,7 @@ class BCEditor:
         return patches
 
     def auto_detect_types(
-        self, patches: list[PatchInfo],
+        self, patches: list[BcPatchInfo],
         bbox: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> int:
         """Auto-detect BC type for each patch using name + geometry.
@@ -145,7 +150,7 @@ class BCEditor:
           3. Centroid position: at bbox min/max along axis
 
         Args:
-            patches: List of PatchInfo to update in-place.
+            patches: List of BcPatchInfo to update in-place.
             bbox: Bounding box dimensions (dx, dy, dz).
 
         Returns:
@@ -178,7 +183,7 @@ class BCEditor:
         return "patch"
 
     def _detect_type(
-        self, patch: PatchInfo,
+        self, patch: BcPatchInfo,
         bbox: tuple[float, float, float],
     ) -> str:
         """Detect BC type using name first, then geometry."""
@@ -215,7 +220,7 @@ class BCEditor:
         return "patch"
 
     def rename_patch(
-        self, patches: list[PatchInfo],
+        self, patches: list[BcPatchInfo],
         old_name: str, new_name: str,
     ) -> bool:
         """Rename a patch and update its colour based on the new name.
@@ -237,7 +242,7 @@ class BCEditor:
                 return True
         return False
 
-    def set_type(self, patch: PatchInfo, bc_type: str) -> None:
+    def set_type(self, patch: BcPatchInfo, bc_type: str) -> None:
         """Manually set a patch's BC type."""
         if bc_type not in PATCH_COLORS:
             raise ValueError(f"Unknown BC type: {bc_type}. Valid: {list(PATCH_COLORS)}")
@@ -257,7 +262,7 @@ class BCEditor:
     # ------------------------------------------------------------------
     def export_fields(
         self, case_dir: Path | str,
-        patches: list[PatchInfo],
+        patches: list[BcPatchInfo],
         solver_template: str = "simpleFoam",
     ) -> list[str]:
         """Export complete ``0/`` field files for all patches.
@@ -297,7 +302,7 @@ class BCEditor:
         })
         return written
 
-    def _generate_field(self, field_name: str, patches: list[PatchInfo]) -> str:
+    def _generate_field(self, field_name: str, patches: list[BcPatchInfo]) -> str:
         """Generate a complete OpenFOAM field file."""
         # Determine dimensions and internal field
         dims_map = {
@@ -351,7 +356,7 @@ class BCEditor:
         return "\n".join(lines) + "\n"
 
     def export_boundary_file(
-        self, case_dir: Path | str, patches: list[PatchInfo],
+        self, case_dir: Path | str, patches: list[BcPatchInfo],
     ) -> str:
         """Write the updated ``constant/polyMesh/boundary`` file.
 
@@ -393,6 +398,6 @@ class BCEditor:
         return str(path)
 
     @staticmethod
-    def colour_for_patch(patch: PatchInfo) -> tuple[float, float, float]:
+    def colour_for_patch(patch: BcPatchInfo) -> tuple[float, float, float]:
         """Return the RGB colour for a patch."""
         return PATCH_COLORS.get(patch.bc_type, PATCH_COLORS["default"])

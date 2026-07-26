@@ -143,7 +143,7 @@ def test_commercial_exporter_delegates_to_core_mesh_export(meshed_case, fmt):
 
     mod = load_commercial_module("exporter")
     ex = mod.MeshExporter()
-    ext = mod.EXPORT_FORMATS[fmt]["ext"]
+    ext = mod.EXPORT_FORMAT_REGISTRY[fmt]["ext"]
     out = WORK_ROOT / f"commercial_export_{fmt}{ext}"
     result = ex.export(meshed_case, fmt=fmt, output_path=out)
 

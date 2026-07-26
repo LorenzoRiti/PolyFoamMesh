@@ -1,4 +1,4 @@
-"""Compare polyDualMesh with different flags on fresh baseline."""
+"""Compare polyDualMesh with different feature angles."""
 from __future__ import annotations
 import shutil, subprocess, re, sys
 from pathlib import Path
@@ -34,15 +34,7 @@ def _checkmesh(case_dir):
         "passed": "Mesh OK." in t,
     }
 
-# Test matrix
-CONFIGS = [
-    ("plain30", {"feature_angle": 30, "concave_multi": False, "split_all": False}),
-    ("concave30", {"feature_angle": 30, "concave_multi": True, "split_all": False}),
-    ("split30", {"feature_angle": 30, "concave_multi": False, "split_all": True}),
-    ("all30", {"feature_angle": 30, "concave_multi": True, "split_all": True}),
-    ("angle15", {"feature_angle": 15, "concave_multi": False, "split_all": False}),
-    ("angle60", {"feature_angle": 60, "concave_multi": False, "split_all": False}),
-]
+ANGLES = [20, 30, 45, 60, 90, 120]
 
 print(f"{'Geo':>8} {'Cfg':>10} {'Cells':>8} {'Red%':>6} {'Skew':>8} {'NOmax':>8} {'NOavg':>8} {'AspRa':>8} {'Pass':>6}")
 print("-" * 74)
@@ -51,7 +43,6 @@ for name, stl, mc, mi in [
     ("venturi", Path("C:/cfmesh_poly_bench/venturi.stl"), 0.08, 0.02),
     ("s_bend",  Path("C:/cfmesh_poly_bench/s_bend.stl"), 0.06, 0.015),
 ]:
-    # One hex mesh for each geometry
     case_dir = Path(f"C:/cfmesh_poly_bench/sweep_{name}")
     shutil.rmtree(case_dir, ignore_errors=True)
     for d in ["constant/triSurface", "system"]:
@@ -73,24 +64,21 @@ for name, stl, mc, mi in [
     if r.returncode != 0:
         print(f"{name:>8} {'cartesian':>10} FAILED"); continue
     hm = _checkmesh(case_dir)
+    print(f"{name:>8} {'hex':>10} {hm['cells']:>8} {'':>6} {hm['skew']:>8.4f} {hm['no_max']:>8.2f} {hm['no_avg']:>8.2f} {hm['ar']:>8.2f}")
 
-    for cname, cparams in CONFIGS:
-        # Clone mesh dir for each config
-        sub_case = Path(f"C:/cfmesh_poly_bench/sweep_{name}_{cname}")
+    for angle in ANGLES:
+        sub_case = Path(f"C:/cfmesh_poly_bench/sweep_{name}_fa{angle}")
         shutil.rmtree(sub_case, ignore_errors=True)
-        # Copy the full cartesianMesh result
-        subprocess.run(cfg._build_wsl_cmd(f"cp -r {lc}/constant {cfg.wsl_linux_case_path(sub_case)}/ && cp -r {lc}/system {cfg.wsl_linux_case_path(sub_case)}/"),
-                       capture_output=True, timeout=60)
+        subprocess.run(cfg._build_wsl_cmd(f"mkdir -p {cfg.wsl_linux_case_path(sub_case)}/constant/polyMesh"),
+                       capture_output=True, timeout=30)
+        subprocess.run(cfg._build_wsl_cmd(
+            f"cp -r {lc}/constant/polyMesh/* {cfg.wsl_linux_case_path(sub_case)}/constant/polyMesh/"),
+            capture_output=True, timeout=60)
 
-        cmd = cfg.build_poly_dual_cmd(
-            sub_case,
-            feature_angle=cparams["feature_angle"],
-            concave_multi=cparams["concave_multi"],
-            split_all_faces=cparams["split_all"],
-        )
+        cmd = cfg.build_poly_dual_cmd(sub_case, feature_angle=angle)
         rp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         pm = _checkmesh(sub_case)
         red = round((1 - pm['cells']/hm['cells'])*100, 1) if hm['cells'] else 0
-        print(f"{name:>8} {cname:>10} {pm['cells']:>8} {red:>6.1f} {pm['skew']:>8.4f} {pm['no_max']:>8.2f} {pm['no_avg']:>8.2f} {pm['ar']:>8.2f} {str(pm['passed']):>6}")
+        print(f"{name:>8} {'fa'+str(angle):>10} {pm['cells']:>8} {red:>6.1f} {pm['skew']:>8.4f} {pm['no_max']:>8.2f} {pm['no_avg']:>8.2f} {pm['ar']:>8.2f} {str(pm['passed']):>6}")
 
 print("\nDone.")
