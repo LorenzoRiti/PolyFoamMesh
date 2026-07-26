@@ -424,5 +424,4 @@ def _main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(_main())
+

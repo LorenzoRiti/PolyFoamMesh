@@ -133,11 +133,8 @@ class MosaicEngine:
     def _step_poly_conversion(self) -> None:
         """Run polyDualMesh via WSL2.
 
-        polyDualMesh requires a featureAngle (positional arg, 0-180 deg).
-        The old ``-constant`` flag does NOT exist — using it means the
-        command silently does nothing.  This fix uses featureAngle=30 by
-        default (Star-CCM+ style) and copies the result from time ``0/``
-        back to ``constant/polyMesh/``.
+        Uses higher featureAngle (45) for smoother polyhedral cells.
+        polyDualMesh uses -overwrite to modify constant/polyMesh in-place.
         """
         if not self._case_dir:
             return
@@ -147,13 +144,9 @@ class MosaicEngine:
         cmd = self._of_config._build_wsl_cmd(
             f"source {env_q} 2>/dev/null; "
             f"cd {linux_case_raw} && "
-            f"polyDualMesh 30 -overwrite -concaveMultiCells 2>&1 | tail -15 && "
-            f"if [ -d \"{linux_case_raw}/0/polyMesh\" ]; then "
-            f"  cp -r \"{linux_case_raw}/0/polyMesh/.\" "
-            f"        \"{linux_case_raw}/constant/polyMesh/\"; "
-            f"fi"
+            f"polyDualMesh 45 -overwrite 2>&1 | tail -15"
         )
-        logger.info("Running polyDualMesh (mosaic conversion, featureAngle=30)...")
+        logger.info("Running polyDualMesh (mosaic, featureAngle=45)...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
@@ -161,9 +154,7 @@ class MosaicEngine:
                 f"polyDualMesh failed (exit {result.returncode}):\n{result.stderr[-300:]}"
             )
 
-        # Count cells after conversion (now in constant/polyMesh)
         self._result.poly_cells = self._count_cells("poly")
-
         logger.info("polyDualMesh conversion OK")
 
     def _count_cells(self, stage: str = "hex") -> int:
