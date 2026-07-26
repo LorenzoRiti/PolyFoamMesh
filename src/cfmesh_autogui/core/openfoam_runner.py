@@ -1289,3 +1289,128 @@ class QualityFixWorker(QObject):
             self._checkmesh_thread.quit()
             self._checkmesh_thread.wait(3000)
 
+
+class GmshSurfaceWorker(QObject):
+    """Runs GMSH surface STL generation + sizing in a subprocess.
+
+    GMSH's own bundled OpenCASCADE conflicts with cadquery/OCP's OpenCASCADE
+    when both are loaded in the same process, causing hard native crashes.
+    Running GMSH in a separate subprocess isolates this completely.
+    """
+
+    finished = Signal(object)  # dict with sizing results
+    log_line = Signal(str)
+    failed = Signal(str)
+
+    SURFACE_TIMEOUT_S = 180
+
+    def __init__(self, geom_path: str, stl_out: Path, detail: str, parent=None):
+        super().__init__(parent)
+        self._geom_path = geom_path
+        self._stl_out = stl_out
+        self._detail = detail
+
+    @Slot()
+    def run(self):
+        import sys, subprocess, json
+        frozen = getattr(sys, "frozen", False)
+        if frozen:
+            cmd = [sys.executable, "--gmsh-surface", self._geom_path, str(self._stl_out), self._detail]
+        else:
+            cmd = [
+                sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper",
+                "surface", self._geom_path, str(self._stl_out), self._detail,
+            ]
+        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+        self.log_line.emit("[gmsh] Running surface STL generation in subprocess...")
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=self.SURFACE_TIMEOUT_S, cwd=run_cwd,
+            )
+        except subprocess.TimeoutExpired:
+            self.failed.emit(f"GMSH surface exceeded {self.SURFACE_TIMEOUT_S}s")
+            return
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+
+        if proc.returncode != 0:
+            self.failed.emit(proc.stderr.strip() or f"GMSH surface failed (exit {proc.returncode})")
+            return
+
+        try:
+            result = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            self.failed.emit(f"GMSH surface: invalid JSON output: {e}")
+            return
+
+        if not result.get("success"):
+            self.failed.emit(result.get("error", "Unknown GMSH error"))
+            return
+
+        self.finished.emit(result)
+
+
+class GmshVolumeWorker(QObject):
+    """Runs GMSH volume mesh generation in a subprocess."""
+
+    finished = Signal(object)  # dict with path + names
+    log_line = Signal(str)
+    failed = Signal(str)
+
+    VOLUME_TIMEOUT_S = 600
+
+    def __init__(self, step_path: str, msh_path: Path, detail: str,
+                 n_layers: int = 0, bl_thickness: float | None = None,
+                 bl_expansion: float = 1.2, parent=None):
+        super().__init__(parent)
+        self._step_path = step_path
+        self._msh_path = msh_path
+        self._detail = detail
+        self._n_layers = n_layers
+        self._bl_thickness = bl_thickness
+        self._bl_expansion = bl_expansion
+
+    @Slot()
+    def run(self):
+        import sys, subprocess, json
+        frozen = getattr(sys, "frozen", False)
+        args = [
+            "volume", self._step_path, str(self._msh_path), self._detail,
+            str(self._n_layers), str(self._bl_thickness or 0), str(self._bl_expansion),
+        ]
+        if frozen:
+            cmd = [sys.executable, "--gmsh-volume"] + args[1:]
+        else:
+            cmd = [sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper"] + args
+        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+        self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=self.VOLUME_TIMEOUT_S, cwd=run_cwd,
+            )
+        except subprocess.TimeoutExpired:
+            self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
+            return
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+
+        if proc.returncode != 0:
+            self.failed.emit(proc.stderr.strip() or f"GMSH volume failed (exit {proc.returncode})")
+            return
+
+        try:
+            result = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            self.failed.emit(f"GMSH volume: invalid JSON output: {e}")
+            return
+
+        if not result.get("success"):
+            self.failed.emit(result.get("error", "Unknown GMSH error"))
+            return
+
+        self.finished.emit(result)
+
