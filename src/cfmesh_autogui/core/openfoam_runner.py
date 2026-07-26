@@ -181,7 +181,8 @@ class MeshWorker(QObject):
     _PID_FILE = "process.pid"
 
     # Maximum wall-clock time for a single meshing run (hours:min:sec)
-    MAX_RUNTIME_SECONDS = 7200  # 2 hours
+    # 4 hours supports ~25M cells at ~1800 cells/sec sustained throughput.
+    MAX_RUNTIME_SECONDS = 14400  # 4 hours
 
     def __init__(self, case_dir: Path | str, of_config: OFConfig, parent=None):
         super().__init__(parent)
@@ -486,8 +487,8 @@ class RetryRunner(QObject):
         if self._thread is not None:
             if self._thread.isRunning():
                 self._thread.quit()
-                if not self._thread.wait(5000):
-                    logger.warning("QThread did not quit within 5s — forcing terminate")
+                if not self._thread.wait(30000):
+                    logger.warning("QThread did not quit within 30s — forcing terminate")
                     self._thread.terminate()
                     self._thread.wait(3000)
             # V1.1: delete thread AFTER it has fully stopped (B14 fix)
@@ -648,7 +649,7 @@ class RetryRunner(QObject):
         if self._thread is not None and self._thread.isRunning():
             self._thread.requestInterruption()
             # V1.1: wait a bit for the select loop to pick up the interruption
-            if not self._thread.wait(5000):
+            if not self._thread.wait(30000):
                 self._thread.terminate()
                 self._thread.wait(3000)
         self._cleanup_previous()
@@ -920,12 +921,12 @@ class CheckMeshWorker(QObject):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=600,
             )
             full = result.stdout + "\n" + result.stderr
         except subprocess.TimeoutExpired:
-            self.log_line.emit("[checkMesh] TIMEOUT (120s)")
-            self.failed.emit("checkMesh timed out after 120s")
+            self.log_line.emit("[checkMesh] TIMEOUT (600s)")
+            self.failed.emit("checkMesh timed out after 600s")
             return
         except FileNotFoundError:
             self.log_line.emit("[checkMesh] WSL not found")

@@ -142,12 +142,12 @@ class OFConfig:
             # run MPI-parallel meshing
             f"mpirun --allow-run-as-root --oversubscribe "
             f"-np {n_cores} {bin_q} -parallel 2>&1 | "
-            f"tee $TMPD/parallel_mesh.log | tail -30\n"
+            f"tee $TMPD/parallel_mesh.log | tail -200\n"
             f"RC1=${{PIPESTATUS[0]}}\n"
             # reconstruct
             f"if [ $RC1 -eq 0 ]; then\n"
             f"  reconstructParMesh -constant 2>&1 | "
-            f"tee -a $TMPD/parallel_mesh.log | tail -15\n"
+            f"tee -a $TMPD/parallel_mesh.log | tail -200\n"
             f"  RC2=${{PIPESTATUS[0]}}\n"
             f"else\n"
             f"  RC2=$RC1\n"
@@ -190,7 +190,7 @@ class OFConfig:
         cmd = (
             f"set -o pipefail; "
             f"source {shlex.quote(self.env_script)} 2>/dev/null; "
-            f"bash {shlex.quote(linux_script)} 2>&1 | tail -50"
+            f"bash {shlex.quote(linux_script)} 2>&1 | tail -200"
         )
         return self._build_wsl_cmd(cmd)
 

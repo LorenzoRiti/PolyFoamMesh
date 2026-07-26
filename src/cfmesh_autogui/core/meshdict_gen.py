@@ -13,6 +13,7 @@ Syntax verified against the official OpenFOAM v2512 tutorials at
 from __future__ import annotations
 
 import logging
+import traceback
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -189,9 +190,16 @@ def build_meshdict_lines(
             # Without this, cfMesh sizes the first layer itself and the y+
             # target the app computed is never actually applied to the mesh.
             lines.append(f"            maxFirstLayerThickness  {float(first_layer_abs):.8g};")
-        lines.append("            optimiseLayer           1;")
-        lines.append("            untangleLayers          1;")
-        lines.append("        }")
+            lines.append("            optimiseLayer           1;")
+            lines.append("            untangleLayers          1;")
+            # Protection against layer collapse on sharp convex edges:
+            # - maxThicknessToMedialRatio caps layer growth near thin gaps
+            # - reCalculateNormals recalculates extrusion direction near sharp angles
+            # - featureAngle prevents BL on faces whose normals differ beyond this
+            lines.append("            maxThicknessToMedialRatio 0.3;")
+            lines.append("            reCalculateNormals       1;")
+            lines.append("            maxBoundaryLayerAngle    60;")
+            lines.append("        }")
         lines.append("    }")
         lines.append("}")
         lines.append("")
@@ -246,6 +254,15 @@ def write_meshdict(
     case_dir = Path(case_dir)
     system_dir = case_dir / "system"
     system_dir.mkdir(parents=True, exist_ok=True)
+
+    # Audit log: every write_meshdict call records caller, values, and timestamp
+    _audit_log = Path.home() / ".cfmesh_meshdict_audit.log"
+    _stack = "".join(traceback.format_stack(limit=8)[:-2])
+    with open(_audit_log, "a", encoding="utf-8") as _af:
+        _af.write(
+            f"[max={max_cell_size} min={min_cell_size} bl={bl_params is not None} "
+            f"dir={case_dir}]\n{_stack}\n"
+        )
 
     lines = build_meshdict_lines(
         max_cell=max_cell_size,
