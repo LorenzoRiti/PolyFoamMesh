@@ -2564,6 +2564,14 @@ class MainWindow(QMainWindow):
                 f"{Tag.WARN} Poly conversion: no mesh found in constant/polyMesh."
             )
             return
+        # Save cell count before poly conversion for comparison
+        try:
+            from cfmesh_autogui.core.of_reader import of_list_count
+            self._cells_before_poly = of_list_count(
+                self._case_dir / "constant" / "polyMesh" / "owner"
+            )
+        except Exception:
+            self._cells_before_poly = 0
         self._polydual_run_id = self._run_id
         if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
             self._polydual_thread.quit()
@@ -2605,6 +2613,20 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Polyhedral mesh ready — running quality check...")
         self._viewer.show_mesh(self._case_dir)
         self._poly_was_converted = True
+        # Compare cell counts from the mesh files
+        try:
+            from cfmesh_autogui.core.of_reader import of_list_count
+            owner = self._case_dir / "constant" / "polyMesh" / "owner"
+            cells_after = of_list_count(owner)
+            cells_before = getattr(self, "_cells_before_poly", 0)
+            if cells_before > 0 and cells_after > 0:
+                pct = round((cells_after / cells_before - 1) * 100, 1)
+                self._log.append_log(
+                    f"[poly] Cells: {cells_before} → {cells_after} ({pct:+.1f}%). "
+                    "Non-orthogonality should improve."
+                )
+        except Exception:
+            pass
         self._launch_checkmesh()
 
     def _launch_decomposepar(self) -> None:
