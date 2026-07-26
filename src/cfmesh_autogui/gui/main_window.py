@@ -1611,12 +1611,6 @@ class MainWindow(QMainWindow):
 
         self._log.append_log(f"{Tag.DICT} Writing meshDict...")
         try:
-            # Don't emit boundaryCellSize + patchCellSize simultaneously:
-            # cfMesh can crash when both are specified because they both
-            # control near-wall resolution through different code paths.
-            if patch_sizes:
-                bc_size = None
-                bc_thick = None
             from cfmesh_autogui.core.meshdict_gen import write_meshdict
             self._log.append_log(
                 f"[DEBUG] Writing meshDict with raw values: max={raw_max:.6f} min={raw_min:.6f}"
@@ -2582,10 +2576,14 @@ class MainWindow(QMainWindow):
                 try:
                     finer_tol = 0.01 / (2 ** attempt)
                     patches = classify_faces(shape)
-                    self._meshes = tessellate_patches(patches, tolerance=finer_tol, angle_tolerance=0.05)
-                    self._unscaled_meshes = [m.copy() for m in self._meshes]
+                    self._unscaled_meshes = list(tessellate_patches(patches, tolerance=finer_tol, angle_tolerance=0.05))
+                    self._scaled_meshes = None
                     if abs(current_scale - 1.0) > 1e-9:
-                        scale_meshes(self._meshes, current_scale)
+                        self._scaled_meshes = [m.copy() for m in self._unscaled_meshes]
+                        scale_meshes(self._scaled_meshes, current_scale)
+                        self._meshes = self._scaled_meshes
+                    else:
+                        self._meshes = self._unscaled_meshes
                     export_surface_file(self._meshes, self._case_dir)
                     self._log.append_log(f"{Tag.FIX} Re-exported STL (tol={finer_tol})")
                     return True

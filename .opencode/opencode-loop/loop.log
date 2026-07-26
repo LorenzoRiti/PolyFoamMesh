@@ -662,3 +662,15 @@
 {"time":"2026-07-26T21:17:27.905Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785100647888.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
 {"time":"2026-07-26T21:17:58.929Z","line":"due-timer-error","sessionID":"ses_05ff634e9ffej14124DLo909BZ","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05ff634e9ffej14124DLo909BZ.json.23084.1785100678914.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05ff634e9ffej14124DLo909BZ.json'"}
 {"time":"2026-07-26T21:18:20.882Z","line":"run","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","runCount":6}
+{"time":"2026-07-26T21:19:06.306Z","line":"active-stale-recovery","sessionID":"ses_05ff634e9ffej14124DLo909BZ","job":"default","startedAt":1785100700884}
+{"time":"2026-07-26T21:19:42.158Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":3}
+{"time":"2026-07-26T21:20:12.705Z","line":"run","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","runCount":4}
+{"time":"2026-07-26T21:20:36.881Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785100782160}
+{"time":"2026-07-26T21:21:45.362Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785100812709}
+{"time":"2026-07-26T21:23:40.677Z","line":"run","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","runCount":5}
+{"time":"2026-07-26T21:25:03.263Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":4}
+{"time":"2026-07-26T21:25:12.165Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785101020682}
+{"time":"2026-07-26T21:25:17.168Z","line":"run","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","runCount":6}
+{"time":"2026-07-26T21:25:27.902Z","line":"run","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","runCount":7}
+{"time":"2026-07-26T21:26:16.059Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785101103266}
+{"time":"2026-07-26T21:27:43.750Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785101127905}

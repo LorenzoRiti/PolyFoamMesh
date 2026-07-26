@@ -503,7 +503,13 @@ def compute_patch_cell_sizes(
         p10 = float(np.percentile(np.asarray(all_thicknesses), 10))
         bc_size = round(min(p10 / 2.0, bbox_max / 16.0), 6)
         bc_size = max(bc_size, 0.0005)
-        bc_thick = round(p10 * 0.8, 6)
+        # Boundary refinement thickness: use the larger of:
+        # - 80% of local thickness (for thin features)
+        # - 3x the maxCellSize (for smooth transition from walls to core)
+        # The larger value ensures smooth spatial transition even for
+        # geometries where thin features are absent.
+        bc_thick = max(p10 * 0.8, bbox_max * 0.1)
+        bc_thick = round(bc_thick, 6)
         boundary_cell_size = bc_size
         boundary_refinement_thickness = bc_thick if bc_thick > 0.001 else None
     else:
