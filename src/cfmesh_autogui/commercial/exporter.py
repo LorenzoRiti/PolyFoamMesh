@@ -32,8 +32,6 @@ EXPORT_FORMAT_REGISTRY: dict[str, dict[str, Any]] = {
     "openfoam": {"ext": "", "desc": "OpenFOAM polyMesh (native)", "requires_wsl": False},
     "cgns": {"ext": ".cgns", "desc": "CGNS — CFD General Notation System", "requires_wsl": True},
     "vtu": {"ext": ".vtu", "desc": "VTU — ParaView unstructured grid", "requires_wsl": False},
-    "vtm": {"ext": ".vtm", "desc": "VTM — ParaView multi-block", "requires_wsl": False},
-    "fluent_msh": {"ext": ".msh", "desc": "Fluent .msh (via meshio)", "requires_wsl": False},
     "abaqus_inp": {"ext": ".inp", "desc": "Abaqus .inp (via meshio)", "requires_wsl": False},
     "su2": {"ext": ".su2", "desc": "SU2 mesh format", "requires_wsl": False},
     "gmsh_msh": {"ext": ".msh", "desc": "GMSH .msh v4.1", "requires_wsl": False},

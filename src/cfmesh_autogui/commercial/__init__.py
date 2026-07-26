@@ -97,6 +97,6 @@ __all__ = [
     "MeshingAlgorithm", "ALGORITHM_INFO",
     "QuickMesh", "QuickMeshResult",
     "QualityEngine", "QualityReport", "QualityMetrics",
-    "BCEditor", "PatchInfo",
+    "BCEditor", "BcPatchInfo",
     "FullAutoPipeline", "FullAutoResult",
 ]

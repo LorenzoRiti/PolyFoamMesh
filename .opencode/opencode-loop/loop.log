@@ -757,3 +757,12 @@
 {"time":"2026-07-26T22:21:08.746Z","line":"due-timer-error","sessionID":"ses_05ff634e9ffej14124DLo909BZ","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05ff634e9ffej14124DLo909BZ.json.23084.1785104468730.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05ff634e9ffej14124DLo909BZ.json'"}
 {"time":"2026-07-26T22:24:38.106Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785104036182}
 {"time":"2026-07-26T22:26:00.308Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":10}
+{"time":"2026-07-26T22:27:25.960Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785104760310}
+{"time":"2026-07-26T22:27:49.905Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785104869885.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:28:13.275Z","line":"run","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","runCount":2}
+{"time":"2026-07-26T22:29:41.116Z","line":"due-timer-error","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","error":"EPERM: operation not permitted, rename 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json.23084.1785104981095.tmp' -> 'C:\\Users\\Davide Valoroso\\cfmesh-autogui\\.opencode\\opencode-loop\\ses_05fd7d94affecXvwiqglXUKv9H.json'"}
+{"time":"2026-07-26T22:29:42.652Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":11}
+{"time":"2026-07-26T22:30:28.922Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785104982654}
+{"time":"2026-07-26T22:32:46.474Z","line":"run","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","runCount":12}
+{"time":"2026-07-26T22:32:49.225Z","line":"active-stale-recovery","sessionID":"ses_05fdc4777ffeDEP8l8KUVG6V96","job":"default","startedAt":1785104893278}
+{"time":"2026-07-26T22:33:31.802Z","line":"active-stale-recovery","sessionID":"ses_05fd7d94affecXvwiqglXUKv9H","job":"default","startedAt":1785105166476}
