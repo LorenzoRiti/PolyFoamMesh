@@ -31,9 +31,6 @@ from cfmesh_autogui.core.geometry import (
     scale_meshes, unit_to_scale,
 )
 from cfmesh_autogui.core.gmsh_wrapper import (
-    compute_sizing as gmsh_compute_sizing,
-    generate_surface_stl as gmsh_generate_surface_stl,
-    generate_volume_mesh as gmsh_generate_volume_mesh,
     gmsh_shutdown,
     from_step as gmsh_read_step,
 )
@@ -2069,6 +2066,107 @@ class MainWindow(QMainWindow):
             min_cell=safe_min,
             patch_names=names,
         )
+
+    def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
+        from cfmesh_autogui.core.openfoam_runner import GmshVolumeWorker
+        self._log.append_log("[gmsh] Starting volume mesh generation in background...")
+        self._status.showMessage("GMSH: volume mesh...")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        root = self._resolve_case_root()
+        self._case_dir = root / f"gmsh_direct_{ts}"
+        self._case_dir.mkdir(parents=True, exist_ok=True)
+        self._params.set_case_dir(str(self._case_dir))
+        msh_path = self._case_dir / "mesh.msh"
+        detail = self._params.get_detail_level()
+        bl_params = self._params.get_bl_params()
+        n_layers = bl_params.get("nLayers", 0) if bl_params else 0
+        bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
+        bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
+
+        self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
+        t = QThread()
+        w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion)
+        w.moveToThread(t)
+        self._gmsh_thread = t
+        self._gmsh_worker = w
+
+        bl_retried = [False]
+
+        def on_volume_result(result: dict):
+            if my_id != self._run_id:
+                return
+            msh_path_result = Path(result["path"])
+            names = result["names"]
+            self._log.append_log(f"[gmsh] Volume mesh: {msh_path_result} — patches: {names}")
+            self._continue_gmsh_direct(my_id, msh_path_result, names)
+
+        def on_volume_failed(msg: str):
+            if my_id != self._run_id:
+                return
+            if not bl_retried[0] and bl_params and n_layers > 0:
+                bl_retried[0] = True
+                self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
+                w2 = GmshVolumeWorker(step_path, msh_path, detail, 0, None, 1.2)
+                w2.moveToThread(t)
+                self._gmsh_worker = w2
+                w2.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+                w2.finished.connect(on_volume_result, Qt.QueuedConnection)
+                w2.failed.connect(on_volume_failed, Qt.QueuedConnection)
+                w2.finished.connect(t.quit, Qt.QueuedConnection)
+                w2.finished.connect(w2.deleteLater, Qt.QueuedConnection)
+                w2.failed.connect(t.quit, Qt.QueuedConnection)
+                w2.failed.connect(w2.deleteLater, Qt.QueuedConnection)
+                t.started.connect(w2.run)
+                t.start()
+                return
+            self._log.append_log(f"[ERROR] GMSH volume: {msg}")
+            self._params.set_all_enabled(True)
+            QMessageBox.critical(self, "GMSH Failed", f"Volume mesh failed:\n{msg}")
+
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.finished.connect(on_volume_result, Qt.QueuedConnection)
+        w.failed.connect(on_volume_failed, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        t.start()
+
+    def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
+        from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
+        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
+        self._status.showMessage("GMSH: conversion...")
+        QApplication.processEvents()
+        try:
+            poly_dir = msh_to_of_polymesh(msh_path, self._case_dir)
+            self._log.append_log(f"[gmsh] polyMesh: {poly_dir}")
+        except Exception as e:
+            logger.error("MSH conversion failed: %s", e)
+            self._log.append_log(f"[ERROR] MSH conversion: {e}")
+            self._params.set_all_enabled(True)
+            return
+        from cfmesh_autogui.core.boundary_reader import parse_boundary
+        from cfmesh_autogui.core.case_setup import setup_case
+        boundary_path = self._case_dir / "constant" / "polyMesh" / "boundary"
+        if boundary_path.exists():
+            try:
+                patches = parse_boundary(boundary_path)
+                setup_case(self._case_dir, patches, **self._case_setup_kwargs())
+                self._log.append_log("[setup] Case files generated (0/, system/).")
+            except Exception as e:
+                logger.error("Case setup failed: %s", e)
+                self._log.append_log(f"[ERROR] Case setup: {e}")
+                self._params.set_all_enabled(True)
+                return
+        self._log.append_log(f"{Tag.DONE} Case: {self._case_dir}")
+        self._viewer.show_mesh(self._case_dir)
+        self._status.showMessage("GMSH direct mesh ready")
+        self._params.set_all_enabled(True)
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        poly_faces = self._case_dir / "constant" / "polyMesh" / "faces"
+        if poly_points.exists() and poly_faces.exists():
+            self._launch_checkmesh()
 
     def _on_run_meshing_gmsh_direct(self, step_path: str):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
