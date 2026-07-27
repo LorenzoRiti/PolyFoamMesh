@@ -261,6 +261,6 @@ octo.remember("implemented_features", done)
 - [x] Integrato in `main_window.py` (menu, ribbon o wizard)
 - [x] L'utente può completare la pipeline dal wizard senza aprire terminale
 - [x] Quick Mesh produce mesh su geometria STL di test in < 60s
-- [ ] Report PDF si apre correttamente
+- [x] Report PDF si apre correttamente (reportlab 5.0.0, MeshReportPDF class in gui/pdf_report.py)
 - [x] Export caso OpenFOAM è valido (checkMesh non dà errori fatali)
 - [x] Tutto gira su Windows 11 + WSL2 Ubuntu + OpenFOAM v2512

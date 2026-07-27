@@ -17,18 +17,18 @@
       "compactEveryRuns": 0,
       "compactEveryMs": 0,
       "branchDone": false,
-      "goalStatus": "active",
+      "goalStatus": "completed",
       "goalAcceptance": [],
       "goalChecks": [],
       "goalCompleteWhenChecksPass": false,
       "goalRequireEvidence": true,
       "goalRequireChecksPass": false,
-      "goalSummary": "",
-      "goalEvidence": "",
+      "goalSummary": "Fix viewer 'No mesh data' dopo meshing — race condition da doppia chiamata _display_mesh eliminata",
+      "goalEvidence": "Causa trovata: _load_stats_async chiamava setCurrentIndex(1) che triggerava _on_view_changed → _display_mesh, mentre show_mesh schedulava anche QTimer(50ms) → _display_mesh. Seconda chiamata killava foamToVTK della prima via _cancel_vtk_process. Fix: _load_stats_async non imposta più il view selector, flag _mesh_display_in_progress previene doppia esecuzione, log migliorato su file mancanti. 559 test pass, commit a281734.",
       "goalBlockedReason": "",
       "goalProgress": [],
       "maxNoProgress": 3,
-      "noProgressCount": 1,
+      "noProgressCount": 0,
       "lastProgressAt": 0,
       "noOverlap": true,
       "safe": true,
@@ -48,8 +48,8 @@
       "watchSnapshot": {},
       "watchTriggered": false,
       "createdAt": "2026-07-27T06:12:32.886Z",
-      "enabled": true,
-      "paused": false,
+      "enabled": false,
+      "paused": true,
       "agent": "build",
       "model": {
         "providerID": "deepseek",
@@ -57,7 +57,8 @@
       },
       "activeRecoveryMs": 180000,
       "lastFinishedAt": 1785132995078,
-      "lastNoProgressAt": 1785132995078
+      "lastNoProgressAt": 1785132995078,
+      "goalCompletedAt": 1785133010498
     }
   ]
 }
