@@ -365,6 +365,11 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
         patches = _parse_boundary(poly_dir / "boundary")
     except (ValueError, IndexError, OSError) as exc:
         logger.warning("Manual mesh parsing failed for %s: %s", poly_dir, exc)
+        logger.warning("Check that constant/polyMesh/* files exist and are readable "
+                       "(points=%s, faces=%s, boundary=%s)",
+                       (poly_dir / "points").exists(),
+                       (poly_dir / "faces").exists(),
+                       (poly_dir / "boundary").exists())
         return None
     result: dict[str, pv.PolyData] = {}
     for i, p in enumerate(patches):
@@ -427,7 +432,8 @@ class ViewerWidget(QWidget):
         self._measure_points: list = []
         self._measure_actors: list = []
         self._highlighted_actor = None
-
+        self._mesh_display_in_progress: bool = False
+ 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
 
@@ -817,6 +823,7 @@ class ViewerWidget(QWidget):
     def _on_vtk_timeout(self):
         logger.error("foamToVTK QProcess timed out after 70s — falling back to manual parse")
         self._vtk_timeout_fired = True
+        self._mesh_display_in_progress = False
         self._cancel_vtk_process()
         # Fall back to manual parsing instead of staying stuck on "Loading..."
         QTimer.singleShot(0, lambda: self._do_load_patches(False))
@@ -850,8 +857,13 @@ class ViewerWidget(QWidget):
     def _display_mesh(self):
         if self._plotter is None or not self._mesh_case_dir:
             return
+        if getattr(self, '_mesh_display_in_progress', False):
+            logger.debug("_display_mesh already in progress — skipping duplicate call")
+            return
+        self._mesh_display_in_progress = True
         if self._section_enabled:
             self._display_mesh_section()
+            self._mesh_display_in_progress = False
             return
         # Show "Loading..." immediately, then chain async operations
         self._plotter.clear()
@@ -862,6 +874,7 @@ class ViewerWidget(QWidget):
         self._plotter.render()
         QApplication.processEvents()
         QTimer.singleShot(0, self._step_vtu_for_mesh)
+        # _mesh_display_in_progress is cleared when _do_load_patches completes
 
     def _display_mesh_section(self):
         self._plotter.clear()
@@ -939,11 +952,12 @@ class ViewerWidget(QWidget):
 
     def _do_load_patches(self, _unused: bool = False):
         """Load and display mesh patches (already deferred via QTimer)."""
+        self._mesh_display_in_progress = False
         patches = read_openfoam_mesh_patches(self._mesh_case_dir)
         if not patches:
             self._plotter.clear()
             self._plotter.add_text(
-                "No mesh data to display.",
+                "No mesh data — try clicking 'Volume Mesh' to retry.",
                 color=self._text_color, font_size=12,
             )
             self._plotter.render()
@@ -1035,10 +1049,10 @@ class ViewerWidget(QWidget):
             return
 
         self._view_selector.setEnabled(True)
-        self._view_selector.blockSignals(True)
-        self._view_selector.setCurrentIndex(-1)
-        self._view_selector.blockSignals(False)
-        self._view_selector.setCurrentIndex(1)
+        # Do NOT set the view selector here — _display_mesh() is already
+        # scheduled via QTimer from show_mesh(). Setting it here triggers
+        # _on_view_changed → _display_mesh, duplicating the foamToVTK launch
+        # and causing the first process to be killed (race condition).
 
     def show_mesh(self, case_dir: Path | str):
         self._mesh_case_dir = str(case_dir)
@@ -1062,6 +1076,7 @@ class ViewerWidget(QWidget):
         self._mesh_case_dir = ""
         self._pvdata_to_name.clear()
         self._stats_label.setText("")
+        self._mesh_display_in_progress = False
         self._section_enabled = False
         self._section_check.blockSignals(True)
         self._section_check.setChecked(False)
