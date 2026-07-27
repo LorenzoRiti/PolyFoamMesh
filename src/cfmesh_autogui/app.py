@@ -125,6 +125,19 @@ def main():
         from cfmesh_autogui.core.geometry_repair import _main as _watertight_main
         _sys.exit(_watertight_main(_sys.argv[2:]))
 
+    if len(_sys.argv) > 1 and _sys.argv[1] in ("--help", "-h"):
+        print(f"CFMesh-AutoGUI v{__version__} — OpenFOAM mesh preprocessor")
+        print()
+        print("Usage: CFMesh-AutoGUI [options]")
+        print()
+        print("Options:")
+        print("  --help, -h         Show this help message and exit")
+        print("  --feature-detect   Run GMSH feature detection (subprocess mode)")
+        print("  --watertight       Run watertight check/repair (subprocess mode)")
+        print()
+        print("Without arguments, the GUI application starts.")
+        _sys.exit(0)
+
     # Global exception hooks: catch unhandled exceptions and show them
     # in a dialog instead of crashing silently.
     _orig_excepthook = _sys.excepthook

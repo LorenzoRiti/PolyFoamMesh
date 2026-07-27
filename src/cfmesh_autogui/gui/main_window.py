@@ -2677,8 +2677,13 @@ class MainWindow(QMainWindow):
             if error_info.error_type in (ErrorType.NON_WATERTIGHT, ErrorType.SURFACE_READ):
                 try:
                     finer_tol = 0.01 / (2 ** attempt)
-                    patches = classify_faces(shape)
-                    self._unscaled_meshes = list(tessellate_patches(patches, tolerance=finer_tol, angle_tolerance=0.05))
+                    if shape is not None:
+                        patches = classify_faces(shape)
+                        self._unscaled_meshes = list(tessellate_patches(patches, tolerance=finer_tol, angle_tolerance=0.05))
+                    else:
+                        # STL-only workflow: no CAD shape to re-tessellate,
+                        # re-export the existing meshes
+                        self._log.append_log(f"{Tag.FIX} STL workflow — using existing meshes")
                     self._scaled_meshes = None
                     if abs(current_scale - 1.0) > 1e-9:
                         self._scaled_meshes = [m.copy() for m in self._unscaled_meshes]
@@ -3230,6 +3235,7 @@ class MainWindow(QMainWindow):
             self._runner.terminate()
         # Clean up ALL background threads
         for attr_t, attr_w in [
+            ("_gmsh_thread", "_gmsh_worker"),
             ("_wsl_check_thread", "_wsl_check_worker"),
             ("_feature_thread", "_feature_worker"),
             ("_parallel_thread", "_parallel_worker"),
@@ -3238,6 +3244,7 @@ class MainWindow(QMainWindow):
             ("_quality_fix_thread", "_quality_fix_worker"),
             ("_decompose_thread", "_decompose_worker"),
             ("_watertight_thread", "_watertight_worker"),
+            ("_export_thread", "_export_worker"),
         ]:
             self._cleanup_thread(attr_t, attr_w)
         from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
