@@ -74,6 +74,13 @@ from cfmesh_autogui.commercial.bc_editor import (
 from cfmesh_autogui.commercial.one_click_run import (
     FullAutoPipeline, FullAutoResult,
 )
+from cfmesh_autogui.commercial.adaptive_loop import (
+    AdaptiveLoopEngine, AdaptiveLoopParams, AdaptiveLoopResult,
+    OODAPhase, OODAStateMachine, UnifiedMeshGraph, SizingField,
+    MeshNode, MeshCell, MeshEntityType,
+    InProcessQualityEvaluator, LocalRemediator, ConformalStitcher,
+    ProximityAwareExtrusion, ErrorType, RemediationAction,
+)
 
 __all__ = [
     "WatertightWorkflow", "WorkflowStep",
@@ -99,4 +106,9 @@ __all__ = [
     "QualityEngine", "QualityReport", "QualityMetrics",
     "BCEditor", "BcPatchInfo",
     "FullAutoPipeline", "FullAutoResult",
+    "AdaptiveLoopEngine", "AdaptiveLoopParams", "AdaptiveLoopResult",
+    "OODAPhase", "OODAStateMachine", "UnifiedMeshGraph", "SizingField",
+    "MeshNode", "MeshCell", "MeshEntityType",
+    "InProcessQualityEvaluator", "LocalRemediator", "ConformalStitcher",
+    "ProximityAwareExtrusion", "ErrorType", "RemediationAction",
 ]

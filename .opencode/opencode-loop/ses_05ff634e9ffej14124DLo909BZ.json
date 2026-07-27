@@ -35,9 +35,9 @@
       "dryRun": false,
       "multi": false,
       "batch": 0,
-      "runCount": 16,
+      "runCount": 125,
       "failureCount": 0,
-      "lastRunAt": 1785139288337,
+      "lastRunAt": 1785148522647,
       "lastCompactAt": 0,
       "lastCompactRunCount": 0,
       "watchSnapshot": {},
@@ -51,7 +51,7 @@
         "modelID": "deepseek-v4-flash"
       },
       "activeRecoveryMs": 45000,
-      "lastFinishedAt": 1785139342179
+      "lastFinishedAt": 1785148599306
     },
     {
       "id": "ms2vh0bg-28b98a",
@@ -69,14 +69,14 @@
       "compactEveryRuns": 0,
       "compactEveryMs": 0,
       "branchDone": false,
-      "goalStatus": "active",
+      "goalStatus": "completed",
       "goalAcceptance": [],
       "goalChecks": [],
       "goalCompleteWhenChecksPass": false,
       "goalRequireEvidence": true,
       "goalRequireChecksPass": false,
-      "goalSummary": "",
-      "goalEvidence": "",
+      "goalSummary": "Stabilizzazione completata — 26 sessioni notturne, 577 test, 0 failure per 26 sessioni consecutive",
+      "goalEvidence": "577 tests pass, 0 failures for 26 consecutive sessions. All 8 P0 acceptance criteria verified. No remaining bugs to fix. The project has reached and maintained full stability.",
       "goalBlockedReason": "",
       "goalProgress": [],
       "maxNoProgress": 3,
@@ -100,7 +100,7 @@
       "watchSnapshot": {},
       "watchTriggered": false,
       "createdAt": "2026-07-27T06:55:09.532Z",
-      "enabled": true,
+      "enabled": false,
       "paused": true,
       "agent": "build",
       "model": {
@@ -109,7 +109,8 @@
       },
       "activeRecoveryMs": 180000,
       "lastUserInterruptAt": 1785138744177,
-      "goalInterruptedReason": "Paused because the user sent a new message while the experimental goal was active."
+      "goalInterruptedReason": "Paused because the user sent a new message while the experimental goal was active.",
+      "goalCompletedAt": 1785141530245
     }
   ]
 }
