@@ -2317,13 +2317,19 @@ class MainWindow(QMainWindow):
 
         import queue
         result_queue: queue.Queue = queue.Queue()
+        progress_queue: queue.Queue = queue.Queue()
 
         def worker_fn():
             try:
                 def progress_cb(pct: int, stage: str, msg: str):
-                    self._progress.setValue(pct)
-                    self._log.append_log(f"[autopoly] {stage}: {msg}")
-                    QApplication.processEvents()
+                    # Called from this raw Python worker thread, NOT the
+                    # Qt GUI thread — touching self._progress/self._log
+                    # directly here (as this used to) is the exact
+                    # cross-thread Qt-widget-access bug already found and
+                    # fixed elsewhere this session (LogPanel heap
+                    # corruption). queue.Queue is thread-safe on its own;
+                    # timerEvent() below drains it on the GUI thread.
+                    progress_queue.put((pct, stage, msg))
                 result = run_autopoly(geom_path, self._case_dir, params, progress=progress_cb)
                 result_queue.put(result)
             except Exception as e:
@@ -2338,22 +2344,33 @@ class MainWindow(QMainWindow):
         self._autopoly_poll_timer = self.startTimer(200)
         self._autopoly_poll_my_id = my_id
         self._autopoly_result_queue = result_queue
+        self._autopoly_progress_queue = progress_queue
         self._autopoly_start_time = time.time()
         t.start()
 
     def timerEvent(self, event):
         if (hasattr(self, "_autopoly_poll_timer") and
-            event.timerId() == self._autopoly_poll_timer and
-            hasattr(self, "_autopoly_result_queue")):
-            try:
-                result = self._autopoly_result_queue.get_nowait()
-                self.killTimer(self._autopoly_poll_timer)
-                if isinstance(result, Exception):
-                    self._on_autopoly_failed(str(result), self._autopoly_poll_my_id)
-                else:
-                    self._on_autopoly_finished(result, self._autopoly_poll_my_id)
-            except queue.Empty:
-                pass
+            event.timerId() == self._autopoly_poll_timer):
+            # Drain any pending progress updates first (GUI thread — safe
+            # to touch widgets here), then check for the final result.
+            if hasattr(self, "_autopoly_progress_queue"):
+                while True:
+                    try:
+                        pct, stage, msg = self._autopoly_progress_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._progress.setValue(pct)
+                    self._log.append_log(f"[autopoly] {stage}: {msg}")
+            if hasattr(self, "_autopoly_result_queue"):
+                try:
+                    result = self._autopoly_result_queue.get_nowait()
+                    self.killTimer(self._autopoly_poll_timer)
+                    if isinstance(result, Exception):
+                        self._on_autopoly_failed(str(result), self._autopoly_poll_my_id)
+                    else:
+                        self._on_autopoly_finished(result, self._autopoly_poll_my_id)
+                except queue.Empty:
+                    pass
         super().timerEvent(event)
 
     def _on_autopoly_finished(self, result, my_id: int):
