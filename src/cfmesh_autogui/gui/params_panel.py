@@ -375,18 +375,18 @@ class ParamsPanel(QWidget):
         self._mesher_combo = QComboBox()
         self._mesher_combo.addItems([
             "Automatic (recommended)",
+            "autopoly (polyhedral CVT, nativo)",
             "cfMesh (hexa-dominant + WSL2)",
-            "autopoly (native polyhedral, CVT-based)",
-            "GMSH hybrid (surface + cfMesh volume)",
-            "GMSH direct (tetra + prism, no WSL)",
         ])
         self._mesher_combo.setToolTip(
-            "Automatic uses cfMesh (best quality) when OpenFOAM/WSL2 is "
-            "available, and falls back to GMSH direct (no WSL needed) "
-            "otherwise — no need to know which one your setup supports.\n\n"
-            "autopoly: motore poliedrico nativo C++ con CVT (Centroidal Voronoi "
-            "Tessellation). Genera mesh poliedriche di qualità paragonabile a "
-            "Star-CCM+ senza richiedere WSL2/OpenFOAM."
+            "Automatic sceglie il miglior mesher disponibile:\n"
+            "  • cfMesh (WSL2) — massima qualità, hex-dominant\n"
+            "  • autopoly (nativo) — poliedrico CVT, senza WSL\n"
+            "  • GMSH direct — tetraedrico, fallback universale\n\n"
+            "autopoly: motore poliedrico nativo C++ con CVT (Centroidal Voronoi\n"
+            "Tessellation). Genera mesh poliedriche di qualità paragonabile a\n"
+            "Star-CCM+ / ANSYS Fluent polyhedral.\n\n"
+            "cfMesh forza l'uso di cartesianMesh via WSL2/OpenFOAM."
         )
         self._mesher_combo.setCurrentText("Automatic (recommended)")
         mesher_layout.addWidget(self._mesher_combo)
@@ -882,10 +882,6 @@ class ParamsPanel(QWidget):
             return "auto"
         if "autopoly" in text:
             return "autopoly"
-        if "hybrid" in text:
-            return "gmsh_hybrid"
-        if "direct" in text:
-            return "gmsh_direct"
         return "cfmesh"
 
     def set_poly_enabled(self, enabled: bool) -> None:
@@ -1019,15 +1015,13 @@ class ParamsPanel(QWidget):
         return ("balanced", None)
 
     def _on_mesher_changed(self, text: str) -> None:
-        is_gmsh_direct = "direct" in text
+        is_cfmesh = "cfMesh" in text
         is_autopoly = "autopoly" in text
-        self._poly_check.setVisible(not is_gmsh_direct and not is_autopoly)
-        if is_autopoly:
+        self._poly_check.setVisible(is_cfmesh)
+        self._poly_agg_check.setVisible(is_cfmesh)
+        if not is_cfmesh:
             self._poly_check.setChecked(False)
             self._poly_agg_check.setChecked(False)
-            self._poly_agg_check.setVisible(False)
-        else:
-            self._poly_agg_check.setVisible(True)
 
     def save_params(self, s):
         s.setValue("params/max_cell", self._max_cell.value())
