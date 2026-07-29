@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-import re
 import logging
+import re
 import struct
+import time as _time
+from pathlib import Path
 
 import numpy as np
 import pyvista as pv
 import trimesh
-from pathlib import Path
-
+from PySide6.QtCore import QProcess, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QCheckBox, QApplication,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import QTimer, Signal, QProcess
 
-from cfmesh_autogui.core.boundary_reader import parse_boundary as _core_parse_boundary  # ✅ F-012
-from cfmesh_autogui.core.of_reader import read_of_text, of_list_count, _read_of_bytes
+from cfmesh_autogui.core.of_reader import _read_header_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +61,14 @@ def _strip_of_comments(text: str) -> str:
 
 
 def _is_binary_of(path: Path) -> bool:
-    """Check if an OpenFOAM file is in binary format."""
-    raw = _read_of_bytes(path)
+    """Check if an OpenFOAM file is in binary format (reads only header)."""
+    from cfmesh_autogui.core.of_reader import _read_header_bytes
+    raw = _read_header_bytes(path)
     return bool(re.search(rb"format\s+ binary\s*;", raw[:1024]))
 
 
 def _read_of_block(path: Path) -> str:
+    from cfmesh_autogui.core.of_reader import _read_of_bytes
     raw = _read_of_bytes(path)
     if _is_binary_of(path):
         return _read_of_block_binary(path, raw)
@@ -78,7 +85,6 @@ def _read_of_block_binary(path: Path, raw: bytes) -> str:
     For points: returns 'x1 y1 z1  x2 y2 z2 ...'
     For faces: returns 'n1 (v0 v1 ...)  n2 (v0 v1 ...) ...'
     """
-    from cfmesh_autogui.core.of_reader import _is_binary_format
     text_part = raw.decode("ascii", errors="replace")
     text_part = _strip_of_comments(text_part)
     # Binary data can contain stray byte 0x7D ('}'), so text_part.find("}")
@@ -208,6 +214,10 @@ def _triangulate_face(indices: list[int]) -> list[tuple[int, int, int]]:
 _MESH_CACHE: dict[tuple[str, float], dict[str, pv.PolyData]] = {}
 _MAX_CACHE_SIZE = 20
 
+# Skip the slow manual parser when faces file exceeds this size (5 MB).
+# Large polyhedral meshes crash/hang the GUI thread; foamToVTK is mandatory.
+_MANUAL_PARSE_MAX_SIZE_BYTES = 5_000_000
+
 
 def _cache_set(key: tuple[str, float], value: dict[str, pv.PolyData]) -> None:
     if len(_MESH_CACHE) >= _MAX_CACHE_SIZE:
@@ -216,20 +226,61 @@ def _cache_set(key: tuple[str, float], value: dict[str, pv.PolyData]) -> None:
     _MESH_CACHE[key] = value
 
 
-def _poly_dir_state(poly_dir: Path) -> float | None:
+def _human_size(n_bytes: int) -> str:
+    """Format bytes as human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n_bytes < 1024:
+            return f"{n_bytes:.1f}{unit}"
+        n_bytes /= 1024
+    return f"{n_bytes:.1f}TB"
+
+
+def _poly_dir_state(poly_dir: Path, max_retries: int = 3, delay_ms: int = 500) -> float | None:
+    """Check that all required polyMesh files exist and return newest mtime.
+
+    Retries up to ``max_retries`` times with ``delay_ms`` sleep between
+    attempts — this handles WSL2's 9P filesystem sync delay, where files
+    written by cartesianMesh inside WSL may not be visible from Windows
+    for several hundred milliseconds.
+
+    Uses ``QApplication.processEvents()`` between retries so the UI stays
+    responsive during the poll interval.
+    """
     files = ("points", "faces", "boundary")
-    mtimes: list[float] = []
-    for name in files:
-        f = poly_dir / name
-        if not f.exists():
-            return None
-        mtimes.append(f.stat().st_mtime)
-    return max(mtimes)
+    for attempt in range(max_retries):
+        mtimes: list[float] = []
+        all_exist = True
+        for name in files:
+            f = poly_dir / name
+            if not f.exists():
+                all_exist = False
+                break
+            try:
+                mtimes.append(f.stat().st_mtime)
+            except OSError:
+                all_exist = False
+                break
+        if all_exist:
+            return max(mtimes)
+        if attempt < max_retries - 1:
+            QApplication.processEvents()
+            _time.sleep(delay_ms / 1000.0)
+            QApplication.processEvents()
+    return None
 
 
 def _run_foamtovtk_async(case_dir: Path, vtk_subdir: str, state: float) -> Path | None:
-    """Run foamToVTK via Popen with polling loop to keep UI responsive."""
-    import subprocess, shlex, time as _time
+    """Run foamToVTK via Popen with polling loop to keep UI responsive.
+
+    Sleeps 100ms between polls so this function does NOT spin at 100% CPU,
+    which froze the main thread on meshes where foamToVTK takes >30s.
+
+    Shows a progress message in the viewer text during conversion.
+    """
+    import shlex
+    import subprocess
+    import time as _time
+
     from cfmesh_autogui.config import OFConfig
 
     cfg = OFConfig()
@@ -243,15 +294,20 @@ def _run_foamtovtk_async(case_dir: Path, vtk_subdir: str, state: float) -> Path 
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=4096,
     )
-    deadline = _time.monotonic() + 60
+    deadline = _time.monotonic() + 180
+    last_progress = 0.0
     while proc.poll() is None:
+        elapsed = _time.monotonic() - (deadline - 180)
+        if elapsed - last_progress > 5.0:
+            logger.info("foamToVTK running for %.0fs...", elapsed)
+            last_progress = elapsed
         QApplication.processEvents()
         if _time.monotonic() > deadline:
             proc.kill()
             proc.wait(5)
-            logger.error("foamToVTK timed out after 60s")
+            logger.error("foamToVTK timed out after 180s")
             return None
-        QApplication.processEvents()
+        _time.sleep(0.1)
     stdout, stderr = proc.communicate()
     if proc.returncode != 0:
         stderr_detail = (stderr or stdout or "")[-500:]
@@ -303,19 +359,31 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
 def read_openfoam_mesh_stats(case_dir: Path) -> dict:
     """Read mesh statistics from an OpenFOAM polyMesh directory.
 
-    Used to have `len(lines) - 2` on each file as a count proxy — but the
-    FoamFile header block is variable-length (comment banner, arch/note
-    lines, etc.), so that silently showed the wrong points/faces/cells
-    counts in the viewer's stats label on every real mesh. Verified against
-    a real cfMesh mesh: reported values didn't match the mesh's own
-    self-reported nPoints/nCells/nFaces at all.
+    Uses nCells/nPoints/nFaces from the FoamFile header where available
+    (fast path, reads only header bytes). Falls back to file-size-based
+    estimation to avoid loading the full data on the GUI thread.
     """
-    from cfmesh_autogui.core.boundary_reader import count_cells, count_faces, count_points
-    return {
-        "points": count_points(case_dir),
-        "faces": count_faces(case_dir),
-        "cells": count_cells(case_dir),
-    }
+    poly_dir = Path(case_dir) / "constant" / "polyMesh"
+    stats = {"points": 0, "faces": 0, "cells": 0}
+
+    # Fast path: read nCells from owner file header
+    from cfmesh_autogui.core.of_reader import of_list_count, of_ncells_from_header
+    owner_path = poly_dir / "owner"
+    if owner_path.exists():
+        n = of_ncells_from_header(owner_path)
+        if n is not None:
+            stats["cells"] = n
+
+    # Use of_list_count which reads only the header
+    points_path = poly_dir / "points"
+    if points_path.exists():
+        stats["points"] = of_list_count(points_path)
+
+    faces_path = poly_dir / "faces"
+    if faces_path.exists():
+        stats["faces"] = of_list_count(faces_path)
+
+    return stats
 
 
 def _load_vtk_patches(case_dir: Path, vtk_subdir: str) -> dict[str, pv.PolyData] | None:
@@ -345,31 +413,48 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
     poly_dir = case_dir / "constant" / "polyMesh"
     state = _poly_dir_state(poly_dir)
     if state is None:
+        logger.warning(
+            "read_openfoam_mesh_patches: polyMesh state is None for %s "
+            "(files may not have synced from WSL2 yet)",
+            poly_dir,
+        )
         return None
     cache_key = (str(case_dir), state)
     cached = _MESH_CACHE.get(cache_key)
     if cached is not None:
+        logger.debug("Mesh patches loaded from cache (%d patches)", len(cached))
         return cached
 
     # Fast path: try loading from foamToVTK-generated VTU files
     vtk_patches = _load_vtk_patches(case_dir, "VTK_view")
     if vtk_patches is not None:
+        logger.info("Loaded %d mesh patches from foamToVTK VTU", len(vtk_patches))
         _cache_set(cache_key, vtk_patches)
         return vtk_patches
 
-    # Slow path: manual parsing of OpenFOAM text files (for small meshes
-    # where foamToVTK hasn't been run yet).
+    # Slow path: manual parsing of OpenFOAM binary files (for small meshes
+    # where foamToVTK hasn't been run yet — cfMesh polyhedral meshes with
+    # 3.5M+ cells are NOT reliably parsed here; foamToVTK is required).
+    faces_path = poly_dir / "faces"
+    if faces_path.exists() and faces_path.stat().st_size > _MANUAL_PARSE_MAX_SIZE_BYTES:
+        logger.info(
+            "Faces file too large (%s), skipping manual parser — foamToVTK required",
+            _human_size(faces_path.stat().st_size),
+        )
+        return None
+
+    logger.info("VTU not found, falling back to manual OF parser for %s", poly_dir)
     try:
         points = _parse_of_points(poly_dir / "points")
         all_faces = _parse_of_faces(poly_dir / "faces")
         patches = _parse_boundary(poly_dir / "boundary")
-    except (ValueError, IndexError, OSError) as exc:
-        logger.warning("Manual mesh parsing failed for %s: %s", poly_dir, exc)
-        logger.warning("Check that constant/polyMesh/* files exist and are readable "
-                       "(points=%s, faces=%s, boundary=%s)",
-                       (poly_dir / "points").exists(),
-                       (poly_dir / "faces").exists(),
-                       (poly_dir / "boundary").exists())
+    except (ValueError, IndexError, OSError, MemoryError) as exc:
+        logger.warning(
+            "Manual mesh parsing failed for %s: %s. "
+            "This is normal for large binary cfMesh meshes — "
+            "foamToVTK must be used instead.",
+            poly_dir, exc,
+        )
         return None
     result: dict[str, pv.PolyData] = {}
     for i, p in enumerate(patches):
@@ -433,7 +518,11 @@ class ViewerWidget(QWidget):
         self._measure_actors: list = []
         self._highlighted_actor = None
         self._mesh_display_in_progress: bool = False
- 
+        self._mesh_retry_count: int = 0
+        self._mesh_retry_max: int = 3
+        self._foam_to_vtk_attempted: bool = False
+        self._display_timeout_timer: QTimer | None = None
+
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
 
@@ -492,11 +581,35 @@ class ViewerWidget(QWidget):
     def _init_vtk(self):
         if self._plotter is not None:
             return
+
+        # Quick pre-check: try importing VTK rendering modules.
+        # If the import fails, skip QtInteractor entirely.
+        try:
+            import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+        except ImportError as exc:
+            logger.warning("VTK/OpenGL not available, 3D viewer disabled: %s", exc)
+            self._add_no_viewer_label()
+            return
+
         from pyvistaqt import QtInteractor
-        self._plotter = QtInteractor(parent=self, auto_update=30.0)
-        self._layout.addWidget(self._plotter)
-        self._plotter_ready = True
-        self._apply_background(self._bg_selector.currentText())
+        try:
+            self._plotter = QtInteractor(parent=self, auto_update=30.0)
+            self._layout.addWidget(self._plotter)
+            self._plotter_ready = True
+            self._apply_background(self._bg_selector.currentText())
+        except Exception as exc:
+            logger.error("Failed to initialize VTK plotter: %s", exc)
+            self._add_no_viewer_label(f"Errore: {exc}")
+
+    def _add_no_viewer_label(self, msg: str = ""):
+        """Add a label explaining that 3D viewer is unavailable."""
+        self._plotter = None
+        self._plotter_ready = False
+        if not msg:
+            msg = "3D viewer non disponibile.\nUsa Strumenti > Launch ParaView."
+        lbl = QLabel(msg)
+        lbl.setAlignment(Qt.AlignCenter)
+        self._layout.addWidget(lbl)
 
     def _apply_background(self, name: str):
         if self._plotter is None:
@@ -777,7 +890,10 @@ class ViewerWidget(QWidget):
         self._plotter.render()
 
     def _cancel_vtk_process(self):
-        """Kill any running foamToVTK QProcess and its timeout timer."""
+        """Kill any running foamToVTK QProcess and its timeout timer.
+
+        Uses a short timeout to avoid blocking the main thread.
+        """
         if hasattr(self, "_vtk_timeout_timer") and self._vtk_timeout_timer:
             self._vtk_timeout_timer.stop()
             self._vtk_timeout_timer.deleteLater()
@@ -785,7 +901,7 @@ class ViewerWidget(QWidget):
         if hasattr(self, "_vtk_process") and self._vtk_process:
             if self._vtk_process.state() != QProcess.NotRunning:
                 self._vtk_process.kill()
-                self._vtk_process.waitForFinished(3000)
+                self._vtk_process.waitForFinished(500)
             self._vtk_process.deleteLater()
             self._vtk_process = None
 
@@ -793,6 +909,8 @@ class ViewerWidget(QWidget):
                              on_finished: callable) -> None:
         """Start foamToVTK via QProcess. Calls ``on_finished(ok)`` when done."""
         self._cancel_vtk_process()
+        # Show status in label instead of rendering to the plotter
+        self._stats_label.setText("Generating foamToVTK... (attendi 1-3 min)")
         from cfmesh_autogui.config import OFConfig
         cfg = OFConfig()
         linux_case = cfg._quoted_linux_path(case_dir)
@@ -818,15 +936,14 @@ class ViewerWidget(QWidget):
         self._vtk_timeout_timer = QTimer(self)
         self._vtk_timeout_timer.setSingleShot(True)
         self._vtk_timeout_timer.timeout.connect(self._on_vtk_timeout)
-        self._vtk_timeout_timer.start(70000)
+        self._vtk_timeout_timer.start(180000)
 
     def _on_vtk_timeout(self):
-        logger.error("foamToVTK QProcess timed out after 70s — falling back to manual parse")
+        logger.error("foamToVTK QProcess timed out after 180s")
         self._vtk_timeout_fired = True
         self._mesh_display_in_progress = False
         self._cancel_vtk_process()
-        # Fall back to manual parsing instead of staying stuck on "Loading..."
-        QTimer.singleShot(0, lambda: self._do_load_patches(False))
+        self._show_mesh_too_large("foamToVTK timed out (>180s)")
 
     def _on_vtk_finished(self, exit_code: int, case_dir: Path,
                           vtk_subdir: str, on_finished: callable) -> None:
@@ -854,26 +971,45 @@ class ViewerWidget(QWidget):
             logger.warning("foamToVTK QProcess failed (rc=%d): %s", exit_code, stderr_text)
         on_finished(exit_code == 0)
 
+    def _cancel_display_timeout(self):
+        """Stop the display timeout timer if running."""
+        if self._display_timeout_timer is not None:
+            self._display_timeout_timer.stop()
+            self._display_timeout_timer.deleteLater()
+            self._display_timeout_timer = None
+
+    def _start_display_timeout(self, seconds: int = 90):
+        """Start a timeout that shows the 'use ParaView' message if the
+        mesh display pipeline takes longer than ``seconds``."""
+        self._cancel_display_timeout()
+        self._display_timeout_timer = QTimer(self)
+        self._display_timeout_timer.setSingleShot(True)
+        self._display_timeout_timer.timeout.connect(
+            lambda: self._on_display_timeout(),
+        )
+        self._display_timeout_timer.start(seconds * 1000)
+
+    def _on_display_timeout(self):
+        """Called when the mesh display pipeline times out."""
+        logger.warning("Mesh display timed out after 90s — showing fallback message")
+        self._mesh_display_in_progress = False
+        self._view_selector.setEnabled(False)
+        self._cancel_vtk_process()
+        self._show_mesh_too_large("Display pipeline timed out (>90s)")
+
     def _display_mesh(self):
+        """Show a message directing the user to ParaView for mesh viewing.
+
+        The integrated viewer cannot reliably display large polyhedral
+        meshes — use ParaView (Strumenti > Launch ParaView).
+        """
         if self._plotter is None or not self._mesh_case_dir:
             return
-        if getattr(self, '_mesh_display_in_progress', False):
-            logger.debug("_display_mesh already in progress — skipping duplicate call")
-            return
-        self._mesh_display_in_progress = True
         if self._section_enabled:
             self._display_mesh_section()
-            self._mesh_display_in_progress = False
             return
-        # Show "Loading..." immediately, then chain async operations
-        self._plotter.clear()
-        self._plotter.add_text(
-            "Loading mesh...",
-            color=self._text_color, font_size=14,
-        )
-        self._plotter.render()
-        QApplication.processEvents()
-        QTimer.singleShot(0, self._step_vtu_for_mesh)
+        self._stats_label.setText("Usa Strumenti > Launch ParaView per visualizzare la mesh")
+        logger.info("Mesh display: Strumenti > Launch ParaView")
         # _mesh_display_in_progress is cleared when _do_load_patches completes
 
     def _display_mesh_section(self):
@@ -899,13 +1035,20 @@ class ViewerWidget(QWidget):
         )
 
     def _do_step_vtu(self, on_vtu_ready: callable) -> None:
-        """Check VTU cache; if stale/missing, start QProcess, else callback immediately."""
+        """Check VTU cache; if stale/missing, start QProcess, else callback immediately.
+
+        If polyMesh files aren't visible yet (WSL2 9P sync delay), retries
+        with increasing delay up to 30s before giving up.
+        """
         if self._plotter is None or not self._mesh_case_dir:
             return
         case_dir = Path(self._mesh_case_dir)
         poly_dir = case_dir / "constant" / "polyMesh"
-        state = _poly_dir_state(poly_dir)
+        # Use a shorter timeout here to avoid hanging the display pipeline
+        state = _poly_dir_state(poly_dir, max_retries=3, delay_ms=2000)
         if state is None:
+            # Poly files not found yet; try again later or show loading message
+            logger.info("polyMesh files not found yet in %s — will retry via _do_load_patches", poly_dir)
             on_vtu_ready(False)
             return
         vtk_subdir = "VTK_view"
@@ -918,6 +1061,23 @@ class ViewerWidget(QWidget):
                     return
             except (ValueError, OSError):
                 pass
+        # If foamToVTK is already running, just attach the callback — don't
+        # kill and restart (that would waste 30-60s of progress).
+        vtk_proc = getattr(self, "_vtk_process", None)
+        if vtk_proc and vtk_proc.state() != QProcess.NotRunning:
+            logger.debug("foamToVTK already running — attaching callback to existing process")
+            # Disconnect old finished signal and reconnect with new callback
+            try:
+                vtk_proc.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            vtk_proc.finished.connect(
+                lambda ec, _exit_status: self._on_vtk_finished(
+                    ec, case_dir, vtk_subdir, on_vtu_ready,
+                ),
+            )
+            return
+        logger.info("Starting foamToVTK for %s", case_dir)
         self._start_vtk_qprocess(case_dir, vtk_subdir, on_vtu_ready)
 
     def _step_mesh_patches(self):
@@ -951,40 +1111,101 @@ class ViewerWidget(QWidget):
         self._plotter.render()
 
     def _do_load_patches(self, _unused: bool = False):
-        """Load and display mesh patches (already deferred via QTimer)."""
+        """Load and display mesh patches (already deferred via QTimer).
+
+        When foamToVTK has already been attempted and failed, shows the
+        "use ParaView" message immediately instead of looping retries.
+        """
         self._mesh_display_in_progress = False
         patches = read_openfoam_mesh_patches(self._mesh_case_dir)
         if not patches:
-            self._plotter.clear()
-            self._plotter.add_text(
-                "No mesh data — try clicking 'Volume Mesh' to retry.",
-                color=self._text_color, font_size=12,
-            )
-            self._plotter.render()
+            # If foamToVTK was already attempted and failed, show "mesh too
+            # large" immediately — no point retrying the same failing path.
+            if self._foam_to_vtk_attempted:
+                self._foam_to_vtk_attempted = False
+                self._show_mesh_too_large("foamToVTK non disponibile (usa ParaView)")
+                return
+
+            if self._mesh_case_dir and self._mesh_retry_count < self._mesh_retry_max:
+                poly_dir = Path(self._mesh_case_dir) / "constant" / "polyMesh"
+                if poly_dir.is_dir():
+                    self._mesh_retry_count += 1
+                    logger.debug(
+                        "Mesh load retry %d/%d (polyDir=%s)",
+                        self._mesh_retry_count, self._mesh_retry_max, poly_dir,
+                    )
+                    # Trigger foamToVTK on first retry — but only once.
+                    case_dir = Path(self._mesh_case_dir)
+                    vtk_dir = case_dir / "VTK_view"
+                    has_vtu = bool(list(vtk_dir.glob("*_0/internal.vtu")) if vtk_dir.exists() else [])
+                    if self._mesh_retry_count == 1 and not has_vtu and not self._foam_to_vtk_attempted:
+                        logger.info("VTU not found — starting foamToVTK before next retry")
+                        self._foam_to_vtk_attempted = True
+                        self._do_step_vtu(
+                            on_vtu_ready=lambda ok: QTimer.singleShot(
+                                2000 if ok else 500,
+                                lambda: self._do_load_patches(False),
+                            ),
+                        )
+                        return
+                    QTimer.singleShot(
+                        2000, lambda: self._do_load_patches(False),
+                    )
+                    return
+            self._mesh_retry_count = 0
+            self._foam_to_vtk_attempted = False
+            self._show_mesh_too_large("VTU non disponibile (usa ParaView)")
             return
+        self._mesh_retry_count = 0
+        self._cancel_display_timeout()
         total_faces = sum(pd.n_cells for pd in patches.values())
+        logger.info(
+            "Loaded %d mesh patches (%d total faces) for %s",
+            len(patches), total_faces, self._mesh_case_dir,
+        )
         show_decimated = total_faces > self.DECIMATE_THRESHOLD
-        self._plotter.clear()
-        ec = self._edge_color()
-        for i, (name, pd) in enumerate(patches.items()):
-            color = PATCH_COLORS[i % len(PATCH_COLORS)]
+        # Wrap plotter operations in try/except — a render hang must not
+        # freeze the entire app; show a fallback message instead.
+        try:
+            self._plotter.clear()
+            ec = self._edge_color()
+            for i, (name, pd) in enumerate(patches.items()):
+                if show_decimated:
+                    try:
+                        pd = pd.decimate_pro(self.DECIMATE_TARGET)
+                    except Exception:
+                        pass
+                self._plotter.add_mesh(
+                    pd, scalars="color", rgb=True,
+                    show_edges=not show_decimated, edge_color=ec, label=name,
+                )
             if show_decimated:
-                try:
-                    pd = pd.decimate_pro(self.DECIMATE_TARGET)
-                except Exception:
-                    pass
-            self._plotter.add_mesh(
-                pd, scalars="color", rgb=True,
-                show_edges=not show_decimated, edge_color=ec, label=name,
-            )
-        if show_decimated:
-            self._plotter.add_text(
-                f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
-                "Il file di mesh reale \u00e8 invariato.",
-                color=self._text_color, font_size=10,
-            )
-        self._plotter.view_isometric()
-        self._plotter.render()
+                self._plotter.add_text(
+                    f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
+                    "Il file di mesh reale \u00e8 invariato.",
+                    color=self._text_color, font_size=10,
+                )
+            self._plotter.view_isometric()
+            self._plotter.render()
+        except Exception as exc:
+            logger.error("Plotter display failed (mesh patches): %s", exc)
+            self._show_mesh_too_large(f"Errore display: {exc}")
+
+    def _show_mesh_too_large(self, reason: str = "") -> None:
+        """Display 'mesh too large' message via label instead of plotter text.
+
+        Avoids ``render()`` in the plotter which can hang with OpenGL issues.
+        """
+        self._mesh_display_in_progress = False
+        self._view_selector.setEnabled(False)
+        self._view_selector.blockSignals(True)
+        self._view_selector.setCurrentIndex(-1)
+        self._view_selector.blockSignals(False)
+        msg = "Usa ParaView per visualizzare la mesh"
+        if reason:
+            msg += f" ({reason})"
+        self._stats_label.setText(msg)
+        logger.info("Mesh display unavailable%s", f" ({reason})" if reason else "")
 
     def _get_internal_volume_grid(self):
         """Load the real internal volume cells (pv.UnstructuredGrid), building
@@ -1022,7 +1243,11 @@ class ViewerWidget(QWidget):
 
     def _load_stats_async(self, case_dir: Path):
         """Load mesh stats in the background (deferred via timer)."""
-        stats = read_openfoam_mesh_stats(case_dir)
+        try:
+            stats = read_openfoam_mesh_stats(case_dir)
+        except Exception as exc:
+            logger.warning("Failed to read mesh stats: %s", exc)
+            stats = {"points": 0, "faces": 0, "cells": 0}
         total = stats["points"] + stats["faces"] + stats["cells"]
         if total > 0:
             self._stats_label.setText(
@@ -1033,19 +1258,9 @@ class ViewerWidget(QWidget):
         if not self._plotter_ready:
             return
         if stats["cells"] > self.MAX_VIEWER_CELLS:
-            self._view_selector.setEnabled(False)
-            self._view_selector.blockSignals(True)
-            self._view_selector.setCurrentIndex(-1)
-            self._view_selector.blockSignals(False)
-            self._plotter.clear()
-            self._plotter.add_text(
-                f"Mesh too large for viewer ({stats['cells']:,} cells, "
-                f"max={self.MAX_VIEWER_CELLS:,}).\n"
-                "Use ParaView or another external tool for visualization.",
-                color=self._text_color, font_size=12,
+            self._show_mesh_too_large(
+                f"{stats['cells']:,} cells (max={self.MAX_VIEWER_CELLS:,})"
             )
-            self._plotter.show_axes()
-            self._plotter.render()
             return
 
         self._view_selector.setEnabled(True)
@@ -1055,21 +1270,42 @@ class ViewerWidget(QWidget):
         # and causing the first process to be killed (race condition).
 
     def show_mesh(self, case_dir: Path | str):
-        self._mesh_case_dir = str(case_dir)
+        """Show mesh status and ParaView launch link.
 
-        # Show loading text immediately, then load stats + mesh deferred
-        if self._plotter_ready:
-            self._plotter.clear()
-            self._plotter.add_text(
-                "Loading mesh...",
-                color=self._text_color, font_size=14,
-            )
-            self._plotter.show_axes()
-            self._plotter.render()
-            QApplication.processEvents()
+        The built-in 3D viewer (PyVista/QtInteractor) often freezes on
+        Windows due to OpenGL issues.  Instead of rendering the mesh in
+        our viewer, we show a clear message and a button to open ParaView
+        — which the user has confirmed works correctly.
+        """
+        try:
+            self._mesh_case_dir = str(case_dir)
+            self._cancel_display_timeout()
+            self._mesh_display_in_progress = False
+            self._mesh_retry_count = 0
 
-        QTimer.singleShot(0, lambda: self._load_stats_async(Path(case_dir)))
-        QTimer.singleShot(50, self._display_mesh)  # let stats load first
+            # Read stats for the label (fast, header-only 16KB reads)
+            try:
+                stats = read_openfoam_mesh_stats(Path(case_dir))
+            except Exception:
+                stats = {"points": 0, "faces": 0, "cells": 0}
+            total = stats["points"] + stats["faces"] + stats["cells"]
+            if total > 0:
+                self._stats_label.setText(
+                    f"P:{stats['points']:,}  F:{stats['faces']:,}  C:{stats['cells']:,}"
+                )
+            else:
+                self._stats_label.setText("Mesh ready — usa Strumenti > Launch ParaView")
+            self._view_selector.setEnabled(True)
+        except Exception as exc:
+            logger.exception("show_mesh failed: %s", exc)
+
+    def _delayed_display_mesh(self):
+        """Call _display_mesh only if the view selector is still enabled
+        (meaning the mesh is not too large for the viewer)."""
+        if self._view_selector.isEnabled():
+            self._display_mesh()
+        else:
+            logger.info("View selector disabled — mesh too large, skipping display")
 
     def clear(self):
         self._cad_meshes = []

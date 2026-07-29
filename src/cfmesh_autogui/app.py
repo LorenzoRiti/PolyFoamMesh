@@ -7,6 +7,8 @@ the main window.
 import logging
 import sys
 
+logger = logging.getLogger(__name__)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -105,6 +107,8 @@ def _load_plugins(app):
 
 
 def main():
+    from cfmesh_autogui import __version__
+
     # FeatureDetectWorker isolates GMSH's feature-detection pass in a
     # child process (a hard native crash there must never take the whole
     # app down — see feature_detector.py). In a normal dev run it invokes
@@ -132,11 +136,20 @@ def main():
         print()
         print("Options:")
         print("  --help, -h         Show this help message and exit")
+        print("  --version, -v      Show version and exit")
         print("  --feature-detect   Run GMSH feature detection (subprocess mode)")
         print("  --watertight       Run watertight check/repair (subprocess mode)")
         print()
         print("Without arguments, the GUI application starts.")
         _sys.exit(0)
+
+    if len(_sys.argv) > 1 and _sys.argv[1] in ("--version", "-v"):
+        print(f"CFMesh-AutoGUI v{__version__}")
+        _sys.exit(0)
+
+    logger.info("Starting CFMesh-AutoGUI v%s...", __version__)
+    logger.info("Python %s, PySide6, PyVista, GMSH, meshio")
+    logger.info("Args: %s", _sys.argv[1:])
 
     # Global exception hooks: catch unhandled exceptions and show them
     # in a dialog instead of crashing silently.

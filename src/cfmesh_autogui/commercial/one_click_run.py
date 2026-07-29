@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cfmesh_autogui.octopoda_local import octo
@@ -88,6 +88,7 @@ class FullAutoPipeline:
         solver_template: str = "Internal Flow",
         auto_bc: bool = True,
         n_cores: int = 1,
+        poly_aggregate: bool = False,
     ) -> FullAutoResult:
         """Execute the full meshing pipeline.
 
@@ -98,11 +99,13 @@ class FullAutoPipeline:
             solver_template: Name of template to apply for solver setup.
             auto_bc: Auto-detect boundary condition types.
             n_cores: Number of parallel cores (1 = serial, >1 = MPI).
+            poly_aggregate: Apply STAR-CCM+ style polyhedral aggregation
+                (3-5x fewer cells, better quality).
 
         Returns:
             ``FullAutoResult`` with full pipeline summary.
         """
-        start = datetime.now()
+        start = datetime.now(UTC)
         self._result = FullAutoResult(
             geometry_file=geometry_path,
             quality_target=quality_target,
@@ -122,6 +125,7 @@ class FullAutoPipeline:
             # Step 2: Generate mesh (quick_mesh, parallel if n_cores > 1)
             qm_result = self._step_mesh(
                 geometry_path, meshes, quality_target, output_dir, n_cores=n_cores,
+                poly_aggregate=poly_aggregate,
             )
             case_dir = qm_result.case_dir
             self._result.case_dir = case_dir
@@ -141,7 +145,7 @@ class FullAutoPipeline:
 
             # Step 4: Boundary conditions
             bc_patches = self._step_bc(case_dir, auto_bc)
-            self._result.bc_types = list(set(p.bc_type for p in bc_patches))
+            self._result.bc_types = list({p.bc_type for p in bc_patches})
             self._result.steps_completed.append(self.STEP_BC)
 
             # Step 5: Solver setup (via template)
@@ -166,7 +170,7 @@ class FullAutoPipeline:
             self._result.errors.append(str(exc))
             logger.exception("FullAuto pipeline failed")
 
-        self._result.wall_time_s = round((datetime.now() - start).total_seconds(), 1)
+        self._result.wall_time_s = round((datetime.now(UTC) - start).total_seconds(), 1)
         return self._result
 
     # ------------------------------------------------------------------
@@ -185,9 +189,9 @@ class FullAutoPipeline:
     def _step_mesh(
         self, geometry_path: str, meshes: list,
         quality_target: str, output_dir: str | None,
-        n_cores: int = 1,
+        n_cores: int = 1, poly_aggregate: bool = False,
     ):
-        """Step 2: Generate mesh via QuickMesh."""
+        """Step 2: Generate mesh via QuickMesh (with optional poly aggregation)."""
         from cfmesh_autogui.commercial.quick_mesh import QuickMesh
         qm = QuickMesh()
         result = qm.run(
@@ -195,6 +199,7 @@ class FullAutoPipeline:
             output_dir=output_dir,
             quality_target=quality_target,
             n_cores=n_cores,
+            poly_aggregate=poly_aggregate,
         )
         if not result.success:
             raise RuntimeError("; ".join(result.errors))

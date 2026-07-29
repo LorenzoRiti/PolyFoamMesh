@@ -1,56 +1,104 @@
 from __future__ import annotations
 
-import logging
 import contextlib
+import logging
+import os
+import queue
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
-import os
-import sys
+import cadquery as cq
 import trimesh
-
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QFileDialog, QMessageBox, QInputDialog, QLabel, QProgressBar,
-    QApplication, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
-    QDockWidget, QFrame, QSizePolicy, QDialog,
+from PySide6.QtCore import (
+    Q_ARG,
+    QMetaObject,
+    QObject,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
 )
-from PySide6.QtCore import Qt, Slot, QThread, QSize, QMetaObject, Q_ARG, QTimer
 from PySide6.QtGui import (
-    QShortcut, QGuiApplication, QKeySequence, QUndoStack, QIcon, QPainter,
-    QPixmap, QColor, QFont,
+    QGuiApplication,
+    QKeySequence,
+    QShortcut,
+    QUndoStack,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDockWidget,
+    QFileDialog,
+    QFrame,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QSplitter,
+    QToolBar,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from cfmesh_autogui.config import OFConfig
-from cfmesh_autogui.core.geometry import (
-    load_step, load_geometry, classify_faces, tessellate_patches, create_test_cylinder,
-    compute_bbox_dim, compute_bbox_full, validate_cell_sizes,
-    compute_volume, estimate_cell_count, suggest_cell_sizes,
-    compute_patch_cell_sizes,
-    scale_meshes, unit_to_scale,
-)
-from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
-from cfmesh_autogui.core.stl_writer import export_surface_file
-from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.openfoam_runner import (
-    RetryRunner, CheckMeshWorker, PolyDualWorker, QualityFixWorker,
-    ParallelMeshWorker, DecomposeParWorker, WslCheckWorker,
-    analyze_error, ErrorType,
-)
-from cfmesh_autogui.core.feature_detector import FeatureDetectWorker
 from cfmesh_autogui.core.boundary_reader import parse_boundary
 from cfmesh_autogui.core.case_setup import setup_case
-from cfmesh_autogui.core.workflow import MeshingWorkflow, Step, Status
-from cfmesh_autogui.gui.quality_panel import QualityPanel
-from cfmesh_autogui.gui.viewer_widget import ViewerWidget
-from cfmesh_autogui.gui.params_panel import ParamsPanel
+from cfmesh_autogui.core.feature_detector import FeatureDetectWorker
+from cfmesh_autogui.core.geometry import (
+    classify_faces,
+    compute_bbox_dim,
+    compute_bbox_full,
+    compute_patch_cell_sizes,
+    compute_volume,
+    create_test_cylinder,
+    estimate_cell_count,
+    load_geometry,
+    load_step,
+    scale_meshes,
+    suggest_cell_sizes,
+    tessellate_patches,
+    unit_to_scale,
+    validate_cell_sizes,
+)
+from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
+from cfmesh_autogui.core.meshdict_gen import write_meshdict
+from cfmesh_autogui.core.openfoam_runner import (
+    CheckMeshWorker,
+    DecomposeParWorker,
+    ErrorType,
+    ParallelMeshWorker,
+    PolyDualWorker,
+    QualityFixWorker,
+    RetryRunner,
+    WslCheckWorker,
+    analyze_error,
+)
+from cfmesh_autogui.core.stl_writer import export_surface_file
+from cfmesh_autogui.core.workflow import MeshingWorkflow, Status, Step
+from cfmesh_autogui.gui.constants import MAX_RECENT_STEP_FILES, MAX_STEP_FILE_BYTES
+from cfmesh_autogui.gui.design_tokens import (
+    APP_VERSION,
+    ORANGE_400,
+    ORANGE_500,
+    ORANGE_600,
+    STATUS_READY,
+)
 from cfmesh_autogui.gui.log_panel import LogPanel
-from cfmesh_autogui.gui.style import COLOR_TEXT_DISABLED, COLOR_DANGER, COLOR_PASS
-from cfmesh_autogui.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
 from cfmesh_autogui.gui.log_tags import Tag
-from cfmesh_autogui.gui.design_tokens import ORANGE_500, ORANGE_600, ORANGE_400, APP_VERSION, STATUS_READY
-from cfmesh_autogui.octopoda_local import octo
+from cfmesh_autogui.gui.params_panel import ParamsPanel
+from cfmesh_autogui.gui.quality_panel import QualityPanel
 from cfmesh_autogui.gui.settings_migration import AppSettings
+from cfmesh_autogui.gui.style import COLOR_DANGER, COLOR_PASS, COLOR_TEXT_DISABLED
+from cfmesh_autogui.gui.viewer_widget import ViewerWidget
+from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +148,13 @@ class MainWindow(QMainWindow):
 
         self._of_config = OFConfig()
         self._meshes: list[trimesh.Trimesh] = []  # ✅ F-009
-        self._original_shape: "cq.Shape" | None = None
+        self._original_shape: cq.Shape | None = None
         self._case_dir: Path | None = None
         self._runner = RetryRunner(self._of_config)
         self._run_id = 0
         self._quality_fix_attempts = 0
         self._poly_was_converted = False
+        self._poly_agg_done = False
         self._unscaled_meshes: list[trimesh.Trimesh] = []
         self._scaled_meshes: list[trimesh.Trimesh] | None = None
         self._current_scale: float = 1.0
@@ -218,7 +267,7 @@ class MainWindow(QMainWindow):
         tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
 
     def _on_theme_change(self, mode: str) -> None:
-        from cfmesh_autogui.gui.theme import set_theme_mode, apply_theme
+        from cfmesh_autogui.gui.theme import apply_theme, set_theme_mode
         set_theme_mode(mode)
         apply_theme(QApplication.instance())
         s = AppSettings()
@@ -297,6 +346,17 @@ class MainWindow(QMainWindow):
             f"QToolButton {{ background:{ORANGE_500}; color:white; border:1px solid {ORANGE_600}; "
             "border-radius:4px; padding:4px 16px; font-weight:700; }"
             f"QToolButton:hover {{ background:{ORANGE_400}; }}"
+        )
+        # Adaptive (OODA) Mesh — runs the closed-loop meshing engine
+        self._ribbon_btns["adaptive"] = _make_ribbon_btn(
+            "Adaptive", "adaptive", self._on_adaptive_mesh, checkable=False,
+        )
+        adaptive_btn = self._ribbon_btns["adaptive"]
+        adaptive_btn.setCheckable(False)
+        adaptive_btn.setAutoExclusive(False)
+        adaptive_btn.setToolTip(
+            "OODA closed-loop adaptive meshing: auto-detects quality issues, "
+            "applies local corrections, iterates until convergence."
         )
         # The Mesh tab's "Generate Mesh" button already turns into "Cancel"
         # while a run is active, but that button lives on one specific tab
@@ -594,7 +654,7 @@ class MainWindow(QMainWindow):
         self._params.restore_params(s.raw)
         self._ribbon_btns["expert"].setChecked(self._params.is_expert_mode())
 
-    def _load_geometry(self, shape: "cq.Shape"):
+    def _load_geometry(self, shape: cq.Shape):
         self._original_shape = shape
         self._set_workflow_stage("geometry", "done")
         self._set_workflow_stage("mesh", "active")
@@ -663,8 +723,28 @@ class MainWindow(QMainWindow):
 
         For meshes under 2M cells or 10 min estimate, proceeds silently.
         For 2M-25M cells, asks with a clear time estimate.
-        For 25M+ cells, warns that this may exceed available resources.
+        For 25M-80M cells, warns that this may exceed available resources.
+        For 80M+ cells, blocks with a hard limit — WSL2's default 8GB RAM
+        cannot handle meshes of this size (cfMesh would be OOM-killed).
         """
+        if est_cells >= 80_000_000:
+            hours = est_seconds / 3600.0
+            msg = (
+                f"<b>Mesh troppo grande per WSL2</b><br><br>"
+                f"La stima è di ~{est_cells:,} celle "
+                f"(~{hours:.1f} ore).<br><br>"
+                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
+                "WSL2 ha un limite di memoria predefinito di 8 GB — una mesh "
+                "di questa dimensione esaurirebbe la RAM e causerebbe il crash "
+                "del motore di mesh (OOM killer di Linux).<br><br>"
+                "<b>Suggerimenti:</b><br>"
+                "• Usa un livello di dettaglio più grossolano (es. Fine o Media)<br>"
+                "• Aumenta la memoria di WSL2: <code>wsl --set-memory Ubuntu 32G</code><br>"
+                "• Riduci la dimensione massima della cella nel pannello Advanced"
+            )
+            QMessageBox.critical(self, "Mesh Troppo Grande", msg)
+            return False
+
         if est_cells < self.LARGE_MESH_CELLS and est_seconds < self.LARGE_MESH_SECONDS:
             return True
 
@@ -673,21 +753,21 @@ class MainWindow(QMainWindow):
 
         if est_cells >= 25_000_000:
             msg = (
-                f"Mesh molto grande: ~{est_cells:,} celle "
-                f"(~{hours:.1f} ore stimate).\n\n"
-                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.\n\n"
-                "Questa mesh potrebbe richiedere più di 8 GB di RAM e diverse ore. "
+                f"<b>Mesh molto grande:</b> ~{est_cells:,} celle "
+                f"(~{hours:.1f} ore stimate).<br><br>"
+                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
+                "Questa mesh potrebbe richiedere più di 8 GB di RAM e diverse ore.<br>"
                 "Assicurati che WSL2 abbia memoria sufficiente "
-                "(esegui 'wsl --set-memory Ubuntu <quantità>' in PowerShell).\n\n"
+                "(esegui <code>wsl --set-memory Ubuntu {'quantità'}</code> in PowerShell).<br><br>"
                 "Procedere?"
             )
         else:
             msg = (
-                f"Questa mesh è stimata in ~{est_cells:,} celle "
-                f"(~{minutes:.0f} min).\n\n"
-                f"Dimensioni cella attuali: max={max_cell:.4g} m, min={min_cell:.4g} m.\n"
+                f"<b>Mesh grande:</b> ~{est_cells:,} celle "
+                f"(~{minutes:.0f} min).<br><br>"
+                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br>"
                 "Aumentare la dimensione minima (o scegliere un livello di dettaglio "
-                "più grossolano) riduce molto il tempo.\n\n"
+                "più grossolano) riduce molto il tempo.<br><br>"
                 "Procedere comunque?"
             )
 
@@ -770,7 +850,6 @@ class MainWindow(QMainWindow):
         """
         if not meshes:
             return
-        from cfmesh_autogui.core.stl_writer import export_multisolid_stl
         import tempfile
         tmp_dir = Path(tempfile.mkdtemp(prefix="cfmesh_watertight_"))
         stl_paths = []
@@ -951,8 +1030,13 @@ class MainWindow(QMainWindow):
             self._load_geometry(cyl.val())
 
     def _on_cleanup_cases(self):
-        from cfmesh_autogui.core.disk_cleanup import list_cases, cases_disk_usage_mb, auto_cleanup
-        from PySide6.QtWidgets import QMessageBox, QInputDialog
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+        from cfmesh_autogui.core.disk_cleanup import (
+            auto_cleanup,
+            cases_disk_usage_mb,
+            list_cases,
+        )
         cases = list_cases()
         usage = cases_disk_usage_mb()
         if not cases:
@@ -1161,16 +1245,22 @@ class MainWindow(QMainWindow):
 
         cfMesh (hex-dominant via WSL2/cartesianMesh) is the highest-quality
         option when it's available (ALGORITHM_INFO's own quality_rank=1);
-        GMSH direct (pure tetra+prism, no WSL needed) is the fallback when
-        it isn't — so the app always produces a mesh instead of stopping
-        with "OpenFOAM Not Found" and leaving the user to figure out there's
-        a manual dropdown they need to switch.
+        autopoly (native polyhedral via CVT) is preferred when WSL2 is not
+        available — it produces higher-quality polyhedral cells than GMSH.
+        GMSH direct (pure tetra+prism, no WSL needed) is the final fallback.
         """
         try:
             if self._of_config.validate():
                 return "cfmesh"
         except Exception as exc:
             logger.debug("Automatic mesher: WSL check failed: %s", exc)
+        # autopoly works without WSL, prefer over GMSH
+        try:
+            from cfmesh_autogui.commercial.autopoly_bridge import create_mesher
+            if create_mesher() is not None:
+                return "autopoly"
+        except Exception as exc:
+            logger.debug("Automatic mesher: autopoly unavailable: %s", exc)
         return "gmsh_direct"
 
     def _on_run_meshing(self):
@@ -1184,6 +1274,7 @@ class MainWindow(QMainWindow):
 
         self._run_id += 1
         self._poly_was_converted = False
+        self._poly_agg_done = False
         my_id = self._run_id
         logger.info("Starting meshing run #%d.", my_id)
 
@@ -1200,6 +1291,20 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"{Tag.CASE} Automatic: using {mesher_type}.")
         octo.log_event("main_window", "run_meshing_start",
             f"run_id={my_id} mesher={mesher_type}")
+        if mesher_type == "autopoly":
+            orig = getattr(self, "_loaded_step_path", None)
+            if orig is None:
+                orig = self._make_temp_geometry_for_gmsh()
+            if orig is None:
+                QMessageBox.warning(
+                    self, "autopoly Needs Geometry",
+                    "No geometry loaded. Load a STEP, STL, or use the test cylinder first.",
+                )
+                return
+            self._params.set_meshing_enabled(False)
+            self._params.set_all_enabled(False)
+            self._start_autopoly_worker(orig, my_id)
+            return
         if mesher_type != "cfmesh":
             orig = getattr(self, "_loaded_step_path", None)
             if orig is None:
@@ -1451,7 +1556,9 @@ class MainWindow(QMainWindow):
         self._throat_zones = None
         if self._params.get_auto_refine_enabled() and self._meshes:
             try:
-                from cfmesh_autogui.core.throat_detector import detect_refinement_regions
+                from cfmesh_autogui.core.throat_detector import (
+                    detect_refinement_regions,
+                )
                 detail = self._params.get_detail_level()
                 raw_max = self._params.get_mesh_params().get("max_cell_size", 0.05)
                 zones = detect_refinement_regions(self._meshes, detail=detail, global_max_cell=raw_max)
@@ -1657,7 +1764,9 @@ class MainWindow(QMainWindow):
             # cfMesh from crashing or producing degenerate cells.
             if bl_params:
                 try:
-                    from cfmesh_autogui.core.throat_detector import check_bl_throat_compatibility
+                    from cfmesh_autogui.core.throat_detector import (
+                        check_bl_throat_compatibility,
+                    )
                     bl_warnings, adjusted_bl = check_bl_throat_compatibility(bl_params, throat_zones)
                     for w in bl_warnings:
                         self._log.append_log(f"{Tag.WARN} {w}")
@@ -1744,6 +1853,22 @@ class MainWindow(QMainWindow):
             self._ribbon_btns["cancel"].setVisible(True)
 
             parallel_enabled, n_cores = self._params.get_parallel_params()
+
+            # Apply OpenMP thread configuration before launching
+            openmp_mode, openmp_threads = self._params.get_openmp_params()
+            if openmp_mode == "custom" and openmp_threads is not None:
+                self._of_config.set_openmp_threads(openmp_threads)
+                self._log.append_log(
+                    f"{Tag.MESHING} OpenMP: {openmp_threads} thread(s) (custom mode)."
+                )
+            else:
+                self._of_config.set_openmp_threads(None)  # auto via OpenMPAccel
+                mpi_ranks = n_cores if parallel_enabled else 0
+                self._log.append_log(
+                    f"{Tag.MESHING} OpenMP mode: {openmp_mode}"
+                    f"{f' ({mpi_ranks} MPI ranks)' if mpi_ranks else ''}."
+                )
+
             # For small meshes (< 500K cells), MPI overhead dwarfs any
             # parallel speedup — force serial.
             if est < 500_000:
@@ -1894,7 +2019,6 @@ class MainWindow(QMainWindow):
         self._parallel_thread.start()
 
     def _make_temp_geometry_for_gmsh(self) -> str | None:
-        import os as _os
         from datetime import datetime as _dt
         _default_base = Path.home() / "cfmesh_cases" / ".gmsh_temp"
         if " " in str(_default_base):
@@ -2109,39 +2233,181 @@ class MainWindow(QMainWindow):
         t.start()
 
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
-        from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
-        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
+        """Convert MSH → OpenFOAM in a background thread to avoid freezing the UI."""
+        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh (background)...")
         self._status.showMessage("GMSH: conversion...")
+        self._progress.setRange(0, 0)
+        self._progress.setVisible(True)
         QApplication.processEvents()
-        try:
-            poly_dir = msh_to_of_polymesh(msh_path, self._case_dir)
-            self._log.append_log(f"[gmsh] polyMesh: {poly_dir}")
-        except Exception as e:
-            logger.error("MSH conversion failed: %s", e)
-            self._log.append_log(f"[ERROR] MSH conversion: {e}")
-            self._params.set_all_enabled(True)
-            return
-        from cfmesh_autogui.core.boundary_reader import parse_boundary
-        from cfmesh_autogui.core.case_setup import setup_case
-        boundary_path = self._case_dir / "constant" / "polyMesh" / "boundary"
-        if boundary_path.exists():
+
+        t = QThread()
+        w = _GmshConversionWorker(msh_path, self._case_dir, names)
+        w.moveToThread(t)
+
+        def on_done():
+            self._log.append_log("[gmsh] Conversion complete.")
+            self._progress.setVisible(False)
             try:
-                patches = parse_boundary(boundary_path)
-                setup_case(self._case_dir, patches, **self._case_setup_kwargs())
-                self._log.append_log("[setup] Case files generated (0/, system/).")
-            except Exception as e:
-                logger.error("Case setup failed: %s", e)
-                self._log.append_log(f"[ERROR] Case setup: {e}")
+                from cfmesh_autogui.core.boundary_reader import parse_boundary
+                from cfmesh_autogui.core.case_setup import setup_case
+                boundary_path = self._case_dir / "constant" / "polyMesh" / "boundary"
+                if boundary_path.exists():
+                    patches = parse_boundary(boundary_path)
+                    setup_case(self._case_dir, patches, **self._case_setup_kwargs())
+                    self._log.append_log("[setup] Case files generated (0/, system/).")
+                self._log.append_log(f"{Tag.DONE} Case: {self._case_dir}")
+                self._viewer.show_mesh(self._case_dir)
+                self._status.showMessage("GMSH direct mesh ready")
                 self._params.set_all_enabled(True)
-                return
-        self._log.append_log(f"{Tag.DONE} Case: {self._case_dir}")
-        self._viewer.show_mesh(self._case_dir)
-        self._status.showMessage("GMSH direct mesh ready")
+                poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+                poly_faces = self._case_dir / "constant" / "polyMesh" / "faces"
+                if poly_points.exists() and poly_faces.exists():
+                    self._launch_checkmesh()
+            except Exception as e:
+                logger.error("Post-conversion setup failed: %s", e)
+                self._log.append_log(f"[ERROR] Setup: {e}")
+                self._params.set_all_enabled(True)
+
+        def on_failed(msg: str):
+            self._log.append_log(f"[ERROR] MSH conversion: {msg}")
+            self._progress.setVisible(False)
+            self._params.set_all_enabled(True)
+            QMessageBox.critical(self, "Conversion Failed", f"MSH to OpenFOAM failed:\n{msg}")
+
+        w.finished.connect(on_done, Qt.QueuedConnection)
+        w.failed.connect(on_failed, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        self._gmsh_conv_thread = t
+        self._gmsh_conv_worker = w
+        t.start()
+
+    # -----------------------------------------------------------------------
+    # autopoly native polyhedral mesher
+    # -----------------------------------------------------------------------
+
+    def _start_autopoly_worker(self, geom_path: str, my_id: int):
+        """Run autopoly polyhedral meshing in a background thread."""
+        from cfmesh_autogui.commercial.autopoly_bridge import (
+            AutopolyParams,
+            run_autopoly,
+        )
+
+        self._log.append_log("[autopoly] Starting CVT-based polyhedral meshing...")
+        self._status.showMessage("autopoly: polyhedral mesh...")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        root = self._resolve_case_root()
+        self._case_dir = root / f"autopoly_{ts}"
+        self._case_dir.mkdir(parents=True, exist_ok=True)
+        self._params.set_case_dir(str(self._case_dir))
+
+        detail = self._params.get_detail_level()
+        params = AutopolyParams.from_detail_level(detail)
+
+        bl_params = self._params.get_bl_params()
+        if bl_params:
+            params.bl_enabled = bool(bl_params.get("enabled", False))
+            params.bl_layers = int(bl_params.get("nLayers", 3))
+            params.bl_first_height = float(bl_params.get("firstLayerThickness", 0.0005))
+            params.bl_growth_rate = float(bl_params.get("thicknessRatio", 1.2))
+            params.bl_max_thickness = float(bl_params.get("maxThickness", 0.01))
+
+        self._cleanup_thread("_autopoly_thread", "_autopoly_worker")
+
+        import queue
+        result_queue: queue.Queue = queue.Queue()
+
+        def worker_fn():
+            try:
+                def progress_cb(pct: int, stage: str, msg: str):
+                    self._progress.setValue(pct)
+                    self._log.append_log(f"[autopoly] {stage}: {msg}")
+                    QApplication.processEvents()
+                result = run_autopoly(geom_path, self._case_dir, params, progress=progress_cb)
+                result_queue.put(result)
+            except Exception as e:
+                result_queue.put(e)
+
+        from threading import Thread
+        t = Thread(target=worker_fn, daemon=True)
+        self._autopoly_thread = t
+        self._autopoly_worker = worker_fn
+
+        # Poll for completion
+        self._autopoly_poll_timer = self.startTimer(200)
+        self._autopoly_poll_my_id = my_id
+        self._autopoly_result_queue = result_queue
+        self._autopoly_start_time = time.time()
+        t.start()
+
+    def timerEvent(self, event):
+        if (hasattr(self, "_autopoly_poll_timer") and
+            event.timerId() == self._autopoly_poll_timer and
+            hasattr(self, "_autopoly_result_queue")):
+            try:
+                result = self._autopoly_result_queue.get_nowait()
+                self.killTimer(self._autopoly_poll_timer)
+                if isinstance(result, Exception):
+                    self._on_autopoly_failed(str(result), self._autopoly_poll_my_id)
+                else:
+                    self._on_autopoly_finished(result, self._autopoly_poll_my_id)
+            except queue.Empty:
+                pass
+        super().timerEvent(event)
+
+    def _on_autopoly_finished(self, result, my_id: int):
+        """Handle successful autopoly meshing completion."""
+        if my_id != self._run_id:
+            return
+        self._progress.setVisible(False)
+        elapsed = time.time() - getattr(self, "_autopoly_start_time", time.time())
+        if result.success:
+            self._log.append_log(
+                f"[autopoly] DONE: {result.n_cells:,} polyhedral cells "
+                f"in {elapsed:.1f}s — "
+                f"skew={result.max_skewness:.2f} "
+                f"nonOrtho={result.max_non_ortho:.1f}° "
+                f"ar={result.max_aspect_ratio:.0f}"
+            )
+            self._status.showMessage(f"autopoly: {result.n_cells:,} cells ready")
+            self._viewer.show_mesh(self._case_dir)
+            self._params.set_all_enabled(True)
+            self._params.set_real_cell_count(result.n_cells)
+            # Launch checkMesh if OpenFOAM available
+            poly_dir = self._case_dir / "constant" / "polyMesh"
+            if poly_dir.exists():
+                self._launch_checkmesh()
+            # Generate case setup
+            try:
+                from cfmesh_autogui.core.boundary_reader import parse_boundary
+                from cfmesh_autogui.core.case_setup import setup_case
+                boundary_path = poly_dir / "boundary"
+                if boundary_path.exists():
+                    patches = parse_boundary(boundary_path)
+                    setup_case(self._case_dir, patches, **self._case_setup_kwargs())
+                    self._log.append_log("[setup] Case files generated (0/, system/).")
+            except Exception as e:
+                logger.warning("Case setup after autopoly: %s", e)
+        else:
+            self._log.append_log(f"[autopoly] FAILED: {result.message}")
+            self._params.set_all_enabled(True)
+            if result.errors:
+                QMessageBox.critical(
+                    self, "autopoly Failed",
+                    f"Polyhedral meshing failed:\n\n{result.message}\n\n"
+                    + "\n".join(result.errors)
+                )
+
+    def _on_autopoly_failed(self, msg: str, my_id: int):
+        """Handle autopoly failure."""
+        if my_id != self._run_id:
+            return
+        self._log.append_log(f"[autopoly] ERROR: {msg}")
+        self._progress.setVisible(False)
         self._params.set_all_enabled(True)
-        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
-        poly_faces = self._case_dir / "constant" / "polyMesh" / "faces"
-        if poly_points.exists() and poly_faces.exists():
-            self._launch_checkmesh()
+        QMessageBox.critical(self, "autopoly Failed",
+                             f"Polyhedral meshing failed:\n\n{msg}")
 
     def _on_cell_count_found(self, count: int):
         from cfmesh_autogui.gui.design_tokens import SUCCESS
@@ -2406,8 +2672,8 @@ class MainWindow(QMainWindow):
         my_id = self._run_id
         self._meshing_run_id = my_id
         logger.info("Direct re-mesh run #%d (quality fix).", my_id)
-        from cfmesh_autogui.core.stl_writer import export_surface_file
         from cfmesh_autogui.core.meshdict_gen import write_meshdict
+        from cfmesh_autogui.core.stl_writer import export_surface_file
         p = self._params.get_mesh_params()
         raw_max = p["max_cell_size"]
         raw_min = p["min_cell_size"]
@@ -2522,11 +2788,21 @@ class MainWindow(QMainWindow):
             self._set_workflow_stage("quality", "done")
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
             self._status.showMessage("Ready — mesh complete")
+
+            # Polyhedral conversion (polyDualMesh) — INCREASES cells
             if self._params.get_poly_conversion():
                 if not getattr(self, "_poly_was_converted", False):
                     self._launch_polydual()
-            else:
-                self._launch_decomposepar()
+                    return
+                self._poly_was_converted = True
+
+            # Polyhedral aggregation (STAR-CCM+ style) — REDUCES cells
+            if self._params.get_poly_aggregation() and not getattr(self, "_poly_agg_done", False):
+                self._launch_poly_aggregation()
+                return
+
+            self._launch_decomposepar()
+            self._viewer.show_mesh(self._case_dir)
         else:
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
@@ -2630,6 +2906,137 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._launch_checkmesh()
+
+    def _launch_poly_aggregation(self) -> None:
+        """Run STAR-CCM+ style polyhedral aggregation in background thread.
+
+        Reads the existing tet mesh, aggregates tetrahedra around each
+        vertex into polyhedral cells, and writes the result back.  Runs
+        in a QThread so the UI stays responsive.
+        """
+        self._poly_agg_run_id = self._run_id
+        my_id = self._run_id
+        if not self._case_dir:
+            return
+        self._log.append_log("[poly-agg] Starting polyhedral aggregation...")
+        self._status.showMessage("Polyhedral aggregation...")
+        self._params.set_meshing_state(True)
+        self._params.set_all_enabled(False)
+
+        geom_path = getattr(self, "_loaded_step_path", None)
+        if not geom_path and self._case_dir:
+            stl = Path(self._case_dir) / "constant" / "triSurface" / "surface.stl"
+            if stl.exists():
+                geom_path = str(stl)
+
+        class _PolyAggWorker(QObject):
+            finished = Signal(object)
+            failed = Signal(str)
+            log_line = Signal(str)
+            progress = Signal(float, str)
+
+            def __init__(self, case_dir, geometry_path, bl_enabled):
+                super().__init__()
+                self._case_dir = case_dir
+                self._geometry_path = geometry_path
+                self._bl_enabled = bl_enabled
+
+            def run(self):
+                try:
+                    from cfmesh_autogui.commercial.poly_aggregator import PolyAggregator
+                    agg = PolyAggregator()
+                    agg.params.min_tets_per_cluster = 5
+                    agg.params.bl_enabled = self._bl_enabled
+                    agg.set_progress_callback(
+                        lambda pct, msg: self.progress.emit(pct, msg),
+                    )
+                    result = agg.run(self._case_dir, geometry_path=self._geometry_path or "")
+                    self.finished.emit(result)
+                except Exception as exc:
+                    self.failed.emit(str(exc))
+
+        # Clean up previous thread
+        self._cleanup_thread("_poly_agg_thread", "_poly_agg_worker")
+
+        t = QThread()
+        w = _PolyAggWorker(self._case_dir, geom_path, self._params.get_bl_enabled())
+        w.moveToThread(t)
+        self._poly_agg_thread = t
+        self._poly_agg_worker = w
+
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.progress.connect(self._on_poly_agg_progress, Qt.QueuedConnection)
+
+        def _guarded_finished(agg_result):
+            if my_id != self._run_id:
+                return
+            self._on_poly_agg_finished(agg_result)
+
+        def _guarded_failed(msg: str):
+            if my_id != self._run_id:
+                return
+            self._on_poly_agg_failed(msg)
+
+        w.finished.connect(_guarded_finished, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.failed.connect(_guarded_failed, Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        t.start()
+
+    def _on_poly_agg_progress(self, pct: float, msg: str) -> None:
+        """Update progress bar during polyhedral aggregation."""
+        if hasattr(self, '_progress'):
+            self._progress.setValue(int(pct))
+            self._progress.setFormat(f"{msg} ({int(pct)}%)")
+            self._progress.setVisible(True)
+
+    def _on_poly_agg_finished(self, agg_result) -> None:
+        """Handle successful polyhedral aggregation completion."""
+        self._params.set_meshing_state(False)
+        self._params.set_all_enabled(True)
+        if not agg_result.success:
+            self._log.append_log(
+                f"[poly-agg] FAILED: {'; '.join(agg_result.errors)}"
+            )
+            self._status.showMessage("Polyhedral aggregation failed")
+            self._launch_decomposepar()
+            self._viewer.show_mesh(self._case_dir)
+            return
+
+        self._progress.setVisible(False)
+        self._poly_agg_done = True
+        reduction = agg_result.reduction_pct
+        self._log.append_log(
+            f"[poly-agg] Done: {agg_result.cells_before} -> "
+            f"{agg_result.cells_after} cells "
+            f"({reduction:.0f}% reduction)"
+        )
+        self._status.showMessage(
+            f"Polyhedral mesh: {agg_result.cells_after:,} cells"
+        )
+        # Update cell count label immediately (before checkMesh re-validates)
+        self._on_cell_count_found(agg_result.cells_after)
+        self._viewer.show_mesh(self._case_dir)
+        self._launch_checkmesh()
+
+        # Show summary notification for significant reductions
+        if reduction >= 40:
+            self._log.append_log(
+                f"[poly-agg] Risultato: {reduction:.0f}% di celle in meno "
+                f"rispetto alla mesh iniziale."
+            )
+
+    def _on_poly_agg_failed(self, msg: str) -> None:
+        """Handle polyhedral aggregation failure."""
+        self._progress.setVisible(False)
+        self._params.set_meshing_state(False)
+        self._params.set_all_enabled(True)
+        self._log.append_log(f"[poly-agg] ERROR: {msg}")
+        logger.error("Polyhedral aggregation failed: %s", msg)
+        self._status.showMessage("Polyhedral aggregation failed")
+        self._launch_decomposepar()
+        self._viewer.show_mesh(self._case_dir)
 
     def _launch_decomposepar(self) -> None:
         """Run decomposePar to create processor dirs for parallel solving.
@@ -2765,7 +3172,6 @@ class MainWindow(QMainWindow):
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
-            from pathlib import Path as _Path
             for url in event.mimeData().urls():
                 p = url.toLocalFile().lower()
                 if p.endswith((".step", ".stp", ".stl")):
@@ -2857,7 +3263,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Mesh", "Generate a mesh first.")
             return
 
-        from cfmesh_autogui.core.baramflow_export import validate_case, export_case
+        from cfmesh_autogui.core.baramflow_export import export_case, validate_case
 
         # Validate completeness AND mesh/field consistency up front, so the user
         # learns about a case BaramFlow can't open here, not after shipping it.
@@ -2951,8 +3357,12 @@ class MainWindow(QMainWindow):
         if not self._case_dir:
             QMessageBox.warning(self, "No Case", "Generate a mesh first.")
             return
-        from cfmesh_autogui.commercial.solver_setup import SolverSetup, SolverConfig, SolverType
         from cfmesh_autogui.commercial.bc_editor import BCEditor
+        from cfmesh_autogui.commercial.solver_setup import (
+            SolverConfig,
+            SolverSetup,
+            SolverType,
+        )
         bce = BCEditor()
         solver = SolverSetup()
         patches = []
@@ -2968,7 +3378,7 @@ class MainWindow(QMainWindow):
         solver.configure(cfg)
         solver.write_all(self._case_dir, patches)
         self._log.append_log(
-            f"[solver] Setup complete: simpleFoam, kOmegaSST, bilanciato"
+            "[solver] Setup complete: simpleFoam, kOmegaSST, bilanciato"
         )
         QMessageBox.information(
             self, "Solver Setup",
@@ -3083,9 +3493,9 @@ class MainWindow(QMainWindow):
             return
         self._log.append_log("[quick] Running Quick Mesh...")
         self._set_workflow_stage("generate", "active")
-        from cfmesh_autogui.commercial.quick_mesh import QuickMesh
         from cfmesh_autogui.commercial.mesh_engine import MeshEngine
-        from cfmesh_autogui.core.geometry import suggest_cell_sizes, compute_bbox_dim
+        from cfmesh_autogui.commercial.quick_mesh import QuickMesh
+        from cfmesh_autogui.core.geometry import compute_bbox_dim
         detail = self._params.get_detail_level()
         # Auto-select algorithm via MeshEngine
         has_wsl = self._of_config.validate()
@@ -3120,6 +3530,96 @@ class MainWindow(QMainWindow):
             f"(bbox={bbox_dim:.4f})"
         )
         self._params._on_run()
+
+    def _on_adaptive_mesh(self):
+        """Run the OODA closed-loop adaptive meshing engine."""
+        if not self._meshes:
+            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
+            return
+
+        self._log.append_log("[adaptive] Starting OODA adaptive loop...")
+        self._set_workflow_stage("generate", "active")
+
+        # Show OODA panel
+        if getattr(self, '_ooda_panel', None) is None:
+            from cfmesh_autogui.gui.ooda_panel import OODAPanel
+            self._ooda_panel = OODAPanel()
+            from PySide6.QtWidgets import QStatusBar
+            if isinstance(self.statusBar(), QStatusBar):
+                self.statusBar().addPermanentWidget(self._ooda_panel)
+        self._ooda_panel.show_running()
+
+        case_dir = self._case_dir or Path(".")
+        of_config = self._of_config
+
+        # Build inline worker QObject
+        from PySide6.QtCore import QObject, QThread, Signal
+
+        class _OODAWorker(QObject):
+            progress = Signal(str, float)
+            log_line = Signal(str)
+            finished = Signal(bool)
+
+            def __init__(self, of_cfg, c_dir, meshes, geo_path):
+                super().__init__()
+                self._of_cfg = of_cfg
+                self._c_dir = c_dir
+                self._meshes = meshes
+                self._geo_path = geo_path
+
+            def run(self):
+                from cfmesh_autogui.commercial.adaptive_integration import (
+                    OODAWorkflowAdapter,
+                )
+                adapter = OODAWorkflowAdapter(self._of_cfg)
+                adapter.configure(self._c_dir, self._meshes, self._geo_path)
+                result = adapter.run(
+                    callback=lambda msg, frac: self.progress.emit(msg, frac),
+                )
+                if result.success:
+                    self.log_line.emit(
+                        f"[adaptive] Done: {result.cell_count} cells, "
+                        f"skew={result.max_skewness:.3f} "
+                        f"({result.n_ooda_iterations} iterations)"
+                    )
+                else:
+                    self.log_line.emit(
+                        "[adaptive] FAILED — see quality report for details"
+                    )
+                self.finished.emit(result.success)
+
+        self._adaptive_thread = QThread()
+        self._adaptive_worker = _OODAWorker(
+            of_config, case_dir, self._meshes, self._geometry_path,
+        )
+        self._adaptive_worker.moveToThread(self._adaptive_thread)
+        self._adaptive_worker.progress.connect(
+            self._ooda_panel.update_progress, Qt.QueuedConnection,
+        )
+        self._adaptive_worker.log_line.connect(
+            self._log.append_log, Qt.QueuedConnection,
+        )
+        self._adaptive_worker.finished.connect(
+            lambda s: self._ooda_panel.show_done(s), Qt.QueuedConnection,
+        )
+        self._adaptive_worker.finished.connect(
+            lambda s: self._set_workflow_stage(
+                "quality", "done" if s else "error",
+            ), Qt.QueuedConnection,
+        )
+        self._adaptive_worker.finished.connect(
+            lambda s: self._launch_checkmesh() if s else None,
+            Qt.QueuedConnection,
+        )
+        self._adaptive_worker.finished.connect(
+            self._adaptive_thread.quit, Qt.QueuedConnection,
+        )
+        self._adaptive_worker.finished.connect(
+            self._adaptive_worker.deleteLater, Qt.QueuedConnection,
+        )
+        self._adaptive_thread.started.connect(self._adaptive_worker.run)
+        self._adaptive_thread.finished.connect(self._adaptive_thread.deleteLater)
+        self._adaptive_thread.start()
 
     def _on_auto_fix_quality(self, _action: str):
         if not self._case_dir:
@@ -3236,6 +3736,7 @@ class MainWindow(QMainWindow):
         # Clean up ALL background threads
         for attr_t, attr_w in [
             ("_gmsh_thread", "_gmsh_worker"),
+            ("_gmsh_conv_thread", "_gmsh_conv_worker"),
             ("_wsl_check_thread", "_wsl_check_worker"),
             ("_feature_thread", "_feature_worker"),
             ("_parallel_thread", "_parallel_worker"),
@@ -3247,7 +3748,32 @@ class MainWindow(QMainWindow):
             ("_export_thread", "_export_worker"),
         ]:
             self._cleanup_thread(attr_t, attr_w)
-        from cfmesh_autogui.core.gmsh_wrapper import gmsh_shutdown
         gmsh_shutdown()
         octo.log_event("main_window", "close", "app closed")
         super().closeEvent(event)
+
+
+class _GmshConversionWorker(QObject):
+    """Converts a GMSH .msh file to OpenFOAM polyMesh in a background thread."""
+
+    finished = Signal()
+    failed = Signal(str)
+    log_line = Signal(str)
+
+    def __init__(self, msh_path: Path, case_dir: Path, names: list[str], parent=None):
+        super().__init__(parent)
+        self._msh_path = msh_path
+        self._case_dir = case_dir
+        self._names = names
+
+    @Slot()
+    def run(self):
+        from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
+        try:
+            poly_dir = msh_to_of_polymesh(self._msh_path, self._case_dir)
+            self.log_line.emit(f"[gmsh] polyMesh: {poly_dir}")
+        except Exception as e:
+            logger.error("MSH conversion failed: %s", e)
+            self.failed.emit(str(e))
+            return
+        self.finished.emit()
