@@ -258,11 +258,13 @@ class _PythonPolyMesher:
     # -----------------------------------------------------------------------
     @staticmethod
     def _load_stl(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Load STL file, return (vertices, triangles, patch_ids)."""
+        """Load surface mesh file (STL, STEP, OBJ, PLY, VTK), return (vertices, triangles, patch_ids)."""
         path = Path(path)
         ext = path.suffix.lower()
 
-        if ext == ".stl":
+        if ext in (".step", ".stp"):
+            return _load_step(path)
+        elif ext == ".stl":
             try:
                 import trimesh
                 mesh = trimesh.load(str(path))
@@ -656,7 +658,7 @@ class _PythonPolyMesher:
                 if face_neigh[fi] >= 0:
                     # Internal face
                     nc = np.mean([
-                        points[v] for v in
+                        points[vv] for v in
                         cell_faces.get(face_neigh[fi], [])
                         for vv in (face_verts[v] if v < len(face_verts) else [])
                     ], axis=0) if face_neigh[fi] in cell_faces else fc
@@ -866,6 +868,60 @@ def _parse_stl_binary(data: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return (np.array(vertices, dtype=np.float64),
             np.array(triangles, dtype=np.int32),
             np.zeros(len(triangles), dtype=np.int32))
+
+
+def _load_step(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load STEP file, tessellate via cadquery, return (vertices, triangles, patch_ids)."""
+    import cadquery as cq
+    from cfmesh_autogui.core.geometry import classify_faces, tessellate_patches
+
+    path = Path(path)
+    logger.info("autopoly: loading STEP file '%s'", path.name)
+
+    try:
+        # Load STEP file
+        shape = cq.importers.importStep(str(path))
+        if isinstance(shape, cq.Workplane):
+            shape = shape.val()
+
+        # Classify faces into patches
+        patches = classify_faces(shape)
+        logger.info("autopoly: classified %d patches from STEP", len(patches))
+
+        # Tessellate patches
+        meshes = tessellate_patches(patches, tolerance=0.01, angle_tolerance=0.1)
+        if not meshes:
+            raise ValueError("Tessellation produced no valid meshes")
+
+        # Merge all meshes into single vertex/triangle arrays
+        all_vertices = []
+        all_triangles = []
+        patch_ids = []
+        vertex_offset = 0
+
+        for patch_idx, mesh in enumerate(meshes):
+            vertices = np.asarray(mesh.vertices, dtype=np.float64)
+            faces = np.asarray(mesh.faces, dtype=np.int32)
+
+            all_vertices.append(vertices)
+            all_triangles.append(faces + vertex_offset)
+            patch_ids.extend([patch_idx] * len(faces))
+
+            vertex_offset += len(vertices)
+
+        vertices_out = np.vstack(all_vertices) if all_vertices else np.empty((0, 3), dtype=np.float64)
+        triangles_out = np.vstack(all_triangles) if all_triangles else np.empty((0, 3), dtype=np.int32)
+        patch_ids_out = np.array(patch_ids, dtype=np.int32)
+
+        logger.info(
+            "autopoly: tessellated STEP → %d vertices, %d triangles, %d patches",
+            len(vertices_out), len(triangles_out), len(meshes)
+        )
+        return vertices_out, triangles_out, patch_ids_out
+
+    except Exception as e:
+        logger.exception("autopoly: STEP tessellation failed")
+        raise ValueError(f"Failed to tessellate STEP file: {e}") from e
 
 
 def _load_obj(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
