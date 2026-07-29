@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cfmesh_autogui.core.validation import validate_geometry_path
@@ -82,6 +82,7 @@ class QuickMesh:
         output_dir: str | None = None,
         quality_target: str = "medium",
         n_cores: int = 1,
+        poly_aggregate: bool = False,
     ) -> QuickMeshResult:
         """Execute quick mesh from geometry file.
 
@@ -90,12 +91,14 @@ class QuickMesh:
             output_dir: Output case directory. Auto-generated if None.
             quality_target: ``"draft"``, ``"medium"``, or ``"high"``.
             n_cores: Number of parallel cores (1 = serial, >1 = MPI).
+            poly_aggregate: Apply STAR-CCM+ style polyhedral aggregation
+                after the initial mesh (3-5x fewer cells, better quality).
 
         Returns:
             ``QuickMeshResult`` with cell count and quality.
         """
         result = QuickMeshResult(n_cores=n_cores)
-        start = datetime.now()
+        start = datetime.now(UTC)
         octo.log_event("quick_mesh", "start", {"file": geometry_path, "n_cores": n_cores})
 
         try:
@@ -121,7 +124,8 @@ class QuickMesh:
             all_wt = n_wt == len(meshes)
 
             from cfmesh_autogui.commercial.mesh_engine import (
-                MeshEngine, MeshEngineParams,
+                MeshEngine,
+                MeshEngineParams,
             )
 
             engine = MeshEngine()
@@ -145,7 +149,7 @@ class QuickMesh:
             if output_dir:
                 case_dir = Path(output_dir)
             else:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
                 case_dir = Path.home() / "cfmesh_cases" / f"quick_mesh_{ts}"
             case_dir.mkdir(parents=True, exist_ok=True)
             result.case_dir = str(case_dir)
@@ -189,7 +193,34 @@ class QuickMesh:
             result.max_skewness = eng_result.max_skewness
             result.quality_passed = eng_result.quality_passed
 
-            # 9. If engine ran a different algorithm (fallback), update
+            # 9. Polyhedral aggregation (Star-CCM+ style, optional)
+            if poly_aggregate and eng_result.success:
+                try:
+                    from cfmesh_autogui.commercial.poly_aggregator import PolyAggregator
+                    agg = PolyAggregator()
+                    agg.params.min_tets_per_cluster = 5
+                    agg_result = agg.run(case_dir, geometry_path)
+                    if agg_result.success:
+                        result.cell_count = agg_result.cells_after
+                        result.max_skewness = agg_result.max_skewness_after
+                        result.algorithm = "PolyAggregated"
+                        result.warnings.append(
+                            f"Polyhedral aggregation: {agg_result.cells_before} -> "
+                            f"{agg_result.cells_after} cells "
+                            f"({agg_result.reduction_pct:.0f}% reduction)"
+                        )
+                        logger.info(
+                            "QuickMesh: polyhedral aggregation OK "
+                            "(%d cells, %.1f%% reduction)",
+                            agg_result.cells_after, agg_result.reduction_pct,
+                        )
+                    else:
+                        errs = "; ".join(agg_result.errors)
+                        result.warnings.append(f"Polyhedral aggregation skipped: {errs}")
+                except (OSError, ValueError, RuntimeError) as agg_exc:
+                    result.warnings.append(f"Polyhedral aggregation failed: {agg_exc}")
+
+            # 10. If engine ran a different algorithm (fallback), update
             if eng_result.algorithm != algo.value:
                 result.algorithm = eng_result.algorithm
                 result.warnings.append(f"Fallback: {eng_result.algorithm}")
@@ -209,7 +240,7 @@ class QuickMesh:
             result.errors.append(str(exc))
             logger.exception("QuickMesh failed")
 
-        result.wall_time_s = round((datetime.now() - start).total_seconds(), 1)
+        result.wall_time_s = round((datetime.now(UTC) - start).total_seconds(), 1)
         return result
 
     # ------------------------------------------------------------------
@@ -218,7 +249,11 @@ class QuickMesh:
     def _import_geometry(self, path: Path, ext: str) -> list:
         """Import geometry to trimesh meshes."""
         if ext in (".step", ".stp"):
-            from cfmesh_autogui.core.geometry import load_step, classify_faces, tessellate_patches
+            from cfmesh_autogui.core.geometry import (
+                classify_faces,
+                load_step,
+                tessellate_patches,
+            )
             shape = load_step(path)
             patches = classify_faces(shape)
             return tessellate_patches(patches)
@@ -256,8 +291,8 @@ class QuickMesh:
                 # cfMesh picks its own and the y+ target is never met.
                 "firstLayerThickness": blp.first_layer_height,
             }
-        except Exception:
-            pass
+        except (ImportError, ValueError, KeyError) as _blexc:
+            logger.debug("Auto BL skipped: %s", _blexc)
 
         return None
 

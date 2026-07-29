@@ -33,6 +33,7 @@ MeshEntityType = _mod.MeshEntityType
 RemediationAction = _mod.RemediationAction
 ErrorType = _mod.ErrorType
 QualityEvaluation = _mod.QualityEvaluation
+MeshEdge = _mod.MeshEdge
 MeshFace = _mod.MeshFace
 SizingFieldPoint = _mod.SizingFieldPoint
 compute_first_layer_height = _mod.compute_first_layer_height
@@ -769,6 +770,328 @@ def test_sizing_field_to_dict():
     assert d["n_points"] == 10
 
 
+# =====================================================================
+# Edge topology
+# =====================================================================
+def test_build_edges_from_faces():
+    g = UnifiedMeshGraph()
+    n1 = g.add_node(MeshNode(x=0, y=0, z=0))
+    n2 = g.add_node(MeshNode(x=1, y=0, z=0))
+    n3 = g.add_node(MeshNode(x=0, y=1, z=0))
+    f1 = g.add_face(MeshFace(node_indices=[n1, n2, n3]))
+    g.add_cell(MeshCell(node_indices=[n1, n2, n3], face_indices=[f1]))
+    g.build_edges()
+    assert len(g.edges) == 3  # triangle has 3 edges
+
+
+def test_edge_get_edge_id():
+    g = UnifiedMeshGraph()
+    n1 = g.add_node(MeshNode(x=0, y=0, z=0))
+    n2 = g.add_node(MeshNode(x=1, y=0, z=0))
+    e = MeshEdge(node_a=n1, node_b=n2)
+    g.add_edge(e)
+    assert g.get_edge_id(n1, n2) == 0
+    assert g.get_edge_id(n2, n1) == 0
+    assert g.get_edge_id(n1, 999) is None
+
+
+def test_edge_internal_flag():
+    g = UnifiedMeshGraph()
+    n1 = g.add_node(MeshNode(x=0, y=0, z=0))
+    n2 = g.add_node(MeshNode(x=1, y=0, z=0))
+    n3 = g.add_node(MeshNode(x=0, y=1, z=0))
+    f1 = g.add_face(MeshFace(node_indices=[n1, n2, n3]))
+    g.add_cell(MeshCell(node_indices=[n1, n2, n3], face_indices=[f1]))
+    g.build_edges()
+    # Only 1 cell, so edges should NOT be internal
+    for e in g.edges.values():
+        assert not e.is_internal
+
+
+def test_edge_other_node():
+    e = MeshEdge(node_a=0, node_b=1)
+    assert e.other_node(0) == 1
+    assert e.other_node(1) == 0
+
+
+def test_edge_cells_around():
+    g = UnifiedMeshGraph()
+    n1 = g.add_node(MeshNode(x=0, y=0, z=0))
+    n2 = g.add_node(MeshNode(x=1, y=0, z=0))
+    n3 = g.add_node(MeshNode(x=0, y=1, z=0))
+    f1 = g.add_face(MeshFace(node_indices=[n1, n2, n3]))
+    cid = g.add_cell(MeshCell(node_indices=[n1, n2, n3], face_indices=[f1]))
+    g.build_edges()
+    for e in g.edges.values():
+        assert cid in e.cells_around
+
+
+# =====================================================================
+# Refinement indicator
+# =====================================================================
+def test_refinement_indicator_flat():
+    ind = _mod.compute_refinement_indicator(
+        curvature=0.0, gap_distance=1.0, max_gap=1.0,
+    )
+    assert abs(ind) < 1e-12
+
+
+def test_refinement_indicator_sharp():
+    ind = _mod.compute_refinement_indicator(
+        curvature=1.0, gap_distance=0.0, max_gap=1.0,
+    )
+    assert ind > 0.5
+
+
+def test_refinement_indicator_tight_gap():
+    ind = _mod.compute_refinement_indicator(
+        curvature=0.0, gap_distance=0.0, max_gap=1.0,
+    )
+    # gap indicator = 1 - 0/1 = 1.0, weighted at 0.3
+    assert abs(ind - 0.3) < 1e-12
+
+
+# =====================================================================
+# CellQualityStatus / evaluate_cell_quality
+# =====================================================================
+def test_evaluate_cell_quality_pass():
+    cell = MeshCell(volume=0.1, skewness=0.3, non_orthogonality=10.0, aspect_ratio=2.0)
+    assert _mod.evaluate_cell_quality(cell) == _mod.CellQualityStatus.PASS
+
+
+def test_evaluate_cell_quality_fail_neg_volume():
+    cell = MeshCell(volume=-0.1, skewness=0.3)
+    assert _mod.evaluate_cell_quality(cell) == _mod.CellQualityStatus.FAIL
+
+
+def test_evaluate_cell_quality_fail_skewness():
+    cell = MeshCell(volume=0.1, skewness=0.95)
+    assert _mod.evaluate_cell_quality(cell) == _mod.CellQualityStatus.FAIL
+
+
+def test_evaluate_cell_quality_warn():
+    cell = MeshCell(volume=0.1, skewness=0.75, non_orthogonality=10.0, aspect_ratio=5.0)
+    assert _mod.evaluate_cell_quality(cell) == _mod.CellQualityStatus.WARN
+
+
+# =====================================================================
+# MeshStatistics
+# =====================================================================
+def test_mesh_statistics_empty():
+    s = _mod.compute_mesh_statistics(UnifiedMeshGraph())
+    assert s.total_cells == 0
+    assert s.total_nodes == 0
+    assert s.total_faces == 0
+
+
+def test_mesh_statistics_with_cells():
+    g = UnifiedMeshGraph()
+    g.add_cell(MeshCell(volume=0.1, entity_type=MeshEntityType.CORE_TETRA))
+    g.add_cell(MeshCell(volume=0.2, entity_type=MeshEntityType.CORE_POLY))
+    g.add_cell(MeshCell(volume=0.3, entity_type=MeshEntityType.BL_LAYER))
+    s = _mod.compute_mesh_statistics(g)
+    assert s.total_cells == 3
+    assert s.n_tetra == 1
+    assert s.n_poly == 1
+    assert s.n_prism == 1
+    assert abs(s.volume_total - 0.6) < 1e-12
+
+
+# =====================================================================
+# Heatmap data
+# =====================================================================
+def test_generate_heatmap_data_empty():
+    h = _mod.generate_heatmap_data(UnifiedMeshGraph())
+    assert len(h["skewness"]) == 0
+
+
+def test_generate_heatmap_data_with_cells():
+    g = UnifiedMeshGraph()
+    g.add_cell(MeshCell(volume=0.1, skewness=0.3, non_orthogonality=10.0, aspect_ratio=5.0))
+    g.add_cell(MeshCell(volume=0.2, skewness=0.9, non_orthogonality=80.0, aspect_ratio=100.0))
+    h = _mod.generate_heatmap_data(g)
+    assert len(h["skewness"]) == 2
+    assert len(h["worst_metric"]) == 2
+    assert h["worst_metric"][1] > h["worst_metric"][0]
+
+
+# =====================================================================
+# Fallback cascade
+# =====================================================================
+def test_fallback_select():
+    eval_ = QualityEvaluation(n_bad_layers=5)
+    fb = _mod.select_fallback(0, eval_)
+    assert fb == _mod.FallbackStrategy.REDUCE_BL_LAYERS
+
+
+def test_fallback_skip_bl_when_no_errors():
+    eval_ = QualityEvaluation(n_bad_layers=0)
+    fb = _mod.select_fallback(0, eval_)
+    assert fb != _mod.FallbackStrategy.REDUCE_BL_LAYERS
+
+
+def test_fallback_accept_last():
+    eval_ = QualityEvaluation()
+    fb = _mod.select_fallback(10, eval_)
+    assert fb == _mod.FallbackStrategy.ACCEPT_CURRENT
+
+
+def test_fallback_cascade_length():
+    assert len(_mod.FALLBACK_CASCADE) == 5
+
+
+# =====================================================================
+# AdaptiveLoopResult with stats/heatmap
+# =====================================================================
+def test_result_with_statistics():
+    r = AdaptiveLoopResult(
+        success=True, cell_count=100,
+        statistics=_mod.MeshStatistics(total_cells=100, n_tetra=50, n_poly=50),
+        heatmap_data={"skewness": [0.1, 0.2], "worst_metric": [0.1, 0.2]},
+    )
+    assert r.statistics is not None
+    assert r.statistics.n_tetra == 50
+    assert r.heatmap_data is not None
+    assert len(r.heatmap_data["skewness"]) == 2
+
+
+def test_analyze_and_remediate(tmp_path):
+    engine = AdaptiveLoopEngine()
+    engine.configure(tmp_path)
+    # Write a minimal valid polyMesh
+    pm = tmp_path / "constant" / "polyMesh"
+    pm.mkdir(parents=True, exist_ok=True)
+    _mod._write_of_points(pm / "points", [(0,0,0), (1,0,0), (0,1,0), (0,0,1)])
+    _mod._write_of_face_list(pm / "faces", [[0,1,2], [0,2,3], [0,3,1], [1,3,2]])
+    _mod._write_of_label_list(pm / "owner", [0, 0, 0, 0])
+    _mod._write_of_label_list_with_neg1(pm / "neighbour", [-1, -1, -1, -1])
+    _mod._write_of_boundary(pm / "boundary", [("walls", "patch", 4, 0)])
+    result = engine.analyze_and_remediate(tmp_path)
+    assert isinstance(result, AdaptiveLoopResult)
+    assert result.cell_count > 0
+
+
+def test_convergence_chart_data():
+    engine = AdaptiveLoopEngine()
+    engine.configure(Path("."))
+    engine.run()
+    data = engine.convergence_chart_data()
+    assert "iteration" in data
+    assert "skewness" in data
+    assert len(data["iteration"]) == len(engine._convergence_history)
+
+
+def test_convergence_chart_empty():
+    engine = AdaptiveLoopEngine()
+    data = engine.convergence_chart_data()
+    assert len(data["iteration"]) == 0
+
+
+# =====================================================================
+# Bad cell clustering
+# =====================================================================
+def test_find_clusters_empty():
+    eval_ = QualityEvaluation()
+    cls = _mod.find_bad_cell_clusters(UnifiedMeshGraph(), eval_)
+    assert len(cls) == 0
+
+
+def test_find_clusters_no_adjacency():
+    g = UnifiedMeshGraph()
+    g.add_cell(MeshCell(volume=0.1))
+    g.add_cell(MeshCell(volume=0.1))
+    eval_ = QualityEvaluation(error_types=[])
+    cls = _mod.find_bad_cell_clusters(g, eval_)
+    assert len(cls) == 0
+
+
+def test_find_clusters_single_bad():
+    g = UnifiedMeshGraph()
+    cid = g.add_cell(MeshCell(volume=-0.1))
+    eval_ = QualityEvaluation(error_types=[(_mod.ErrorType.NEGATIVE_VOLUME, cid, -0.1)])
+    cls = _mod.find_bad_cell_clusters(g, eval_, min_cluster_size=1)
+    assert len(cls) == 1
+    assert cls[0].n_cells == 1
+
+
+# =====================================================================
+# Quality report JSON
+# =====================================================================
+def test_export_quality_report_empty():
+    g = UnifiedMeshGraph()
+    r = AdaptiveLoopResult(success=True)
+    report = _mod.export_quality_report_json(g, r)
+    assert "metrics" in report
+    assert "recommendations" in report
+    assert "quality_breakdown" in report
+
+
+def test_export_quality_report_with_cells():
+    g = UnifiedMeshGraph()
+    cid, _ = _add_tetra(g)
+    g.cells[cid].skewness = 0.3
+    g.cells[cid].non_orthogonality = 10.0
+    g.cells[cid].aspect_ratio = 2.0
+    r = AdaptiveLoopResult(success=True, cell_count=1)
+    report = _mod.export_quality_report_json(g, r)
+    assert report["statistics"]["total_cells"] == 1
+    assert report["quality_breakdown"]["pass"] >= 0
+
+
+# =====================================================================
+# Progressive refinement
+# =====================================================================
+def test_progressive_refinement_params():
+    p = _mod.ProgressiveRefinementParams()
+    assert p.n_levels == 3
+    assert abs(p.refinement_factor - 0.6) < 1e-12
+    assert p.inner_max_iterations == 3
+
+
+def test_progressive_refinement_result_defaults():
+    r = _mod.ProgressiveRefinementResult()
+    assert not r.success
+    assert r.n_levels_completed == 0
+    assert len(r.level_results) == 0
+    assert "FAIL" in r.summary
+
+
+def test_progressive_refinement_result_pass():
+    r = _mod.ProgressiveRefinementResult(
+        success=True, n_levels_completed=2, final_cell_count=1000,
+        best_skewness=0.5, best_non_orthogonality=30.0,
+    )
+    assert "PASS" in r.summary
+    assert "1000" in r.summary
+
+
+def test_progressive_refinement_run(monkeypatch):
+    """Run progressive refinement with a single level (should complete)."""
+    engine = AdaptiveLoopEngine()
+    engine.configure(Path("."))
+
+    params = _mod.ProgressiveRefinementParams(
+        n_levels=1, inner_max_iterations=2,
+    )
+    result = _mod.run_progressive_refinement(engine, params)
+    assert isinstance(result, _mod.ProgressiveRefinementResult)
+    assert result.n_levels_completed >= 0
+    assert len(result.level_results) == 1
+
+
+def test_progressive_refinement_level_callback():
+    levels_seen = []
+    engine = AdaptiveLoopEngine()
+    engine.configure(Path("."))
+    params = _mod.ProgressiveRefinementParams(
+        n_levels=1,
+        on_level_change=lambda l, f: levels_seen.append((l, f)),
+    )
+    _mod.run_progressive_refinement(engine, params)
+    assert len(levels_seen) == 1
+    assert levels_seen[0][0] == 0
+
+
 if __name__ == "__main__":
     test_graph_empty()
     test_graph_add_node()
@@ -831,5 +1154,39 @@ if __name__ == "__main__":
     test_parse_of_face_list()
     test_write_of_points()
     test_sizing_field_to_dict()
+    test_build_edges_from_faces()
+    test_edge_get_edge_id()
+    test_edge_internal_flag()
+    test_edge_other_node()
+    test_edge_cells_around()
+    test_refinement_indicator_flat()
+    test_refinement_indicator_sharp()
+    test_refinement_indicator_tight_gap()
+    test_evaluate_cell_quality_pass()
+    test_evaluate_cell_quality_fail_neg_volume()
+    test_evaluate_cell_quality_fail_skewness()
+    test_evaluate_cell_quality_warn()
+    test_mesh_statistics_empty()
+    test_mesh_statistics_with_cells()
+    test_generate_heatmap_data_empty()
+    test_generate_heatmap_data_with_cells()
+    test_fallback_select()
+    test_fallback_skip_bl_when_no_errors()
+    test_fallback_accept_last()
+    test_fallback_cascade_length()
+    test_result_with_statistics()
+    test_find_clusters_empty()
+    test_find_clusters_no_adjacency()
+    test_find_clusters_single_bad()
+    test_export_quality_report_empty()
+    test_export_quality_report_with_cells()
+    test_progressive_refinement_params()
+    test_progressive_refinement_result_defaults()
+    test_progressive_refinement_result_pass()
+    test_progressive_refinement_run()
+    test_progressive_refinement_level_callback()
+    test_analyze_and_remediate()
+    test_convergence_chart_data()
+    test_convergence_chart_empty()
     # test_write_and_read_roundtrip and test_export_roundtrip need tmp_path fixture
     print("ALL PASS")

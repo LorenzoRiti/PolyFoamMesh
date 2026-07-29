@@ -15,6 +15,24 @@ class OFConfig:
     check_mesh_bin: str = "checkMesh"
     _validated: bool = False
     _n_physical: int | None = None  # cached cpu_count for parallel cmd
+    _openmp_threads: int | None = None  # override OpenMP thread count (None = auto)
+
+    def set_openmp_threads(self, n: int | None) -> None:
+        """Override the OpenMP thread count used in commands.
+        Pass None to restore auto-detection via OpenMPAccel."""
+        self._openmp_threads = n
+
+    def _openmp_env_prefix(self, cell_estimate: int = 0, mpi_ranks: int = 0) -> str:
+        if self._openmp_threads is not None:
+            return (
+                f"export OMP_NUM_THREADS={self._openmp_threads}; "
+                f"export OMP_PROC_BIND=spread; "
+                f"export OMP_PLACES=cores;"
+            )
+        from cfmesh_autogui.commercial.openmp_accel import OpenMPAccel
+        return OpenMPAccel.build_env_prefix(
+            cell_estimate=cell_estimate, mode="balanced", mpi_ranks=mpi_ranks,
+        )
 
     def validate(self) -> bool:
         try:
@@ -64,17 +82,17 @@ class OFConfig:
     def _quoted_linux_path(self, case_dir: Path | str) -> str:
         return shlex.quote(self.wsl_linux_case_path(case_dir))
 
-    def build_command(self, case_dir: Path | str, extra_args: list[str] | None = None) -> list[str]:
+    def build_command(self, case_dir: Path | str, extra_args: list[str] | None = None,
+                      cell_estimate: int = 0) -> list[str]:
         case_dir = Path(case_dir).resolve()
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         bin_quoted = shlex.quote(self.cartesian_mesh_bin)
 
-        n_threads = os.cpu_count() or 4
         env_cmd = (
             f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
-            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
+            f"{self._openmp_env_prefix(cell_estimate=cell_estimate)} "
             f"cd {linux_case} && {bin_quoted}"
         )
         if extra_args:
@@ -100,13 +118,12 @@ class OFConfig:
         linux_case = self.wsl_linux_case_path(case_dir_resolved)  # unquoted for script
         env_q = self.env_script
         bin_q = self.cartesian_mesh_bin
-        n_threads = os.cpu_count() or 4
 
         script = (
             f"#!/bin/bash\n"
             f"set -o pipefail\n"
             f"source {env_q} 2>/dev/null\n"
-            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}\n"
+            f"{self._openmp_env_prefix(mpi_ranks=n_cores)}\n"
             # OpenMPI's negation operator only applies once, at the start
             # of the whole list — "^openib,^openfabric,^uct" is invalid
             # ("MCA framework parameters can only take a single negation
@@ -198,12 +215,10 @@ class OFConfig:
         case_dir = Path(case_dir).resolve()
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
-        import os as _os
-        n_threads = _os.cpu_count() or 4
         cmd = (
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
-            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
+            f"{self._openmp_env_prefix()} "
             f"cd {linux_case} && checkMesh"
         )
         return self._build_wsl_cmd(cmd)
@@ -274,7 +289,7 @@ class OFConfig:
             f"set -o pipefail; "
             f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
-            f"export OMP_NUM_THREADS={max(n_threads - 1, 1)}; "
+            f"{self._openmp_env_prefix()} "
             f"cd {linux_case_q}; "
             f"polyDualMesh {feature_angle} -overwrite{extra} 2>&1 | tail -20"
         )

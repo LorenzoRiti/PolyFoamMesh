@@ -6,20 +6,37 @@ import os
 from pathlib import Path
 
 import trimesh  # ✅ F-017
-
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox, QSpinBox,
-    QPushButton, QListWidget, QListWidgetItem, QLabel, QGroupBox, QMessageBox, QCheckBox,
-    QComboBox, QScrollArea, QTabWidget, QHBoxLayout, QSlider, QFrame,
-    QInputDialog,
-)
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
-
-from cfmesh_autogui.gui.style import (
-    COLOR_ACCENT, COLOR_DANGER, COLOR_TEXT_DIM, FS_METRIC, metric_label,
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
+
 from cfmesh_autogui.gui.design_tokens import ORANGE_500
+from cfmesh_autogui.gui.style import (
+    COLOR_DANGER,
+    COLOR_TEXT_DIM,
+    FS_METRIC,
+    metric_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -359,13 +376,17 @@ class ParamsPanel(QWidget):
         self._mesher_combo.addItems([
             "Automatic (recommended)",
             "cfMesh (hexa-dominant + WSL2)",
+            "autopoly (native polyhedral, CVT-based)",
             "GMSH hybrid (surface + cfMesh volume)",
             "GMSH direct (tetra + prism, no WSL)",
         ])
         self._mesher_combo.setToolTip(
             "Automatic uses cfMesh (best quality) when OpenFOAM/WSL2 is "
             "available, and falls back to GMSH direct (no WSL needed) "
-            "otherwise — no need to know which one your setup supports."
+            "otherwise — no need to know which one your setup supports.\n\n"
+            "autopoly: motore poliedrico nativo C++ con CVT (Centroidal Voronoi "
+            "Tessellation). Genera mesh poliedriche di qualità paragonabile a "
+            "Star-CCM+ senza richiedere WSL2/OpenFOAM."
         )
         self._mesher_combo.setCurrentText("Automatic (recommended)")
         mesher_layout.addWidget(self._mesher_combo)
@@ -440,7 +461,54 @@ class ParamsPanel(QWidget):
         )
         adv_layout.addWidget(self._poly_check)
 
-        parallel_group = QGroupBox("Parallel Meshing (Experimental)")
+        self._poly_agg_check = QCheckBox("Polyhedral Aggregation (Star-CCM+ style)")
+        self._poly_agg_check.setToolTip(
+            "Genera mesh tetraedrica + aggregazione poliedrica.\n\n"
+            "Effetti:\n"
+            "  • Cell count si RIDUCE 3-5x (vs tetraedri)\n"
+            "  • Non-orthogonality migliora significativamente\n"
+            "  • Qualità paragonabile a Star-CCM+ polyhedral\n"
+            "  • Boundary layers preservati\n\n"
+            "Diverso da 'Convert to polyhedral mesh' sopra:\n"
+            "  • Quello usa polyDualMesh (AUMENTA le celle)\n"
+            "  • Questo usa GMSH + aggregazione (RIDUCE le celle)"
+        )
+        adv_layout.addWidget(self._poly_agg_check)
+
+        openmp_group = QGroupBox("OpenMP Acceleration")
+        openmp_group_layout = QVBoxLayout(openmp_group)
+        openmp_row = QHBoxLayout()
+        self._openmp_combo = QComboBox()
+        self._openmp_combo.addItems([
+            "Bilanciato (fisici, consigliato)",
+            "Conservativo (fisici/2)",
+            "Aggressivo (logici)",
+            "Custom...",
+        ])
+        self._openmp_combo.setToolTip(
+            "Controlla quante thread OpenMP usa cfMesh per il calcolo parallelo.\n\n"
+            "• Bilanciato: usa tutti i core fisici (consigliato)\n"
+            "• Conservativo: metà dei core fisici (meno memoria, più lento)\n"
+            "• Aggressivo: tutti i core logici, inclusi hyperthread\n"
+            "• Custom: imposta manualmente il numero di thread\n\n"
+            "Ogni thread consuma memoria, quindi modi più aggressivi "
+            "possono causare OOM su mesh grandi."
+        )
+        self._openmp_combo.currentTextChanged.connect(self._on_openmp_mode_changed)
+        openmp_row.addWidget(QLabel("Thread mode:"))
+        openmp_row.addWidget(self._openmp_combo)
+        self._openmp_spin = QSpinBox()
+        cpu_n = os.cpu_count() or 4
+        self._openmp_spin.setRange(1, max(1, cpu_n))
+        self._openmp_spin.setValue(max(1, cpu_n // 2))
+        self._openmp_spin.setSuffix(" threads")
+        self._openmp_spin.setEnabled(False)
+        self._openmp_spin.setToolTip("Numero di thread OpenMP da utilizzare (modalità Custom).")
+        openmp_row.addWidget(self._openmp_spin)
+        openmp_group_layout.addLayout(openmp_row)
+        adv_layout.addWidget(openmp_group)
+
+        parallel_group = QGroupBox("Parallel Meshing (MPI)")
         parallel_group_layout = QVBoxLayout(parallel_group)
 
         parallel_row = QHBoxLayout()
@@ -680,7 +748,10 @@ class ParamsPanel(QWidget):
             QMessageBox.information(self, "No Geometry", "Load a CAD geometry first.")
             return
         detail = self.get_detail_level()
-        from cfmesh_autogui.core.geometry import suggest_cell_sizes, analyze_local_thickness
+        from cfmesh_autogui.core.geometry import (
+            analyze_local_thickness,
+            suggest_cell_sizes,
+        )
         try:
             analysis = analyze_local_thickness(self._suggest_meshes)
             s_max, s_min = suggest_cell_sizes(self._suggest_meshes, detail=detail)
@@ -767,6 +838,9 @@ class ParamsPanel(QWidget):
     def set_bl_enabled(self, enabled: bool) -> None:
         self._bl_checkbox.setChecked(enabled)
 
+    def get_bl_enabled(self) -> bool:
+        return self._bl_checkbox.isChecked()
+
     def get_bl_params(self) -> dict | None:
         if not self._bl_checkbox.isChecked():
             return None
@@ -786,6 +860,9 @@ class ParamsPanel(QWidget):
     def get_poly_conversion(self) -> bool:
         return self._poly_check.isChecked()
 
+    def get_poly_aggregation(self) -> bool:
+        return self._poly_agg_check.isChecked()
+
     _DETAIL_LABELS = ["Molto Grossolana", "Grossolana", "Media", "Fine", "Molto Fine"]
     _DETAIL_MAP = {0: "very_coarse", 1: "coarse", 2: "medium", 3: "fine", 4: "very_fine"}
 
@@ -803,6 +880,8 @@ class ParamsPanel(QWidget):
         text = self._mesher_combo.currentText()
         if "Automatic" in text:
             return "auto"
+        if "autopoly" in text:
+            return "autopoly"
         if "hybrid" in text:
             return "gmsh_hybrid"
         if "direct" in text:
@@ -925,9 +1004,30 @@ class ParamsPanel(QWidget):
     def trigger_meshing(self):
         self._on_run()
 
+    def _on_openmp_mode_changed(self, text: str) -> None:
+        is_custom = "Custom" in text
+        self._openmp_spin.setEnabled(is_custom)
+
+    def get_openmp_params(self) -> tuple[str, int | None]:
+        text = self._openmp_combo.currentText()
+        if "Conservativo" in text:
+            return ("conservative", None)
+        if "Aggressivo" in text:
+            return ("aggressive", None)
+        if "Custom" in text:
+            return ("custom", self._openmp_spin.value())
+        return ("balanced", None)
+
     def _on_mesher_changed(self, text: str) -> None:
         is_gmsh_direct = "direct" in text
-        self._poly_check.setVisible(not is_gmsh_direct)
+        is_autopoly = "autopoly" in text
+        self._poly_check.setVisible(not is_gmsh_direct and not is_autopoly)
+        if is_autopoly:
+            self._poly_check.setChecked(False)
+            self._poly_agg_check.setChecked(False)
+            self._poly_agg_check.setVisible(False)
+        else:
+            self._poly_agg_check.setVisible(True)
 
     def save_params(self, s):
         s.setValue("params/max_cell", self._max_cell.value())

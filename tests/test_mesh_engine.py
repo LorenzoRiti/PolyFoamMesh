@@ -1,7 +1,9 @@
 """Tests for the multi-algorithm mesh engine."""
 from __future__ import annotations
+
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _test_helpers import load_commercial_module
 
@@ -17,7 +19,9 @@ def test_meshing_algorithm_enum():
     assert MeshingAlgorithm.CARTESIAN_HEX.value == "CartesianHex"
     assert MeshingAlgorithm.POLYHEDRAL.value == "Polyhedral"
     assert MeshingAlgorithm.TETRAHEDRAL.value == "Tetrahedral"
-    assert len(MeshingAlgorithm) == 5
+    assert MeshingAlgorithm.SNAPPY_HEX_MESH.value == "SnappyHexMesh"
+    assert MeshingAlgorithm.MMG_ADAPTATION.value == "MmgAdaptation"
+    assert len(MeshingAlgorithm) == 8
 
 
 def test_algorithm_info_all_present():
@@ -144,16 +148,209 @@ def test_params_cell_size_validation():
     assert p.min_cell < p.max_cell
 
 
+# ---------------------------------------------------------------------------
+# Adaptive escalation tests
+# ---------------------------------------------------------------------------
+
+def test_adaptive_escalation_enabled_by_default():
+    p = MeshEngineParams()
+    assert p.adaptive_escalation
+
+
+def test_adaptive_escalation_params():
+    p = MeshEngineParams(adaptive_escalation=True, max_escalation_steps=5)
+    assert p.adaptive_escalation
+    assert p.max_escalation_steps == 5
+
+
+def test_adaptive_escalation_disable():
+    p = MeshEngineParams(adaptive_escalation=False)
+    assert not p.adaptive_escalation
+
+
+def test_quality_acceptable_all_good():
+    me = MeshEngine()
+    quality = {
+        "neg_cells": 0,
+        "max_skewness": 0.5,
+        "max_non_orthogonality": 50.0,
+        "max_aspect_ratio": 500.0,
+    }
+    assert me._quality_acceptable(quality)
+
+
+def test_quality_acceptable_bad_skewness():
+    me = MeshEngine()
+    quality = {
+        "neg_cells": 0,
+        "max_skewness": 0.95,
+        "max_non_orthogonality": 50.0,
+        "max_aspect_ratio": 500.0,
+    }
+    assert not me._quality_acceptable(quality)
+
+
+def test_quality_acceptable_bad_non_ortho():
+    me = MeshEngine()
+    quality = {
+        "neg_cells": 0,
+        "max_skewness": 0.5,
+        "max_non_orthogonality": 75.0,
+        "max_aspect_ratio": 500.0,
+    }
+    assert not me._quality_acceptable(quality)
+
+
+def test_quality_acceptable_neg_cells():
+    me = MeshEngine()
+    quality = {
+        "neg_cells": 5,
+        "max_skewness": 0.5,
+        "max_non_orthogonality": 50.0,
+        "max_aspect_ratio": 500.0,
+    }
+    assert not me._quality_acceptable(quality)
+
+
+def test_quality_acceptable_bad_aspect():
+    me = MeshEngine()
+    quality = {
+        "neg_cells": 0,
+        "max_skewness": 0.5,
+        "max_non_orthogonality": 50.0,
+        "max_aspect_ratio": 1500.0,
+    }
+    assert not me._quality_acceptable(quality)
+
+
+def test_next_escalation_from_hex():
+    me = MeshEngine()
+    algo, reason = me._next_escalation(MeshingAlgorithm.CARTESIAN_HEX)
+    assert algo == MeshingAlgorithm.HEX_CORE_POLY  # next in ladder
+    assert reason
+
+
+def test_next_escalation_from_tetrahedral():
+    me = MeshEngine()
+    algo, _ = me._next_escalation(MeshingAlgorithm.TETRAHEDRAL)
+    assert algo in (
+        MeshingAlgorithm.POLY_AGGREGATED,
+        MeshingAlgorithm.SNAPPY_HEX_MESH,
+    )  # next robust
+
+
+def test_algorithm_robustness_map():
+    assert MeshingAlgorithm.CARTESIAN_HEX in _mod.ALGORITHM_ROBUSTNESS
+    assert MeshingAlgorithm.SNAPPY_HEX_MESH in _mod.ALGORITHM_ROBUSTNESS
+    assert MeshingAlgorithm.MMG_ADAPTATION in _mod.ALGORITHM_ROBUSTNESS
+    assert (_mod.ALGORITHM_ROBUSTNESS[MeshingAlgorithm.SNAPPY_HEX_MESH]
+            > _mod.ALGORITHM_ROBUSTNESS[MeshingAlgorithm.TETRAHEDRAL])
+
+
+def test_escalation_ladder():
+    """Verify that the escalation ladder entries all map to valid algorithms."""
+    for algo, _ in _mod.ESCALATION_LADDER:
+        assert algo in MeshingAlgorithm
+
+
+def test_adaptive_thresholds_defined():
+    """Verify all required thresholds are defined."""
+    for key in ("non_ortho_max", "skewness_max", "aspect_ratio_max"):
+        assert key in _mod.ADAPTIVE_THRESHOLDS
+        assert _mod.ADAPTIVE_THRESHOLDS[key] > 0
+
+
+# ---------------------------------------------------------------------------
+# SnappyHexMesh algorithm info
+# ---------------------------------------------------------------------------
+def test_algorithm_info_snappy():
+    assert MeshingAlgorithm.SNAPPY_HEX_MESH in ALGORITHM_INFO
+    info = ALGORITHM_INFO[MeshingAlgorithm.SNAPPY_HEX_MESH]
+    assert "SnappyHexMesh" in info["label"]
+    assert info["requires_wsl"]
+
+
+def test_algorithm_info_mmg():
+    assert MeshingAlgorithm.MMG_ADAPTATION in ALGORITHM_INFO
+    info = ALGORITHM_INFO[MeshingAlgorithm.MMG_ADAPTATION]
+    assert "MMG" in info["label"]
+    assert info["requires_wsl"]
+
+
+# ---------------------------------------------------------------------------
+# MeshEngineResult extended fields
+# ---------------------------------------------------------------------------
+def test_mesh_engine_result_escalation_fields():
+    r = MeshEngineResult()
+    assert r.escalation_reason == ""
+    assert r.escalation_steps == 0
+    assert r.metrics_before is None
+    assert r.metrics_after is None
+    assert r.original_algorithm == ""
+
+
+def test_mesh_engine_result_non_ortho_field():
+    r = MeshEngineResult(max_non_orthogonality=65.0)
+    assert r.max_non_orthogonality == 65.0
+    r.max_non_orthogonality = 70.0
+    assert r.max_non_orthogonality == 70.0
+
+
+def test_mesh_engine_result_neg_cells():
+    r = MeshEngineResult(neg_cells=3)
+    assert r.neg_cells == 3
+
+
+# ---------------------------------------------------------------------------
+# Verification module test
+# ---------------------------------------------------------------------------
+def test_verification_metrics_score():
+    from _test_helpers import load_commercial_module
+    vmod = load_commercial_module("verification")
+    m = vmod.AlgorithmMetrics(
+        algorithm="CartesianHex",
+        cell_count=10000,
+        max_skewness=0.8,
+        max_non_ortho=60.0,
+        max_aspect_ratio=500.0,
+        passed=True,
+    )
+    score = m.quality_score()
+    assert 0 < score < 2.0
+
+
+def test_verification_metrics_score_with_neg_cells():
+    from _test_helpers import load_commercial_module
+    vmod = load_commercial_module("verification")
+    m = vmod.AlgorithmMetrics(
+        algorithm="Tetrahedral",
+        cell_count=5000,
+        max_skewness=0.5,
+        max_non_ortho=30.0,
+        max_aspect_ratio=200.0,
+        neg_cells=5,
+        passed=False,
+    )
+    score = m.quality_score()
+    # Neg cells weight = 0.2 * 5 = 1.0, so score >= 1.0
+    assert score >= 1.0
+
+
 if __name__ == "__main__":
     test_meshing_algorithm_enum()
     test_algorithm_info_all_present()
     test_algorithm_info_hex()
     test_algorithm_info_tetrahedral()
+    test_algorithm_info_snappy()
+    test_algorithm_info_mmg()
     test_mesh_engine_params_defaults()
     test_mesh_engine_params_custom()
     test_cell_size_multiplier()
     test_detail_label()
     test_mesh_engine_result_defaults()
+    test_mesh_engine_result_escalation_fields()
+    test_mesh_engine_result_non_ortho_field()
+    test_mesh_engine_result_neg_cells()
     test_mesh_engine_init()
     test_mesh_engine_configure()
     test_auto_select_no_wsl()
@@ -163,4 +360,19 @@ if __name__ == "__main__":
     test_auto_select_many_patches()
     test_run_no_case()
     test_params_cell_size_validation()
+    test_adaptive_escalation_enabled_by_default()
+    test_adaptive_escalation_params()
+    test_adaptive_escalation_disable()
+    test_quality_acceptable_all_good()
+    test_quality_acceptable_bad_skewness()
+    test_quality_acceptable_bad_non_ortho()
+    test_quality_acceptable_neg_cells()
+    test_quality_acceptable_bad_aspect()
+    test_next_escalation_from_hex()
+    test_next_escalation_from_tetrahedral()
+    test_algorithm_robustness_map()
+    test_escalation_ladder()
+    test_adaptive_thresholds_defined()
+    test_verification_metrics_score()
+    test_verification_metrics_score_with_neg_cells()
     print("ALL PASS")

@@ -1257,6 +1257,146 @@ class AdaptiveLoopParams:
     on_remediation: Callable[[int, int], None] | None = None
 
 
+class CellQualityStatus(Enum):
+    PASS = "pass"
+    WARN = "warn"
+    FAIL = "fail"
+
+
+@dataclass
+class CellQualityDetail:
+    """Per-cell quality snapshot."""
+    cell_id: int
+    entity_type: str = ""
+    volume: float = 0.0
+    skewness: float = 0.0
+    non_orthogonality: float = 0.0
+    aspect_ratio: float = 0.0
+    status: CellQualityStatus = CellQualityStatus.PASS
+
+
+@dataclass
+class MeshStatistics:
+    """Aggregate mesh statistics by cell type."""
+    total_cells: int = 0
+    total_nodes: int = 0
+    total_faces: int = 0
+    total_edges: int = 0
+    n_tetra: int = 0
+    n_poly: int = 0
+    n_prism: int = 0
+    n_hex: int = 0
+    n_boundary: int = 0
+    volume_total: float = 0.0
+    volume_min: float = 0.0
+    volume_max: float = 0.0
+    volume_avg: float = 0.0
+    n_negative_volume: int = 0
+    n_high_skewness: int = 0
+    n_high_non_ortho: int = 0
+    n_high_aspect: int = 0
+    cell_types: dict[str, int] = field(default_factory=dict)
+
+
+def compute_mesh_statistics(graph: UnifiedMeshGraph) -> MeshStatistics:
+    """Compute aggregate statistics for all cells in the graph."""
+    s = MeshStatistics()
+    s.total_nodes = len(graph.nodes)
+    s.total_faces = len(graph.faces)
+    s.total_edges = len(graph.edges)
+
+    vols: list[float] = []
+    for cid, cell in graph.cells.items():
+        s.total_cells += 1
+        et = cell.entity_type.name
+        s.cell_types[et] = s.cell_types.get(et, 0) + 1
+        if cell.entity_type == MeshEntityType.CORE_TETRA:
+            s.n_tetra += 1
+        elif cell.entity_type == MeshEntityType.CORE_POLY:
+            s.n_poly += 1
+        elif cell.entity_type == MeshEntityType.BL_LAYER:
+            s.n_prism += 1
+        if cell.volume > 0:
+            vols.append(cell.volume)
+            s.volume_total += cell.volume
+        if cell.volume <= 0:
+            s.n_negative_volume += 1
+        if cell.skewness > SKEWNESS_THRESHOLD:
+            s.n_high_skewness += 1
+        if cell.non_orthogonality > NON_ORTHO_THRESHOLD:
+            s.n_high_non_ortho += 1
+        if cell.aspect_ratio > ASPECT_RATIO_THRESHOLD:
+            s.n_high_aspect += 1
+
+    if vols:
+        s.volume_min = min(vols)
+        s.volume_max = max(vols)
+        s.volume_avg = sum(vols) / len(vols)
+
+    for nid, node in graph.nodes.items():
+        if node.entity_type == MeshEntityType.BOUNDARY:
+            s.n_boundary += 1
+
+    return s
+
+
+def generate_heatmap_data(
+    graph: UnifiedMeshGraph,
+) -> dict[str, list[float]]:
+    """Generate per-cell quality arrays for 3D heatmap colouring.
+
+    Returns dict with keys: ``skewness``, ``non_orthogonality``,
+    ``aspect_ratio``, ``volume``, ``worst_metric``.
+    Each value is a list of floats, one per cell (in cell-index order).
+    """
+    skews: list[float] = []
+    northos: list[float] = []
+    aspects: list[float] = []
+    vols: list[float] = []
+
+    sorted_ids = sorted(graph.cells.keys())
+    for cid in sorted_ids:
+        cell = graph.cells[cid]
+        skews.append(cell.skewness)
+        northos.append(cell.non_orthogonality)
+        aspects.append(cell.aspect_ratio)
+        vols.append(abs(cell.volume))
+
+    worst = [
+        max(
+            s / max(SKEWNESS_THRESHOLD, 1e-12),
+            no / max(NON_ORTHO_THRESHOLD, 1e-12),
+            ar / max(ASPECT_RATIO_THRESHOLD, 1e-12),
+        )
+        for s, no, ar in zip(skews, northos, aspects)
+    ]
+
+    return {
+        "skewness": skews,
+        "non_orthogonality": northos,
+        "aspect_ratio": aspects,
+        "volume": vols,
+        "worst_metric": worst,
+    }
+
+
+def evaluate_cell_quality(cell: MeshCell) -> CellQualityStatus:
+    """Classify a single cell's quality status."""
+    if cell.volume <= 0:
+        return CellQualityStatus.FAIL
+    if cell.skewness > SKEWNESS_THRESHOLD:
+        return CellQualityStatus.FAIL
+    if cell.non_orthogonality > NON_ORTHO_THRESHOLD:
+        return CellQualityStatus.FAIL
+    if cell.aspect_ratio > ASPECT_RATIO_THRESHOLD:
+        return CellQualityStatus.FAIL
+    if cell.skewness > SKEWNESS_THRESHOLD * 0.8:
+        return CellQualityStatus.WARN
+    if cell.non_orthogonality > NON_ORTHO_THRESHOLD * 0.8:
+        return CellQualityStatus.WARN
+    return CellQualityStatus.PASS
+
+
 @dataclass
 class AdaptiveLoopResult:
     success: bool = False
@@ -1273,6 +1413,11 @@ class AdaptiveLoopResult:
     wall_time_s: float = 0.0
     warnings: list[str] = field(default_factory=list)
     convergence_history: list[dict[str, float]] = field(default_factory=list)
+    statistics: MeshStatistics | None = None
+    heatmap_data: dict[str, list[float]] | None = None
+    n_cells_pass: int = 0
+    n_cells_warn: int = 0
+    n_cells_fail: int = 0
 
     @property
     def summary(self) -> str:
@@ -1370,11 +1515,30 @@ class AdaptiveLoopEngine:
         self._result.transitions = [p.name for p in self._state._history]
         self._result.wall_time_s = round(elapsed, 1)
         self._result.convergence_history = list(self._convergence_history)
+        self._result.statistics = compute_mesh_statistics(self._graph)
+        self._result.heatmap_data = generate_heatmap_data(self._graph)
+
+        # Per-cell quality counts
+        n_pass = n_warn = n_fail = 0
+        for cell in self._graph.cells.values():
+            st = evaluate_cell_quality(cell)
+            if st == CellQualityStatus.PASS:
+                n_pass += 1
+            elif st == CellQualityStatus.WARN:
+                n_warn += 1
+            else:
+                n_fail += 1
+        self._result.n_cells_pass = n_pass
+        self._result.n_cells_warn = n_warn
+        self._result.n_cells_fail = n_fail
 
         octo.log_event("adaptive_loop", "run_done", {
             "success": self._result.success,
             "iterations": self._result.n_iterations,
             "cells": self._result.cell_count,
+            "pass": n_pass,
+            "warn": n_warn,
+            "fail": n_fail,
             "time_s": self._result.wall_time_s,
         })
 
@@ -1418,13 +1582,14 @@ class AdaptiveLoopEngine:
         )
 
     # ------------------------------------------------------------------
-    # Phase 2: INTENT GENERATION
+    # Phase 2: INTENT GENERATION (weighted refinement indicator)
     # ------------------------------------------------------------------
     def _step_intent_generation(self) -> None:
-        logger.info("OODA Phase 2: INTENT GENERATION")
+        logger.info("OODA Phase 2: INTENT GENERATION (weighted indicator)")
         bbox_diag = self._graph.bbox_diagonal or 1.0
         base_h = bbox_diag / self._params.base_cell_fraction
         min_h = bbox_diag / self._params.min_cell_fraction
+        max_gap = bbox_diag * 0.5
 
         first_h = compute_first_layer_height(
             self._params.y_plus_target,
@@ -1433,14 +1598,32 @@ class AdaptiveLoopEngine:
             self._params.length_ref,
         )
 
-        # Curvature-aware sizing: higher curvature → smaller cells
+        # Compute refinement indicator for each boundary node using
+        # weighted combination of curvature, gap proximity, gradient
+        for node in self._graph.nodes.values():
+            if node.entity_type != MeshEntityType.BOUNDARY:
+                continue
+            gap = self._estimate_gap((node.x, node.y, node.z))
+            indicator = compute_refinement_indicator(
+                curvature=node.curvature,
+                gap_distance=gap,
+                max_gap=max_gap,
+                w_curv=0.5, w_gap=0.3, w_grad=0.2,
+            )
+            # indicator ∈ [0, 1]: 0 = coarse, 1 = very fine
+            cell_size = base_h * (1.0 - 0.7 * indicator)
+            cell_size = max(min_h, min(base_h, cell_size))
+            node.target_size = cell_size
+            self._sizing.refine_region(
+                node.x, node.y, node.z, base_h, cell_size,
+            )
+
+        # Propagate to non-boundary nodes via gradient limit
         for node in self._graph.nodes.values():
             if node.entity_type == MeshEntityType.BOUNDARY:
-                curvature_factor = max(0.3, 1.0 - node.curvature * 5.0)
-                node.target_size = max(min_h, base_h * curvature_factor)
-                # Update sizing field at this node position
-                cx, cy, cz = node.x, node.y, node.z
-                self._sizing.refine_region(cx, cy, cz, base_h, node.target_size)
+                continue
+            cx, cy, cz = node.x, node.y, node.z
+            node.target_size = self._sizing.sample_at(cx, cy, cz)
 
         logger.info(
             "  Intent: base_h=%.6f min_h=%.6f first_h=%.8f",
@@ -1575,35 +1758,116 @@ class AdaptiveLoopEngine:
         self._fill_core_tetra()
 
     # ------------------------------------------------------------------
-    # Phase 4: DUAL GRAPH POLY
+    # Phase 4: DUAL GRAPH POLY (edge-based centroid dualization)
     # ------------------------------------------------------------------
     def _step_dual_graph_poly(self) -> None:
-        logger.info("OODA Phase 4: DUAL GRAPH POLY")
+        """Core-only dual-graph polyhedral conversion.
+
+        For each *internal* edge of the Core sub-graph, collect the
+        centroids of all tetrahedra incident to that edge.  Connect
+        those centroids in a loop around the edge to form a flat
+        polyhedral face.
+
+        The dual of a tetrahedral core produces hexahedral or
+        prismatic poly cells around each internal edge, with the
+        original tetra centroids as poly vertices.
+        """
+        logger.info("OODA Phase 4: DUAL GRAPH POLY (edge-based)")
 
         core_graph = self._graph.extract_subgraph(MeshEntityType.CORE_TETRA)
-        dual_count = 0
 
+        # 1. Collect tetra centroids indexed by cell ID
+        tetra_centroids: dict[int, Vec3] = {}
         for cid, cell in core_graph.cells.items():
-            centroid = cell.centroid
+            vol = compute_cell_volume(core_graph, cell)
+            if vol != 0.0:
+                c = compute_cell_centroid(core_graph, cell)
+            else:
+                c = cell.centroid
+            tetra_centroids[cid] = c
+
+        # 2. For each internal edge, collect the incident tetra centroids
+        edge_poly_faces: list[tuple[list[Vec3], list[int]]] = []
+        for eid, edge in core_graph.edges.items():
+            if not edge.is_internal:
+                continue
+            cells_around = [
+                c for c in edge.cells_around
+                if core_graph.cells.get(c, MeshCell()).entity_type == MeshEntityType.CORE_TETRA
+            ]
+            if len(cells_around) < 2:
+                continue
+
+            # Sort cells around the edge by angle (simple centroid ordering)
+            centroids = []
+            for c in cells_around:
+                tc = tetra_centroids.get(c)
+                if tc:
+                    centroids.append((c, tc))
+
+            if len(centroids) < 2:
+                continue
+
+            # Order by angle around the edge axis
+            ea = core_graph.node_pos(edge.node_a)
+            eb = core_graph.node_pos(edge.node_b)
+            edge_dir = v3_normalize(v3_sub(eb, ea))
+            # Pick a reference direction from edge midpoint to first centroid
+            mid = edge.centroid
+            ref_dir = v3_normalize(v3_sub(centroids[0][1], mid))
+            if v3_norm(ref_dir) < 1e-12:
+                continue
+
+            def _angle_key(item: tuple[int, Vec3]) -> float:
+                d = v3_sub(item[1], mid)
+                proj = v3_sub(d, v3_scale(edge_dir, v3_dot(d, edge_dir)))
+                if v3_norm(proj) < 1e-12:
+                    return 0.0
+                proj_n = v3_normalize(proj)
+                cos_a = v3_dot(ref_dir, proj_n)
+                sin_a = v3_dot(v3_cross(ref_dir, proj_n), edge_dir)
+                return math.atan2(sin_a, cos_a)
+
+            sorted_centroids = sorted(centroids, key=_angle_key)
+            pts = [tc for _, tc in sorted_centroids]
+            cids = [c for c, _ in sorted_centroids]
+            # Close the loop: append the first point again
+            if len(pts) >= 3:
+                edge_poly_faces.append((pts, cids))
+
+        dual_count = len(edge_poly_faces)
+
+        # 3. Create polyhedral cells: for each edge face, create a poly cell
+        # whose dual vertices are the tetra centroids
+        for pts, cids in edge_poly_faces:
+            # Compute cell centroid as average of all face centroids
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
+            cz = sum(p[2] for p in pts) / len(pts)
+            poly_cent = (cx, cy, cz)
+
+            # Create a poly cell with dual vertices = tetra centroids
+            poly_node_ids: list[int] = []
+            for p in pts:
+                pn = self._graph.add_node(MeshNode(
+                    x=p[0], y=p[1], z=p[2],
+                    entity_type=MeshEntityType.CORE_POLY,
+                ))
+                poly_node_ids.append(pn)
+
             poly_cell = MeshCell(
                 entity_type=MeshEntityType.CORE_POLY,
-                node_indices=list(cell.node_indices),
-                centroid=centroid,
-                volume=cell.volume,
+                node_indices=poly_node_ids,
+                centroid=poly_cent,
+                volume=0.001,  # will be recomputed by evaluator
             )
-            for nid in cell.neighbour_cells:
-                poly_nbr = self._graph.cells.get(nid)
-                if poly_nbr:
-                    poly_cell.neighbour_cells.append(nid)
-                    poly_nbr.neighbour_cells.append(cid)
             self._graph.add_cell(poly_cell)
-            dual_count += 1
 
         n_stitched = self._stitcher.stitch()
 
         logger.info(
-            "  Poly conversion: %d dual cells, %d stitched interfaces",
-            dual_count, n_stitched,
+            "  Poly dualization: %d poly cells from %d internal edges, %d interfaces",
+            dual_count, len(core_graph.edges), n_stitched,
         )
 
     # ------------------------------------------------------------------
@@ -1708,6 +1972,55 @@ class AdaptiveLoopEngine:
             self._params.on_remediation(n_errors, n_applied)
 
     # ------------------------------------------------------------------
+    # Analyse & remediate (full closed loop on real mesh)
+    # ------------------------------------------------------------------
+    def analyze_and_remediate(
+        self, case_dir: Path | str,
+    ) -> AdaptiveLoopResult:
+        """Import a real mesh, run the OODA evaluator, apply local
+        remediation, and return the result.
+
+        This is the **true closed loop**: import → evaluate → remediate
+        → re-evaluate → converge.  Unlike ``run()``, this does NOT
+        generate a new mesh — it operates on an existing one.
+
+        Args:
+            case_dir: OpenFOAM case directory with an existing polyMesh.
+
+        Returns:
+            ``AdaptiveLoopResult`` with quality before/after.
+        """
+        self.import_from_ofmesh(case_dir)
+        return self.run()
+
+    def convergence_chart_data(self) -> dict[str, list[float]]:
+        """Return convergence history as plottable series.
+
+        Keys: ``skewness``, ``non_orthogonality``, ``aspect_ratio``,
+        ``neg_volume``, ``bad_layers``, ``iteration``.
+
+        Each value is a list of floats, one entry per OODA iteration.
+        Empty if no convergence history exists.
+        """
+        if not self._convergence_history:
+            return {"iteration": [], "skewness": [], "non_orthogonality": [],
+                    "aspect_ratio": [], "neg_volume": [], "bad_layers": []}
+        data: dict[str, list[float]] = {
+            "iteration": [],
+            "skewness": [],
+            "non_orthogonality": [],
+            "aspect_ratio": [],
+            "neg_volume": [],
+            "bad_layers": [],
+        }
+        for i, snap in enumerate(self._convergence_history):
+            data["iteration"].append(float(i))
+            for key in ("skewness", "non_orthogonality", "aspect_ratio",
+                        "neg_volume", "bad_layers"):
+                data[key].append(float(snap.get(key, 0.0)))
+        return data
+
+    # ------------------------------------------------------------------
     # Import / Export
     # ------------------------------------------------------------------
     def import_from_ofmesh(self, case_dir: Path | str) -> UnifiedMeshGraph:
@@ -1801,6 +2114,9 @@ class AdaptiveLoopEngine:
             self._graph.bbox_min = (min(xs), min(ys), min(zs))
             self._graph.bbox_max = (max(xs), max(ys), max(zs))
 
+        # Build edge topology
+        self._graph.build_edges()
+
         return self._graph
 
     def export_to_ofmesh(self, output_dir: Path | str) -> None:
@@ -1840,6 +2156,372 @@ class AdaptiveLoopEngine:
             ])
         else:
             _write_of_boundary(out / "boundary", [])
+
+
+# ---------------------------------------------------------------------------
+# Fallback cascade
+# ---------------------------------------------------------------------------
+class FallbackStrategy(Enum):
+    """Deterministic fallback strategies when the OODA loop fails."""
+    REDUCE_BL_LAYERS = auto()
+    DISABLE_BL = auto()
+    COARSEN_GLOBAL = auto()
+    SWITCH_TO_TETRA = auto()
+    ACCEPT_CURRENT = auto()
+
+
+FALLBACK_CASCADE: list[FallbackStrategy] = [
+    FallbackStrategy.REDUCE_BL_LAYERS,
+    FallbackStrategy.DISABLE_BL,
+    FallbackStrategy.COARSEN_GLOBAL,
+    FallbackStrategy.SWITCH_TO_TETRA,
+    FallbackStrategy.ACCEPT_CURRENT,
+]
+
+
+def select_fallback(
+    current_iteration: int,
+    eval_: QualityEvaluation,
+) -> FallbackStrategy:
+    """Select the next fallback strategy based on iteration and errors.
+
+    Cascades from least to most invasive:
+      1. Reduce BL layers (if BL errors)
+      2. Disable BL entirely (if non-ortho errors persist)
+      3. Coarsen globally (if skewness/volume errors)
+      4. Switch to tetra-only (if poly conversion caused errors)
+      5. Accept current mesh (last resort)
+    """
+    idx = min(current_iteration, len(FALLBACK_CASCADE) - 1)
+    strategy = FALLBACK_CASCADE[idx]
+
+    # Skip irrelevant steps
+    if strategy == FallbackStrategy.REDUCE_BL_LAYERS and eval_.n_bad_layers == 0:
+        return FallbackStrategy.DISABLE_BL
+    if strategy == FallbackStrategy.DISABLE_BL and eval_.n_bad_layers == 0:
+        return FallbackStrategy.COARSEN_GLOBAL
+    return strategy
+
+
+# ---------------------------------------------------------------------------
+# Bad cell clustering (connected-component analysis)
+# ---------------------------------------------------------------------------
+@dataclass
+class BadCellCluster:
+    """A connected cluster of bad-quality cells."""
+    cell_ids: list[int] = field(default_factory=list)
+    centroid: Vec3 = (0.0, 0.0, 0.0)
+    n_cells: int = 0
+    dominant_error: ErrorType = ErrorType.HIGH_SKEWNESS
+    avg_metric: float = 0.0
+
+
+def find_bad_cell_clusters(
+    graph: UnifiedMeshGraph, eval_: QualityEvaluation,
+    min_cluster_size: int = 2,
+) -> list[BadCellCluster]:
+    """Find connected clusters of bad cells via flood-fill over adjacency.
+
+    Returns:
+        List of ``BadCellCluster``, sorted by size (largest first).
+    """
+    bad_ids = {cid for _, cid, _ in eval_.error_types}
+    visited: set[int] = set()
+    clusters: list[BadCellCluster] = []
+
+    for start_id in bad_ids:
+        if start_id in visited:
+            continue
+        if start_id not in graph.cells:
+            continue
+        cluster_ids: list[int] = []
+        stack = [start_id]
+        while stack:
+            cid = stack.pop()
+            if cid in visited or cid not in graph.cells:
+                continue
+            visited.add(cid)
+            if cid in bad_ids:
+                cluster_ids.append(cid)
+                for nid in graph.cells[cid].neighbour_cells:
+                    if nid in bad_ids and nid not in visited:
+                        stack.append(nid)
+
+        if len(cluster_ids) >= min_cluster_size:
+            cx = sum(graph.cells[cid].centroid[0] for cid in cluster_ids) / len(cluster_ids)
+            cy = sum(graph.cells[cid].centroid[1] for cid in cluster_ids) / len(cluster_ids)
+            cz = sum(graph.cells[cid].centroid[2] for cid in cluster_ids) / len(cluster_ids)
+            cluster = BadCellCluster(
+                cell_ids=cluster_ids,
+                centroid=(cx, cy, cz),
+                n_cells=len(cluster_ids),
+                dominant_error=_cluster_dominant_error(eval_, cluster_ids),
+                avg_metric=_cluster_avg_metric(graph, eval_, cluster_ids),
+            )
+            clusters.append(cluster)
+
+    clusters.sort(key=lambda c: c.n_cells, reverse=True)
+    return clusters
+
+
+def _cluster_dominant_error(
+    eval_: QualityEvaluation, cluster_ids: list[int],
+) -> ErrorType:
+    """Find the most frequent error type in a cluster."""
+    from collections import Counter
+    counts: Counter[ErrorType] = Counter()
+    for err_type, eid, _ in eval_.error_types:
+        if eid in cluster_ids:
+            counts[err_type] += 1
+    if not counts:
+        return ErrorType.HIGH_SKEWNESS
+    return counts.most_common(1)[0][0]
+
+
+def _cluster_avg_metric(
+    graph: UnifiedMeshGraph, eval_: QualityEvaluation,
+    cluster_ids: list[int],
+) -> float:
+    """Average worst metric across a cluster."""
+    vals: list[float] = []
+    for cid in cluster_ids:
+        cell = graph.cells.get(cid)
+        if cell:
+            vals.append(max(
+                cell.skewness / SKEWNESS_THRESHOLD,
+                cell.non_orthogonality / NON_ORTHO_THRESHOLD,
+                cell.aspect_ratio / ASPECT_RATIO_THRESHOLD,
+            ))
+    if not vals:
+        return 0.0
+    return sum(vals) / len(vals)
+
+
+# ---------------------------------------------------------------------------
+# Quality report export (JSON for GUI/PDF)
+# ---------------------------------------------------------------------------
+def export_quality_report_json(
+    graph: UnifiedMeshGraph,
+    result: AdaptiveLoopResult,
+) -> dict[str, Any]:
+    """Generate a structured quality report dict (serialisable to JSON).
+
+    Contains: metrics, histogram, per-cell heatmap summary, clusters,
+    statistics, convergence timeline, recommendations.
+    """
+    eval_ = InProcessQualityEvaluator().evaluate(graph)
+    clusters = find_bad_cell_clusters(graph, eval_)
+    stats = compute_mesh_statistics(graph)
+    heatmap = generate_heatmap_data(graph)
+
+    # Histogram of worst metric
+    worst = heatmap.get("worst_metric", [])
+    hist_counts: list[int] = []
+    hist_edges: list[float] = []
+    if worst:
+        n_bins = 20
+        min_w, max_w = min(worst), max(worst)
+        if max_w > min_w:
+            bin_w = (max_w - min_w) / n_bins
+            hist_edges = [min_w + i * bin_w for i in range(n_bins + 1)]
+            hist_counts = [0] * n_bins
+            for w in worst:
+                idx = min(int((w - min_w) / bin_w), n_bins - 1)
+                hist_counts[idx] += 1
+
+    # Quality breakdown
+    n_pass = n_warn = n_fail = 0
+    for cell in graph.cells.values():
+        st = evaluate_cell_quality(cell)
+        if st == CellQualityStatus.PASS:
+            n_pass += 1
+        elif st == CellQualityStatus.WARN:
+            n_warn += 1
+        else:
+            n_fail += 1
+
+    # Recommendations
+    recommendations: list[str] = []
+    if eval_.max_skewness > SKEWNESS_THRESHOLD:
+        recommendations.append(
+            f"Skewness elevata ({eval_.max_skewness:.2f}): "
+            f"applicare smoothing locale o rilassare dimensioni cella"
+        )
+    if eval_.max_non_orthogonality > NON_ORTHO_THRESHOLD:
+        recommendations.append(
+            f"Non-ortogonalità elevata ({eval_.max_non_orthogonality:.1f}°): "
+            f"ridurre strati BL o applicare CVT smoothing"
+        )
+    if eval_.n_neg_volume > 0:
+        recommendations.append(
+            f"{eval_.n_neg_volume} celle a volume negativo: "
+            f"applicare un-dualize o rigenerare mesh locale"
+        )
+    if eval_.n_bad_layers > 0:
+        recommendations.append(
+            f"{eval_.n_bad_layers} strati BL collassati: "
+            f"ridurre numero di layer nelle zone critiche"
+        )
+    if clusters:
+        recommendations.append(
+            f"{len(clusters)} cluster(s) di celle difettose: "
+            f"raffinamento localizzato raccomandato"
+        )
+    if not recommendations:
+        recommendations.append("Qualità mesh accettabile — nessuna correzione necessaria")
+
+    return {
+        "success": result.success,
+        "summary": result.summary,
+        "metrics": {
+            "cells": eval_.n_cells_total,
+            "max_skewness": round(eval_.max_skewness, 4),
+            "max_non_orthogonality": round(eval_.max_non_orthogonality, 2),
+            "max_aspect_ratio": round(eval_.max_aspect_ratio, 1),
+            "n_negative_volume": eval_.n_neg_volume,
+            "n_bad_layers": eval_.n_bad_layers,
+        },
+        "quality_breakdown": {
+            "pass": n_pass,
+            "warn": n_warn,
+            "fail": n_fail,
+        },
+        "statistics": {
+            "total_cells": stats.total_cells,
+            "total_nodes": stats.total_nodes,
+            "total_faces": stats.total_faces,
+            "total_edges": stats.total_edges,
+            "n_tetra": stats.n_tetra,
+            "n_poly": stats.n_poly,
+            "n_prism": stats.n_prism,
+            "volume_total": round(stats.volume_total, 6),
+            "volume_min": round(stats.volume_min, 6),
+            "volume_max": round(stats.volume_max, 6),
+            "volume_avg": round(stats.volume_avg, 6),
+        },
+        "histogram": {
+            "counts": hist_counts,
+            "edges": [round(e, 4) for e in hist_edges],
+        },
+        "clusters": [
+            {
+                "n_cells": c.n_cells,
+                "centroid": [round(v, 6) for v in c.centroid],
+                "dominant_error": c.dominant_error.name,
+                "avg_metric": round(c.avg_metric, 4),
+            }
+            for c in clusters
+        ],
+        "convergence": {
+            "n_iterations": result.n_iterations,
+            "n_remediations": result.n_remediations,
+            "final_phase": result.final_phase,
+            "history": result.convergence_history,
+        },
+        "recommendations": recommendations,
+        "timestamps": {
+            "run": datetime.now().isoformat(),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Progressive refinement scheduler (outer loop)
+# ---------------------------------------------------------------------------
+@dataclass
+class ProgressiveRefinementParams:
+    """Parameters for the progressive refinement outer loop."""
+    n_levels: int = 3
+    refinement_factor: float = 0.6  # multiply cell size by this each level
+    min_cell_fraction: float = 100.0
+    inner_max_iterations: int = 3
+    converge_at_level: int = -1  # -1 = all levels
+
+    # Callbacks
+    on_level_change: Callable[[int, float], None] | None = None
+
+
+@dataclass
+class ProgressiveRefinementResult:
+    """Result of the progressive refinement outer loop."""
+    success: bool = False
+    n_levels_completed: int = 0
+    final_cell_count: int = 0
+    level_results: list[AdaptiveLoopResult] = field(default_factory=list)
+    wall_time_s: float = 0.0
+    best_skewness: float = 0.0
+    best_non_orthogonality: float = 0.0
+
+    @property
+    def summary(self) -> str:
+        status = "PASS" if self.success else "FAIL"
+        return (
+            f"ProgressiveRefinement[{status}] "
+            f"levels={self.n_levels_completed} "
+            f"cells={self.final_cell_count} "
+            f"bestSkew={self.best_skewness:.2f} "
+            f"bestNonOrtho={self.best_non_orthogonality:.1f} "
+            f"t={self.wall_time_s:.1f}s"
+        )
+
+
+def run_progressive_refinement(
+    engine: AdaptiveLoopEngine,
+    params: ProgressiveRefinementParams | None = None,
+) -> ProgressiveRefinementResult:
+    """Run the OODA loop at progressively finer cell sizes.
+
+    Each level halves the cell size and re-runs the full OODA cycle.
+    This produces a multi-resolution mesh that converges to the target
+    quality from coarse to fine.
+
+    Args:
+        engine: Configured ``AdaptiveLoopEngine`` instance.
+        params: Progressive refinement parameters.
+
+    Returns:
+        ``ProgressiveRefinementResult`` with per-level results.
+    """
+    p = params or ProgressiveRefinementParams()
+    start = datetime.now()
+    result = ProgressiveRefinementResult()
+    engine._params.max_remediation_iterations = p.inner_max_iterations
+
+    logger.info("Progressive refinement: %d levels, factor=%.2f", p.n_levels, p.refinement_factor)
+
+    for level in range(p.n_levels):
+        factor = p.refinement_factor ** level
+        engine._params.base_cell_fraction = 20.0 / factor
+        engine._params.min_cell_fraction = max(p.min_cell_fraction, 100.0 / factor)
+
+        if p.on_level_change:
+            p.on_level_change(level, factor)
+
+        logger.info("  Level %d/%d: cell fraction=%.1f", level + 1, p.n_levels, engine._params.base_cell_fraction)
+
+        level_result = engine.run()
+        result.level_results.append(level_result)
+
+        if level_result.success:
+            result.n_levels_completed = level + 1
+            result.final_cell_count = level_result.cell_count
+            result.best_skewness = min(result.best_skewness, level_result.max_skewness) if result.best_skewness > 0 else level_result.max_skewness
+            result.best_non_orthogonality = min(result.best_non_orthogonality, level_result.max_non_orthogonality) if result.best_non_orthogonality > 0 else level_result.max_non_orthogonality
+
+        # Stop if all required levels converged
+        if p.converge_at_level >= 0 and level >= p.converge_at_level:
+            break
+
+    result.success = result.n_levels_completed >= 1
+    result.wall_time_s = round((datetime.now() - start).total_seconds(), 1)
+
+    octo.log_event("adaptive_loop", "progressive_done", {
+        "levels": result.n_levels_completed,
+        "cells": result.final_cell_count,
+        "time_s": result.wall_time_s,
+    })
+
+    return result
 
 
 # ---------------------------------------------------------------------------

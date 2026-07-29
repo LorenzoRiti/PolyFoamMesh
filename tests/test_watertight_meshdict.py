@@ -114,10 +114,18 @@ def test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop(workflow, mon
     """
     calls = {"cartesian_mesh": 0, "checkmesh": 0}
 
+    # Mock physical-core detection to avoid extra subprocess.run call
+    # from OpenMPAccel._detect_physical_cores inside build_command.
+    monkeypatch.setattr(
+        "cfmesh_autogui.commercial.openmp_accel.OpenMPAccel._detect_physical_cores",
+        lambda self: 4,
+    )
+
     def fake_run(cmd, **kwargs):
-        if "checkMesh" in " ".join(cmd) if isinstance(cmd, list) else str(cmd):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "checkMesh" in cmd_str:
             calls["checkmesh"] += 1
-        else:
+        elif "cartesianMesh" in cmd_str:
             calls["cartesian_mesh"] += 1
         # Minimal polyMesh so the "poly_points exists" gate in
         # _step_quality() passes and it actually reaches the subprocess call.

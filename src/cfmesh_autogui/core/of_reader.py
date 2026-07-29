@@ -29,8 +29,44 @@ def read_of_text(path: Path | str, errors: str = "replace") -> str:
     return raw.decode("ascii", errors=errors)
 
 
+_HEADER_READ_SIZE = 16_384  # 16 KB is enough for any OpenFOAM header block
+
+
+def _read_header_bytes(path: Path, max_bytes: int = _HEADER_READ_SIZE) -> bytes:
+    """Read only the header portion of an OpenFOAM file.
+
+    Handles both plain and gzip-compressed files.  For gzip files the
+    entire stream must be decompressed to find the header, but for plain
+    files only the first ``max_bytes`` are read — avoids loading a
+    100+ MB faces file just to extract ``N`` from the header.
+    """
+    # Try gzip first: open and decompress up to max_bytes
+    gz_data = None
+    try:
+        with gzip.open(path, "rb") as f:
+            gz_data = f.read(max_bytes)
+    except (OSError, gzip.BadGzipFile):
+        pass
+    if gz_data and gz_data[:2] == b"\x1f\x8b":
+        # File was gzip but we only got compressed bytes from gzip.open
+        # (can happen when gzip.open fails to decompress)
+        pass
+    elif gz_data:
+        return gz_data
+    # Plain file: read only first max_bytes
+    try:
+        with open(path, "rb") as f:
+            return f.read(max_bytes)
+    except OSError:
+        return b""
+
+
 def _read_of_bytes(path: Path) -> bytes:
-    """Read raw bytes, decompressing if the file is gzipped."""
+    """Read full file content, decompressing if the file is gzipped.
+
+    WARNING: For large binary files (100 MB+ faces) prefer
+    ``_read_header_bytes()`` instead.
+    """
     try:
         with gzip.open(path, "rb") as f:
             header = f.read(2)
@@ -39,7 +75,6 @@ def _read_of_bytes(path: Path) -> bytes:
                 return f.read()
     except (OSError, gzip.BadGzipFile):
         pass
-    # Plain file or gzip-open failed → read normally
     return path.read_bytes()
 
 
@@ -62,9 +97,8 @@ def of_list_count(path: Path) -> int:
     """
     if not path.exists():
         return 0
-    try:
-        raw = _read_of_bytes(path)
-    except Exception:
+    raw = _read_header_bytes(path)
+    if not raw:
         return 0
     text = raw.decode("ascii", errors="replace")
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
@@ -163,9 +197,8 @@ def of_ncells_from_header(path: Path) -> int | None:
     """
     if not path.exists():
         return None
-    try:
-        raw = _read_of_bytes(path)
-    except Exception:
+    raw = _read_header_bytes(path)
+    if not raw:
         return None
     text = raw.decode("ascii", errors="replace")
     m = re.search(r"nCells\s*[:=]\s*(\d+)", text)
