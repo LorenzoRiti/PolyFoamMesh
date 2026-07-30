@@ -377,15 +377,40 @@ def _configure_adaptive_sizing(
         except Exception:
             pass  # option name varies across GMSH versions; NumThreads alone still helps
 
+    # polyDualMesh risk heuristic: on the real valve part investigated
+    # today (89 surfaces, 50 detected gaps — the detector's cap, i.e.
+    # "at least 50") polyDualMesh reliably produced 600-1000
+    # incorrectly-oriented faces regardless of tet mesh quality —
+    # confirmed across curvature-based, gap-aware, budget-driven sizing
+    # and both HXT and classic Delaunay tet algorithms, so it's a
+    # limitation of polyDualMesh's dual construction on that surface
+    # topology, not something this pipeline's tet generation can fix.
+    # Simple/moderate parts tested (a tube, a block with one hole, an
+    # aero body with a fin — 5 to 11 surfaces, 0 gaps) converted cleanly
+    # every time. Surface count and gap count are the two measurements
+    # available before ever running polyDualMesh; flagging high values
+    # lets the caller warn instead of silently shipping a defective
+    # poly mesh — investigated foamyHexMesh as a structurally different
+    # alternative (no dual-conversion step at all) but the installed
+    # OpenFOAM build's binary itself crashes (SIGFPE inside its own
+    # CGAL-based conformalVoronoiMesh library, reproducible, unrelated
+    # to any dictionary setting tried), so no reliable alternative
+    # exists for this geometry class yet.
+    n_surfaces = len(gmsh_mod.model.getEntities(2))
+    poly_dual_risk = n_surfaces > 30 or len(gaps) >= 20
+
     logger.info(
         "Adaptive sizing: min=%.5f max=%.5f (geom_min=%.5f hw_floor=%.5f) "
-        "small_curves=%d/%d gaps=%d cpu=%d max_cells_budget=%d",
+        "small_curves=%d/%d gaps=%d surfaces=%d poly_dual_risk=%s "
+        "cpu=%d max_cells_budget=%d",
         min_size, coarse_max, geom_min, hw_floor, n_small,
-        len(gmsh_mod.model.getEntities(1)), len(gaps), hw["cpu_count"], hw["max_cells"],
+        len(gmsh_mod.model.getEntities(1)), len(gaps), n_surfaces, poly_dual_risk,
+        hw["cpu_count"], hw["max_cells"],
     )
     return {
         "min_size": min_size, "coarse_max": coarse_max,
         "n_small_curves": n_small, "n_gaps": len(gaps),
+        "n_surfaces": n_surfaces, "poly_dual_risk": poly_dual_risk,
     }
 
 
@@ -648,15 +673,168 @@ def generate_surface_stl(
             "Check disk space and write permissions."
         )
 
-    actual_min = lc_user * 0.01
-    actual_max = lc_user * df["max_mult"]
     logger.info(
-        "GMSH surface: %s  detail=%s curvAngle=%d "
-        "minLC=%.6f maxLC=%.6f patches=%s",
-        stl_path, detail, df["curv_angle"],
-        actual_min, actual_max, names,
+        "GMSH surface: %s  detail=%s patches=%s",
+        stl_path, detail, names,
     )
     return names
+
+
+def prepare_foamy_hex_mesh(
+    filepath: Path | str,
+    case_dir: Path | str,
+    detail: str = "medium",
+) -> dict:
+    """Set up a foamyHexMesh case: a curvature-aware STL surface (same
+    generator as the hybrid GMSH+cfMesh flow) plus a self-contained
+    foamyHexMeshDict, ready for `OFConfig.build_foamy_hex_mesh_cmd()` to
+    run via WSL.
+
+    foamyHexMesh is OpenFOAM's native conformal-Voronoi mesher — it
+    builds genuine polyhedra directly from the surface geometry, with no
+    tet-mesh + dual-conversion step at all. Investigated as the
+    alternative to polyDualMesh's face-orientation defect after
+    confirming that defect survives every tet-generation strategy tried
+    (curvature/feature-size sizing, gap-aware refinement, budget-driven
+    sizing, both HXT and classic Delaunay algorithms) — it's a
+    limitation of polyDualMesh's dual construction itself on complex
+    real-world CAD, not of input tet mesh quality, so no amount of tet
+    tuning was ever going to fix it.
+
+    `locationInMesh` — a point foamyHexMesh needs inside the volume to
+    be meshed — is computed as the CAD volume's own center of mass
+    (gmsh.model.occ.getCenterOfMass), not guessed or asked of the user:
+    for the tube/duct-like flow volumes this app targets (the STEP
+    geometry defines the fluid passage directly, confirmed by every
+    watertight-volume check so far), center of mass reliably falls
+    inside the solid.
+    """
+    case_dir = Path(case_dir).resolve()
+    tri_surface_dir = case_dir / "constant" / "triSurface"
+    tri_surface_dir.mkdir(parents=True, exist_ok=True)
+    stl_path = tri_surface_dir / "geometry.stl"
+
+    names = generate_surface_stl(filepath, stl_path, detail=detail)
+
+    gmsh = _ensure_gmsh()
+    vols = gmsh.model.getEntities(3)
+    if vols:
+        com = gmsh.model.occ.getCenterOfMass(*vols[0])
+    else:
+        bbox = gmsh.model.getBoundingBox(-1, -1)
+        com = tuple((bbox[i] + bbox[i + 3]) / 2 for i in range(3))
+
+    bbox = gmsh.model.getBoundingBox(-1, -1)
+    max_extent = max(
+        abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])
+    )
+    df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+    default_cell_size = max_extent * 0.02 * df["max_mult"]
+
+    system_dir = case_dir / "system"
+    system_dir.mkdir(parents=True, exist_ok=True)
+    stl_name = stl_path.name
+    dict_text = f"""FoamFile
+{{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object foamyHexMeshDict;
+}}
+
+// Pull in every required default (conformationControls, initialPoints,
+// motionControl sub-settings, meshQualityControls, etc.) so this file
+// only needs to override what's actually geometry-specific.
+#includeEtc "caseDicts/foamyHexMeshDict"
+
+geometry
+{{
+    {stl_name}
+    {{
+        type triSurfaceMesh;
+        name geometry;
+    }}
+}}
+
+surfaceConformation
+{{
+    locationInMesh ({com[0]:.6f} {com[1]:.6f} {com[2]:.6f});
+
+    geometryToConformTo
+    {{
+        {stl_name}
+        {{
+            featureMethod extractFeatures;
+            includedAngle 140;
+
+            patchInfo
+            {{
+                type wall;
+            }}
+        }}
+    }}
+}}
+
+initialPoints
+{{
+    initialPointsMethod autoDensity;
+
+    // autoDensity::fillBox SIGFPE'd with the base default's
+    // autoDensityCoeffs (no minCellSizeLimit) — the working simpleShapes
+    // tutorial always sets this explicitly.
+    autoDensityCoeffs
+    {{
+        minCellSizeLimit        {default_cell_size * 0.5:.6f};
+        minLevels               4;
+        maxSizeRatio            5.0;
+        sampleResolution        3;
+        surfaceSampleResolution 3;
+    }}
+}}
+
+motionControl
+{{
+    defaultCellSize      {default_cell_size:.6f};
+    minimumCellSizeCoeff 0;
+
+    // Required — an empty shapeControlFunctions left foamyHexMesh's
+    // internal cell-size background mesh completely uninitialized
+    // ("Cell Size Mesh Bounds = (1e+150 ...) (-1e+150 ...)", 0 points
+    // generated). Matches the real simpleShapes tutorial's pattern for
+    // a plain enclosing surface with no internal objects.
+    shapeControlFunctions
+    {{
+        geometry
+        {{
+            type                    searchableSurfaceControl;
+            priority                1;
+            mode                    bothSides;
+
+            surfaceCellSizeFunction uniformValue;
+            uniformValueCoeffs
+            {{
+                surfaceCellSizeCoeff 1;
+            }}
+
+            cellSizeFunction        uniform;
+            uniformCoeffs
+            {{}}
+        }}
+    }}
+}}
+"""
+    (system_dir / "foamyHexMeshDict").write_text(dict_text, encoding="utf-8")
+
+    logger.info(
+        "prepare_foamy_hex_mesh: stl=%s locationInMesh=%s defaultCellSize=%.6f patches=%s",
+        stl_path, com, default_cell_size, names,
+    )
+    return {
+        "stl_path": str(stl_path),
+        "location_in_mesh": com,
+        "default_cell_size": default_cell_size,
+        "patch_names": names,
+    }
 
 
 def generate_volume_mesh(
@@ -976,7 +1154,24 @@ if __name__ == "__main__":
                 min_cell_size=min_cell_size if min_cell_size > 0 else None,
                 max_cells_override=max_cells_target if max_cells_target > 0 else None,
             )
-            print(json.dumps({"success": True, "path": str(result_path), "names": names}))
+            # Cheap post-hoc check (reuses the still-open GMSH model, a
+            # few ms) so the GUI can warn about the known polyDualMesh
+            # limitation on complex geometries — see the poly_dual_risk
+            # comment in _configure_adaptive_sizing for the evidence.
+            poly_dual_risk, n_surfaces, n_gaps = False, 0, 0
+            try:
+                g = _ensure_gmsh()
+                bbox = g.model.getBoundingBox(-1, -1)
+                me = max(abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2]))
+                n_surfaces = len(g.model.getEntities(2))
+                n_gaps = len(_detect_surface_gaps(g, me))
+                poly_dual_risk = n_surfaces > 30 or n_gaps >= 20
+            except Exception:
+                pass
+            print(json.dumps({
+                "success": True, "path": str(result_path), "names": names,
+                "poly_dual_risk": poly_dual_risk, "n_surfaces": n_surfaces, "n_gaps": n_gaps,
+            }))
         except Exception as e:
             print(json.dumps({"success": False, "error": str(e)}))
             sys.exit(1)
