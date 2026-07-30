@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 class MeshingAlgorithm(Enum):
     CARTESIAN_HEX = "CartesianHex"
     POLYHEDRAL = "Polyhedral"
+    AUTOPOLY = "AutoPoly"
     TETRAHEDRAL = "Tetrahedral"
     HEX_CORE_POLY = "HexCorePolyBoundary"
     CARTESIAN_CUT = "CartesianCutCell"
@@ -60,6 +61,11 @@ ADAPTIVE_THRESHOLDS: dict[str, float] = {
 }
 
 # Escalation ladder: each entry is (algorithm, reason_suffix)
+# AUTOPOLY (scipy-Voronoi CVT) is intentionally excluded — verified
+# non-conforming to the domain boundary (negative volumes, warped boundary
+# faces; see commit 4b98813). It stays selectable explicitly (no-WSL
+# fallback in _resolve_auto_mesher) but must never be silently substituted
+# by auto-escalation.
 ESCALATION_LADDER: list[tuple[MeshingAlgorithm, str]] = [
     (MeshingAlgorithm.CARTESIAN_HEX, "default hex"),
     (MeshingAlgorithm.HEX_CORE_POLY, "hex + poly boundary (better non-ortho)"),
@@ -73,6 +79,7 @@ ESCALATION_LADDER: list[tuple[MeshingAlgorithm, str]] = [
 ALGORITHM_ROBUSTNESS: dict[MeshingAlgorithm, int] = {
     MeshingAlgorithm.CARTESIAN_HEX: 1,
     MeshingAlgorithm.POLYHEDRAL: 2,
+    MeshingAlgorithm.AUTOPOLY: 2,
     MeshingAlgorithm.HEX_CORE_POLY: 3,
     MeshingAlgorithm.CARTESIAN_CUT: 3,
     MeshingAlgorithm.TETRAHEDRAL: 4,
@@ -91,6 +98,14 @@ ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
         "cell_types": "hex-dominant",
         "best_for": "geometrie watertight, volumi interni",
         "quality_rank": 1,  # 1 = highest quality
+    },
+    MeshingAlgorithm.AUTOPOLY: {
+        "label": "AutoPoly (CVT polyhedral, nativo)",
+        "description": "Poliedrico CVT (Centroidal Voronoi Tessellation), non richiede WSL",
+        "requires_wsl": False,
+        "cell_types": "polyhedral",
+        "best_for": "mesh poliedrica qualità Star-CCM+, nessun WSL necessario",
+        "quality_rank": 2,
     },
     MeshingAlgorithm.POLYHEDRAL: {
         "label": "Polyhedral (cfMesh polyDualMesh)",
@@ -222,6 +237,7 @@ class MeshEngine:
 
     def __init__(self) -> None:
         self._params = MeshEngineParams()
+        self._escalation_step = 0
         from cfmesh_autogui.config import OFConfig
         self._of_config = OFConfig()
 
@@ -295,6 +311,7 @@ class MeshEngine:
 
             while escalation_count <= max_steps:
                 # --- Run the current algorithm ---
+                self._escalation_step = escalation_count
                 try:
                     self._execute_algorithm(algo, case_dir, meshes, geometry_path)
                 except Exception as exc:
@@ -422,6 +439,8 @@ class MeshEngine:
         """Execute a single algorithm by dispatching to the right implementation."""
         if algo == MeshingAlgorithm.CARTESIAN_HEX:
             self._run_cartesian_hex(case_dir, meshes)
+        elif algo == MeshingAlgorithm.AUTOPOLY:
+            self._run_autopoly(case_dir, geometry_path)
         elif algo == MeshingAlgorithm.POLYHEDRAL:
             self._run_cartesian_hex(case_dir, meshes)
             try:
@@ -566,13 +585,49 @@ class MeshEngine:
 
     def _run_polyhedral(self, case_dir: Path, feature_angle: float = 90) -> None:
         """Convert hex mesh to polyhedral via polyDualMesh."""
+        logger.info(
+            "polyDualMesh: case_dir=%s feature_angle=%g", case_dir, feature_angle,
+        )
         cmd = self._of_config.build_poly_dual_cmd(
             case_dir, feature_angle=feature_angle,
         )
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
         if r.returncode != 0:
+            logger.error(
+                "polyDualMesh failed (exit %d): %s",
+                r.returncode, (r.stdout or r.stderr or "")[-500:],
+            )
             raise RuntimeError(f"polyDualMesh failed (exit {r.returncode})")
         logger.info("Polyhedral conversion OK (featureAngle=%g)", feature_angle)
+
+    def _run_autopoly(self, case_dir: Path, geometry_path: str) -> None:
+        """Run autopoly CVT-based polyhedral meshing."""
+        from cfmesh_autogui.commercial.autopoly_bridge import (
+            AutopolyParams, run_autopoly,
+        )
+
+        detail = self._params.detail_level
+        params = AutopolyParams.from_detail_level(detail)
+        params.lloyd_iterations = max(2, 10 - self._escalation_step * 2)
+
+        from cfmesh_autogui.octopoda_local import octo
+        octo.log_event("mesh_engine", "run_autopoly", {
+            "detail": detail, "geometry": geometry_path,
+        })
+
+        result = run_autopoly(geometry_path, case_dir, params)
+        if not result.success:
+            raise RuntimeError(
+                f"Autopoly failed: {result.message} — "
+                + "; ".join(result.errors)
+            )
+
+        logger.info(
+            "AutoPoly: %d cells, nonOrtho=%.1f skew=%.2f ar=%.0f in %.1fs",
+            result.n_cells, result.max_non_ortho,
+            result.max_skewness, result.max_aspect_ratio,
+            result.wall_time_s,
+        )
 
     def _run_tetrahedral(self, case_dir: Path, geometry_path: str) -> None:
         """Run GMSH tetrahedral meshing (no WSL required)."""

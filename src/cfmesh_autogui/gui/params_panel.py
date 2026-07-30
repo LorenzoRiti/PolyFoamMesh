@@ -186,10 +186,14 @@ class ParamsPanel(QWidget):
 
         template_group = QGroupBox("Case Template")
         template_layout = QVBoxLayout(template_group)
-        self._template_combo = QComboBox()
-        self._template_combo.addItems(["None (manual)", "Internal Flow", "External Aero", "CHT"])
-        self._template_combo.currentTextChanged.connect(self._on_template_selected)
-        template_layout.addWidget(self._template_combo)
+        # Distinct from the Mesh tab's self._template_combo below (a separate
+        # TemplateEngine-backed picker) — same "Case Template" group box
+        # label, different widget/purpose, previously both assigned to the
+        # same attribute name (the second silently shadowed this one).
+        self._geometry_template_combo = QComboBox()
+        self._geometry_template_combo.addItems(["None (manual)", "Internal Flow", "External Aero", "CHT"])
+        self._geometry_template_combo.currentTextChanged.connect(self._on_template_selected)
+        template_layout.addWidget(self._geometry_template_combo)
         template_layout.addWidget(QLabel("Preset: geometry + mesh defaults per case type"))
         geom_layout.addWidget(template_group)
 
@@ -375,18 +379,22 @@ class ParamsPanel(QWidget):
         self._mesher_combo = QComboBox()
         self._mesher_combo.addItems([
             "Automatic (recommended)",
-            "autopoly (polyhedral CVT, nativo)",
             "cfMesh (hexa-dominant + WSL2)",
+            "autopoly (sperimentale, no-WSL)",
         ])
         self._mesher_combo.setToolTip(
-            "Automatic sceglie il miglior mesher disponibile:\n"
-            "  • cfMesh (WSL2) — massima qualità, hex-dominant\n"
-            "  • autopoly (nativo) — poliedrico CVT, senza WSL\n"
+            "Automatic sceglie il miglior mesher disponibile e genera una\n"
+            "mesh POLIEDRICA vera:\n"
+            "  • cfMesh (WSL2) + conversione polyDualMesh — verificato pulito\n"
+            "    con checkMesh anche su geometrie curve complesse\n"
+            "  • autopoly (nativo, sperimentale) — solo se WSL2 non disponibile\n"
             "  • GMSH direct — tetraedrico, fallback universale\n\n"
-            "autopoly: motore poliedrico nativo C++ con CVT (Centroidal Voronoi\n"
-            "Tessellation). Genera mesh poliedriche di qualità paragonabile a\n"
-            "Star-CCM+ / ANSYS Fluent polyhedral.\n\n"
-            "cfMesh forza l'uso di cartesianMesh via WSL2/OpenFOAM."
+            "cfMesh: forza cartesianMesh via WSL2/OpenFOAM, poi converte in\n"
+            "poliedrico (spunta 'Convert to polyhedral mesh' in Advanced).\n\n"
+            "autopoly: motore CVT Python nativo, no WSL richiesto — ma su\n"
+            "superfici molto curve produce ancora bordi non perfettamente\n"
+            "conformi (verificato con checkMesh). Usare solo se WSL2/OpenFOAM\n"
+            "non è disponibile."
         )
         self._mesher_combo.setCurrentText("Automatic (recommended)")
         mesher_layout.addWidget(self._mesher_combo)
@@ -460,20 +468,6 @@ class ParamsPanel(QWidget):
             "Use only when a polyhedral topology is required."
         )
         adv_layout.addWidget(self._poly_check)
-
-        self._poly_agg_check = QCheckBox("Polyhedral Aggregation (Star-CCM+ style)")
-        self._poly_agg_check.setToolTip(
-            "Genera mesh tetraedrica + aggregazione poliedrica.\n\n"
-            "Effetti:\n"
-            "  • Cell count si RIDUCE 3-5x (vs tetraedri)\n"
-            "  • Non-orthogonality migliora significativamente\n"
-            "  • Qualità paragonabile a Star-CCM+ polyhedral\n"
-            "  • Boundary layers preservati\n\n"
-            "Diverso da 'Convert to polyhedral mesh' sopra:\n"
-            "  • Quello usa polyDualMesh (AUMENTA le celle)\n"
-            "  • Questo usa GMSH + aggregazione (RIDUCE le celle)"
-        )
-        adv_layout.addWidget(self._poly_agg_check)
 
         openmp_group = QGroupBox("OpenMP Acceleration")
         openmp_group_layout = QVBoxLayout(openmp_group)
@@ -860,9 +854,6 @@ class ParamsPanel(QWidget):
     def get_poly_conversion(self) -> bool:
         return self._poly_check.isChecked()
 
-    def get_poly_aggregation(self) -> bool:
-        return self._poly_agg_check.isChecked()
-
     _DETAIL_LABELS = ["Molto Grossolana", "Grossolana", "Media", "Fine", "Molto Fine"]
     _DETAIL_MAP = {0: "very_coarse", 1: "coarse", 2: "medium", 3: "fine", 4: "very_fine"}
 
@@ -883,9 +874,6 @@ class ParamsPanel(QWidget):
         if "autopoly" in text:
             return "autopoly"
         return "cfmesh"
-
-    def set_poly_enabled(self, enabled: bool) -> None:
-        self._poly_check.setEnabled(enabled)
 
     def get_auto_refine_enabled(self) -> bool:
         return getattr(self, "_auto_refine_check", None) is not None and self._auto_refine_check.isChecked()
@@ -955,9 +943,6 @@ class ParamsPanel(QWidget):
         from cfmesh_autogui.core.geometry import unit_to_scale
         return unit_to_scale(self._unit_selector.currentText())
 
-    def get_n_cores(self) -> int:
-        return 1
-
     def get_patch_names(self) -> list[str]:
         return [
             self._patch_list.item(i).text()
@@ -1016,12 +1001,9 @@ class ParamsPanel(QWidget):
 
     def _on_mesher_changed(self, text: str) -> None:
         is_cfmesh = "cfMesh" in text
-        is_autopoly = "autopoly" in text
         self._poly_check.setVisible(is_cfmesh)
-        self._poly_agg_check.setVisible(is_cfmesh)
         if not is_cfmesh:
             self._poly_check.setChecked(False)
-            self._poly_agg_check.setChecked(False)
 
     def save_params(self, s):
         s.setValue("params/max_cell", self._max_cell.value())

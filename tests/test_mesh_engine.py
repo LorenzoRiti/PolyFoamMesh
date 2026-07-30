@@ -21,7 +21,7 @@ def test_meshing_algorithm_enum():
     assert MeshingAlgorithm.TETRAHEDRAL.value == "Tetrahedral"
     assert MeshingAlgorithm.SNAPPY_HEX_MESH.value == "SnappyHexMesh"
     assert MeshingAlgorithm.MMG_ADAPTATION.value == "MmgAdaptation"
-    assert len(MeshingAlgorithm) == 8
+    assert len(MeshingAlgorithm) == 9
 
 
 def test_algorithm_info_all_present():
