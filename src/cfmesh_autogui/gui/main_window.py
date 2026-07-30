@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     Q_ARG,
     QMetaObject,
     QObject,
+    QProcess,
     QSize,
     Qt,
     QThread,
@@ -2152,34 +2153,85 @@ class MainWindow(QMainWindow):
         t.start()
 
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
-        """Convert MSH → OpenFOAM in a background thread to avoid freezing the UI."""
-        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh (background)...")
+        """Convert MSH → OpenFOAM via gmshToFoam.
+
+        Uses QProcess, not a blocking subprocess.run() call inside a
+        QThread (the previous _GmshConversionWorker design) — that
+        pattern froze the GUI to the point Windows flagged it "Not
+        Responding" during a real run, matching a symptom this codebase
+        already hit and fixed once before for foamToVTK (see
+        viewer_widget.py's _start_vtk_qprocess): a blocking OS subprocess
+        call, even off the GUI thread, can still stall Qt's event
+        delivery. QProcess integrates with Qt's own event loop instead,
+        so it doesn't need a separate QThread at all.
+        """
+        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
         self._status.showMessage("GMSH: conversion...")
         self._progress.setRange(0, 0)
         self._progress.setVisible(True)
-        QApplication.processEvents()
 
-        t = QThread()
-        w = _GmshConversionWorker(msh_path, self._case_dir, names)
-        w.moveToThread(t)
+        from cfmesh_autogui.config import OFConfig
+        cfg = OFConfig()
+        cmd = cfg.build_gmsh_to_foam_cmd(self._case_dir, msh_path.name)
 
-        def on_done():
+        case_dir = self._case_dir
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.SeparateChannels)
+        self._gmsh_conv_process = proc
+
+        timeout_timer = QTimer(self)
+        timeout_timer.setSingleShot(True)
+        self._gmsh_conv_timeout_timer = timeout_timer
+
+        def fail(msg: str):
+            timeout_timer.stop()
+            self._log.append_log(f"[ERROR] MSH conversion: {msg}")
+            self._progress.setVisible(False)
+            self._params.set_all_enabled(True)
+            QMessageBox.critical(self, "Conversion Failed", f"MSH to OpenFOAM failed:\n{msg}")
+
+        def on_timeout():
+            if proc.state() != QProcess.NotRunning:
+                proc.kill()
+                proc.waitForFinished(2000)
+            fail("gmshToFoam timed out after 300s")
+
+        def verify_polymesh(retry: int = 0):
+            # gmshToFoam writes through WSL2's 9P filesystem — Windows
+            # may not see the new files for a few hundred ms after the
+            # process exits (same delay already documented/handled in
+            # viewer_widget._poly_dir_state for cartesianMesh output).
+            # Retry a few times before concluding it genuinely failed —
+            # checking once immediately after exit produced a false
+            # "no polyMesh found" on a real run.
+            poly_points = case_dir / "constant" / "polyMesh" / "points"
+            if not poly_points.exists():
+                if my_id != self._run_id:
+                    return
+                if retry < 6:
+                    QTimer.singleShot(300, lambda: verify_polymesh(retry + 1))
+                    return
+                fail(
+                    "gmshToFoam reported success but no polyMesh found in "
+                    f"{case_dir / 'constant' / 'polyMesh'}"
+                )
+                return
+            self._log.append_log(f"[gmsh] polyMesh: {case_dir / 'constant' / 'polyMesh'}")
             self._log.append_log("[gmsh] Conversion complete.")
             self._progress.setVisible(False)
             try:
                 from cfmesh_autogui.core.boundary_reader import parse_boundary
                 from cfmesh_autogui.core.case_setup import setup_case
-                boundary_path = self._case_dir / "constant" / "polyMesh" / "boundary"
+                boundary_path = case_dir / "constant" / "polyMesh" / "boundary"
                 if boundary_path.exists():
                     patches = parse_boundary(boundary_path)
-                    setup_case(self._case_dir, patches, **self._case_setup_kwargs())
+                    setup_case(case_dir, patches, **self._case_setup_kwargs())
                     self._log.append_log("[setup] Case files generated (0/, system/).")
-                self._log.append_log(f"{Tag.DONE} Case: {self._case_dir}")
-                self._viewer.show_mesh(self._case_dir)
+                self._log.append_log(f"{Tag.DONE} Case: {case_dir}")
+                self._viewer.show_mesh(case_dir)
                 self._status.showMessage("GMSH direct mesh ready")
                 self._params.set_all_enabled(True)
-                poly_points = self._case_dir / "constant" / "polyMesh" / "points"
-                poly_faces = self._case_dir / "constant" / "polyMesh" / "faces"
+                poly_faces = case_dir / "constant" / "polyMesh" / "faces"
                 if poly_points.exists() and poly_faces.exists():
                     self._launch_checkmesh()
             except Exception as e:
@@ -2187,20 +2239,25 @@ class MainWindow(QMainWindow):
                 self._log.append_log(f"[ERROR] Setup: {e}")
                 self._params.set_all_enabled(True)
 
-        def on_failed(msg: str):
-            self._log.append_log(f"[ERROR] MSH conversion: {msg}")
-            self._progress.setVisible(False)
-            self._params.set_all_enabled(True)
-            QMessageBox.critical(self, "Conversion Failed", f"MSH to OpenFOAM failed:\n{msg}")
+        def on_finished(exit_code, _exit_status):
+            timeout_timer.stop()
+            if my_id != self._run_id:
+                return
+            stdout = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
+            stderr = bytes(proc.readAllStandardError()).decode("utf-8", errors="replace")
+            for line in stdout.splitlines()[-20:]:
+                self._log.append_log(f"[gmshToFoam] {line}")
+            if exit_code != 0:
+                tail = (stderr or stdout or "")[-500:]
+                fail(f"gmshToFoam failed (exit {exit_code}): {tail}")
+                return
+            verify_polymesh()
 
-        w.finished.connect(on_done, Qt.QueuedConnection)
-        w.failed.connect(on_failed, Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        w.failed.connect(t.quit, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        self._gmsh_conv_thread = t
-        self._gmsh_conv_worker = w
-        t.start()
+        proc.finished.connect(on_finished)
+        timeout_timer.timeout.connect(on_timeout)
+        program, args = cmd[0], cmd[1:]
+        proc.start(program, args)
+        timeout_timer.start(300000)
 
     # -----------------------------------------------------------------------
     # autopoly native polyhedral mesher
@@ -3661,50 +3718,3 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-class _GmshConversionWorker(QObject):
-    """Converts a GMSH .msh file to OpenFOAM polyMesh in a background thread."""
-
-    finished = Signal()
-    failed = Signal(str)
-    log_line = Signal(str)
-
-    def __init__(self, msh_path: Path, case_dir: Path, names: list[str], parent=None):
-        super().__init__(parent)
-        self._msh_path = msh_path
-        self._case_dir = case_dir
-        self._names = names
-
-    @Slot()
-    def run(self):
-        # OpenFOAM's own gmshToFoam (via WSL), not the custom Python
-        # meshio-based converter — msh_to_of_polymesh() turned out to have
-        # several correctness bugs (owner/neighbour indexing, boundary
-        # patch tagging, face-winding/orientation) that only surfaced once
-        # generate_volume_mesh() actually produced real tetrahedra to feed
-        # it, which it never had before. See config.OFConfig.
-        # build_gmsh_to_foam_cmd for the full story.
-        import subprocess
-        from cfmesh_autogui.config import OFConfig
-        try:
-            cfg = OFConfig()
-            cmd = cfg.build_gmsh_to_foam_cmd(self._case_dir, self._msh_path.name)
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
-            )
-            for line in (result.stdout or "").splitlines()[-20:]:
-                self.log_line.emit(f"[gmshToFoam] {line}")
-            if result.returncode != 0:
-                stderr_tail = (result.stderr or result.stdout or "")[-500:]
-                raise RuntimeError(f"gmshToFoam failed (exit {result.returncode}): {stderr_tail}")
-            poly_dir = self._case_dir / "constant" / "polyMesh"
-            if not (poly_dir / "points").exists():
-                raise RuntimeError(f"gmshToFoam reported success but no polyMesh found in {poly_dir}")
-            self.log_line.emit(f"[gmsh] polyMesh: {poly_dir}")
-        except subprocess.TimeoutExpired:
-            self.failed.emit("gmshToFoam timed out after 300s")
-            return
-        except Exception as e:
-            logger.error("MSH conversion failed: %s", e)
-            self.failed.emit(str(e))
-            return
-        self.finished.emit()
