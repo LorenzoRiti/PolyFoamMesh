@@ -81,6 +81,7 @@ class ParamsPanel(QWidget):
     unit_changed = Signal(str)
     param_changed = Signal(str, object)
     suggestion_completed = Signal(str)
+    pick_refinement_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -380,7 +381,8 @@ class ParamsPanel(QWidget):
         self._mesher_combo.addItems([
             "Automatic (recommended)",
             "cfMesh (hexa-dominant + WSL2)",
-            "Tetrahedral (GMSH direct, STEP/STL + poly)",
+            "Tetrahedral (FEM) — GMSH direct",
+            "Polyhedral (CFD) — GMSH + poly",
             "autopoly (sperimentale, no-WSL)",
         ])
         self._mesher_combo.setToolTip(
@@ -394,7 +396,7 @@ class ParamsPanel(QWidget):
             "poliedrico (spunta 'Convert to polyhedral mesh' in Advanced).\n"
             "Il dual di una mesh cartesiana resta molto regolare/a griglia\n"
             "(celle di bordo ~99% quadrilateri).\n\n"
-            "Tetrahedral (GMSH direct): mesh tetraedrica non strutturata\n"
+            "Tetrahedral (FEM) / Polyhedral (CFD): mesh tetraedrica non strutturata\n"
             "(via GMSH, funziona meglio con input STEP/CAD reale) + stessa\n"
             "conversione polyDualMesh — dualizzare una mesh NON strutturata\n"
             "produce poliedri irregolari veri, stile Voronoi/STAR-CCM+\n"
@@ -884,7 +886,7 @@ class ParamsPanel(QWidget):
             return "auto"
         if "autopoly" in text:
             return "autopoly"
-        if "Tetrahedral" in text:
+        if "Tetrahedral" in text or "Polyhedral" in text:
             return "gmsh_direct"
         return "cfmesh"
 
@@ -902,7 +904,21 @@ class ParamsPanel(QWidget):
         return refs
 
     def _on_add_refinement(self):
-        """Open a dialog to add a manual refinement zone (box)."""
+        """Add a manual refinement zone — pick from 3D or enter coordinates."""
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Refinement Zone",
+            "How do you want to define the refinement zone?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Cancel:
+            return
+        if reply == QMessageBox.Yes:
+            # Pick from 3D viewer
+            self.pick_refinement_requested.emit()
+            return
+        # Manual coordinate entry
         cx, ok = QInputDialog.getDouble(self, "Refinement Zone Centre X",
                                          "X coordinate (m):", 0.0, -1000, 1000, 4)
         if not ok:
@@ -926,6 +942,24 @@ class ParamsPanel(QWidget):
             return
         entry = {"centre": (cx, cy, cz), "radius": radius, "cell_size": cell_size}
         label = f"Box ({cx:.3f},{cy:.3f},{cz:.3f}) r={radius:.3f} cs={cell_size:.5f}"
+        item = QListWidgetItem(label)
+        item.setData(Qt.UserRole, entry)
+        self._refine_list.addItem(item)
+        self._refresh_refine_placeholder()
+
+    def add_refinement_from_pick(self, cx: float, cy: float, cz: float):
+        """Add a refinement zone from a 3D pick — prompts for radius and cell size."""
+        radius, ok = QInputDialog.getDouble(self, "Refinement Zone Radius",
+                                             "Radius (m):", 0.1, 0.001, 100, 4)
+        if not ok:
+            return
+        cell_size, ok = QInputDialog.getDouble(self, "Refinement Cell Size",
+                                                "Target cell size inside zone (m):",
+                                                0.01, 0.0001, 10, 5)
+        if not ok:
+            return
+        entry = {"centre": (cx, cy, cz), "radius": radius, "cell_size": cell_size}
+        label = f"Pick ({cx:.3f},{cy:.3f},{cz:.3f}) r={radius:.3f} cs={cell_size:.5f}"
         item = QListWidgetItem(label)
         item.setData(Qt.UserRole, entry)
         self._refine_list.addItem(item)
@@ -1013,17 +1047,28 @@ class ParamsPanel(QWidget):
         return ("balanced", None)
 
     def _on_mesher_changed(self, text: str) -> None:
-        # polyDualMesh conversion applies to both cfMesh's hex-dominant
-        # mesh (dual comes out grid-like/regular — cfMesh's own boundary
-        # is a structured cartesian cut) and GMSH's unstructured tet mesh
-        # (dual comes out as genuinely irregular Voronoi-style polyhedra
-        # — verified: 7-23 faces/cell, clean checkMesh). Not applicable
-        # to autopoly, which does its own (currently non-conforming)
-        # polyhedral generation directly.
-        show_poly = "cfMesh" in text or "Tetrahedral" in text
-        self._poly_check.setVisible(show_poly)
-        if not show_poly:
+        # The GMSH-direct path used to be one entry with a separate
+        # "Convert to polyhedral mesh" checkbox — easy to forget to tick
+        # (reported live: mesh finished as tet-only, no indication poly
+        # was ever an option). Split into two explicit choices instead,
+        # matching how FEM vs. CFD actually differ in practice (FEM
+        # solvers are tet-native; CFD benefits from polyhedral cells —
+        # fewer cells, less numerical diffusion): "Tetrahedral (FEM)"
+        # forces poly off, "Polyhedral (CFD)" forces it on. Neither
+        # exposes the checkbox anymore, so there's nothing to forget.
+        # cfMesh keeps the manual checkbox — poly there is optional
+        # either way (its hex-dual is grid-like/regular regardless).
+        if "Polyhedral" in text:
+            self._poly_check.setVisible(False)
+            self._poly_check.setChecked(True)
+        elif "Tetrahedral" in text:
+            self._poly_check.setVisible(False)
             self._poly_check.setChecked(False)
+        else:
+            show_poly = "cfMesh" in text
+            self._poly_check.setVisible(show_poly)
+            if not show_poly:
+                self._poly_check.setChecked(False)
 
     def save_params(self, s):
         s.setValue("params/max_cell", self._max_cell.value())
