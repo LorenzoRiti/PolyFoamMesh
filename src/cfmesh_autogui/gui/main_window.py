@@ -2228,6 +2228,15 @@ class MainWindow(QMainWindow):
         msh_path_result = Path(result["path"])
         names = result["names"]
         self._log.append_log(f"[gmsh] Volume mesh: {msh_path_result} — patches: {names}")
+        if result.get("poly_dual_risk"):
+            self._log.append_log(
+                f"{Tag.WARN} Geometry has {result.get('n_surfaces', '?')} surfaces / "
+                f"{result.get('n_gaps', '?')}+ tight gaps — polyDualMesh is known to "
+                "produce incorrectly-oriented faces on this class of geometry "
+                "(confirmed on real parts this complex, unrelated to mesh quality). "
+                "The tetrahedral mesh will still be clean; check the final poly "
+                "checkMesh report carefully before trusting it for a solver run."
+            )
         self._continue_gmsh_direct(my_id, msh_path_result, names)
 
     def _on_gmsh_volume_failed(self, msg: str):

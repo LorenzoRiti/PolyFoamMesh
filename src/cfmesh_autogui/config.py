@@ -320,3 +320,46 @@ class OFConfig:
             f"cd {linux_case_q} && gmshToFoam {msh_quoted} 2>&1 | tail -40"
         )
         return self._build_wsl_cmd(cmd)
+
+    def build_surface_orient_cmd(self, case_dir: Path | str, stl_filename: str) -> list[str]:
+        """Build WSL command to run surfaceOrient on a triSurface STL,
+        making its normals consistently point outward from a point known
+        to be inside the volume — foamyHexMesh requires this ("space to
+        be meshed always on the inside of all surfaces"); GMSH's own STL
+        export doesn't guarantee it. Point (0,0,0) is a placeholder — the
+        real inside point is substituted by the caller.
+        """
+        case_dir = Path(case_dir).resolve()
+        linux_case_q = self._quoted_linux_path(case_dir)
+        env_quoted = shlex.quote(self.env_script)
+        stl_quoted = shlex.quote(f"constant/triSurface/{stl_filename}")
+        cmd = (
+            f"source {env_quoted} 2>/dev/null; "
+            f"cd {linux_case_q} && surfaceOrient {stl_quoted} "
+            f"'({{INSIDE_POINT}})' {stl_quoted} -outside 2>&1 | tail -20"
+        )
+        return self._build_wsl_cmd(cmd)
+
+    def build_foamy_hex_mesh_cmd(self, case_dir: Path | str) -> list[str]:
+        """Build WSL command to run foamyHexMesh — OpenFOAM's native
+        conformal-Voronoi mesher. Generates genuine polyhedra directly
+        from the surface geometry with no tet-mesh + dual-conversion
+        step at all, sidestepping polyDualMesh's face-orientation defect
+        entirely (confirmed on a real complex part: persists across
+        every tet-generation strategy tried — curvature, feature-size,
+        gap-aware, budget-driven sizing, both HXT and classic Delaunay —
+        so it's a limitation of polyDualMesh itself, not of the input
+        tet mesh's quality).
+        """
+        case_dir = Path(case_dir).resolve()
+        linux_case_q = self._quoted_linux_path(case_dir)
+        env_quoted = shlex.quote(self.env_script)
+        n_threads = os.cpu_count() or 4
+        cmd = (
+            f"set -o pipefail; "
+            f"export OMPI_MCA_btl=^openib,openfabric,uct 2>/dev/null; "
+            f"source {env_quoted} 2>/dev/null; "
+            f"{self._openmp_env_prefix()} "
+            f"cd {linux_case_q} && foamyHexMesh 2>&1 | tail -60"
+        )
+        return self._build_wsl_cmd(cmd)
