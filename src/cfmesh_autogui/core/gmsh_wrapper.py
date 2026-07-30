@@ -510,3 +510,37 @@ if __name__ == "__main__":
         except Exception as e:
             print(json.dumps({"success": False, "error": str(e)}))
             sys.exit(1)
+    elif cmd == "convert_to_foam":
+        # Runs gmshToFoam via a WSL subprocess.run() call, same as
+        # OFConfig.build_gmsh_to_foam_cmd always did — but from inside a
+        # fresh, short-lived Python process (spawned by the GUI exactly
+        # like the "volume" subcommand above), not from within the
+        # long-lived GUI process itself. That call reproducibly hung
+        # (in a real user session, and independently reproduced with a
+        # genuine app.exec() loop) when launched directly from
+        # MainWindow, regardless of whether it went through QProcess or
+        # a plain threading.Thread — but the exact same command ran
+        # fine, fast, every time from a plain script. The most likely
+        # explanation is Windows handle/state accumulated by the
+        # long-lived GUI process (many prior subprocess/QThread/QProcess
+        # calls) leaking into this specific subprocess creation; a
+        # fresh process sidesteps that regardless of the precise cause.
+        import subprocess
+        case_dir_arg = Path(sys.argv[2])
+        msh_filename = sys.argv[3]
+        try:
+            from cfmesh_autogui.config import OFConfig
+            cfg = OFConfig()
+            wsl_cmd = cfg.build_gmsh_to_foam_cmd(case_dir_arg, msh_filename)
+            r = subprocess.run(wsl_cmd, capture_output=True, text=True, timeout=300)
+            print(json.dumps({
+                "success": r.returncode == 0,
+                "returncode": r.returncode,
+                "stdout": r.stdout[-4000:],
+                "stderr": r.stderr[-2000:],
+            }))
+            if r.returncode != 0:
+                sys.exit(1)
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
+            sys.exit(1)
