@@ -16,6 +16,7 @@ Requirements:
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -338,6 +339,31 @@ def generate_volume_mesh(
     output_msh = str(Path(output_msh).resolve())
     gmsh.open(filepath_str)
 
+    if filepath_str.lower().endswith(".stl"):
+        # A raw STL has no B-Rep topology — gmsh.open() only imports the
+        # discrete surface triangles, so mesh.generate(3) below has no
+        # volume to fill and silently produces 0 tetrahedra (surface
+        # triangles pass through untouched). Reconstruct a real volume:
+        # classify the discrete triangles into surface patches by feature
+        # angle, give them a parametrization, then close a surface loop
+        # into a volume — the standard GMSH STL-to-volume workflow (see
+        # GMSH tutorial t13).
+        gmsh.model.mesh.classifySurfaces(
+            angle=40 * math.pi / 180,
+            boundary=True,
+            forReparametrization=False,
+            curveAngle=180 * math.pi / 180,
+        )
+        gmsh.model.mesh.createGeometry()
+        surfaces = gmsh.model.getEntities(2)
+        if not surfaces:
+            raise RuntimeError(
+                f"GMSH found no surfaces after reconstructing STL topology: {filepath_str}"
+            )
+        surface_loop = gmsh.model.geo.addSurfaceLoop([tag for _, tag in surfaces])
+        gmsh.model.geo.addVolume([surface_loop])
+        gmsh.model.geo.synchronize()
+
     try:
         bbox = gmsh.model.getBoundingBox(-1, -1)
     except Exception as e:
@@ -355,7 +381,12 @@ def generate_volume_mesh(
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
     gmsh.option.setNumber("Mesh.MinimumCirclePoints", int(360 / df["curv_angle"]))
     gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
-    gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
+    # HXT (10), not classic Delaunay (1) — Delaunay fails with "Invalid
+    # boundary mesh (overlapping facets)" on the discrete/reparametrized
+    # surfaces produced by the STL-reconstruction step above (long curved
+    # patches parametrize badly); HXT meshes directly off the discrete
+    # boundary triangulation and doesn't hit this.
+    gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal
     gmsh.option.setNumber("Mesh.Optimize", 1)
     gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
