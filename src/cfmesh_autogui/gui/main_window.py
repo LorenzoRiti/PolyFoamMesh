@@ -3536,13 +3536,59 @@ class MainWindow(QMainWindow):
         self._quality_fix_thread.start()
         self._log.append_log("[quality-fix] Auto-fix cycle started...")
 
+    @staticmethod
+    def _resolve_paraview_exe() -> str | None:
+        """Find the ParaView executable.
+
+        Most Windows ParaView installs don't add themselves to PATH, so
+        `shutil.which` alone isn't enough — also glob the standard
+        Program Files install locations for the versioned folder name
+        (e.g. "ParaView 6.1.0"). Returns None if nothing is found.
+        """
+        import shutil
+        exe = shutil.which("paraview") or (
+            shutil.which("paraview.exe") if sys.platform == "win32" else None
+        )
+        if exe:
+            return exe
+        if sys.platform == "win32":
+            import glob
+            for pf in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+                if not pf:
+                    continue
+                matches = sorted(glob.glob(os.path.join(pf, "ParaView*", "bin", "paraview.exe")))
+                if matches:
+                    return matches[-1]
+        return None
+
     def _on_launch_paraview(self):
         if not self._case_dir:
             QMessageBox.warning(self, "No Case", "Generate a mesh first.")
             return
         import subprocess
+        exe = self._resolve_paraview_exe()
+        if exe is None:
+            QMessageBox.warning(
+                self, "ParaView Not Found",
+                "ParaView executable not found in PATH or in the standard "
+                "Program Files install location.\n"
+                "Install ParaView and ensure 'paraview' is available.",
+            )
+            return
+        # ParaView's OpenFOAM reader is keyed off a "<name>.foam" marker
+        # file inside the case dir (the community-standard convention) —
+        # more reliably auto-detected across versions than pointing it at
+        # the bare case directory.
+        foam_marker = Path(self._case_dir) / f"{Path(self._case_dir).name}.foam"
         try:
-            subprocess.Popen(["paraview", str(self._case_dir)], shell=sys.platform == "win32")  # ✅ F-008
+            if not foam_marker.exists():
+                foam_marker.touch()
+            # shell=True previously swallowed a not-found executable as a
+            # silent no-op on Windows (cmd.exe prints "not recognized" to
+            # its own invisible console and exits 0 instead of Popen
+            # raising FileNotFoundError) — always launch the resolved exe
+            # directly, no shell involved.
+            subprocess.Popen([exe, str(foam_marker)])
             self._log.append_log(f"[paraview] Launched ParaView for {self._case_dir}")
         except FileNotFoundError:
             QMessageBox.warning(

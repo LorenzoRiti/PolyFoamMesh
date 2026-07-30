@@ -402,7 +402,14 @@ def _load_vtk_patches(case_dir: Path, vtk_subdir: str) -> dict[str, pv.PolyData]
     if not boundary_dir.is_dir():
         return None
     result: dict[str, pv.PolyData] = {}
-    for i, vtu in enumerate(sorted(boundary_dir.glob("*.vtu"))):
+    # foamToVTK writes each boundary patch as 2D surface data (.vtp,
+    # PolyData) — searching for "*.vtu" (volumetric UnstructuredGrid) never
+    # matched anything, so this fast path silently always returned None and
+    # every mesh fell through to the manual ASCII parser, which bails with
+    # "too large" on anything but tiny cases (root cause of the integrated
+    # viewer showing "mesh too large, use ParaView" instead of the mesh).
+    boundary_files = sorted(boundary_dir.glob("*.vtp")) + sorted(boundary_dir.glob("*.vtu"))
+    for i, vtu in enumerate(boundary_files):
         try:
             pd = pv.read(str(vtu))
             name = vtu.stem
