@@ -2188,6 +2188,7 @@ class MainWindow(QMainWindow):
             # branch for why.
             import json
             import subprocess
+            import traceback
             try:
                 frozen = getattr(sys, "frozen", False)
                 args = ["convert_to_foam", str(case_dir), msh_name]
@@ -2217,7 +2218,12 @@ class MainWindow(QMainWindow):
             except subprocess.TimeoutExpired:
                 result_queue.put(("error", "gmshToFoam timed out after 300s"))
             except Exception as e:
-                result_queue.put(("error", str(e)))
+                # Full traceback, not just str(e) — a bare exception message
+                # here previously gave no way to diagnose what actually
+                # went wrong when this step failed in a real session.
+                tb = traceback.format_exc()
+                logger.error("MSH conversion worker thread crashed:\n%s", tb)
+                result_queue.put(("error", f"{e}\n\n{tb}"))
 
         thread = threading.Thread(target=worker_fn, daemon=True)
         # Not "_gmsh_conv_thread" on purpose — closeEvent()'s generic
@@ -2280,24 +2286,34 @@ class MainWindow(QMainWindow):
             if my_id != self._run_id:
                 return
             try:
-                item = result_queue.get_nowait()
-            except queue.Empty:
-                if thread.is_alive():
-                    QTimer.singleShot(300, poll_result)
+                try:
+                    item = result_queue.get_nowait()
+                except queue.Empty:
+                    if thread.is_alive():
+                        QTimer.singleShot(300, poll_result)
+                        return
+                    fail("gmshToFoam worker thread ended without a result")
                     return
-                fail("gmshToFoam worker thread ended without a result")
-                return
-            if item[0] == "error":
-                fail(item[1])
-                return
-            _, exit_code, stdout, stderr = item
-            for line in (stdout or "").splitlines()[-20:]:
-                self._log.append_log(f"[gmshToFoam] {line}")
-            if exit_code != 0:
-                tail = (stderr or stdout or "")[-500:]
-                fail(f"gmshToFoam failed (exit {exit_code}): {tail}")
-                return
-            verify_polymesh()
+                if item[0] == "error":
+                    fail(item[1])
+                    return
+                _, exit_code, stdout, stderr = item
+                for line in (stdout or "").splitlines()[-20:]:
+                    self._log.append_log(f"[gmshToFoam] {line}")
+                if exit_code != 0:
+                    tail = (stderr or stdout or "")[-500:]
+                    fail(f"gmshToFoam failed (exit {exit_code}): {tail}")
+                    return
+                verify_polymesh()
+            except Exception:
+                # This runs as a Qt timer callback on the main thread — an
+                # uncaught exception here previously had no logging, and
+                # could present to the user as a hard crash rather than a
+                # clean "Conversion Failed" dialog.
+                import traceback as _tb
+                tb_text = _tb.format_exc()
+                logger.error("poll_result crashed:\n%s", tb_text)
+                fail(f"internal error in poll_result:\n{tb_text}")
 
         thread.start()
         QTimer.singleShot(300, poll_result)
