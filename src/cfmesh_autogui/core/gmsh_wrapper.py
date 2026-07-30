@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +48,182 @@ _GMSH_DETAIL = {
     "very_fine": {"curv_angle": 6, "min_mult": 0.005, "max_mult": 0.75, "vol_mult": 0.007,
                   "min_size": 0.0001, "max_size": 0.015},
 }
+
+
+def _available_ram_bytes() -> int:
+    """Free physical RAM, best-effort. No third-party dependency (ctypes
+    is stdlib) so this works the same in a frozen/PyInstaller build."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            if stat.ullAvailPhys:
+                return int(stat.ullAvailPhys)
+        except Exception:
+            pass
+    try:
+        import resource
+        pages = os.sysconf("SC_AVPHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return int(pages * page_size)
+    except Exception:
+        pass
+    return 4 * 1024**3  # unknown platform/failure: assume 4 GB free, conservative
+
+
+def _hardware_budget() -> dict:
+    """CPU/RAM snapshot used to keep automatic mesh refinement bounded
+    on the machine actually running it, instead of a single global
+    'Detail Level' the user has to guess a safe value for by hand."""
+    cpu_count = os.cpu_count() or 4
+    ram_bytes = _available_ram_bytes()
+    # ~2.5 KB/cell covers GMSH's own tet storage plus the downstream
+    # copies that exist at once (meshio conversion, the OpenFOAM case,
+    # checkMesh, the viewer). Use at most 40% of currently-free RAM so
+    # WSL, the GUI itself, and everything else running still has room.
+    max_cells = max(80_000, int((ram_bytes * 0.4) / 2500))
+    return {"cpu_count": cpu_count, "ram_available_bytes": ram_bytes, "max_cells": max_cells}
+
+
+def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
+    """Measure the geometry's own small-feature scale instead of
+    assuming one is a fixed fraction of the overall bounding box — that
+    assumption breaks down once a model spans a large size range (a 3 m
+    valve body with ~0.25 mm fillets is a >10000:1 ratio; a uniform
+    floor tight enough for the fillets would try to mesh the whole 3 m
+    body that fine, and one loose enough for the body leaves the
+    fillets under-resolved into degenerate elements — this was the
+    actual cause of the 600+ incorrectly-oriented dual-mesh faces found
+    testing the real Parte4 valve part).
+
+    Returns the shortest curve length, a cutoff separating "small"
+    curves from the rest (their 25th percentile by length), and the
+    tags of those small curves — candidates for local refinement.
+    """
+    curves = gmsh_mod.model.getEntities(1)
+    curve_lengths: list[tuple[int, float]] = []
+    for dim, tag in curves:
+        length = None
+        try:
+            length = gmsh_mod.model.occ.getMass(dim, tag)
+        except Exception:
+            pass
+        if not length or length <= 1e-9:
+            # occ.getMass only works on OCC-kernel entities (STEP input).
+            # STL input goes through classifySurfaces()/createGeometry(),
+            # which builds discrete/"geo"-kernel curves instead — fall
+            # back to the curve's own bounding-box diagonal as a length
+            # proxy (exact for a straight edge, a reasonable estimate for
+            # a curved one, good enough to rank "small" vs "large").
+            try:
+                bbox = gmsh_mod.model.getBoundingBox(dim, tag)
+                dx, dy, dz = bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]
+                length = math.sqrt(dx * dx + dy * dy + dz * dz)
+            except Exception:
+                continue
+        if length and length > 1e-9:
+            curve_lengths.append((tag, length))
+
+    if not curve_lengths:
+        fallback = max_extent * 0.01
+        return {"min_feature": fallback, "small_cutoff": fallback, "small_curve_tags": []}
+
+    lens_sorted = sorted(length for _, length in curve_lengths)
+    min_feature = lens_sorted[0]
+    idx = max(0, len(lens_sorted) // 4)
+    small_cutoff = lens_sorted[idx]
+    small_curve_tags = [tag for tag, length in curve_lengths if length <= small_cutoff]
+    return {
+        "min_feature": min_feature,
+        "small_cutoff": small_cutoff,
+        "small_curve_tags": small_curve_tags,
+    }
+
+
+def _configure_adaptive_sizing(
+    gmsh_mod, detail: str, max_extent: float, feat: dict, hw: dict,
+) -> dict:
+    """Local/adaptive sizing: fine only near small curves (a Distance +
+    Threshold background field) and near curved surfaces (GMSH's
+    existing curvature-based auto-sizing, left on — the two combine via
+    GMSH's own min-of-all-active-sources rule, no extra field needed
+    for that part), coarse everywhere else. CharacteristicLengthMin is
+    driven by the geometry's real smallest feature (clamped by the
+    hardware budget below, not by a % of the bounding box); Max stays
+    the existing detail-level coarse ceiling so the bulk of a large
+    domain is unaffected.
+    """
+    df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+    lc_user = max_extent * 0.02
+    coarse_max = lc_user * df["max_mult"]
+
+    geom_min = max(feat["min_feature"] * 0.35, max_extent * 1e-5)
+    # Hardware floor: caps how fine the geometry-driven floor is allowed
+    # to go, so a machine with little free RAM backs off automatically
+    # rather than grinding for minutes/hours or exhausting memory — the
+    # "fine everywhere" uniform pass tried earlier on this same valve
+    # part never converged in a reasonable time; this bound is what a
+    # uniform detail level has no way to express.
+    hw_floor = max_extent / (hw["max_cells"] ** (1 / 3) * 15)
+    min_size = max(geom_min, hw_floor)
+
+    n_small = len(feat["small_curve_tags"])
+    if n_small:
+        f_dist = gmsh_mod.model.mesh.field.add("Distance")
+        gmsh_mod.model.mesh.field.setNumbers(
+            f_dist, "CurvesList", [float(t) for t in feat["small_curve_tags"]]
+        )
+        f_thresh = gmsh_mod.model.mesh.field.add("Threshold")
+        gmsh_mod.model.mesh.field.setNumber(f_thresh, "InField", f_dist)
+        gmsh_mod.model.mesh.field.setNumber(f_thresh, "SizeMin", min_size)
+        gmsh_mod.model.mesh.field.setNumber(f_thresh, "SizeMax", coarse_max)
+        gmsh_mod.model.mesh.field.setNumber(
+            f_thresh, "DistMin", max(feat["small_cutoff"] * 2, min_size * 4)
+        )
+        gmsh_mod.model.mesh.field.setNumber(
+            f_thresh, "DistMax", max(feat["small_cutoff"] * 20, min_size * 40)
+        )
+        gmsh_mod.model.mesh.field.setAsBackgroundMesh(f_thresh)
+
+    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", min_size)
+    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", coarse_max)
+    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
+    gmsh_mod.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+    gmsh_mod.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+    gmsh_mod.option.setNumber("Mesh.MinimumCirclePoints", df["curv_angle"])
+    gmsh_mod.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
+    for opt in (
+        "General.NumThreads", "Mesh.MaxNumThreads1D",
+        "Mesh.MaxNumThreads2D", "Mesh.MaxNumThreads3D",
+    ):
+        try:
+            gmsh_mod.option.setNumber(opt, hw["cpu_count"])
+        except Exception:
+            pass  # option name varies across GMSH versions; NumThreads alone still helps
+
+    logger.info(
+        "Adaptive sizing: min=%.5f max=%.5f (geom_min=%.5f hw_floor=%.5f) "
+        "small_curves=%d/%d cpu=%d max_cells_budget=%d",
+        min_size, coarse_max, geom_min, hw_floor, n_small,
+        len(gmsh_mod.model.getEntities(1)), hw["cpu_count"], hw["max_cells"],
+    )
+    return {"min_size": min_size, "coarse_max": coarse_max, "n_small_curves": n_small}
 
 
 @dataclass
@@ -239,21 +417,25 @@ def generate_surface_stl(
 
     try:
         bbox = gmsh.model.getBoundingBox(-1, -1)
-        dx = bbox[3] - bbox[0]
-        lc_user = user_lc or max(abs(dx), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])) * 0.02
+        max_extent = max(abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2]))
     except Exception as e:
         raise RuntimeError(f"Failed to read geometry bounding box: {e}") from e
 
-    # Detail settings
-    df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+    if user_lc:
+        df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", user_lc * 0.01)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", user_lc * df["max_mult"])
+        gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MinimumCirclePoints", df["curv_angle"])
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
+    else:
+        hw = _hardware_budget()
+        feat = _scan_feature_sizes(gmsh, max_extent)
+        sizing_info = _configure_adaptive_sizing(gmsh, detail, max_extent, feat, hw)
+        logger.info("generate_surface_stl adaptive sizing: %s", sizing_info)
 
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMin", lc_user * 0.01)
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", lc_user * df["max_mult"])
-    gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-    gmsh.option.setNumber("Mesh.MinimumCirclePoints", df["curv_angle"])
-    gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
     gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal (good for surfaces)
 
@@ -368,19 +550,31 @@ def generate_volume_mesh(
         bbox = gmsh.model.getBoundingBox(-1, -1)
     except Exception as e:
         raise RuntimeError(f"Failed to read geometry bounding box: {e}") from e
-    lc_user = user_lc or max(
+    max_extent = max(
         abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])
-    ) * 0.02
+    )
 
-    df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+    if user_lc:
+        # Explicit user override bypasses adaptive sizing entirely — same
+        # single uniform size everywhere, as before.
+        df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", user_lc * df["min_mult"])
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", user_lc * df["max_mult"])
+        gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
+        gmsh.option.setNumber("Mesh.MinimumCirclePoints", int(360 / df["curv_angle"]))
+        gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
+    else:
+        hw = _hardware_budget()
+        feat = _scan_feature_sizes(gmsh, max_extent)
+        sizing_info = _configure_adaptive_sizing(gmsh, detail, max_extent, feat, hw)
+        logger.info(
+            "generate_volume_mesh adaptive sizing: %s (feature scan: min=%.5f "
+            "small_curves=%d)",
+            sizing_info, feat["min_feature"], sizing_info["n_small_curves"],
+        )
 
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMin", lc_user * df["min_mult"])
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", lc_user * df["max_mult"])
-    gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-    gmsh.option.setNumber("Mesh.MinimumCirclePoints", int(360 / df["curv_angle"]))
-    gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
     # HXT (10), not classic Delaunay (1) — Delaunay fails with "Invalid
     # boundary mesh (overlapping facets)" on the discrete/reparametrized
     # surfaces produced by the STL-reconstruction step above (long curved
@@ -396,19 +590,23 @@ def generate_volume_mesh(
         surfaces = gmsh.model.getEntities(2)
         surface_tags = [tag for _, tag in surfaces]
         if surface_tags:
-            gmsh.model.mesh.field.add("BoundaryLayer", 1)
-            gmsh.model.mesh.field.setNumbers(1, "CurvesList", [])
-            gmsh.model.mesh.field.setNumbers(1, "PointsList", [])
-            gmsh.model.mesh.field.setNumber(1, "hwall_n", bl_thickness)
-            gmsh.model.mesh.field.setNumber(1, "thickness", bl_thickness * n_layers)
-            gmsh.model.mesh.field.setNumber(1, "ratio", bl_expansion)
-            gmsh.model.mesh.field.setNumber(1, "Quads", 0)
+            # Auto-assigned tag (not hardcoded 1) — the adaptive sizing
+            # fields above already claim their own auto-assigned tags
+            # starting at 1, and a hardcoded collision here would either
+            # error or silently overwrite one of them.
+            bl_field = gmsh.model.mesh.field.add("BoundaryLayer")
+            gmsh.model.mesh.field.setNumbers(bl_field, "CurvesList", [])
+            gmsh.model.mesh.field.setNumbers(bl_field, "PointsList", [])
+            gmsh.model.mesh.field.setNumber(bl_field, "hwall_n", bl_thickness)
+            gmsh.model.mesh.field.setNumber(bl_field, "thickness", bl_thickness * n_layers)
+            gmsh.model.mesh.field.setNumber(bl_field, "ratio", bl_expansion)
+            gmsh.model.mesh.field.setNumber(bl_field, "Quads", 0)
             # A "BoundaryLayer" field only takes effect once activated via
             # setAsBoundaryLayer() — without this call the field is fully
             # configured but silently never applied, so BL settings the
             # user enables in the UI (n_layers/thickness/expansion) have
             # no effect on the generated volume mesh.
-            gmsh.model.mesh.field.setAsBoundaryLayer(1)
+            gmsh.model.mesh.field.setAsBoundaryLayer(bl_field)
 
     # Generate 3D mesh
     try:
