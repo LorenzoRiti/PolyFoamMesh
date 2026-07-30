@@ -95,7 +95,8 @@ def _hardware_budget(max_cells_override: int | None = None) -> dict:
     directly instead of relying on the hardware estimate."""
     cpu_count = os.cpu_count() or 4
     ram_bytes = _available_ram_bytes()
-    if max_cells_override and max_cells_override > 0:
+    is_explicit_target = bool(max_cells_override and max_cells_override > 0)
+    if is_explicit_target:
         max_cells = max_cells_override
     else:
         # ~2.5 KB/cell covers GMSH's own tet storage plus the downstream
@@ -103,7 +104,10 @@ def _hardware_budget(max_cells_override: int | None = None) -> dict:
         # case, checkMesh, the viewer). Use at most 40% of currently-free
         # RAM so WSL, the GUI itself, and everything else still has room.
         max_cells = max(80_000, int((ram_bytes * 0.4) / 2500))
-    return {"cpu_count": cpu_count, "ram_available_bytes": ram_bytes, "max_cells": max_cells}
+    return {
+        "cpu_count": cpu_count, "ram_available_bytes": ram_bytes,
+        "max_cells": max_cells, "is_explicit_target": is_explicit_target,
+    }
 
 
 def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
@@ -163,29 +167,96 @@ def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
 
 def _configure_adaptive_sizing(
     gmsh_mod, detail: str, max_extent: float, feat: dict, hw: dict,
+    cross_scale: float | None = None, domain_volume: float | None = None,
 ) -> dict:
-    """Local/adaptive sizing: fine only near small curves (a Distance +
+    """Local/adaptive sizing: fine near small curves (a Distance +
     Threshold background field) and near curved surfaces (GMSH's
     existing curvature-based auto-sizing, left on — the two combine via
     GMSH's own min-of-all-active-sources rule, no extra field needed
-    for that part), coarse everywhere else. CharacteristicLengthMin is
-    driven by the geometry's real smallest feature (clamped by the
-    hardware budget below, not by a % of the bounding box); Max stays
-    the existing detail-level coarse ceiling so the bulk of a large
-    domain is unaffected.
+    for that part), with the bulk/coarse size driven by the cell budget
+    rather than a single fixed detail-level multiplier.
+
+    Earlier version used a fixed coarse_max from detail level alone —
+    on a geometry with few/no small features (a plain pipe), that meant
+    a "Max cells target" override changed almost nothing: the floor
+    only governs refinement NEAR small features, so with none present
+    the whole mesh sat at the detail-level ceiling regardless of budget
+    (observed: requesting a 1M-cell target on a simple pipe still only
+    produced ~2K nodes). Now coarse_max is pulled down toward whatever
+    uniform size would use the full cell budget across the domain
+    volume — detail level still acts as the upper bound (never coarser
+    than what the user picked), the budget can only make it finer.
     """
     df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
     lc_user = max_extent * 0.02
-    coarse_max = lc_user * df["max_mult"]
+    coarse_max_detail = lc_user * df["max_mult"]
 
-    geom_min = max(feat["min_feature"] * 0.35, max_extent * 1e-5)
-    # Hardware floor: caps how fine the geometry-driven floor is allowed
-    # to go, so a machine with little free RAM backs off automatically
+    # Hardware floor: keeps the finest allowed size bounded by the cell
+    # budget, so a machine with little free RAM backs off automatically
     # rather than grinding for minutes/hours or exhausting memory — the
     # "fine everywhere" uniform pass tried earlier on this same valve
     # part never converged in a reasonable time; this bound is what a
     # uniform detail level has no way to express.
+    #
+    # Scaled off cross_scale (the bounding box's MEDIAN dimension), not
+    # max_extent (its LARGEST). On an elongated domain — a long pipe —
+    # max_extent is the length, not the diameter; a floor sized off the
+    # length was far coarser than the cross-section actually needed,
+    # producing stretched/flattened cells there (observed: aspect ratio
+    # 933 on a pipe test).
+    #
+    # CORRECTION: that pipe fix turned out to be the geom_min clamp
+    # below, not this — hw_floor was never the dominant term there
+    # (0.00013, negligible next to geom_min's 0.01). Using cross_scale
+    # here too was wrong: it also shrinks the reference on OTHER
+    # elongated geometries (the valve is 3m x 0.255m x 0.255m, just as
+    # elongated as the pipe test), making hw_floor ~12x finer than
+    # intended there and dragging the whole mesh into a multi-minute
+    # stall. hw_floor is meant purely as a hardware SAFETY backstop
+    # (only matters when it's the larger/coarser of the two floors) —
+    # max_extent is the right scale for that, not the cross-section.
     hw_floor = max_extent / (hw["max_cells"] ** (1 / 3) * 15)
+
+    # Budget-driven coarse size: the uniform edge length that would use
+    # roughly the full cell budget across the domain volume (0.118 is a
+    # regular tetrahedron's volume-to-edge-length^3 ratio, so V/(0.118*a^3)
+    # ~= N cells of edge a). Computed BEFORE the small-feature floor
+    # below, and independent of it, so an explicit "Max cells target"
+    # can genuinely drive the whole mesh finer — not just the area near
+    # small features — capped only by the detail level's own ceiling
+    # (never coarser than what the user picked) and by hw_floor (never
+    # finer than the hardware can reasonably handle).
+    # Only pulled finer when the user set an EXPLICIT "Max cells target".
+    # Without one, hw["max_cells"] is an auto-estimate from free RAM (an
+    # upper SAFETY bound only) — several million on a machine with a lot
+    # of RAM. Treating that as an active target by default turned every
+    # adaptive run into one striving to use the whole estimate, not just
+    # what the chosen Detail Level asked for: on the 3m valve body this
+    # meant a uniformly much finer bulk mesh than "medium" detail should
+    # give, and the generation stalled. Only an explicit target should
+    # pull resolution beyond the detail level's own default ceiling.
+    if hw.get("is_explicit_target"):
+        vol = domain_volume if domain_volume and domain_volume > 0 else max_extent ** 3
+        budget_uniform_size = (vol / (0.118 * hw["max_cells"])) ** (1 / 3)
+        coarse_max = min(coarse_max_detail, max(budget_uniform_size, hw_floor * 2))
+    else:
+        coarse_max = coarse_max_detail
+
+    # geom_min is only meaningful when the geometry genuinely HAS a small
+    # feature relative to everything else (the valve's 0.25mm fillets on
+    # a 3m body). On a geometry with no small features — every curve
+    # roughly the same size, like a plain pipe — "the shortest curve"
+    # isn't small at all, and using it unclamped produced min_size >
+    # coarse_max (observed directly: min=0.07 vs max=0.02 on the pipe
+    # test), which GMSH can't reconcile and which collapsed the whole
+    # mesh down to ~2K nodes regardless of any cell budget requested.
+    # Clamped against coarse_max (computed above, already budget-aware)
+    # rather than against the fixed detail ceiling, so it can't undercut
+    # a genuinely higher-resolution budget request either.
+    geom_min = min(
+        max(feat["min_feature"] * 0.35, max_extent * 1e-5),
+        coarse_max * 0.5,
+    )
     min_size = max(geom_min, hw_floor)
 
     n_small = len(feat["small_curve_tags"])
@@ -422,7 +493,10 @@ def generate_surface_stl(
 
     try:
         bbox = gmsh.model.getBoundingBox(-1, -1)
-        max_extent = max(abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2]))
+        dx, dy, dz = abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])
+        max_extent = max(dx, dy, dz)
+        cross_scale = sorted([dx, dy, dz])[1]
+        surf_vol = max(dx * dy * dz, 1e-12)
     except Exception as e:
         raise RuntimeError(f"Failed to read geometry bounding box: {e}") from e
 
@@ -438,7 +512,9 @@ def generate_surface_stl(
     else:
         hw = _hardware_budget()
         feat = _scan_feature_sizes(gmsh, max_extent)
-        sizing_info = _configure_adaptive_sizing(gmsh, detail, max_extent, feat, hw)
+        sizing_info = _configure_adaptive_sizing(
+            gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=surf_vol,
+        )
         logger.info("generate_surface_stl adaptive sizing: %s", sizing_info)
 
     gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
@@ -558,21 +634,20 @@ def generate_volume_mesh(
         bbox = gmsh.model.getBoundingBox(-1, -1)
     except Exception as e:
         raise RuntimeError(f"Failed to read geometry bounding box: {e}") from e
-    max_extent = max(
-        abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])
-    )
-    # Volume estimate for cell count prediction
-    vol = max(
-        (bbox[3] - bbox[0]) * (bbox[4] - bbox[1]) * (bbox[5] - bbox[2]),
-        1e-12,
-    )
+    dx, dy, dz = abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])
+    max_extent = max(dx, dy, dz)
+    cross_scale = sorted([dx, dy, dz])[1]  # median dimension — see _configure_adaptive_sizing
+    vol = max(dx * dy * dz, 1e-12)
 
-    # SAFETY: estimate cell count and cap if needed
-    MAX_GMSH_CELLS = 3_000_000  # safety limit for GMSH direct
+    # SAFETY: estimate cell count and auto-coarsen the explicit-size path
+    # if it would run away. The adaptive path has its own hardware-budget
+    # clamp (_hardware_budget/_configure_adaptive_sizing) that does the
+    # equivalent job with a better size estimate, so it doesn't need a
+    # separate pre-check here.
     if user_lc and user_lc > 0:
+        MAX_GMSH_CELLS = 3_000_000
         est_cells = vol / (user_lc ** 3)
         if est_cells > MAX_GMSH_CELLS:
-            # Auto-coarsen to stay under the limit
             new_lc = (vol / MAX_GMSH_CELLS) ** (1.0 / 3.0)
             logger.warning(
                 "Cell size %.5f would produce ~%.0f cells (cap=%d). "
@@ -582,16 +657,6 @@ def generate_volume_mesh(
             user_lc = new_lc
             if min_cell_size and min_cell_size > 0:
                 min_cell_size = min(min_cell_size, user_lc * 0.1)
-    elif not user_lc:
-        # Adaptive path: also check hardware budget
-        hw = _hardware_budget()
-        est_cells_adaptive = vol / ((max_extent * 0.02) ** 3)
-        if est_cells_adaptive > hw["max_cells"]:
-            logger.warning(
-                "Adaptive sizing would produce ~%.0f cells, budget=%d. "
-                "Capping will apply.",
-                est_cells_adaptive, hw["max_cells"],
-            )
 
     if user_lc:
         # Explicit user override: use user's cell sizes directly
@@ -612,7 +677,9 @@ def generate_volume_mesh(
     else:
         hw = _hardware_budget(max_cells_override)
         feat = _scan_feature_sizes(gmsh, max_extent)
-        sizing_info = _configure_adaptive_sizing(gmsh, detail, max_extent, feat, hw)
+        sizing_info = _configure_adaptive_sizing(
+            gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=vol,
+        )
         logger.info(
             "generate_volume_mesh adaptive sizing: %s (feature scan: min=%.5f "
             "small_curves=%d)",
