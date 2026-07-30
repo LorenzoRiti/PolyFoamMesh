@@ -165,6 +165,61 @@ def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
     }
 
 
+def _detect_surface_gaps(gmsh_mod, max_extent: float, max_pairs: int = 4000) -> list[dict]:
+    """Find pairs of surfaces close to each other — narrow internal
+    channels/passages (a valve's internal bore near its seat, say) that
+    curve-length scanning alone misses entirely: a gap can be tight with
+    no short edge anywhere near it. GMSH's own automatic gap-aware field
+    (AutomaticMeshSizeField, medial-axis based) would be the mature
+    solution here, but the installed GMSH build lacks the P4EST it
+    requires ("Gmsh has to be compiled with HXT and P4EST" — confirmed
+    by trying it directly). This is the same pragmatic fallback a proven
+    reference tool for this exact geometry (an external snappyHexMesh
+    geometry analyzer script) uses: bounding-box-to-bounding-box
+    distance as a cheap proxy for true surface-to-surface distance, not
+    exact but good enough to flag WHERE a gap is probably tight.
+
+    O(n^2) over surface pairs — fine for realistic part complexity
+    (dozens to low hundreds of surfaces); max_pairs guards against
+    pathological cases without silently hanging.
+    """
+    surfaces = gmsh_mod.model.getEntities(2)
+    n = len(surfaces)
+    if n < 2 or n * (n - 1) // 2 > max_pairs:
+        return []
+
+    boxes = [(tag, gmsh_mod.model.getBoundingBox(dim, tag)) for dim, tag in surfaces]
+
+    def bbox_distance(b1, b2):
+        d2 = 0.0
+        for i in range(3):
+            lo1, hi1, lo2, hi2 = b1[i], b1[i + 3], b2[i], b2[i + 3]
+            if hi1 < lo2:
+                d2 += (lo2 - hi1) ** 2
+            elif hi2 < lo1:
+                d2 += (lo1 - hi2) ** 2
+        return d2 ** 0.5
+
+    # Only genuinely narrow gaps are worth dedicated refinement — a
+    # threshold relative to overall domain size, not an absolute value,
+    # so this works the same on a 3m valve or a 3cm fitting.
+    gap_threshold = max_extent * 0.02
+    gaps = []
+    for i in range(n):
+        tag_a, box_a = boxes[i]
+        for j in range(i + 1, n):
+            tag_b, box_b = boxes[j]
+            dist = bbox_distance(box_a, box_b)
+            if 1e-9 < dist < gap_threshold:
+                cx = ((box_a[0] + box_a[3]) / 2 + (box_b[0] + box_b[3]) / 2) / 2
+                cy = ((box_a[1] + box_a[4]) / 2 + (box_b[1] + box_b[4]) / 2) / 2
+                cz = ((box_a[2] + box_a[5]) / 2 + (box_b[2] + box_b[5]) / 2) / 2
+                gaps.append({"distance": dist, "center": (cx, cy, cz)})
+
+    gaps.sort(key=lambda g: g["distance"])
+    return gaps[:50]  # cap field count — each becomes a Ball field below
+
+
 def _configure_adaptive_sizing(
     gmsh_mod, detail: str, max_extent: float, feat: dict, hw: dict,
     cross_scale: float | None = None, domain_volume: float | None = None,
@@ -260,6 +315,7 @@ def _configure_adaptive_sizing(
     min_size = max(geom_min, hw_floor)
 
     n_small = len(feat["small_curve_tags"])
+    active_fields = []
     if n_small:
         f_dist = gmsh_mod.model.mesh.field.add("Distance")
         gmsh_mod.model.mesh.field.setNumbers(
@@ -275,7 +331,35 @@ def _configure_adaptive_sizing(
         gmsh_mod.model.mesh.field.setNumber(
             f_thresh, "DistMax", max(feat["small_cutoff"] * 20, min_size * 40)
         )
-        gmsh_mod.model.mesh.field.setAsBackgroundMesh(f_thresh)
+        active_fields.append(f_thresh)
+
+    # Gap-aware refinement: narrow passages between surfaces (a valve's
+    # internal bore near its seat, say) that curve-length scanning can
+    # miss entirely — a tight gap doesn't need a short edge nearby to
+    # exist. One Ball field per detected gap, sized to resolve it with
+    # a handful of cells across, bounded by the same min/max as
+    # everywhere else.
+    gaps = _detect_surface_gaps(gmsh_mod, max_extent)
+    for gap in gaps:
+        gap_size = max(gap["distance"] / 3.0, min_size)
+        gap_size = min(gap_size, coarse_max)
+        cx, cy, cz = gap["center"]
+        f_ball = gmsh_mod.model.mesh.field.add("Ball")
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "VIn", gap_size)
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "VOut", coarse_max)
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "Radius", gap["distance"] * 3.0)
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "Thickness", gap["distance"] * 3.0)
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "XCenter", cx)
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "YCenter", cy)
+        gmsh_mod.model.mesh.field.setNumber(f_ball, "ZCenter", cz)
+        active_fields.append(f_ball)
+
+    if len(active_fields) == 1:
+        gmsh_mod.model.mesh.field.setAsBackgroundMesh(active_fields[0])
+    elif len(active_fields) > 1:
+        f_min = gmsh_mod.model.mesh.field.add("Min")
+        gmsh_mod.model.mesh.field.setNumbers(f_min, "FieldsList", active_fields)
+        gmsh_mod.model.mesh.field.setAsBackgroundMesh(f_min)
 
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", min_size)
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", coarse_max)
@@ -295,11 +379,14 @@ def _configure_adaptive_sizing(
 
     logger.info(
         "Adaptive sizing: min=%.5f max=%.5f (geom_min=%.5f hw_floor=%.5f) "
-        "small_curves=%d/%d cpu=%d max_cells_budget=%d",
+        "small_curves=%d/%d gaps=%d cpu=%d max_cells_budget=%d",
         min_size, coarse_max, geom_min, hw_floor, n_small,
-        len(gmsh_mod.model.getEntities(1)), hw["cpu_count"], hw["max_cells"],
+        len(gmsh_mod.model.getEntities(1)), len(gaps), hw["cpu_count"], hw["max_cells"],
     )
-    return {"min_size": min_size, "coarse_max": coarse_max, "n_small_curves": n_small}
+    return {
+        "min_size": min_size, "coarse_max": coarse_max,
+        "n_small_curves": n_small, "n_gaps": len(gaps),
+    }
 
 
 @dataclass
