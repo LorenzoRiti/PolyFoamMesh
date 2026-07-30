@@ -174,6 +174,12 @@ def _binary_faces_to_ascii(data: bytes) -> str:
 
 def _parse_of_points(path: Path) -> np.ndarray:
     text = _read_of_block(path)
+    # Each point is written "(x y z)" — np.fromstring can't tokenize the
+    # parens (raises "unmatched data" on modern numpy), so strip them.
+    # cfMesh meshes are normally too large for this manual-parser fallback
+    # (they require foamToVTK instead), which is why this only surfaces on
+    # small meshes such as autopoly's.
+    text = text.replace("(", " ").replace(")", " ")
     arr = np.fromstring(text, sep=" ", dtype=np.float64)
     return arr.reshape(-1, 3)
 
@@ -998,18 +1004,32 @@ class ViewerWidget(QWidget):
         self._show_mesh_too_large("Display pipeline timed out (>90s)")
 
     def _display_mesh(self):
-        """Show a message directing the user to ParaView for mesh viewing.
-
-        The integrated viewer cannot reliably display large polyhedral
-        meshes — use ParaView (Strumenti > Launch ParaView).
-        """
+        """Render the mesh (foamToVTK + PyVista), guarded by a 90s safety
+        timeout that falls back to the 'use ParaView' message if the
+        pipeline hangs (e.g. OpenGL issues on this machine)."""
         if self._plotter is None or not self._mesh_case_dir:
             return
+        if getattr(self, "_mesh_display_in_progress", False):
+            logger.debug("_display_mesh already in progress — skipping duplicate call")
+            return
+        self._mesh_display_in_progress = True
         if self._section_enabled:
             self._display_mesh_section()
+            self._mesh_display_in_progress = False
             return
-        self._stats_label.setText("Usa Strumenti > Launch ParaView per visualizzare la mesh")
-        logger.info("Mesh display: Strumenti > Launch ParaView")
+        # Show "Loading..." immediately, then chain async operations
+        try:
+            self._plotter.clear()
+            self._plotter.add_text(
+                "Loading mesh...",
+                color=self._text_color, font_size=14,
+            )
+            self._plotter.render()
+        except Exception as exc:
+            logger.error("Plotter failed to show loading message: %s", exc)
+        QApplication.processEvents()
+        self._start_display_timeout(90)
+        QTimer.singleShot(0, self._step_vtu_for_mesh)
         # _mesh_display_in_progress is cleared when _do_load_patches completes
 
     def _display_mesh_section(self):
@@ -1269,6 +1289,14 @@ class ViewerWidget(QWidget):
         # _on_view_changed → _display_mesh, duplicating the foamToVTK launch
         # and causing the first process to be killed (race condition).
 
+    def _delayed_display_mesh(self):
+        """Deferred mesh rendering — no-ops if view selector was disabled
+        (e.g. mesh too large).  Called via QTimer.singleShot from show_mesh()
+        so the stats label paints before the heavy VTK pipeline starts."""
+        if not self._view_selector.isEnabled():
+            return
+        self._display_mesh()
+
     def show_mesh(self, case_dir: Path | str):
         """Show mesh status and ParaView launch link.
 
@@ -1296,16 +1324,12 @@ class ViewerWidget(QWidget):
             else:
                 self._stats_label.setText("Mesh ready — usa Strumenti > Launch ParaView")
             self._view_selector.setEnabled(True)
+            # Actually render the mesh (deferred so the stats label above
+            # paints first). _delayed_display_mesh no-ops if the view
+            # selector got disabled above (mesh too large).
+            QTimer.singleShot(50, self._delayed_display_mesh)
         except Exception as exc:
             logger.exception("show_mesh failed: %s", exc)
-
-    def _delayed_display_mesh(self):
-        """Call _display_mesh only if the view selector is still enabled
-        (meaning the mesh is not too large for the viewer)."""
-        if self._view_selector.isEnabled():
-            self._display_mesh()
-        else:
-            logger.info("View selector disabled — mesh too large, skipping display")
 
     def clear(self):
         self._cad_meshes = []

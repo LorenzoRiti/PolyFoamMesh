@@ -138,6 +138,3 @@ class BCEditorDialog(QDialog):
             self, "Exported",
             f"Boundary conditions exported to {target}"
         )
-
-    def get_patches(self):
-        return self._patches

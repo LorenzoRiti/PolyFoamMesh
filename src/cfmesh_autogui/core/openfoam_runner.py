@@ -1012,12 +1012,38 @@ class PolyDualWorker(QObject):
                 text=True,
                 timeout=300,
             )
+            # Always log stdout/stderr so we can diagnose silent failures
+            stdout_text = (result.stdout or "").strip()
+            stderr_text = (result.stderr or "").strip()
+            if stdout_text:
+                for line in stdout_text.splitlines()[-20:]:
+                    self.log_line.emit(f"[polyDualMesh] {line}")
+            if stderr_text:
+                for line in stderr_text.splitlines()[-10:]:
+                    self.log_line.emit(f"[polyDualMesh:err] {line}")
             if result.returncode == 0:
+                # Verify the mesh actually changed by checking owner file
+                owner_path = self._case_dir / "constant" / "polyMesh" / "owner"
+                if owner_path.exists():
+                    logger.info(
+                        "polyDualMesh OK (rc=0), owner file exists: %s",
+                        owner_path,
+                    )
+                else:
+                    logger.warning(
+                        "polyDualMesh returned rc=0 but owner file NOT found at %s",
+                        owner_path,
+                    )
                 self.log_line.emit(
                     f"[polyDualMesh] Conversion OK (featureAngle={self._feature_angle})"
                 )
                 self.finished.emit(self._case_dir)
             else:
+                logger.error(
+                    "polyDualMesh FAILED (rc=%d): %s",
+                    result.returncode,
+                    stdout_text[-500:] if stdout_text else "(no stdout)",
+                )
                 self.log_line.emit(f"[polyDualMesh] Return code {result.returncode}")
                 self.failed.emit(f"polyDualMesh returned {result.returncode}")
         except subprocess.TimeoutExpired:
