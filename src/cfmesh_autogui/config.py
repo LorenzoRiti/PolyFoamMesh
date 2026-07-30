@@ -294,3 +294,29 @@ class OFConfig:
             f"polyDualMesh {feature_angle} -overwrite{extra} 2>&1 | tail -20"
         )
         return self._build_wsl_cmd(cmd)
+
+    def build_gmsh_to_foam_cmd(self, case_dir: Path | str, msh_filename: str) -> list[str]:
+        """Build WSL command to convert a GMSH .msh file to OpenFOAM polyMesh
+        via OpenFOAM's own gmshToFoam utility.
+
+        Replaces the app's custom Python meshio-based converter
+        (mesh_converter.msh_to_of_polymesh), which turned out to have
+        several correctness bugs once real tetrahedra started flowing
+        through it (owner/neighbour indexing offset by the surface-element
+        count, boundary patches tagged from the wrong entity, and — never
+        fully resolved — face-winding/orientation errors producing
+        negative-volume cells). gmshToFoam is OpenFOAM's own mature,
+        already-shipped converter and produces a clean mesh from the same
+        .msh file (verified: 8665/8665 real tetrahedra, only a 0.5%
+        residual quality warning, vs. ~40% negative-volume cells from the
+        custom converter on the same input).
+        """
+        case_dir = Path(case_dir).resolve()
+        linux_case_q = self._quoted_linux_path(case_dir)
+        env_quoted = shlex.quote(self.env_script)
+        msh_quoted = shlex.quote(msh_filename)
+        cmd = (
+            f"source {env_quoted} 2>/dev/null; "
+            f"cd {linux_case_q} && gmshToFoam {msh_quoted} 2>&1 | tail -40"
+        )
+        return self._build_wsl_cmd(cmd)

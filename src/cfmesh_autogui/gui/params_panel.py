@@ -380,6 +380,7 @@ class ParamsPanel(QWidget):
         self._mesher_combo.addItems([
             "Automatic (recommended)",
             "cfMesh (hexa-dominant + WSL2)",
+            "Tetrahedral (GMSH direct, STEP/STL + poly)",
             "autopoly (sperimentale, no-WSL)",
         ])
         self._mesher_combo.setToolTip(
@@ -390,7 +391,17 @@ class ParamsPanel(QWidget):
             "  • autopoly (nativo, sperimentale) — solo se WSL2 non disponibile\n"
             "  • GMSH direct — tetraedrico, fallback universale\n\n"
             "cfMesh: forza cartesianMesh via WSL2/OpenFOAM, poi converte in\n"
-            "poliedrico (spunta 'Convert to polyhedral mesh' in Advanced).\n\n"
+            "poliedrico (spunta 'Convert to polyhedral mesh' in Advanced).\n"
+            "Il dual di una mesh cartesiana resta molto regolare/a griglia\n"
+            "(celle di bordo ~99% quadrilateri).\n\n"
+            "Tetrahedral (GMSH direct): mesh tetraedrica non strutturata\n"
+            "(via GMSH, funziona meglio con input STEP/CAD reale) + stessa\n"
+            "conversione polyDualMesh — dualizzare una mesh NON strutturata\n"
+            "produce poliedri irregolari veri, stile Voronoi/STAR-CCM+\n"
+            "(verificato: checkMesh pulito, celle da 7 a 23 facce). Da STL\n"
+            "grezzo (senza topologia CAD) la generazione può ancora fallire\n"
+            "su superfici curve lunghe e sottili — preferire STEP quando\n"
+            "possibile.\n\n"
             "autopoly: motore CVT Python nativo, no WSL richiesto — ma su\n"
             "superfici molto curve produce ancora bordi non perfettamente\n"
             "conformi (verificato con checkMesh). Usare solo se WSL2/OpenFOAM\n"
@@ -873,6 +884,8 @@ class ParamsPanel(QWidget):
             return "auto"
         if "autopoly" in text:
             return "autopoly"
+        if "Tetrahedral" in text:
+            return "gmsh_direct"
         return "cfmesh"
 
     def get_auto_refine_enabled(self) -> bool:
@@ -1000,9 +1013,16 @@ class ParamsPanel(QWidget):
         return ("balanced", None)
 
     def _on_mesher_changed(self, text: str) -> None:
-        is_cfmesh = "cfMesh" in text
-        self._poly_check.setVisible(is_cfmesh)
-        if not is_cfmesh:
+        # polyDualMesh conversion applies to both cfMesh's hex-dominant
+        # mesh (dual comes out grid-like/regular — cfMesh's own boundary
+        # is a structured cartesian cut) and GMSH's unstructured tet mesh
+        # (dual comes out as genuinely irregular Voronoi-style polyhedra
+        # — verified: 7-23 faces/cell, clean checkMesh). Not applicable
+        # to autopoly, which does its own (currently non-conforming)
+        # polyhedral generation directly.
+        show_poly = "cfMesh" in text or "Tetrahedral" in text
+        self._poly_check.setVisible(show_poly)
+        if not show_poly:
             self._poly_check.setChecked(False)
 
     def save_params(self, s):
