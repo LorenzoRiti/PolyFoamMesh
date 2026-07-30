@@ -250,10 +250,19 @@ def msh_to_of_polymesh(
 # File writers
 # ---------------------------------------------------------------------------
 
-def _of_header(class_type: str) -> str:
-    """OpenFOAM ASCII file header."""
+def _of_header(class_type: str, object_name: str) -> str:
+    """OpenFOAM ASCII file header.
+
+    The banner must stay inside a single C-style comment (opened on the
+    first line with '*\\', closed only on the last banner line with
+    '*/') — closing it early on line 1 leaves the '|'-boxed lines as
+    raw tokens, which OpenFOAM's parser rejects with "First token could
+    not be read or is not 'FoamFile'" before it ever reaches the actual
+    data (found via a broken GMSH-tet-mesh conversion: checkMesh,
+    polyDualMesh and ParaView all failed to open the resulting mesh).
+    """
     hdr = (
-        "/*--------------------------------*- C++ -*----------------------------------*/\n"
+        "/*--------------------------------*- C++ -*----------------------------------*\\\n"
         "| =========                 |                                                 |\n"
         "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
         "|  \\\\    /   O peration     | Version:  v2512                                 |\n"
@@ -265,11 +274,11 @@ def _of_header(class_type: str) -> str:
         "    format      ascii;\n"
         "    class       {cs};\n"
         "    location    \"constant/polyMesh\";\n"
-        "    object      {cs};\n"
+        "    object      {obj};\n"
         "}}\n"
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n"
     )
-    return hdr.format(cs=class_type)
+    return hdr.format(cs=class_type, obj=object_name)
 
 
 def _write_points(poly_dir: Path, points: np.ndarray) -> None:
@@ -279,7 +288,7 @@ def _write_points(poly_dir: Path, points: np.ndarray) -> None:
         lines.append(f"    ({p[0]:.10e} {p[1]:.10e} {p[2]:.10e})")
     lines.append(")")
     (poly_dir / "points").write_text(
-        _of_header("vectorField") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("vectorField", "points") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 
@@ -290,7 +299,7 @@ def _write_faces(poly_dir: Path, faces: list[list[int]]) -> None:
         lines.append(f"{len(fv)}({' '.join(str(v) for v in fv)})")
     lines.append(")")
     (poly_dir / "faces").write_text(
-        _of_header("faceList") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("faceList", "faces") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 
@@ -301,7 +310,7 @@ def _write_owner(poly_dir: Path, owners: list[int]) -> None:
         lines.append(str(o))
     lines.append(")")
     (poly_dir / "owner").write_text(
-        _of_header("labelList") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("labelList", "owner") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 
@@ -312,7 +321,7 @@ def _write_neighbour(poly_dir: Path, neighbours: list[int]) -> None:
         lines.append(str(nb))
     lines.append(")")
     (poly_dir / "neighbour").write_text(
-        _of_header("labelList") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("labelList", "neighbour") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 
@@ -327,5 +336,5 @@ def _write_boundary(poly_dir: Path, patches: list[dict]) -> None:
         lines.append("    }")
     lines.append(")")
     (poly_dir / "boundary").write_text(
-        _of_header("polyBoundaryMesh") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("polyBoundaryMesh", "boundary") + "\n".join(lines) + "\n", encoding="ascii",
     )
