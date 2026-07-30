@@ -451,6 +451,20 @@ def generate_volume_mesh(
     for dim, tag in gmsh.model.getEntities(3):
         gmsh.model.addPhysicalGroup(3, [tag], tag)
 
+    # gmshToFoam (OpenFOAM's own converter) segfaults reading MSH 4.x
+    # output on geometries with many adjoining surfaces (e.g. a real
+    # multi-face valve part): duplicate-node removal during meshing
+    # leaves gaps in the node tag sequence (e.g. 7099 nodes but max tag
+    # 7494), and gmshToFoam's MSH4 reader isn't robust to that — it
+    # crashes mid-parse ("Starting to read points...", then SIGSEGV) on
+    # geometries simple enough to never hit a gap (a plain tube, a block
+    # with one hole) never triggered this. Renumbering to a dense 1..N
+    # sequence and writing the older MSH 2.2 format — which gmshToFoam
+    # handles reliably — avoids both the gaps and the fragile MSH4 parser.
+    gmsh.model.mesh.renumberNodes()
+    gmsh.model.mesh.renumberElements()
+    gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+
     msh_path = Path(output_msh)
     msh_path.parent.mkdir(parents=True, exist_ok=True)
     try:
