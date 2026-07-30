@@ -3676,10 +3676,33 @@ class _GmshConversionWorker(QObject):
 
     @Slot()
     def run(self):
-        from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh
+        # OpenFOAM's own gmshToFoam (via WSL), not the custom Python
+        # meshio-based converter — msh_to_of_polymesh() turned out to have
+        # several correctness bugs (owner/neighbour indexing, boundary
+        # patch tagging, face-winding/orientation) that only surfaced once
+        # generate_volume_mesh() actually produced real tetrahedra to feed
+        # it, which it never had before. See config.OFConfig.
+        # build_gmsh_to_foam_cmd for the full story.
+        import subprocess
+        from cfmesh_autogui.config import OFConfig
         try:
-            poly_dir = msh_to_of_polymesh(self._msh_path, self._case_dir)
+            cfg = OFConfig()
+            cmd = cfg.build_gmsh_to_foam_cmd(self._case_dir, self._msh_path.name)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300,
+            )
+            for line in (result.stdout or "").splitlines()[-20:]:
+                self.log_line.emit(f"[gmshToFoam] {line}")
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or result.stdout or "")[-500:]
+                raise RuntimeError(f"gmshToFoam failed (exit {result.returncode}): {stderr_tail}")
+            poly_dir = self._case_dir / "constant" / "polyMesh"
+            if not (poly_dir / "points").exists():
+                raise RuntimeError(f"gmshToFoam reported success but no polyMesh found in {poly_dir}")
             self.log_line.emit(f"[gmsh] polyMesh: {poly_dir}")
+        except subprocess.TimeoutExpired:
+            self.failed.emit("gmshToFoam timed out after 300s")
+            return
         except Exception as e:
             logger.error("MSH conversion failed: %s", e)
             self.failed.emit(str(e))
