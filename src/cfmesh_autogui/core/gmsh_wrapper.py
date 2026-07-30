@@ -433,6 +433,24 @@ def generate_volume_mesh(
             gmsh.model.setPhysicalName(2, tag, f"surface_{tag}")
             names.append(f"surface_{tag}")
 
+    # GMSH only writes mesh elements belonging to a defined Physical Group
+    # by default. Only surfaces ever got one (above) — the volume never
+    # did — so every tetrahedron mesh.generate(3) just produced was
+    # silently dropped on write: the .msh always came out with only the
+    # boundary triangles, 0 volume cells, no error anywhere. This was the
+    # actual root cause of "GMSH direct" always producing 0 tets, for BOTH
+    # STEP and STL input — independent of the STL topology reconstruction
+    # above (which is still needed for STL specifically, since a raw STL
+    # has no volume entity to mesh in the first place).
+    #
+    # Fixed by tagging the volume(s) too, rather than blanket
+    # Mesh.SaveAll=1 — SaveAll also dumps untagged leftover element
+    # blocks (stray points/edges from the STL reconstruction, etc.),
+    # and downstream msh_to_of_polymesh()'s meshio.read() rejects a
+    # mismatched count of cell blocks vs. physical-tag arrays.
+    for dim, tag in gmsh.model.getEntities(3):
+        gmsh.model.addPhysicalGroup(3, [tag], tag)
+
     msh_path = Path(output_msh)
     msh_path.parent.mkdir(parents=True, exist_ok=True)
     try:
