@@ -2093,6 +2093,31 @@ class MainWindow(QMainWindow):
         root = self._resolve_case_root()
         self._case_dir = root / f"gmsh_direct_{ts}"
         self._case_dir.mkdir(parents=True, exist_ok=True)
+        # gmshToFoam (and checkMesh/polyDualMesh after it) need a real
+        # OpenFOAM case skeleton — system/controlDict at minimum. Every
+        # other mesher path gets this from write_meshdict() or similar;
+        # this one never got it at all. Uncovered by fixing the freeze
+        # above: gmshToFoam failed immediately with "cannot find file
+        # .../system/controlDict" — previously invisible because nothing
+        # downstream of the freeze ever ran.
+        (self._case_dir / "system").mkdir(parents=True, exist_ok=True)
+        (self._case_dir / "constant").mkdir(parents=True, exist_ok=True)
+        self._write_control_dict(self._case_dir)
+        (self._case_dir / "system" / "fvSchemes").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n"
+            "ddtSchemes { default steadyState; }\n"
+            "gradSchemes { default Gauss linear; }\n"
+            "divSchemes { default Gauss linear; }\n"
+            "laplacianSchemes { default Gauss linear corrected; }\n"
+            "interpolationSchemes { default linear; }\n"
+            "snGradSchemes { default corrected; }\n",
+            encoding="ascii",
+        )
+        (self._case_dir / "system" / "fvSolution").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }\n"
+            "solvers { p { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0.1; } }\n",
+            encoding="ascii",
+        )
         self._params.set_case_dir(str(self._case_dir))
         msh_path = self._case_dir / "mesh.msh"
         detail = self._params.get_detail_level()
@@ -2108,48 +2133,82 @@ class MainWindow(QMainWindow):
         self._gmsh_thread = t
         self._gmsh_worker = w
 
-        bl_retried = [False]
-
-        def on_volume_result(result: dict):
-            if my_id != self._run_id:
-                return
-            msh_path_result = Path(result["path"])
-            names = result["names"]
-            self._log.append_log(f"[gmsh] Volume mesh: {msh_path_result} — patches: {names}")
-            self._continue_gmsh_direct(my_id, msh_path_result, names)
-
-        def on_volume_failed(msg: str):
-            if my_id != self._run_id:
-                return
-            if not bl_retried[0] and bl_params and n_layers > 0:
-                bl_retried[0] = True
-                self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
-                w2 = GmshVolumeWorker(step_path, msh_path, detail, 0, None, 1.2)
-                w2.moveToThread(t)
-                self._gmsh_worker = w2
-                w2.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-                w2.finished.connect(on_volume_result, Qt.QueuedConnection)
-                w2.failed.connect(on_volume_failed, Qt.QueuedConnection)
-                w2.finished.connect(t.quit, Qt.QueuedConnection)
-                w2.finished.connect(w2.deleteLater, Qt.QueuedConnection)
-                w2.failed.connect(t.quit, Qt.QueuedConnection)
-                w2.failed.connect(w2.deleteLater, Qt.QueuedConnection)
-                t.started.connect(w2.run)
-                t.start()
-                return
-            self._log.append_log(f"[ERROR] GMSH volume: {msg}")
-            self._params.set_all_enabled(True)
-            QMessageBox.critical(self, "GMSH Failed", f"Volume mesh failed:\n{msg}")
+        # ROOT CAUSE of today's "Converting to OpenFOAM polyMesh..." freeze,
+        # found by checking QThread.currentThread() live inside the old
+        # on_volume_result closure: it ran on the WORKER thread `t`, not
+        # the main thread — despite Qt.QueuedConnection. w.finished was
+        # connected to a plain nested closure, not a bound method of a
+        # QObject; PySide6 can't always resolve a definite receiver thread
+        # for that, and fell back to a same-thread (direct) call. Every
+        # downstream step run from inside that closure — including this
+        # module's whole gmshToFoam conversion, and any QTimer.singleShot
+        # it scheduled for polling — ran on thread `t`, which quits (via
+        # the `finished -> t.quit` connection below) essentially as soon
+        # as the closure returns. The polling timer was scheduled on an
+        # event loop that was already gone, so it silently never fired —
+        # not a hang in gmshToFoam or WSL at all (see the diagnostic
+        # session: direct WSL/subprocess probes from that exact context
+        # always completed in well under a second). Fixed by connecting
+        # to real bound methods of `self` instead of closures — self is a
+        # QWidget, its thread affinity (main thread) is unambiguous, so
+        # PySide6 queues correctly.
+        self._gmsh_vol_ctx = {
+            "step_path": step_path, "msh_path": msh_path, "detail": detail,
+            "bl_params": bl_params, "n_layers": n_layers,
+            "bl_thickness": bl_thickness, "bl_expansion": bl_expansion,
+            "thread": t, "bl_retried": False, "my_id": my_id,
+        }
 
         w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.finished.connect(on_volume_result, Qt.QueuedConnection)
-        w.failed.connect(on_volume_failed, Qt.QueuedConnection)
+        w.finished.connect(self._on_gmsh_volume_result, Qt.QueuedConnection)
+        w.failed.connect(self._on_gmsh_volume_failed, Qt.QueuedConnection)
         w.finished.connect(t.quit, Qt.QueuedConnection)
         w.finished.connect(w.deleteLater, Qt.QueuedConnection)
         w.failed.connect(t.quit, Qt.QueuedConnection)
         w.failed.connect(w.deleteLater, Qt.QueuedConnection)
         t.started.connect(w.run)
         t.start()
+
+    def _on_gmsh_volume_result(self, result: dict):
+        """Bound method (not a closure) so Qt.QueuedConnection reliably
+        delivers this on the main thread — see _start_gmsh_volume_worker's
+        comment for the full story of why that distinction matters here."""
+        ctx = self._gmsh_vol_ctx
+        my_id = ctx["my_id"]
+        if my_id != self._run_id:
+            return
+        msh_path_result = Path(result["path"])
+        names = result["names"]
+        self._log.append_log(f"[gmsh] Volume mesh: {msh_path_result} — patches: {names}")
+        self._continue_gmsh_direct(my_id, msh_path_result, names)
+
+    def _on_gmsh_volume_failed(self, msg: str):
+        """Bound method — see _on_gmsh_volume_result."""
+        from cfmesh_autogui.core.openfoam_runner import GmshVolumeWorker
+        ctx = self._gmsh_vol_ctx
+        my_id = ctx["my_id"]
+        if my_id != self._run_id:
+            return
+        if not ctx["bl_retried"] and ctx["bl_params"] and ctx["n_layers"] > 0:
+            ctx["bl_retried"] = True
+            self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
+            t = ctx["thread"]
+            w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2)
+            w2.moveToThread(t)
+            self._gmsh_worker = w2
+            w2.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+            w2.finished.connect(self._on_gmsh_volume_result, Qt.QueuedConnection)
+            w2.failed.connect(self._on_gmsh_volume_failed, Qt.QueuedConnection)
+            w2.finished.connect(t.quit, Qt.QueuedConnection)
+            w2.finished.connect(w2.deleteLater, Qt.QueuedConnection)
+            w2.failed.connect(t.quit, Qt.QueuedConnection)
+            w2.failed.connect(w2.deleteLater, Qt.QueuedConnection)
+            t.started.connect(w2.run)
+            t.start()
+            return
+        self._log.append_log(f"[ERROR] GMSH volume: {msg}")
+        self._params.set_all_enabled(True)
+        QMessageBox.critical(self, "GMSH Failed", f"Volume mesh failed:\n{msg}")
 
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
         """Convert MSH → OpenFOAM via gmshToFoam.
