@@ -15,7 +15,6 @@ from PySide6.QtCore import (
     Q_ARG,
     QMetaObject,
     QObject,
-    QProcess,
     QSize,
     Qt,
     QThread,
@@ -2155,46 +2154,84 @@ class MainWindow(QMainWindow):
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
         """Convert MSH → OpenFOAM via gmshToFoam.
 
-        Uses QProcess, not a blocking subprocess.run() call inside a
-        QThread (the previous _GmshConversionWorker design) — that
-        pattern froze the GUI to the point Windows flagged it "Not
-        Responding" during a real run, matching a symptom this codebase
-        already hit and fixed once before for foamToVTK (see
-        viewer_widget.py's _start_vtk_qprocess): a blocking OS subprocess
-        call, even off the GUI thread, can still stall Qt's event
-        delivery. QProcess integrates with Qt's own event loop instead,
-        so it doesn't need a separate QThread at all.
+        Runs the blocking subprocess.run() call on a plain Python
+        threading.Thread (not QThread, not QProcess) and hands the
+        result back via a thread-safe queue.Queue, polled by a QTimer —
+        the same pattern _start_autopoly_worker already uses successfully
+        elsewhere in this file. Two prior designs both hung in a real
+        session with a genuine app.exec() loop, reproduced live:
+        subprocess.run() inside a QThread (original), and QProcess
+        (first fix attempt, worked in isolation but not once wired into
+        the full MainWindow — the finished signal never arrived, cause
+        unidentified). This sidesteps Qt's process machinery for the
+        actual work entirely; only plain, well-understood pieces
+        (threading.Thread, queue.Queue, QTimer.singleShot) are load-
+        bearing here.
         """
         self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
         self._status.showMessage("GMSH: conversion...")
         self._progress.setRange(0, 0)
         self._progress.setVisible(True)
 
-        from cfmesh_autogui.config import OFConfig
-        cfg = OFConfig()
-        cmd = cfg.build_gmsh_to_foam_cmd(self._case_dir, msh_path.name)
-
         case_dir = self._case_dir
-        proc = QProcess(self)
-        proc.setProcessChannelMode(QProcess.SeparateChannels)
-        self._gmsh_conv_process = proc
+        msh_name = msh_path.name
 
-        timeout_timer = QTimer(self)
-        timeout_timer.setSingleShot(True)
-        self._gmsh_conv_timeout_timer = timeout_timer
+        import queue
+        import threading
+        result_queue: queue.Queue = queue.Queue()
+
+        def worker_fn():
+            # Dispatch through a fresh `python -m gmsh_wrapper` subprocess
+            # (same pattern GmshVolumeWorker already uses reliably),
+            # rather than calling wsl.exe directly from this long-lived
+            # GUI process — see gmsh_wrapper.py's "convert_to_foam" CLI
+            # branch for why.
+            import json
+            import subprocess
+            try:
+                frozen = getattr(sys, "frozen", False)
+                args = ["convert_to_foam", str(case_dir), msh_name]
+                if frozen:
+                    cmd = [sys.executable, "--gmsh-convert-to-foam"] + args[1:]
+                else:
+                    cmd = [sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper"] + args
+                run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=300, cwd=run_cwd,
+                )
+                try:
+                    payload = json.loads(result.stdout.strip().splitlines()[-1])
+                except Exception:
+                    payload = None
+                if payload is not None:
+                    result_queue.put((
+                        "done",
+                        0 if payload.get("success") else 1,
+                        payload.get("stdout", ""),
+                        payload.get("stderr") or payload.get("error", ""),
+                    ))
+                else:
+                    result_queue.put((
+                        "done", result.returncode, result.stdout, result.stderr,
+                    ))
+            except subprocess.TimeoutExpired:
+                result_queue.put(("error", "gmshToFoam timed out after 300s"))
+            except Exception as e:
+                result_queue.put(("error", str(e)))
+
+        thread = threading.Thread(target=worker_fn, daemon=True)
+        # Not "_gmsh_conv_thread" on purpose — closeEvent()'s generic
+        # cleanup list below calls thread.isRunning()/.quit()/.terminate()
+        # (QThread API) on every entry there; this is a plain Python
+        # threading.Thread (daemon=True, so it won't block process exit
+        # on its own — no Qt-specific cleanup needed or safe to attempt).
+        self._gmsh_conv_py_thread = thread
 
         def fail(msg: str):
-            timeout_timer.stop()
             self._log.append_log(f"[ERROR] MSH conversion: {msg}")
             self._progress.setVisible(False)
             self._params.set_all_enabled(True)
             QMessageBox.critical(self, "Conversion Failed", f"MSH to OpenFOAM failed:\n{msg}")
-
-        def on_timeout():
-            if proc.state() != QProcess.NotRunning:
-                proc.kill()
-                proc.waitForFinished(2000)
-            fail("gmshToFoam timed out after 300s")
 
         def verify_polymesh(retry: int = 0):
             # gmshToFoam writes through WSL2's 9P filesystem — Windows
@@ -2239,13 +2276,22 @@ class MainWindow(QMainWindow):
                 self._log.append_log(f"[ERROR] Setup: {e}")
                 self._params.set_all_enabled(True)
 
-        def on_finished(exit_code, _exit_status):
-            timeout_timer.stop()
+        def poll_result():
             if my_id != self._run_id:
                 return
-            stdout = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
-            stderr = bytes(proc.readAllStandardError()).decode("utf-8", errors="replace")
-            for line in stdout.splitlines()[-20:]:
+            try:
+                item = result_queue.get_nowait()
+            except queue.Empty:
+                if thread.is_alive():
+                    QTimer.singleShot(300, poll_result)
+                    return
+                fail("gmshToFoam worker thread ended without a result")
+                return
+            if item[0] == "error":
+                fail(item[1])
+                return
+            _, exit_code, stdout, stderr = item
+            for line in (stdout or "").splitlines()[-20:]:
                 self._log.append_log(f"[gmshToFoam] {line}")
             if exit_code != 0:
                 tail = (stderr or stdout or "")[-500:]
@@ -2253,11 +2299,8 @@ class MainWindow(QMainWindow):
                 return
             verify_polymesh()
 
-        proc.finished.connect(on_finished)
-        timeout_timer.timeout.connect(on_timeout)
-        program, args = cmd[0], cmd[1:]
-        proc.start(program, args)
-        timeout_timer.start(300000)
+        thread.start()
+        QTimer.singleShot(300, poll_result)
 
     # -----------------------------------------------------------------------
     # autopoly native polyhedral mesher
