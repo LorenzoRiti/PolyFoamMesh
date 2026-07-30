@@ -3033,25 +3033,54 @@ class MainWindow(QMainWindow):
         w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
         w.finished.connect(self._on_polydual_finished, Qt.QueuedConnection)
         w.finished.connect(t.quit, Qt.QueuedConnection)
-        w.failed.connect(
-            lambda msg: (
-                self._log.append_log(f"[poly] FAILED: {msg}"),
-                QMessageBox.warning(
-                    self, "Polyhedral Conversion Failed",
-                    f"polyDualMesh failed:\n\n{msg}\n\n"
-                    "The hex mesh is still available. "
-                    "Try a larger feature angle or skip polyhedral conversion."
-                ),
-            ),
-            Qt.QueuedConnection,
-        )
+        # Bound method, not a lambda/closure \u2014 a plain closure connected
+        # via Qt.QueuedConnection can't always be resolved to the main
+        # thread by PySide6 and may run on the worker thread instead
+        # (confirmed root cause of today's gmsh_direct freeze/crash, same
+        # anti-pattern here). QMessageBox.warning() from the wrong thread
+        # would be a real crash risk, not just a cosmetic issue.
+        w.failed.connect(self._on_polydual_failed, Qt.QueuedConnection)
         w.failed.connect(t.quit, Qt.QueuedConnection)
         t.started.connect(w.run)
         self._polydual_thread = t
         self._polydual_worker = w
+        self._polydual_start_time = time.monotonic()
+        # polyDualMesh's own WSL command buffers all output until it
+        # exits (piped through `tail -20` in build_poly_dual_cmd), so
+        # PolyDualWorker has nothing to stream while it runs \u2014 on a big
+        # mesh this can take a couple of minutes with zero log output,
+        # which reads as a frozen app. A periodic heartbeat line is a
+        # much smaller change than restructuring that command to stream
+        # live, and gives the same reassurance that it's still working.
+        heartbeat = QTimer(self)
+        heartbeat.setInterval(8000)
+        heartbeat.timeout.connect(self._on_polydual_heartbeat)
+        heartbeat.start()
+        self._polydual_heartbeat = heartbeat
         t.start()
 
+    def _on_polydual_heartbeat(self) -> None:
+        elapsed = time.monotonic() - getattr(self, "_polydual_start_time", time.monotonic())
+        self._log.append_log(f"[poly] ...still converting ({elapsed:.0f}s elapsed, this can take a while on large meshes)")
+
+    def _stop_polydual_heartbeat(self) -> None:
+        hb = getattr(self, "_polydual_heartbeat", None)
+        if hb is not None:
+            hb.stop()
+            self._polydual_heartbeat = None
+
+    def _on_polydual_failed(self, msg: str) -> None:
+        self._stop_polydual_heartbeat()
+        self._log.append_log(f"[poly] FAILED: {msg}")
+        QMessageBox.warning(
+            self, "Polyhedral Conversion Failed",
+            f"polyDualMesh failed:\n\n{msg}\n\n"
+            "The hex mesh is still available. "
+            "Try a larger feature angle or skip polyhedral conversion."
+        )
+
     def _on_polydual_finished(self, meshes) -> None:
+        self._stop_polydual_heartbeat()
         poly_run_id = getattr(self, "_polydual_run_id", self._run_id)
         if poly_run_id != self._run_id:
             logger.debug("Stale polyDual callback ignored (%d != %d).", poly_run_id, self._run_id)
