@@ -26,7 +26,23 @@ logger = logging.getLogger(__name__)
 # Cell topology: for each GMSH element type, list the vertex-index lists
 # of its faces. Vertex indices are LOCAL to the cell (0..N-1).
 # ---------------------------------------------------------------------------
-# Tetrahedron (GMSH type 4): 4 faces, each a triangle
+# Tetrahedron (GMSH type 4): 4 faces, each a triangle.
+# KNOWN BUG, not yet fixed: OpenFOAM derives a face's normal from its
+# vertex winding and requires an internal face's owner (lower cell index)
+# to have that normal point toward the neighbour. Real GMSH tet meshes
+# converted through this function come out with ~40-100% negative-volume
+# cells and thousands of "incorrectly oriented face" checkMesh errors —
+# reproduced on a real STEP-derived 8665-tet mesh. Simply flipping the
+# two faces whose winding looked wrong for a single isolated tet (by hand
+# reference-triangle derivation) made it substantially WORSE (45% -> 99.7%
+# negative-volume cells), which means the actual problem is not just this
+# per-cell face template — it's very likely also missing the owner<
+# neighbour swap-and-flip step for shared internal faces. Left as the
+# original values pending a proper fix; do not "fix" this template in
+# isolation again without also auditing the owner/neighbour assignment
+# in msh_to_of_polymesh(). This was never exposed before today because
+# generate_volume_mesh() always silently produced 0 tetrahedra (see
+# gmsh_wrapper.py) — there was never any real tet data to expose it.
 _TETRA_FACES = [[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]]
 # Hexahedron (GMSH type 5): 6 faces, each a quad
 _HEX_FACES = [
@@ -103,14 +119,32 @@ def msh_to_of_polymesh(
     field_data = mesh.field_data
 
     # ------------------------------------------------------------------
-    # Phase 1: Extract per-cell physical group tags from cell_data
+    # Phase 1: Extract per-element physical group tags from cell_data
     # ------------------------------------------------------------------
     # meshio stores cell_data["gmsh:physical"] as a NumPy array per cell
     # block. Each entry is the physical group tag for that element.
-    # We build: cell_phys_map[cell_id] = physical_tag
+    #
+    # Two maps, keyed differently on purpose:
+    #  - surface_face_tag_map[sorted-vertex-tuple] = physical_tag, for 2D
+    #    (surface) elements — this is what actually carries the named
+    #    patch (inlet/outlet/wall/surface_N) a boundary face belongs to.
+    #  - cell_phys_map[3D-cell-local-index] = physical_tag, for 3D
+    #    (volume) elements — only meaningful for multi-region meshes
+    #    with more than one named volume; kept as a fallback.
+    # A single running counter across ALL blocks (2D and 3D mixed) was
+    # used as the cell_phys_map key before, and Phase 2 below re-used
+    # that same counter as the OpenFOAM owner/neighbour cell index for
+    # 3D cells — but GMSH lists surface elements before volume elements,
+    # so every 3D cell's index came out offset by the total surface
+    # element count. checkMesh then believed the mesh had that many
+    # extra cells, all with zero faces ("illegal cells"), and crashed.
+    # Root-caused via a GMSH-generated STEP tet mesh: 8665 real
+    # tetrahedra plus exactly 2956 phantom empty cells — 2956 being the
+    # exact total triangle count across the boundary surface blocks.
+    surface_face_tag_map: dict[tuple[int, ...], int] = {}
     cell_phys_map: dict[int, int] = {}
     phys_tags_seen: set[int] = set()
-    cell_counter = 0
+    cell_3d_counter = 0
     for block_idx, cell_block in enumerate(cells):
         n_cells = len(cell_block.data)
         phys_data = None
@@ -121,12 +155,16 @@ def msh_to_of_polymesh(
                 phys_data = data_array[block_idx]
             elif isinstance(data_array, np.ndarray) and data_array.ndim == 1:
                 phys_data = data_array
-        for ci in range(n_cells):
+        is_3d = _MESHIO_CELL_MAP.get(cell_block.type) in _3D_CELL_TYPES
+        for ci, verts in enumerate(cell_block.data):
             tag = int(phys_data[ci]) if phys_data is not None else 0
-            cell_phys_map[cell_counter] = tag
             if tag > 0:
                 phys_tags_seen.add(tag)
-            cell_counter += 1
+            if is_3d:
+                cell_phys_map[cell_3d_counter] = tag
+                cell_3d_counter += 1
+            else:
+                surface_face_tag_map[tuple(sorted(int(v) for v in verts))] = tag
 
     # ------------------------------------------------------------------
     # Phase 2: Extract faces from 3D cells
@@ -142,19 +180,19 @@ def msh_to_of_polymesh(
 
     face_cell_map: dict[tuple[int, ...], tuple[int, int]] = {}
 
+    # 3D-cell-local counter — do NOT increment for skipped 2D/unsupported
+    # blocks (see Phase 1 comment: that was the bug that produced 2956
+    # phantom zero-face cells on a real STEP-derived tet mesh).
     cell_counter = 0
     for cell_block in cells:
         cell_type_str = cell_block.type
         type_id = _MESHIO_CELL_MAP.get(cell_type_str)
         if type_id not in _3D_CELL_TYPES:
-            # Skip surface elements; they're handled via cell tags
-            cell_counter += len(cell_block.data)
-            continue
+            continue  # surface/line/point elements — not OpenFOAM cells
         face_template = _CELL_FACE_MAP.get(type_id)
         if face_template is None:
             logger.warning("Unknown cell type '%s', skipping %d cells.",
                            cell_type_str, len(cell_block.data))
-            cell_counter += len(cell_block.data)
             continue
 
         for ci, verts in enumerate(cell_block.data):
@@ -168,14 +206,29 @@ def msh_to_of_polymesh(
                     all_neighbours.append(cell_counter)
                     face_owner_tags.append(0)  # internal
                 else:
-                    face_cell_map[key] = (cell_counter, ci)
+                    # Keep the ORIGINAL (unsorted) vertex order, not the
+                    # sorted lookup key — a face's winding determines
+                    # which way its normal points, and OpenFOAM requires
+                    # that normal to point out of the owner cell. Boundary
+                    # faces used to be reconstructed from the sorted key
+                    # (arbitrary winding), which silently produced
+                    # negative-volume cells and "incorrectly oriented"
+                    # faces on essentially every geometry — the 3D face
+                    # template's vertex order already comes out right,
+                    # this just has to not get thrown away.
+                    face_cell_map[key] = (cell_counter, face_verts)
             cell_counter += 1
 
     # Remaining entries in face_cell_map = boundary faces
     boundary_faces_by_tag: dict[int, list[list[int]]] = {}
-    for key, (owner_cell, _) in face_cell_map.items():
-        face_verts = list(key)
-        tag = cell_phys_map.get(owner_cell, 0)
+    for key, (owner_cell, face_verts) in face_cell_map.items():
+        # A boundary face's patch comes from the named 2D surface element
+        # that coincides with it (inlet/outlet/wall/surface_N) — NOT from
+        # the owning 3D cell's tag, which is only ever meaningful for
+        # multi-region meshes with more than one named volume. Using the
+        # cell tag here meant every boundary face fell into the same
+        # single (or untagged) bucket, losing the actual patch split.
+        tag = surface_face_tag_map.get(key, cell_phys_map.get(owner_cell, 0))
         if tag not in boundary_faces_by_tag:
             boundary_faces_by_tag[tag] = []
         boundary_faces_by_tag[tag].append(face_verts)
