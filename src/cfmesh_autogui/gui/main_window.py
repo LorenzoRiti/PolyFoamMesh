@@ -563,6 +563,8 @@ class MainWindow(QMainWindow):
         self._params.run_meshing.connect(self._on_run_meshing)
         self._params.reset_all.connect(self._on_reset)
         self._params.load_step_requested.connect(self._on_load_step)
+        self._params.pick_refinement_requested.connect(self._on_pick_refinement)
+        self._viewer.refinement_point_picked.connect(self._on_refinement_point_picked)
         rl.addWidget(self._params)
 
         self._cell_count_label = QLabel("Cells: --")
@@ -1193,6 +1195,21 @@ class MainWindow(QMainWindow):
         self._viewer.highlight_patch(new_name)
         self._log.append_log(f"{Tag.PATCH} Renamed '{patch_name}' \u2192 '{new_name}'.")
 
+    def _on_pick_refinement(self):
+        """Start 3D picking mode for refinement zone centre."""
+        self._viewer.start_refinement_pick()
+        self._log.append_log(
+            f"{Tag.GEOM} Click a point on the mesh to set the refinement zone centre..."
+        )
+
+    @Slot(float, float, float)
+    def _on_refinement_point_picked(self, x: float, y: float, z: float):
+        """Handle a picked point: add refinement zone at that location."""
+        self._params.add_refinement_from_pick(x, y, z)
+        self._log.append_log(
+            f"{Tag.GEOM} Refinement zone at ({x:.4f}, {y:.4f}, {z:.4f})"
+        )
+
     def _on_set_case_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Select Case Directory")
         if not path:
@@ -1324,6 +1341,19 @@ class MainWindow(QMainWindow):
             self._start_autopoly_worker(orig, my_id)
             return
         if mesher_type != "cfmesh":
+            # Auto-enable poly conversion for GMSH tet direct — the dual
+            # of a tet mesh produces genuinely irregular Voronoi-style
+            # polyhedra (7-23 faces/cell, verified), unlike the hex dual
+            # which stays grid-like.  Only auto-enables, never overrides
+            # an explicit user uncheck.
+            if mesher_type == "gmsh_direct" and not self._params.get_poly_conversion():
+                self._params._poly_check.setChecked(True)
+                logger.info(
+                    "GMSH direct mesher — auto-enabling polyDualMesh conversion."
+                )
+                self._log.append_log(
+                    f"{Tag.CASE} GMSH direct: enabling polyhedral conversion (polyDualMesh)."
+                )
             orig = getattr(self, "_loaded_step_path", None)
             if orig is None:
                 orig = self._make_temp_geometry_for_gmsh()
@@ -1589,6 +1619,11 @@ class MainWindow(QMainWindow):
                     self._log.append_log(
                         f"{Tag.DICT} {len(zones)} auto refinement zone(s) detected."
                     )
+                    # Show detected zones as semi-transparent spheres in the viewer
+                    try:
+                        self._viewer.show_refinement_zones(zones)
+                    except Exception as exc:
+                        logger.debug("Could not display refinement zones: %s", exc)
                 else:
                     logger.debug("Refinement detection: no narrow passages found.")
             except Exception as exc:
@@ -2125,10 +2160,23 @@ class MainWindow(QMainWindow):
         n_layers = bl_params.get("nLayers", 0) if bl_params else 0
         bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
         bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
+        # Pass user's cell sizes to GMSH — these were previously ignored.
+        # Only when adaptive sizing is OFF: with it on (the default),
+        # forcing max_cell_size here always overrode GMSH's adaptive
+        # sizing with the old uniform behavior — Max/Min Cell Size are
+        # always populated by Auto-Suggest, so the adaptive algorithm
+        # added earlier today never actually ran in the live GUI.
+        adaptive = self._params.get_adaptive_sizing_enabled()
+        max_cell = 0 if adaptive else self._params.get_max_cell()
+        min_cell = 0 if adaptive else self._params.get_min_cell()
+        max_cells_target = self._params.get_max_cells_target()
 
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
         t = QThread()
-        w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion)
+        w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
+                             refinement_zones=getattr(self, '_throat_zones', None) or [],
+                             max_cell_size=max_cell, min_cell_size=min_cell,
+                             max_cells_target=max_cells_target)
         w.moveToThread(t)
         self._gmsh_thread = t
         self._gmsh_worker = w
@@ -2193,7 +2241,10 @@ class MainWindow(QMainWindow):
             ctx["bl_retried"] = True
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
             t = ctx["thread"]
-            w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2)
+            w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
+                                  refinement_zones=getattr(self, '_throat_zones', None) or [],
+                                  max_cell_size=self._params.get_max_cell(),
+                                  min_cell_size=self._params.get_min_cell())
             w2.moveToThread(t)
             self._gmsh_worker = w2
             w2.log_line.connect(self._log.append_log, Qt.QueuedConnection)
