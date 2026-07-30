@@ -25,7 +25,7 @@ from cfmesh_autogui.core.gmsh_wrapper import _GMSH_DETAIL
 def test_of_header_produces_valid_openfoam():
     """Header must contain FoamFile, version, and matching class/object."""
     for class_type in ("faceList", "labelList", "primitiveEntry", "polyBoundaryMesh"):
-        hdr = _of_header(class_type)
+        hdr = _of_header(class_type, class_type)
         assert "FoamFile" in hdr
         assert "version     2.0" in hdr
         assert f"class       {class_type}" in hdr
@@ -36,6 +36,20 @@ def test_of_header_produces_valid_openfoam():
         closes = hdr.count("}")
         assert opens == closes, (
             f"Header for {class_type} has {opens} '{{' but {closes} '}}'"
+        )
+        # Regression: the banner is one C-style comment opened on line 1
+        # and closed only on the last banner line. Closing it early (line
+        # 1 ending in '*/' instead of '*\') leaves the '|'-boxed lines as
+        # raw tokens, which OpenFOAM's parser rejects before it ever
+        # reaches 'FoamFile' (checkMesh/polyDualMesh/ParaView all fail to
+        # open the mesh). Exactly one comment-close before 'FoamFile'.
+        pre_foamfile = hdr.split("FoamFile", 1)[0]
+        assert pre_foamfile.count("*/") == 1, (
+            f"Banner for {class_type} closes its C comment {pre_foamfile.count('*/')} "
+            "times before 'FoamFile' (expected exactly 1, on the last banner line)"
+        )
+        assert not hdr.splitlines()[0].endswith("*/"), (
+            "Banner's first line must not prematurely close the C comment"
         )
     print("PASS: _of_header produces valid OF headers for all 4 types")
 
