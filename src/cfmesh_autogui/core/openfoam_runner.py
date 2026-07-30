@@ -1401,7 +1401,10 @@ class GmshVolumeWorker(QObject):
 
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  n_layers: int = 0, bl_thickness: float | None = None,
-                 bl_expansion: float = 1.2, parent=None):
+                 bl_expansion: float = 1.2, refinement_zones: list | None = None,
+                 max_cell_size: float = 0, min_cell_size: float = 0,
+                 max_cells_target: int = 0,
+                 parent=None):
         super().__init__(parent)
         self._step_path = step_path
         self._msh_path = msh_path
@@ -1409,14 +1412,21 @@ class GmshVolumeWorker(QObject):
         self._n_layers = n_layers
         self._bl_thickness = bl_thickness
         self._bl_expansion = bl_expansion
+        self._refinement_zones = refinement_zones or []
+        self._max_cell_size = max_cell_size
+        self._min_cell_size = min_cell_size
+        self._max_cells_target = max_cells_target
 
     @Slot()
     def run(self):
         import sys, subprocess, json
         frozen = getattr(sys, "frozen", False)
+        # Pass refinement zones as JSON via env var (avoids shell-escaping issues)
+        zones_json = json.dumps(self._refinement_zones) if self._refinement_zones else ""
         args = [
             "volume", self._step_path, str(self._msh_path), self._detail,
             str(self._n_layers), str(self._bl_thickness or 0), str(self._bl_expansion),
+            str(self._max_cell_size), str(self._min_cell_size), str(self._max_cells_target),
         ]
         if frozen:
             cmd = [sys.executable, "--gmsh-volume"] + args[1:]
@@ -1424,10 +1434,14 @@ class GmshVolumeWorker(QObject):
             cmd = [sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper"] + args
         run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
+        import os
+        env = os.environ.copy()
+        if zones_json:
+            env["GMSH_REFINEMENT_ZONES"] = zones_json
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True,
-                timeout=self.VOLUME_TIMEOUT_S, cwd=run_cwd,
+                timeout=self.VOLUME_TIMEOUT_S, cwd=run_cwd, env=env,
             )
         except subprocess.TimeoutExpired:
             self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")

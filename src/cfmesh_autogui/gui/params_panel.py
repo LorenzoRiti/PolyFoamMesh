@@ -482,6 +482,42 @@ class ParamsPanel(QWidget):
         )
         adv_layout.addWidget(self._poly_check)
 
+        # Guides for the GMSH adaptive/automatic refinement (Tetrahedral
+        # FEM / Polyhedral CFD mesher only): without these the "Max/Min
+        # Cell Size" fields above — always populated by Auto-Suggest —
+        # silently forced the old uniform sizing every time, so the
+        # adaptive algorithm never actually ran in practice. Two knobs:
+        # a switch back to manual uniform sizing, and a direct cap on
+        # how large the mesh is allowed to grow (the "8M tet cells"
+        # concern — the auto hardware budget only guides how fine small
+        # features get resolved, it doesn't hard-cap the total count).
+        self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (GMSH mesher, recommended)")
+        self._adaptive_sizing_check.setChecked(True)
+        self._adaptive_sizing_check.setToolTip(
+            "Refines only near small features/curved surfaces, coarse\n"
+            "elsewhere, sized from the geometry itself and the available\n"
+            "hardware — instead of one uniform size everywhere (the\n"
+            "Max/Min Cell Size fields above, still used when this is off,\n"
+            "or as a starting point Auto-Suggest fills in).\n"
+            "Only applies to the Tetrahedral (FEM) / Polyhedral (CFD) mesher."
+        )
+        adv_layout.addWidget(self._adaptive_sizing_check)
+
+        max_cells_row = QHBoxLayout()
+        max_cells_row.addWidget(QLabel("Max cells target:"))
+        self._max_cells_target = QSpinBox()
+        self._max_cells_target.setRange(0, 50_000_000)
+        self._max_cells_target.setSingleStep(100_000)
+        self._max_cells_target.setValue(0)
+        self._max_cells_target.setSpecialValueText("Auto (hardware-based)")
+        self._max_cells_target.setToolTip(
+            "0 = decide automatically from free RAM/CPU cores.\n"
+            "Set a value to cap it directly instead — e.g. if an 8M-cell\n"
+            "tetrahedral mesh feels like more than you want to wait on."
+        )
+        max_cells_row.addWidget(self._max_cells_target)
+        adv_layout.addLayout(max_cells_row)
+
         openmp_group = QGroupBox("OpenMP Acceleration")
         openmp_group_layout = QVBoxLayout(openmp_group)
         openmp_row = QHBoxLayout()
@@ -889,6 +925,12 @@ class ParamsPanel(QWidget):
         if "Tetrahedral" in text or "Polyhedral" in text:
             return "gmsh_direct"
         return "cfmesh"
+
+    def get_adaptive_sizing_enabled(self) -> bool:
+        return getattr(self, "_adaptive_sizing_check", None) is not None and self._adaptive_sizing_check.isChecked()
+
+    def get_max_cells_target(self) -> int:
+        return getattr(self, "_max_cells_target", None) and self._max_cells_target.value() or 0
 
     def get_auto_refine_enabled(self) -> bool:
         return getattr(self, "_auto_refine_check", None) is not None and self._auto_refine_check.isChecked()

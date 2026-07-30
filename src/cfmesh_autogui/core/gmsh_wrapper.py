@@ -87,17 +87,22 @@ def _available_ram_bytes() -> int:
     return 4 * 1024**3  # unknown platform/failure: assume 4 GB free, conservative
 
 
-def _hardware_budget() -> dict:
+def _hardware_budget(max_cells_override: int | None = None) -> dict:
     """CPU/RAM snapshot used to keep automatic mesh refinement bounded
     on the machine actually running it, instead of a single global
-    'Detail Level' the user has to guess a safe value for by hand."""
+    'Detail Level' the user has to guess a safe value for by hand.
+    max_cells_override lets the GUI's "Max cells target" field cap this
+    directly instead of relying on the hardware estimate."""
     cpu_count = os.cpu_count() or 4
     ram_bytes = _available_ram_bytes()
-    # ~2.5 KB/cell covers GMSH's own tet storage plus the downstream
-    # copies that exist at once (meshio conversion, the OpenFOAM case,
-    # checkMesh, the viewer). Use at most 40% of currently-free RAM so
-    # WSL, the GUI itself, and everything else running still has room.
-    max_cells = max(80_000, int((ram_bytes * 0.4) / 2500))
+    if max_cells_override and max_cells_override > 0:
+        max_cells = max_cells_override
+    else:
+        # ~2.5 KB/cell covers GMSH's own tet storage plus the downstream
+        # copies that exist at once (meshio conversion, the OpenFOAM
+        # case, checkMesh, the viewer). Use at most 40% of currently-free
+        # RAM so WSL, the GUI itself, and everything else still has room.
+        max_cells = max(80_000, int((ram_bytes * 0.4) / 2500))
     return {"cpu_count": cpu_count, "ram_available_bytes": ram_bytes, "max_cells": max_cells}
 
 
@@ -499,6 +504,9 @@ def generate_volume_mesh(
     n_layers: int = 0,
     bl_thickness: float | None = None,
     bl_expansion: float = 1.2,
+    refinement_zones: list[dict] | None = None,
+    min_cell_size: float | None = None,
+    max_cells_override: int | None = None,
 ) -> tuple[Path, list[str]]:
     """Generate a full tetrahedral volume mesh using GMSH (direct flow).
 
@@ -553,20 +561,56 @@ def generate_volume_mesh(
     max_extent = max(
         abs(bbox[3] - bbox[0]), abs(bbox[4] - bbox[1]), abs(bbox[5] - bbox[2])
     )
+    # Volume estimate for cell count prediction
+    vol = max(
+        (bbox[3] - bbox[0]) * (bbox[4] - bbox[1]) * (bbox[5] - bbox[2]),
+        1e-12,
+    )
+
+    # SAFETY: estimate cell count and cap if needed
+    MAX_GMSH_CELLS = 3_000_000  # safety limit for GMSH direct
+    if user_lc and user_lc > 0:
+        est_cells = vol / (user_lc ** 3)
+        if est_cells > MAX_GMSH_CELLS:
+            # Auto-coarsen to stay under the limit
+            new_lc = (vol / MAX_GMSH_CELLS) ** (1.0 / 3.0)
+            logger.warning(
+                "Cell size %.5f would produce ~%.0f cells (cap=%d). "
+                "Auto-coarsening to %.5f.",
+                user_lc, est_cells, MAX_GMSH_CELLS, new_lc,
+            )
+            user_lc = new_lc
+            if min_cell_size and min_cell_size > 0:
+                min_cell_size = min(min_cell_size, user_lc * 0.1)
+    elif not user_lc:
+        # Adaptive path: also check hardware budget
+        hw = _hardware_budget()
+        est_cells_adaptive = vol / ((max_extent * 0.02) ** 3)
+        if est_cells_adaptive > hw["max_cells"]:
+            logger.warning(
+                "Adaptive sizing would produce ~%.0f cells, budget=%d. "
+                "Capping will apply.",
+                est_cells_adaptive, hw["max_cells"],
+            )
 
     if user_lc:
-        # Explicit user override bypasses adaptive sizing entirely — same
-        # single uniform size everywhere, as before.
+        # Explicit user override: use user's cell sizes directly
         df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", user_lc * df["min_mult"])
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", user_lc * df["max_mult"])
+        # User's min cell size takes priority over detail-level min_mult
+        lc_min = min_cell_size if min_cell_size and min_cell_size > 0 else user_lc * df["min_mult"]
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", lc_min)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", user_lc)
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
         gmsh.option.setNumber("Mesh.MinimumCirclePoints", int(360 / df["curv_angle"]))
         gmsh.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
+        logger.info(
+            "GMSH user cell sizes: max=%.5f min=%.5f (detail=%s)",
+            user_lc, lc_min, detail,
+        )
     else:
-        hw = _hardware_budget()
+        hw = _hardware_budget(max_cells_override)
         feat = _scan_feature_sizes(gmsh, max_extent)
         sizing_info = _configure_adaptive_sizing(gmsh, detail, max_extent, feat, hw)
         logger.info(
@@ -607,6 +651,51 @@ def generate_volume_mesh(
             # user enables in the UI (n_layers/thickness/expansion) have
             # no effect on the generated volume mesh.
             gmsh.model.mesh.field.setAsBoundaryLayer(bl_field)
+
+    # Refinement zones: add Distance + Threshold fields to shrink cell size
+    # near narrow passages detected by the throat detector.
+    # Each zone creates a field that maps distance-from-centre → cell size,
+    # then a Min field combines them all with the base adaptive sizing.
+    if refinement_zones:
+        zone_fields = []
+        for i, z in enumerate(refinement_zones):
+            cx, cy, cz = z["centre"]
+            r = z["radius"]
+            cs = z["cell_size"]
+            try:
+                # Use "Points" field (GMSH 4.x+) — works on any geometry kernel
+                # without needing geo.addPoint() which can conflict with STL.
+                dist_field = gmsh.model.mesh.field.add("Distance")
+                # "Points" field type accepts coordinate list directly
+                pts_field = gmsh.model.mesh.field.add("Points")
+                gmsh.model.mesh.field.setNumbers(pts_field, "Coordinates", [cx, cy, cz])
+                # Re-use the Points field as input to Distance
+                # Actually, Distance field needs PointsList of existing points.
+                # Fall back to using Ball field which is self-contained.
+                gmsh.model.mesh.field.remove(dist_field)
+                gmsh.model.mesh.field.remove(pts_field)
+                ball_field = gmsh.model.mesh.field.add("Ball")
+                gmsh.model.mesh.field.setNumber(ball_field, "VIn", cs)
+                gmsh.model.mesh.field.setNumber(ball_field, "VOut", -1)  # don't override outside
+                gmsh.model.mesh.field.setNumber(ball_field, "Radius", r)
+                gmsh.model.mesh.field.setNumber(ball_field, "X", cx)
+                gmsh.model.mesh.field.setNumber(ball_field, "Y", cy)
+                gmsh.model.mesh.field.setNumber(ball_field, "Z", cz)
+                zone_fields.append(ball_field)
+                logger.info(
+                    "GMSH refinement zone %d: centre=(%.4f,%.4f,%.4f) "
+                    "radius=%.4f cell_size=%.5f",
+                    i, cx, cy, cz, r, cs,
+                )
+            except Exception as exc:
+                logger.warning("Failed to add GMSH refinement zone %d: %s", i, exc)
+        # Combine all zone fields with Min (smallest cell size wins)
+        if len(zone_fields) == 1:
+            gmsh.model.mesh.field.setAsBackgroundMesh(zone_fields[0])
+        else:
+            min_field = gmsh.model.mesh.field.add("Min")
+            gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", zone_fields)
+            gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
 
     # Generate 3D mesh
     try:
@@ -711,12 +800,27 @@ if __name__ == "__main__":
         n_layers = int(sys.argv[5]) if len(sys.argv) > 5 else 0
         bl_thickness = float(sys.argv[6]) if len(sys.argv) > 6 else None
         bl_expansion = float(sys.argv[7]) if len(sys.argv) > 7 else 1.2
+        max_cell_size = float(sys.argv[8]) if len(sys.argv) > 8 else 0
+        min_cell_size = float(sys.argv[9]) if len(sys.argv) > 9 else 0
+        max_cells_target = int(float(sys.argv[10])) if len(sys.argv) > 10 else 0
+        # Read refinement zones from environment variable (set by GmshVolumeWorker)
+        refinement_zones = None
+        zones_json = os.environ.get("GMSH_REFINEMENT_ZONES", "")
+        if zones_json:
+            try:
+                refinement_zones = json.loads(zones_json)
+            except json.JSONDecodeError:
+                refinement_zones = None
         msh_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             result_path, names = generate_volume_mesh(
                 step_path, msh_path, detail=detail,
                 n_layers=n_layers, bl_thickness=bl_thickness,
                 bl_expansion=bl_expansion,
+                refinement_zones=refinement_zones,
+                user_lc=max_cell_size if max_cell_size > 0 else None,
+                min_cell_size=min_cell_size if min_cell_size > 0 else None,
+                max_cells_override=max_cells_target if max_cells_target > 0 else None,
             )
             print(json.dumps({"success": True, "path": str(result_path), "names": names}))
         except Exception as e:
