@@ -45,7 +45,12 @@ def test_full_workflow():
     assert valid, f"Invalid case path: {msg}"
 
     print("[1/7] Creating cylinder geometry...")
-    cyl = create_test_cylinder(radius=1.0, height=2.0)
+    # 1000x larger than the "1.0/2.0" used elsewhere: create_test_cylinder
+    # builds geometry directly in cadquery's native mm, and tessellate_patches
+    # now converts mm->m (matching real STEP file imports) — this test's
+    # hardcoded downstream cell sizes (0.5/0.1) assume a real 1m/2m cylinder,
+    # so the input must be specified in mm to land there after conversion.
+    cyl = create_test_cylinder(radius=1000.0, height=2000.0)
     patches = classify_faces(cyl.val())
     patch_names = [n for n, _ in patches]
     assert len(patches) == 3

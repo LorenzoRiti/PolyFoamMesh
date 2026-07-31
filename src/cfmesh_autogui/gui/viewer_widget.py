@@ -516,12 +516,14 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
 class ViewerWidget(QWidget):
     face_picked = Signal(str)
     distance_measured = Signal(str)
+    refinement_point_picked = Signal(float, float, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cad_meshes: list[trimesh.Trimesh] = []
         self._mesh_case_dir: str = ""
         self._bg_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._refinement_pick_active: bool = False
         self._text_color: str = "black"
         self._plotter = None
         self._plotter_ready: bool = False
@@ -767,6 +769,77 @@ class ViewerWidget(QWidget):
                 except Exception:
                     pass
         self._measure_actors = []
+
+    def start_refinement_pick(self):
+        """Enter refinement-pick mode: click a point on the mesh to set
+        the centre of a manual refinement zone.  Emits
+        ``refinement_point_picked(x, y, z)`` on first pick, then
+        automatically exits pick mode."""
+        if self._plotter is None or not self._plotter_ready:
+            return
+        self._refinement_pick_active = True
+        # Disable other pick modes
+        self._pick_check.blockSignals(True)
+        self._pick_check.setChecked(False)
+        self._pick_check.blockSignals(False)
+        self._measure_check.blockSignals(True)
+        self._measure_check.setChecked(False)
+        self._measure_check.blockSignals(False)
+        self._clear_measure_actors()
+        try:
+            self._plotter.enable_point_picking(
+                callback=self._on_refinement_point_picked,
+                show_message=False,
+                color="cyan",
+                point_size=12,
+                use_marker=True,
+                picker="point",
+            )
+        except Exception as exc:
+            logger.warning("start_refinement_pick failed: %s", exc)
+            self._refinement_pick_active = False
+
+    def _on_refinement_point_picked(self, point):
+        """Handle a point pick in refinement mode: emit coordinates and exit."""
+        import numpy as np
+        pt = np.array(point[:3])
+        # Show a visual marker at the picked point
+        if self._plotter and self._cad_meshes:
+            r = max(getattr(self._cad_meshes[0], 'scale', 1.0) * 0.02, 0.005)
+            self._plotter.add_mesh(
+                pv.Sphere(radius=r, center=pt),
+                color="cyan", opacity=0.7,
+            )
+            self._plotter.render()
+        self._refinement_pick_active = False
+        try:
+            self._plotter.disable_picking()
+        except Exception:
+            pass
+        self.refinement_point_picked.emit(float(pt[0]), float(pt[1]), float(pt[2]))
+
+    def show_refinement_zones(self, zones: list):
+        """Display detected refinement zones as semi-transparent cyan spheres."""
+        if self._plotter is None or not self._cad_meshes:
+            return
+        # Remove previous refinement zone actors
+        for attr in ("_refinement_zone_actors",):
+            for actor in getattr(self, attr, []):
+                try:
+                    self._plotter.remove_actor(actor)
+                except Exception:
+                    pass
+        self._refinement_zone_actors = []
+        for z in zones:
+            cx, cy, cz = z.centre
+            r = z.radius
+            sphere = self._plotter.add_mesh(
+                pv.Sphere(radius=r, center=(cx, cy, cz)),
+                color="cyan", opacity=0.25, style="wireframe",
+            )
+            self._refinement_zone_actors.append(sphere)
+        if zones:
+            self._plotter.render()
 
     def _on_mesh_picked(self, actor):
         # use_actor=True (set in _on_pick_toggled) means `actor` is the
