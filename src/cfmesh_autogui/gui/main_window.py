@@ -1319,6 +1319,23 @@ class MainWindow(QMainWindow):
                 self._log.append_log(
                     f"{Tag.CASE} Automatic: enabling polyhedral conversion (polyDualMesh)."
                 )
+            elif mesher_type == "gmsh_direct" and not self._params.get_poly_conversion():
+                # Same "Automatic means polyhedral" philosophy as the cfmesh
+                # branch above, for the case where cfMesh/autopoly are both
+                # unavailable and _resolve_auto_mesher() falls back to plain
+                # GMSH direct: without this, poly_conversion stays off (the
+                # mesher combo shows "Automatic", not "Polyhedral (CFD)", so
+                # _on_mesher_changed's own force-checked logic never runs),
+                # silently leaving Automatic mode on a pure tet mesh even
+                # though terminal-face conversion is available and validated.
+                self._params._poly_check.setChecked(True)
+                logger.info(
+                    "Automatic mesher resolved to gmsh_direct — auto-enabling "
+                    "polyhedral (terminal-face) conversion."
+                )
+                self._log.append_log(
+                    f"{Tag.CASE} Automatic: enabling polyhedral conversion (terminal-face)."
+                )
         self._current_mesher_type = mesher_type
         logger.info(
             "Meshing run #%d: mesher=%s poly_conversion=%s",
