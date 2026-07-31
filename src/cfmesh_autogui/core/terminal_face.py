@@ -47,12 +47,22 @@ def _binary_header_parse(raw: bytes) -> tuple[int, int]:
 
     Returns (data_start_byte, n_items).
     """
-    # Find all '}\n' positions in first 4000 bytes
+    # Find the '}\n' that closes the FoamFile header block.
     all_closes = list(re.finditer(rb'\}\n', raw[:4000]))
     if not all_closes:
         raise ValueError("Cannot find '}' in binary OpenFOAM header")
-    # Use the LAST one — this is the FoamFile closing brace
-    header_end = all_closes[-1].end()
+    # Use the FIRST one, not the last: the header itself is always
+    # well-formed plain-ASCII dictionary text (can't contain a stray
+    # '}\n' before its own real closing brace), but the BINARY DATA
+    # right after it can coincidentally contain the same 2-byte sequence
+    # by pure chance in large files — confirmed live on a real ~2.1M-row
+    # 'neighbour' file, which had a second, spurious '}\n' match inside
+    # its binary payload. Taking the last match landed header_end deep
+    # inside the binary data, past the real "N\n(" count marker, so the
+    # search for it below came back empty. The first match is always the
+    # real header end; smaller files that only ever had one match (the
+    # common case) are unaffected either way.
+    header_end = all_closes[0].end()
     # Find N followed by '(\n' after header end
     m = re.search(rb'(\d+)\n\(', raw[header_end:])
     if not m:
