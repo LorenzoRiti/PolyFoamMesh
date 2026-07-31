@@ -1342,19 +1342,18 @@ class MainWindow(QMainWindow):
             self._start_autopoly_worker(orig, my_id)
             return
         if mesher_type != "cfmesh":
-            # Auto-enable poly conversion for GMSH tet direct — runs
-            # terminal-face conversion (see TerminalFaceWorker), not
-            # polyDualMesh, which has a confirmed structural defect on
-            # complex real geometry and is skipped for this mesher type.
-            # Only auto-enables, never overrides an explicit user uncheck.
-            if mesher_type == "gmsh_direct" and not self._params.get_poly_conversion():
-                self._params._poly_check.setChecked(True)
-                logger.info(
-                    "GMSH direct mesher — auto-enabling polyhedral (terminal-face) conversion."
-                )
-                self._log.append_log(
-                    f"{Tag.CASE} GMSH direct: enabling polyhedral conversion (terminal-face)."
-                )
+            # No auto-enable needed here: for gmsh_direct/gmsh_direct_poly
+            # the mesher combo's own _on_mesher_changed already forces the
+            # poly checkbox to match the choice (checked+hidden for
+            # "Polyhedral (CFD)", unchecked+hidden for "Tetrahedral (FEM)")
+            # the moment the user selects it — see params_panel.py. An
+            # earlier version of this block re-forced it to checked
+            # whenever mesher_type == "gmsh_direct" specifically, which
+            # (once "Tetrahedral (FEM)" and "Polyhedral (CFD)" became
+            # distinct mesher_type values instead of one shared "gmsh_direct"
+            # entry) meant picking "Tetrahedral (FEM)" — meant to be
+            # poly-off — got its poly conversion silently re-enabled here
+            # at Run time regardless.
             orig = getattr(self, "_loaded_step_path", None)
             if orig is None:
                 orig = self._make_temp_geometry_for_gmsh()
