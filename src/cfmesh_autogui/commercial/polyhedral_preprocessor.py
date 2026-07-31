@@ -428,9 +428,14 @@ def _poly_cell_quality(
 # OpenFOAM polyMesh writer
 # ---------------------------------------------------------------------------
 
-def _of_header(class_name: str) -> str:
+def _of_header(class_name: str, object_name: str | None = None) -> str:
+    object_name = object_name or {
+        "vectorField": "points",
+        "faceList": "faces",
+        "polyBoundaryMesh": "boundary",
+    }.get(class_name, class_name)
     return (
-        "/*--------------------------------*- C++ -*----------------------------------*/\n"
+        "/*--------------------------------*- C++ -*----------------------------------*\\\n"
         "| =========                 |                                                 |\n"
         "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
         "|  \\\\    /   O peration     | Version:  v2512                                 |\n"
@@ -442,7 +447,7 @@ def _of_header(class_name: str) -> str:
         "    format      ascii;\n"
         f"    class       {class_name};\n"
         "    location    \"constant/polyMesh\";\n"
-        f"    object      {class_name};\n"
+        f"    object      {object_name};\n"
         "}\n"
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n"
     )
@@ -474,7 +479,7 @@ def _write_owner(poly_dir: Path, owners: list[int]) -> None:
         lines.append(str(int(o)))
     lines.append(")")
     (poly_dir / "owner").write_text(
-        _of_header("labelList") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("labelList", "owner") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 
@@ -484,7 +489,7 @@ def _write_neighbour(poly_dir: Path, neighbours: list[int]) -> None:
         lines.append(str(nb))
     lines.append(")")
     (poly_dir / "neighbour").write_text(
-        _of_header("labelList") + "\n".join(lines) + "\n", encoding="ascii",
+        _of_header("labelList", "neighbour") + "\n".join(lines) + "\n", encoding="ascii",
     )
 
 

@@ -27,7 +27,17 @@ from cfmesh_autogui.core.openfoam_runner import (
     MeshWorker,
     analyze_error,
     ErrorType,
+    parse_checkmesh_output,
 )
+
+
+def test_checkmesh_failed_checks_are_not_passed():
+    report = parse_checkmesh_output(
+        "Mesh stats\n    cells: 10\n"
+        "Mesh non-orthogonality Max: 68 average: 12\n"
+        "Failed 1 mesh checks.\n"
+    )
+    assert not report.passed
 
 
 def test_analyze_error():
@@ -179,4 +189,3 @@ if __name__ == "__main__":
 
     app.quit()
     print("\nAll Fase 3 tests passed.")
-

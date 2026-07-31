@@ -1288,6 +1288,20 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # GMSH/feature-detect/checkMesh use separate workers and do not set
+        # RetryRunner.is_running.  Without this guard repeated clicks can
+        # start overlapping native GMSH processes, making the UI appear stuck
+        # and corrupting which run owns the callback.
+        for thread_attr in ("_gmsh_thread", "_feature_thread", "_checkmesh_thread"):
+            thread = getattr(self, thread_attr, None)
+            if thread is not None and thread.isRunning():
+                logger.warning("Meshing request ignored: %s is still running", thread_attr)
+                self._log.append_log(
+                    f"{Tag.WARN} A meshing stage is still running ({thread_attr}); "
+                    "cancel it before starting another run."
+                )
+                return
+
         self._run_id += 1
         self._poly_was_converted = False
         my_id = self._run_id
@@ -1371,6 +1385,14 @@ class MainWindow(QMainWindow):
             # entry) meant picking "Tetrahedral (FEM)" — meant to be
             # poly-off — got its poly conversion silently re-enabled here
             # at Run time regardless.
+            if mesher_type == "gmsh_direct_poly" and self._params.get_bl_enabled():
+                # The current terminal-face converter accepts pure tetrahedral
+                # volumes only. Do not silently feed it prism/BL cells.
+                self._params.set_bl_enabled(False)
+                self._log.append_log(
+                    f"{Tag.WARN} Polyhedral GMSH mode: boundary layers disabled "
+                    "because the current converter requires pure tetrahedra."
+                )
             orig = getattr(self, "_loaded_step_path", None)
             if orig is None:
                 orig = self._make_temp_geometry_for_gmsh()
@@ -1383,6 +1405,7 @@ class MainWindow(QMainWindow):
                 return
             self._params.set_meshing_enabled(False)
             self._params.set_all_enabled(False)
+            logger.info("Dispatching GMSH worker: run_id=%d mesher=%s", my_id, mesher_type)
             self._start_gmsh_volume_worker(orig, my_id)
             return
 
@@ -2139,6 +2162,10 @@ class MainWindow(QMainWindow):
 
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
         from cfmesh_autogui.core.openfoam_runner import GmshVolumeWorker
+        logger.info(
+            "GMSH stage entered: run_id=%d step=%s mesher=%s",
+            my_id, step_path, getattr(self, "_current_mesher_type", ""),
+        )
         self._log.append_log("[gmsh] Starting volume mesh generation in background...")
         self._status.showMessage("GMSH: volume mesh...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2233,6 +2260,7 @@ class MainWindow(QMainWindow):
         w.failed.connect(w.deleteLater, Qt.QueuedConnection)
         t.started.connect(w.run)
         t.start()
+        logger.info("GMSH worker thread started: run_id=%d pid_pending=true", my_id)
 
     def _on_gmsh_volume_result(self, result: dict):
         """Bound method (not a closure) so Qt.QueuedConnection reliably
