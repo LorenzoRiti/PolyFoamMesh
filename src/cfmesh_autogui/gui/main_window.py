@@ -2749,6 +2749,33 @@ class MainWindow(QMainWindow):
             if not parallel_thread.wait(5000):
                 parallel_thread.terminate()
                 parallel_thread.wait(3000)
+
+        # GMSH-direct path (Tetrahedral/Polyhedral): none of the above
+        # ever touched it. _kill_wsl_processes only targets WSL, and
+        # cartesianMesh's _runner/thread machinery is a separate path —
+        # GmshVolumeWorker/GmshSurfaceWorker/CheckMeshWorker/
+        # WatertightWorker each spawn their own native subprocess via
+        # _stream_subprocess, and NOTHING here ever called into it.
+        # Confirmed live: Cancel reset the UI but the GMSH child process
+        # kept running orphaned, and starting a new run then meant two
+        # GMSH processes running at once — reported as both "Cancel does
+        # nothing" and "processes overlap". .cancel() kills the actual
+        # subprocess by PID; _cleanup_thread below then tears down the
+        # QThread cleanly since run() can now return promptly instead of
+        # sitting in _stream_subprocess's poll loop until the 3s timeout
+        # forces a QThread.terminate() that never touched the orphan.
+        for worker_attr in ("_gmsh_worker", "_checkmesh_worker", "_watertight_worker"):
+            worker = getattr(self, worker_attr, None)
+            cancel = getattr(worker, "cancel", None)
+            if callable(cancel):
+                cancel()
+        for thread_attr, worker_attr in (
+            ("_gmsh_thread", "_gmsh_worker"),
+            ("_checkmesh_thread", "_checkmesh_worker"),
+            ("_watertight_thread", "_watertight_worker"),
+        ):
+            self._cleanup_thread(thread_attr, worker_attr)
+
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
