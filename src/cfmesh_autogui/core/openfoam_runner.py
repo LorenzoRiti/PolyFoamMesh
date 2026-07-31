@@ -933,6 +933,20 @@ class CheckMeshWorker(QObject):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._of_config = of_config
+        self._proc_holder: dict = {}
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        """Kill the live subprocess (wsl.exe), if any is running right
+        now. See GmshSurfaceWorker.cancel for why this exists — same gap
+        here even though _on_cancel_meshing's _kill_wsl_processes() gives
+        this one partial coverage already, killing wsl.exe directly by
+        PID is faster and doesn't depend on process-name matching."""
+        self._cancelled = True
+        proc = self._proc_holder.get("proc")
+        if proc is not None and proc.poll() is None:
+            _kill_pid_tree(proc.pid)
 
     @Slot()
     def run(self):
@@ -944,6 +958,7 @@ class CheckMeshWorker(QObject):
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, None, 600,
                 on_line=lambda ln: self.log_line.emit(f"[checkMesh] {ln}"),
+                proc_holder=self._proc_holder,
             )
             full = "\n".join(stdout_lines) + "\n" + "\n".join(stderr_lines)
         except FileNotFoundError:
@@ -951,8 +966,13 @@ class CheckMeshWorker(QObject):
             self.failed.emit("WSL not found")
             return
         except Exception as exc:
-            self.log_line.emit(f"[checkMesh] ERROR: {exc}")
-            self.failed.emit(str(exc))
+            if not self._cancelled:
+                self.log_line.emit(f"[checkMesh] ERROR: {exc}")
+                self.failed.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self.log_line.emit("[checkMesh] Cancelled.")
             return
 
         if timed_out:
@@ -1402,7 +1422,22 @@ def _gmsh_wrapper_script_cmd(
     return [sys.executable, script] + args, run_cwd
 
 
-def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10):
+def _kill_pid_tree(pid: int) -> None:
+    """Kill a process and its children by PID. Windows-only helper for
+    the GMSH-subprocess workers (WSL processes go through
+    MeshWorker._kill_process_tree / _kill_wsl_processes instead — this
+    is for the plain sys.executable child _stream_subprocess launches).
+    """
+    import subprocess
+    from contextlib import suppress
+    with suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True, timeout=5,
+        )
+
+
+def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10, proc_holder=None):
     """Run cmd via Popen, streaming stdout/stderr line-by-line as they
     arrive instead of buffering everything until the process exits.
 
@@ -1415,6 +1450,17 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
     interpolated mesh sizes..."), emits a synthetic "still running" line
     through the same callback so silence never looks like a hang.
 
+    proc_holder: optional mutable dict the caller can inspect from another
+    thread while this call is still blocking — populated with the live
+    Popen object as {"proc": proc} immediately after launch. Without this,
+    nothing outside this function can ever reach the subprocess: Cancel in
+    the GUI only tore down the QThread that called this (and only after a
+    3s wait, since the thread is blocked in this loop and never processes
+    the quit() event) — the actual GMSH child process, spawned here via
+    Popen, was never touched and kept running orphaned. Confirmed live:
+    Cancel visually reset the UI but the process stayed alive, and
+    starting a new run then meant two GMSH processes running at once.
+
     Returns (returncode, stdout_lines, stderr_lines, timed_out).
     """
     import subprocess
@@ -1425,6 +1471,8 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, cwd=run_cwd, env=env, bufsize=1,
     )
+    if proc_holder is not None:
+        proc_holder["proc"] = proc
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -1495,6 +1543,23 @@ class GmshSurfaceWorker(QObject):
         self._geom_path = geom_path
         self._stl_out = stl_out
         self._detail = detail
+        self._proc_holder: dict = {}
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        """Kill the live GMSH subprocess, if any is running right now.
+
+        Cancel in the GUI previously only tore down the QThread this runs
+        on — it never reached the actual GMSH child process spawned by
+        _stream_subprocess, which kept running orphaned (confirmed live:
+        Cancel visually reset the UI but the process stayed alive, and a
+        new run then meant two GMSH processes running at once).
+        """
+        self._cancelled = True
+        proc = self._proc_holder.get("proc")
+        if proc is not None and proc.poll() is None:
+            _kill_pid_tree(proc.pid)
 
     @Slot()
     def run(self):
@@ -1506,9 +1571,15 @@ class GmshSurfaceWorker(QObject):
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, run_cwd, self.SURFACE_TIMEOUT_S,
                 on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
+                proc_holder=self._proc_holder,
             )
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self.log_line.emit("[gmsh] Surface generation cancelled.")
             return
 
         if timed_out:
@@ -1565,6 +1636,21 @@ class GmshVolumeWorker(QObject):
         self._max_cell_size = max_cell_size
         self._min_cell_size = min_cell_size
         self._max_cells_target = max_cells_target
+        self._proc_holder: dict = {}
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        """Kill the live GMSH subprocess, if any is running right now.
+
+        See GmshSurfaceWorker.cancel — same gap, same fix: Cancel in the
+        GUI previously reset the UI without ever touching this worker's
+        actual subprocess, which kept running orphaned in the background.
+        """
+        self._cancelled = True
+        proc = self._proc_holder.get("proc")
+        if proc is not None and proc.poll() is None:
+            _kill_pid_tree(proc.pid)
 
     @Slot()
     def run(self):
@@ -1586,9 +1672,15 @@ class GmshVolumeWorker(QObject):
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=env,
                 on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
+                proc_holder=self._proc_holder,
             )
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self.log_line.emit("[gmsh] Volume generation cancelled.")
             return
 
         if timed_out:
@@ -1640,6 +1732,17 @@ class WatertightWorker(QObject):
     def __init__(self, stl_paths: list[Path], parent=None):
         super().__init__(parent)
         self._stl_paths = stl_paths
+        self._proc_holder: dict = {}
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        """Kill the live subprocess, if any is running right now. See
+        GmshSurfaceWorker.cancel for why this exists."""
+        self._cancelled = True
+        proc = self._proc_holder.get("proc")
+        if proc is not None and proc.poll() is None:
+            _kill_pid_tree(proc.pid)
 
     @Slot()
     def run(self):
@@ -1653,9 +1756,15 @@ class WatertightWorker(QObject):
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, run_cwd, self.TIMEOUT_S,
                 on_line=lambda ln: self.log_line.emit(f"[watertight] {ln}"),
+                proc_holder=self._proc_holder,
             )
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self.log_line.emit("[watertight] Cancelled.")
             return
 
         if timed_out:
