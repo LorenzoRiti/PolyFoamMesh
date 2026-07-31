@@ -112,6 +112,7 @@ class TerminalFaceConverter:
             # --- Read tet mesh ---
             poly_dir = self._case_dir / "constant" / "polyMesh"
             points = self._read_points(poly_dir / "points")
+            self._last_points = points
             faces_raw = self._read_faces(poly_dir / "faces")
             owner = self._read_label_list(poly_dir / "owner")
             neighbour = self._read_label_list(poly_dir / "neighbour")
@@ -140,22 +141,29 @@ class TerminalFaceConverter:
                 )
             non_tet_cells = [i for i in range(n_cells) if len(cell_faces[i]) != 4]
             if non_tet_cells:
-                # Not all cells are tets — fall back to poly_aggregator style
-                logger.warning(
-                    "Terminal-face: %d non-tet cells found (%.1f%%). "
-                    "Using vertex-based aggregation fallback.",
-                    len(non_tet_cells),
-                    100.0 * len(non_tet_cells) / n_cells,
-                )
-                return self._fallback_aggregate(
-                    points, faces_raw, owner, neighbour,
-                    boundary_patches, n_cells, t0, result,
+                raise RuntimeError(
+                    f"Tet-to-poly requires a pure tetrahedral volume; "
+                    f"{len(non_tet_cells)}/{n_cells} cells have a topology "
+                    "different from 4 faces. Disable boundary layers/prisms "
+                    "or use the dedicated hybrid mesher."
                 )
 
             # --- Phase 1: LABEL ---
             largest_face, frontier_bitvector, seed_list = self._label_phase(
                 points, faces_raw, cell_faces, face_owner, face_neigh, n_cells,
             )
+            # NOT calling _augment_disjoint_pair_matching here: measured on
+            # the same block-with-bore reference mesh (251,902 tets) that it
+            # raises poly coverage from 21.1% to 80.2% (78.9% -> 19.8%
+            # residual tets), but wrong-oriented faces go from 79 to 1,056
+            # (13x) — same single failed checkMesh check as the baseline
+            # (no new skewness/non-orthogonality failures), but a real
+            # regression on the metric that matters for CFD use. User
+            # decision 2026-07-31: keep the higher-quality baseline over
+            # higher poly coverage. Left implemented (mutual-agreement-first
+            # disjoint pair matching, bounded to pairs so it can't runaway-
+            # chain) as a starting point if orientation-safe second-chance
+            # matching is worth revisiting later.
             result.n_terminal_faces = sum(1 for v in frontier_bitvector if not v)
             result.n_frontier_faces = sum(frontier_bitvector)
             logger.info("Terminal-face label: %d terminal, %d frontier, %d seeds",
@@ -169,6 +177,10 @@ class TerminalFaceConverter:
             n_leftover_before = sum(1 for t in tet_sets if len(t) == 1)
             logger.info("Terminal-face traversal: %d polyhedra (%d single-tet leftovers)",
                         len(polyhedra), n_leftover_before)
+            # The bounded leftover merge is intentionally not enabled yet:
+            # on the reference mesh it reduced residual tets but introduced
+            # hundreds of wrong-oriented faces and skewness failures. Keep
+            # the clean baseline until a geometric quality gate is added.
             result.n_leftover_tets_merged = 0
 
             # NOT calling _merge_leftover_tets here: measured directly on
@@ -309,6 +321,71 @@ class TerminalFaceConverter:
                 frontier_bitvector[fid] = True
 
         return largest_face, frontier_bitvector, seed_list
+
+    def _augment_disjoint_pair_matching(
+        self,
+        points: np.ndarray,
+        faces_raw: list[list[int]],
+        cell_faces: list[list[int]],
+        face_owner: np.ndarray,
+        face_neigh: np.ndarray,
+        frontier_bitvector: list[bool],
+        n_cells: int,
+    ) -> int:
+        """Join unmatched tets in a quality-bounded one-to-one matching.
+
+        The first label phase only joins a face when both tetrahedra choose it
+        as their largest face.  That is safe but leaves many isolated tets.
+        This pass considers all internal faces, ranks each face in both
+        incident tetrahedra by area, and greedily accepts the best disjoint
+        pairs.  A pair is a valid two-tet polyhedron; no tet is absorbed into
+        an already-created cell and no cell can acquire a second shared
+        interior interface through this pass.
+
+        Returns the number of accepted pairs.  The selected matching defines
+        the complete internal-face graph for this pass; unselected internal
+        faces become frontier faces.
+        """
+        ranks: list[dict[int, int]] = []
+        for cfaces in cell_faces:
+            ordered = sorted(
+                cfaces,
+                key=lambda fid: self._face_area(faces_raw[fid], points),
+                reverse=True,
+            )
+            ranks.append({fid: rank for rank, fid in enumerate(ordered)})
+
+        candidates: list[tuple[int, int, float, int, int, int]] = []
+        for fid in range(min(len(faces_raw), len(face_neigh))):
+            neigh = int(face_neigh[fid])
+            if neigh < 0:
+                continue
+            own = int(face_owner[fid])
+            if not (0 <= own < n_cells and 0 <= neigh < n_cells):
+                continue
+            ro = ranks[own].get(fid, 99)
+            rn = ranks[neigh].get(fid, 99)
+            area = self._face_area(faces_raw[fid], points)
+            # Prefer faces high in both local rankings, then larger faces.
+            candidates.append((max(ro, rn), ro + rn, -area, fid, own, neigh))
+
+        candidates.sort()
+        used = [False] * n_cells
+        selected: set[int] = set()
+        for _quality, _rank_sum, _neg_area, fid, own, neigh in candidates:
+            if used[own] or used[neigh]:
+                continue
+            used[own] = True
+            used[neigh] = True
+            selected.add(fid)
+
+        # Reclassify all internal faces: selected pairs are internal; all
+        # other connections are frontier faces for the resulting cells.
+        for fid in range(min(len(faces_raw), len(face_neigh))):
+            if int(face_neigh[fid]) >= 0:
+                frontier_bitvector[fid] = fid not in selected
+
+        return len(selected)
 
     # ------------------------------------------------------------------
     # Phase 2: TRAVERSAL (DFS)
@@ -502,6 +579,80 @@ class TerminalFaceConverter:
             repaired_tet_sets.extend(split_tet_sets)
 
         return repaired, repaired_tet_sets, n_repaired
+
+    def _merge_leftovers_safe(
+        self,
+        polyhedra: list[list[int]],
+        tet_sets: list[set[int]],
+        cell_faces: list[list[int]],
+        faces_raw: list[list[int]],
+        face_owner: np.ndarray,
+        face_neigh: np.ndarray,
+    ) -> tuple[list[list[int]], list[set[int]], int]:
+        """Merge only topologically safe single-tet leftovers.
+
+        A leftover tet may be attached to a target polyhedron only when:
+        - the target is not itself a singleton;
+        - exactly one shared face is used as the interface;
+        - no second face is common between the two cells;
+        - each target receives at most one leftover in this pass.
+
+        This deliberately leaves some tetrahedra unmerged. A mixed but valid
+        mesh is preferable to a cosmetically all-poly mesh with duplicate
+        faces, inverted volumes, or non-manifold topology.
+        """
+        face_to_poly: dict[int, list[int]] = {}
+        for pi, faces in enumerate(polyhedra):
+            for fid in faces:
+                face_to_poly.setdefault(fid, []).append(pi)
+
+        target_used: set[int] = set()
+        removed: set[int] = set()
+        merges = 0
+        candidates: list[tuple[float, int, int, int]] = []
+
+        for pi, tset in enumerate(tet_sets):
+            if len(tset) != 1:
+                continue
+            tet = next(iter(tset))
+            for fid in cell_faces[tet]:
+                own = int(face_owner[fid])
+                neigh = int(face_neigh[fid]) if fid < len(face_neigh) else -1
+                other = neigh if own == tet else own
+                for target in face_to_poly.get(fid, []):
+                    if target == pi or len(tet_sets[target]) <= 1:
+                        continue
+                    other_faces = set(polyhedra[target])
+                    leftover_faces = set(polyhedra[pi])
+                    # The shared interface is the only face allowed to
+                    # overlap between the two cell boundaries.
+                    if (other_faces & leftover_faces) != {fid}:
+                        continue
+                    area = self._face_area(faces_raw[fid], self._last_points)
+                    candidates.append((-area, pi, target, fid))
+
+        candidates.sort()
+        for _neg_area, pi, target, fid in candidates:
+            if pi in removed or target in removed or target in target_used:
+                continue
+            if len(tet_sets[pi]) != 1 or len(tet_sets[target]) <= 1:
+                continue
+            # Recheck after earlier merges in this pass.
+            if (set(polyhedra[target]) & set(polyhedra[pi])) != {fid}:
+                continue
+            merged = [f for f in polyhedra[target] if f != fid]
+            merged.extend(f for f in polyhedra[pi] if f != fid)
+            if len(set(merged)) != len(merged) or len(merged) < 4:
+                continue
+            polyhedra[target] = list(dict.fromkeys(merged))
+            tet_sets[target].update(tet_sets[pi])
+            removed.add(pi)
+            target_used.add(target)
+            merges += 1
+
+        kept_poly = [p for i, p in enumerate(polyhedra) if i not in removed]
+        kept_tets = [t for i, t in enumerate(tet_sets) if i not in removed]
+        return kept_poly, kept_tets, merges
 
     def _split_at_barrier(
         self,

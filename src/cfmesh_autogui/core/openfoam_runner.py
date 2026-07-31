@@ -699,6 +699,10 @@ class MeshQualityReport:
     def passed(self) -> bool:
         if self.has_fatal or self.neg_cells > 0:
             return False
+        # OpenFOAM can finish with return code 0 while reporting failed
+        # topology/geometry checks.  Do not show a misleading PASS banner.
+        if re.search(r"Failed\s+\d+\s+mesh\s+checks?", self.raw_output, re.IGNORECASE):
+            return False
         return True
 
     @property
