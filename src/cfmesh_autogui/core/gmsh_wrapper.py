@@ -912,6 +912,18 @@ def generate_surface_stl(
 
     if user_lc:
         df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
+        # Same domain-scale safety clamp as generate_volume_mesh's manual
+        # path — see its comment for the confirmed failure mode (the
+        # built-in test cylinder, 2mm real-world scale after mm->m
+        # conversion, hit a 600s non-convergent GMSH run against the GUI's
+        # untouched 5cm/1cm defaults).
+        if user_lc > max_extent * 0.5:
+            logger.warning(
+                "Max Cell Size %.5g doesn't fit domain (max_extent=%.5g) — "
+                "clamping to %.5g to avoid a non-convergent GMSH run.",
+                user_lc, max_extent, max_extent * 0.5,
+            )
+            user_lc = max_extent * 0.5
         gmsh.option.setNumber("Mesh.CharacteristicLengthMin", user_lc * 0.01)
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", user_lc * df["max_mult"])
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
@@ -1228,6 +1240,33 @@ def generate_volume_mesh(
         df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
         # User's min cell size takes priority over detail-level min_mult
         lc_min = min_cell_size if min_cell_size and min_cell_size > 0 else user_lc * df["min_mult"]
+
+        # Domain-scale safety clamp. Max/Min Cell Size are free-typed
+        # fields with fixed GUI defaults (5cm / 1cm) tuned for metre-scale
+        # CFD parts, and nothing forces them to reflect the geometry
+        # actually loaded ("Auto-Suggest Cell Sizes" is a manual button,
+        # never run automatically) — confirmed live: the built-in 2mm test
+        # cylinder (create_test_cylinder, cadquery's native mm units) with
+        # those untouched defaults asks GMSH for a minimum cell 5x and a
+        # maximum cell 25x larger than the entire object. The est_cells
+        # check above only guards the opposite failure (user_lc so SMALL it
+        # would produce >20M cells) — a user_lc/lc_min that doesn't fit in
+        # the domain at all sails through it (est_cells comes out «1, not
+        # «20M) and instead sends GMSH into a real, unbounded "splitting
+        # those edges and trying again" retry loop that never converges —
+        # reproduced live as a 600s timeout with zero progress. Cap both
+        # against max_extent so a size request always fits inside the part,
+        # regardless of what's sitting in the GUI fields.
+        if user_lc > max_extent * 0.5:
+            logger.warning(
+                "Max Cell Size %.5g doesn't fit domain (max_extent=%.5g) — "
+                "clamping to %.5g to avoid a non-convergent GMSH run.",
+                user_lc, max_extent, max_extent * 0.5,
+            )
+            user_lc = max_extent * 0.5
+        if lc_min >= user_lc:
+            lc_min = user_lc * 0.2
+
         gmsh.option.setNumber("Mesh.CharacteristicLengthMin", lc_min)
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", user_lc)
         gmsh.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
