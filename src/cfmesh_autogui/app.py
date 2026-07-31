@@ -129,6 +129,32 @@ def main():
         from cfmesh_autogui.core.geometry_repair import _main as _watertight_main
         _sys.exit(_watertight_main(_sys.argv[2:]))
 
+    # Same frozen-exe dispatch problem as --feature-detect/--watertight
+    # above, for the three GMSH subprocess launches in openfoam_runner.py
+    # (GmshSurfaceWorker, GmshVolumeWorker, and the msh->foam conversion
+    # in main_window.py): _gmsh_wrapper_script_cmd's frozen branch has
+    # always assumed these flags land here, but nothing ever actually
+    # dispatched them — confirmed by direct inspection, not yet hit in
+    # practice since this app hasn't shipped as a frozen build. GMSH's
+    # __main__ block (not refactored into a _main(argv) like the other
+    # two) reads its subcommand from sys.argv[1], so it's restored here
+    # before handing off via runpy — args[1:] (already args, minus the
+    # leading "surface"/"volume"/"convert_to_foam" word) is what the
+    # frozen cmd carries after this flag, per _gmsh_wrapper_script_cmd.
+    _GMSH_FLAG_SUBCOMMAND = {
+        "--gmsh-surface": "surface",
+        "--gmsh-volume": "volume",
+        "--gmsh-convert-to-foam": "convert_to_foam",
+    }
+    if len(_sys.argv) > 1 and _sys.argv[1] in _GMSH_FLAG_SUBCOMMAND:
+        import runpy
+        from pathlib import Path as _Path
+        subcommand = _GMSH_FLAG_SUBCOMMAND[_sys.argv[1]]
+        _sys.argv = [_sys.argv[0], subcommand] + _sys.argv[2:]
+        script = str(_Path(__file__).resolve().with_name("core") / "gmsh_wrapper.py")
+        runpy.run_path(script, run_name="__main__")
+        _sys.exit(0)
+
     if len(_sys.argv) > 1 and _sys.argv[1] in ("--help", "-h"):
         print(f"CFMesh-AutoGUI v{__version__} — OpenFOAM mesh preprocessor")
         print()
@@ -139,6 +165,9 @@ def main():
         print("  --version, -v      Show version and exit")
         print("  --feature-detect   Run GMSH feature detection (subprocess mode)")
         print("  --watertight       Run watertight check/repair (subprocess mode)")
+        print("  --gmsh-surface     Run GMSH surface STL generation (subprocess mode)")
+        print("  --gmsh-volume      Run GMSH volume mesh generation (subprocess mode)")
+        print("  --gmsh-convert-to-foam  Convert GMSH .msh to OpenFOAM polyMesh (subprocess mode)")
         print()
         print("Without arguments, the GUI application starts.")
         _sys.exit(0)
