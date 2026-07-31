@@ -9,6 +9,22 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+# Windows' console defaults to cp1252, which can't encode plenty of
+# characters this app's own log messages use (arrows, checkmarks, the
+# multiplication sign in "Domain: 3.000 x 0.255 x 0.255 m", etc.).
+# logging's own emit() catches the resulting UnicodeEncodeError and just
+# dumps a traceback instead of the actual message — confirmed live: an
+# arrow in a healing-summary log line ("faces 12790→12776") produced
+# a "--- Logging error ---" block instead of the message, discarding the
+# real log content and cluttering the console with an unrelated-looking
+# traceback. reconfigure() (Python 3.7+) switches the stream to UTF-8
+# without needing to touch every individual log call site.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+except (AttributeError, ValueError):
+    pass  # non-reconfigurable stream (e.g. redirected to something unusual)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -19,7 +35,10 @@ import os as _os
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
 _log_dir = _os.path.join(_os.environ.get("APPDATA", _os.path.expanduser("~")), "cfmesh-autogui", "logs")
 _os.makedirs(_log_dir, exist_ok=True)
-_file_handler = _RotatingFileHandler(_os.path.join(_log_dir, "app.log"), maxBytes=5*1024*1024, backupCount=3)
+_file_handler = _RotatingFileHandler(
+    _os.path.join(_log_dir, "app.log"), maxBytes=5*1024*1024, backupCount=3,
+    encoding="utf-8",
+)
 _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logging.getLogger().addHandler(_file_handler)
 
