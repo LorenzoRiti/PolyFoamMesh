@@ -556,6 +556,22 @@ def _configure_adaptive_sizing(
     else:
         coarse_max = coarse_max_detail
 
+    # Absolute sanity floor, independent of domain scale: coarse_max_detail
+    # is `max_extent * 0.02 * max_mult` — proportional to the domain, which
+    # is right for CFD-scale parts (the 3m valve gets ~9cm bulk cells, a
+    # sensible "medium") but breaks down on a genuinely small domain: a 2mm
+    # test cylinder gets the SAME relative treatment and lands at 0.06mm —
+    # confirmed directly to produce 1,071,874 tets in 49s for "medium" on a
+    # part the size of a grain of rice, with nothing about it actually
+    # needing that resolution. df["min_size"] is this detail level's own
+    # declared finest-intended absolute size (already defined per level,
+    # just never wired to anything before this) — using it as a floor here
+    # means the bulk mesh is never finer than what "medium" itself considers
+    # its own upper resolution limit, regardless of how small the domain is.
+    # Never engages on a normal CFD-scale part (there coarse_max_detail is
+    # already well above this floor), so the valve's tuning is unaffected.
+    coarse_max = max(coarse_max, df["min_size"])
+
     # geom_min is only meaningful when the geometry genuinely HAS a small
     # feature relative to everything else (the valve's 0.25mm fillets on
     # a 3m body). On a geometry with no small features — every curve

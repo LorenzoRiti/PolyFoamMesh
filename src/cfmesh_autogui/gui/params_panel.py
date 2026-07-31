@@ -492,7 +492,10 @@ class ParamsPanel(QWidget):
         # concern — the auto hardware budget only guides how fine small
         # features get resolved, it doesn't hard-cap the total count).
         self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (GMSH mesher, recommended)")
-        self._adaptive_sizing_check.setChecked(True)
+        # Manual Max/Min Cell Size is authoritative by default.  Adaptive
+        # sizing is opt-in so the values visible in the main Mesh tab always
+        # describe the mesh that will actually be generated.
+        self._adaptive_sizing_check.setChecked(False)
         self._adaptive_sizing_check.setToolTip(
             "Refines only near small features/curved surfaces, coarse\n"
             "elsewhere, sized from the geometry itself and the available\n"
@@ -502,13 +505,21 @@ class ParamsPanel(QWidget):
             "Only applies to the Tetrahedral (FEM) / Polyhedral (CFD) mesher."
         )
         adv_layout.addWidget(self._adaptive_sizing_check)
+        # Max/Min Cell Size stayed visible, editable, and full of a
+        # plausible-looking number even when Adaptive was checked and
+        # silently ignoring them (see _on_run_meshing: `0 if adaptive else
+        # get_max_cell()`) — nothing told the user their typed values were
+        # about to be discarded. Grey them out instead so the panel tells
+        # the truth about what's actually authoritative.
+        self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
+        self._on_adaptive_sizing_toggled(self._adaptive_sizing_check.isChecked())
 
         max_cells_row = QHBoxLayout()
         max_cells_row.addWidget(QLabel("Max cells target:"))
         self._max_cells_target = QSpinBox()
         self._max_cells_target.setRange(0, 50_000_000)
         self._max_cells_target.setSingleStep(100_000)
-        self._max_cells_target.setValue(0)
+        self._max_cells_target.setValue(20_000_000)
         self._max_cells_target.setSpecialValueText("Auto (hardware-based)")
         self._max_cells_target.setToolTip(
             "0 = decide automatically from free RAM/CPU cores.\n"
@@ -661,6 +672,14 @@ class ParamsPanel(QWidget):
 
     def _on_bl_toggled(self, checked: bool):
         self._bl_form_widget.setVisible(checked)
+
+    def _on_adaptive_sizing_toggled(self, checked: bool):
+        """Grey out Max/Min Cell Size while Adaptive sizing is checked —
+        they're silently ignored in that state (see the comment where
+        this is connected), so leaving them enabled misrepresents what's
+        actually driving the mesh."""
+        self._max_cell.setEnabled(not checked)
+        self._min_cell.setEnabled(not checked)
 
     # Kinematic viscosity at 20 °C, m²/s.
     _FLUID_NU = {"Air (20°C)": 1.5e-5, "Water (20°C)": 1.0e-6}
@@ -922,7 +941,9 @@ class ParamsPanel(QWidget):
             return "auto"
         if "autopoly" in text:
             return "autopoly"
-        if "Tetrahedral" in text or "Polyhedral" in text:
+        if "Polyhedral" in text:
+            return "gmsh_direct_poly"
+        if "Tetrahedral" in text:
             return "gmsh_direct"
         return "cfmesh"
 

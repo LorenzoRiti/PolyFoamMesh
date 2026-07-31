@@ -908,7 +908,21 @@ def tessellate_patches(
                     name, len(faces), tolerance,
                 )
                 continue
-            verts_np = np.array([(v.x, v.y, v.z) for v in verts], dtype=np.float64)
+            # CadQuery normalizes every imported STEP file to its own
+            # internal working unit (millimetres) regardless of what unit
+            # the source file itself declared — that normalization is
+            # reliable (mature CAD kernel behaviour), so converting mm to
+            # this app's internal metre convention here is always correct,
+            # not a guess. Without it, a real CAD export authored in mm
+            # (the normal case for mechanical parts — confirmed live: a
+            # genuinely 3 m part came through as bbox=3000, then got
+            # treated as 3000 m by every downstream consumer that assumes
+            # metres, producing a "~45 billion cell" estimate and blocking
+            # meshing entirely). Synthetic test geometry built directly
+            # with cadquery calls never exposed this: dimensions typed
+            # into cadquery ARE already in its native mm, so there was
+            # never a real-world scale to be wrong against.
+            verts_np = np.array([(v.x, v.y, v.z) for v in verts], dtype=np.float64) * 0.001
             tris_np = np.array(tris, dtype=np.int32)
             mesh = trimesh.Trimesh(vertices=verts_np, faces=tris_np, process=False)
             mesh.metadata["name"] = name

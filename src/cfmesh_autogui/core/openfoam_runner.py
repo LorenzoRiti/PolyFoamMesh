@@ -1401,6 +1401,80 @@ def _gmsh_wrapper_script_cmd(args: list[str], frozen_flag: str) -> tuple[list[st
     return [sys.executable, script] + args, run_cwd
 
 
+def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10):
+    """Run cmd via Popen, streaming stdout/stderr line-by-line as they
+    arrive instead of buffering everything until the process exits.
+
+    subprocess.run(capture_output=True) blocks with zero output for the
+    ENTIRE run — confirmed live: a user watching the log during a slow
+    (not hung, just genuinely producing far more cells than expected for
+    the geometry) GMSH run saw nothing for 49s and reasonably assumed a
+    freeze. This streams stdout as it's produced and, if GMSH itself goes
+    quiet for heartbeat_s (it commonly does mid-phase, e.g. "Computing
+    interpolated mesh sizes..."), emits a synthetic "still running" line
+    through the same callback so silence never looks like a hang.
+
+    Returns (returncode, stdout_lines, stderr_lines, timed_out).
+    """
+    import subprocess
+    import threading
+    import time
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=run_cwd, env=env, bufsize=1,
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    last_activity = [time.monotonic()]
+
+    def _pump(stream, sink, echo):
+        try:
+            for line in iter(stream.readline, ""):
+                line = line.rstrip("\n")
+                sink.append(line)
+                last_activity[0] = time.monotonic()
+                if echo and line.strip():
+                    on_line(line)
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(target=_pump, args=(proc.stdout, stdout_lines, True), daemon=True)
+    t_err = threading.Thread(target=_pump, args=(proc.stderr, stderr_lines, False), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    start = time.monotonic()
+    timed_out = False
+    while True:
+        ret = proc.poll()
+        if ret is not None:
+            break
+        now = time.monotonic()
+        if now - start > timeout_s:
+            timed_out = True
+            proc.kill()
+            break
+        if now - last_activity[0] > heartbeat_s:
+            on_line(f"... still running ({int(now - start)}s elapsed, "
+                     f"no output for {int(now - last_activity[0])}s)")
+            last_activity[0] = now
+        time.sleep(0.5)
+
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    t_out.join(timeout=2)
+    t_err.join(timeout=2)
+
+    return proc.returncode, stdout_lines, stderr_lines, timed_out
+
+
 class GmshSurfaceWorker(QObject):
     """Runs GMSH surface STL generation + sizing in a subprocess.
 
@@ -1423,29 +1497,30 @@ class GmshSurfaceWorker(QObject):
 
     @Slot()
     def run(self):
-        import sys, subprocess, json
+        import json
         args = ["surface", self._geom_path, str(self._stl_out), self._detail]
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-surface")
         self.log_line.emit("[gmsh] Running surface STL generation in subprocess...")
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=self.SURFACE_TIMEOUT_S, cwd=run_cwd,
+            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                cmd, run_cwd, self.SURFACE_TIMEOUT_S,
+                on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
             )
-        except subprocess.TimeoutExpired:
-            self.failed.emit(f"GMSH surface exceeded {self.SURFACE_TIMEOUT_S}s")
-            return
         except Exception as exc:
             self.failed.emit(str(exc))
+            return
+
+        if timed_out:
+            self.failed.emit(f"GMSH surface exceeded {self.SURFACE_TIMEOUT_S}s")
             return
 
         # Parse stdout first — see _gmsh_wrapper_script_cmd's docstring and
         # GmshVolumeWorker.run() for why returncode must not gate this.
         result = None
-        stdout_lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-        if stdout_lines:
+        non_empty = [ln for ln in stdout_lines if ln.strip()]
+        if non_empty:
             try:
-                result = json.loads(stdout_lines[-1])
+                result = json.loads(non_empty[-1])
             except json.JSONDecodeError:
                 result = None
 
@@ -1456,8 +1531,8 @@ class GmshSurfaceWorker(QObject):
             self.finished.emit(result)
             return
 
-        if proc.returncode != 0:
-            self.failed.emit(proc.stderr.strip() or f"GMSH surface failed (exit {proc.returncode})")
+        if returncode != 0:
+            self.failed.emit("\n".join(stderr_lines).strip() or f"GMSH surface failed (exit {returncode})")
             return
 
         self.failed.emit("GMSH surface: no JSON output produced")
@@ -1492,7 +1567,8 @@ class GmshVolumeWorker(QObject):
 
     @Slot()
     def run(self):
-        import sys, subprocess, json
+        import json
+        import os
         # Pass refinement zones as JSON via env var (avoids shell-escaping issues)
         zones_json = json.dumps(self._refinement_zones) if self._refinement_zones else ""
         args = [
@@ -1502,20 +1578,20 @@ class GmshVolumeWorker(QObject):
         ]
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
-        import os
         env = os.environ.copy()
         if zones_json:
             env["GMSH_REFINEMENT_ZONES"] = zones_json
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=self.VOLUME_TIMEOUT_S, cwd=run_cwd, env=env,
+            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=env,
+                on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
             )
-        except subprocess.TimeoutExpired:
-            self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
-            return
         except Exception as exc:
             self.failed.emit(str(exc))
+            return
+
+        if timed_out:
+            self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
             return
 
         # Parse stdout FIRST, even on a non-zero exit: the CLI's own
@@ -1531,10 +1607,10 @@ class GmshVolumeWorker(QObject):
         # GMSH itself may print "Info:" lines to stdout before the JSON,
         # so take the last non-empty line rather than the whole stream.
         result = None
-        stdout_lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-        if stdout_lines:
+        non_empty = [ln for ln in stdout_lines if ln.strip()]
+        if non_empty:
             try:
-                result = json.loads(stdout_lines[-1])
+                result = json.loads(non_empty[-1])
             except json.JSONDecodeError:
                 result = None
 
@@ -1545,8 +1621,8 @@ class GmshVolumeWorker(QObject):
             self.finished.emit(result)
             return
 
-        if proc.returncode != 0:
-            self.failed.emit(proc.stderr.strip() or f"GMSH volume failed (exit {proc.returncode})")
+        if returncode != 0:
+            self.failed.emit("\n".join(stderr_lines).strip() or f"GMSH volume failed (exit {returncode})")
             return
 
         self.failed.emit("GMSH volume: no JSON output produced")
