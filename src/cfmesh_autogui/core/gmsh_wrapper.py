@@ -740,7 +740,22 @@ def _ensure_gmsh():
                 # interpreter" when it ran off the main thread (confirmed
                 # live). Skip the signal-handler install entirely.
                 gmsh.initialize(interruptible=False)
-                gmsh.option.setNumber("General.Terminal", 0)
+                # Was 0 (silenced): GMSH's own progress output ("Meshing
+                # curve/surface/volume N", "Info: Done meshing 3D (Wall
+                # Xs)", element-splitting retry messages, etc.) is real,
+                # specific progress — with it off, a long run showed the
+                # user nothing but this app's own synthetic "still
+                # running, Ns elapsed" heartbeat, no way to tell genuine
+                # multi-minute work on a big/complex mesh apart from a
+                # stuck one. _stream_subprocess already reads and forwards
+                # every stdout line as it's produced, so turning this back
+                # on costs nothing extra to wire up — it just stops
+                # throwing away output that was already flowing through
+                # the same pipe. The CLI's own JSON result is still always
+                # the LAST non-empty line (see generate_volume_mesh's CLI
+                # wrapper below), so callers parsing "last line as JSON"
+                # are unaffected by GMSH's own chatter appearing before it.
+                gmsh.option.setNumber("General.Terminal", 1)
                 # Without this, GMSH's OCC STEP/IGES importer ignores the
                 # unit declared in the file (its LENGTH_UNIT entity, e.g.
                 # SI_UNIT(.MILLI.,.METRE.)) and keeps the raw numeric
