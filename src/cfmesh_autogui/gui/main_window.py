@@ -1370,10 +1370,31 @@ class MainWindow(QMainWindow):
                     f"{Tag.CASE} Automatic: enabling polyhedral conversion (terminal-face)."
                 )
         self._current_mesher_type = mesher_type
+        adaptive_on = self._params.get_adaptive_sizing_enabled()
+        poly_on = self._params.get_poly_conversion()
         logger.info(
-            "Meshing run #%d: mesher=%s poly_conversion=%s",
-            my_id, mesher_type, self._params.get_poly_conversion(),
+            "Meshing run #%d: mesher=%s poly_conversion=%s adaptive=%s",
+            my_id, mesher_type, poly_on, adaptive_on,
         )
+        # This state decides more about the outcome than anything else in
+        # the run (whether poly conversion happens at all, whether sizing
+        # follows the geometry or a fixed manual value) — confirmed live
+        # that its absence from the visible log was the actual blocker
+        # when a user couldn't tell why a run finished as a pure tet mesh:
+        # the equivalent logger.info() line above only ever reached the
+        # Python console/file log, never the in-app log panel actually
+        # being read.
+        self._log.append_log(
+            f"{Tag.CASE} Mesher: {mesher_type} | poly conversion: "
+            f"{'ON' if poly_on else 'OFF'} | adaptive sizing: "
+            f"{'ON' if adaptive_on else 'OFF (manual Max/Min Cell Size)'}"
+        )
+        if mesher_type == "gmsh_direct" and poly_on is False:
+            self._log.append_log(
+                f"{Tag.WARN} Tetrahedral (FEM) selected: this run will "
+                "produce a pure tet mesh, no polyhedral conversion. "
+                "Select 'Polyhedral (CFD)' in the Mesh tab for a poly mesh."
+            )
         octo.log_event("main_window", "run_meshing_start",
             f"run_id={my_id} mesher={mesher_type}")
         if mesher_type == "autopoly":
