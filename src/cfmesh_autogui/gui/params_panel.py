@@ -481,6 +481,13 @@ class ParamsPanel(QWidget):
             "Use only when a polyhedral topology is required."
         )
         adv_layout.addWidget(self._poly_check)
+        # _mesher_combo.setCurrentText("Automatic (recommended)") ran before
+        # its currentTextChanged connection existed (and before this
+        # checkbox even existed), so _on_mesher_changed never fired for the
+        # actual default selection — without this, "Convert to polyhedral
+        # mesh" starts visible (Qt's default for a freshly added widget) for
+        # "Automatic", where _on_mesher_changed would actually hide it.
+        self._on_mesher_changed(self._mesher_combo.currentText())
 
         # Guides for the GMSH adaptive/automatic refinement (Tetrahedral
         # FEM / Polyhedral CFD mesher only): without these the "Max/Min
