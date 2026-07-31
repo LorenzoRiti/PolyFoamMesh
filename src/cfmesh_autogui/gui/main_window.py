@@ -3164,6 +3164,7 @@ class MainWindow(QMainWindow):
                 f"({self._params.get_detail_level()})"
             )
             self._run_id += 1
+            self._poly_was_converted = False
             self._params.set_meshing_enabled(False)
             self._params.set_all_enabled(False)
             self._start_autopoly_worker(geom_path, self._run_id)
@@ -3196,6 +3197,15 @@ class MainWindow(QMainWindow):
                 f"({self._params.get_detail_level()})"
             )
             self._run_id += 1
+            # Confirmed live root cause of a "poly never happens on retry"
+            # report: this dispatches a BRAND NEW GMSH tet mesh into a new
+            # case_dir, which has never had terminal-face conversion
+            # applied — but without this reset, the stale True left over
+            # from the PREVIOUS (failed) case's successful conversion made
+            # _on_checkmesh_finished's "already done" guard skip poly
+            # conversion entirely for the new mesh, leaving it pure tet
+            # forever with no error or warning anywhere.
+            self._poly_was_converted = False
             self._params.set_meshing_enabled(False)
             self._params.set_all_enabled(False)
             self._start_gmsh_volume_worker(step_path, self._run_id)
