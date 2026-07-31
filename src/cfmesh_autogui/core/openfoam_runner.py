@@ -941,17 +941,11 @@ class CheckMeshWorker(QObject):
         self.log_line.emit(f"[checkMesh] {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,
+            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                cmd, None, 600,
+                on_line=lambda ln: self.log_line.emit(f"[checkMesh] {ln}"),
             )
-            full = result.stdout + "\n" + result.stderr
-        except subprocess.TimeoutExpired:
-            self.log_line.emit("[checkMesh] TIMEOUT (600s)")
-            self.failed.emit("checkMesh timed out after 600s")
-            return
+            full = "\n".join(stdout_lines) + "\n" + "\n".join(stderr_lines)
         except FileNotFoundError:
             self.log_line.emit("[checkMesh] WSL not found")
             self.failed.emit("WSL not found")
@@ -959,6 +953,11 @@ class CheckMeshWorker(QObject):
         except Exception as exc:
             self.log_line.emit(f"[checkMesh] ERROR: {exc}")
             self.failed.emit(str(exc))
+            return
+
+        if timed_out:
+            self.log_line.emit("[checkMesh] TIMEOUT (600s)")
+            self.failed.emit("checkMesh timed out after 600s")
             return
 
         report = parse_checkmesh_output(full)
@@ -1377,13 +1376,15 @@ class QualityFixWorker(QObject):
             self._checkmesh_thread.wait(3000)
 
 
-def _gmsh_wrapper_script_cmd(args: list[str], frozen_flag: str) -> tuple[list[str], str | None]:
-    """Build a subprocess command that runs gmsh_wrapper.py's CLI directly
-    by file path rather than via `python -m cfmesh_autogui.core.gmsh_wrapper`.
+def _gmsh_wrapper_script_cmd(
+    args: list[str], frozen_flag: str, script_name: str = "gmsh_wrapper.py",
+) -> tuple[list[str], str | None]:
+    """Build a subprocess command that runs a core/ module's CLI directly
+    by file path rather than via `python -m cfmesh_autogui.core.<module>`.
 
     `-m` first fully imports the parent package (cfmesh_autogui.core),
-    whose __init__.py already imports gmsh_wrapper — so by the time
-    Python's runpy machinery goes to execute gmsh_wrapper as __main__,
+    whose __init__.py already imports several of these modules — so by
+    the time Python's runpy machinery goes to execute one as __main__,
     it's already sitting in sys.modules under its real dotted name. That
     triggers Python's own "found in sys.modules ... prior to execution;
     this may result in unpredictable behaviour" RuntimeWarning and
@@ -1396,7 +1397,7 @@ def _gmsh_wrapper_script_cmd(args: list[str], frozen_flag: str) -> tuple[list[st
     frozen = getattr(sys, "frozen", False)
     if frozen:
         return [sys.executable, frozen_flag] + args[1:], None
-    script = str(Path(__file__).resolve().with_name("gmsh_wrapper.py"))
+    script = str(Path(__file__).resolve().with_name(script_name))
     run_cwd = str(Path(__file__).resolve().parents[2])
     return [sys.executable, script] + args, run_cwd
 
@@ -1642,38 +1643,45 @@ class WatertightWorker(QObject):
 
     @Slot()
     def run(self):
-        import sys, subprocess, json
-        frozen = getattr(sys, "frozen", False)
+        import json
         args = ["check"] + [str(p) for p in self._stl_paths]
-        if frozen:
-            cmd = [sys.executable, "--watertight"] + args[1:]
-        else:
-            cmd = [sys.executable, "-m", "cfmesh_autogui.core.geometry_repair"] + args
-        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+        cmd, run_cwd = _gmsh_wrapper_script_cmd(
+            args, "--watertight", script_name="geometry_repair.py",
+        )
         self.log_line.emit("[watertight] Checking geometry...")
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=self.TIMEOUT_S, cwd=run_cwd,
+            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                cmd, run_cwd, self.TIMEOUT_S,
+                on_line=lambda ln: self.log_line.emit(f"[watertight] {ln}"),
             )
-        except subprocess.TimeoutExpired:
-            self.failed.emit(f"Watertight check exceeded {self.TIMEOUT_S}s")
-            return
         except Exception as exc:
             self.failed.emit(str(exc))
             return
-        if proc.returncode != 0:
-            self.failed.emit(proc.stderr.strip() or f"Check failed (exit {proc.returncode})")
+
+        if timed_out:
+            self.failed.emit(f"Watertight check exceeded {self.TIMEOUT_S}s")
             return
-        try:
-            result = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            self.failed.emit(f"Watertight: invalid JSON: {e}")
+
+        result = None
+        non_empty = [ln for ln in stdout_lines if ln.strip()]
+        if non_empty:
+            try:
+                result = json.loads(non_empty[-1])
+            except json.JSONDecodeError:
+                result = None
+
+        if result is not None:
+            if not result.get("success"):
+                self.failed.emit(result.get("error", "Unknown error"))
+                return
+            self.finished.emit(result)
             return
-        if not result.get("success"):
-            self.failed.emit(result.get("error", "Unknown error"))
+
+        if returncode != 0:
+            self.failed.emit("\n".join(stderr_lines).strip() or f"Check failed (exit {returncode})")
             return
-        self.finished.emit(result)
+
+        self.failed.emit("Watertight: no JSON output produced")
 
 
 class ExportWorker(QObject):
