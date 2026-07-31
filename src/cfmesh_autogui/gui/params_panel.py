@@ -218,6 +218,40 @@ class ParamsPanel(QWidget):
         mesh_tab = QWidget()
         mesh_layout = QVBoxLayout(mesh_tab)
 
+        # Master control (Lorenzo, live testing feedback: too many peer
+        # controls with no hierarchy — Max/Min Cell Size, Detail, Adaptive
+        # all fighting for attention). One slider drives sizing for the
+        # geometry actually loaded (Adaptive sizing, on by default — see
+        # _adaptive_sizing_check below); Max/Min Cell Size move to a manual
+        # override under the Advanced tab, off by default. This directly
+        # closes off the class of bug behind today's cylinder timeout too:
+        # that happened because the OLD peer-level Max/Min fields carried
+        # fixed defaults (5cm/1cm) that don't scale to whatever geometry is
+        # loaded — a single geometry-aware slider can't drift out of scale
+        # the same way.
+        detail_group = QGroupBox("Mesh Fineness")
+        detail_layout = QVBoxLayout(detail_group)
+        detail_caption = QLabel(
+            "Controlla tutto — di solito basta questo. Per interventi "
+            "manuali (dimensione celle, ecc.) vedi la scheda Advanced."
+        )
+        detail_caption.setWordWrap(True)
+        detail_caption.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        detail_layout.addWidget(detail_caption)
+        self._detail_slider = QSlider(Qt.Horizontal)
+        self._detail_slider.setRange(0, 4)
+        self._detail_slider.setValue(2)
+        self._detail_slider.setTickPosition(QSlider.TicksBelow)
+        self._detail_slider.setTickInterval(1)
+        self._detail_slider.setToolTip("Controlla la finezza della mesh: da Molto Grossolana (celle grandi, mesh veloce) a Molto Fine (celle piccole, mesh accurata)")
+        self._detail_label = QLabel("Media")
+        self._detail_label.setAlignment(Qt.AlignCenter)
+        self._detail_label.setStyleSheet(f"font-weight: bold; color: {ORANGE_500}; font-size: 14px;")
+        self._detail_slider.valueChanged.connect(self._on_detail_changed)
+        detail_layout.addWidget(self._detail_slider)
+        detail_layout.addWidget(self._detail_label)
+        mesh_layout.addWidget(detail_group)
+
         # Case templates: pick a starting point (Internal Flow, External Aero,
         # CHT, ...) instead of guessing detail level / BL / cell-size ratios
         # from scratch. Only reads template metadata (name/description/detail/
@@ -249,54 +283,12 @@ class ParamsPanel(QWidget):
         self._applied_template_solver: str | None = None
         self._applied_template_turbulence: str | None = None
 
-        mesh_group = QGroupBox("Cell Sizes")
-        mesh_form = QFormLayout(mesh_group)
-        self._max_cell = QDoubleSpinBox()
-        self._max_cell.setRange(0.001, 100.0)
-        self._max_cell.setValue(0.05)
-        self._max_cell.setSingleStep(0.01)
-        self._max_cell.setDecimals(4)
-        self._max_cell.setSuffix(" m")
-        mesh_form.addRow("Max Cell Size:", self._max_cell)
-
-        self._min_cell = QDoubleSpinBox()
-        self._min_cell.setRange(0.0001, 10.0)
-        self._min_cell.setValue(0.01)
-        self._min_cell.setSingleStep(0.001)
-        self._min_cell.setDecimals(4)
-        self._min_cell.setSuffix(" m")
-        mesh_form.addRow("Min Cell Size:", self._min_cell)
-
-        self._cell_est_label = QLabel("Cells: --")
-        self._cell_est_label.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
-        mesh_form.addRow(self._cell_est_label)
-
-        self._prev_cell_params["max_cell"] = self._max_cell.value()
-        self._prev_cell_params["min_cell"] = self._min_cell.value()
-        self._max_cell.valueChanged.connect(self._on_max_cell_changed)
-        self._min_cell.valueChanged.connect(self._on_min_cell_changed)
-        mesh_layout.addWidget(mesh_group)
-
-        detail_group = QGroupBox("Detail Level")
-        detail_layout = QVBoxLayout(detail_group)
-        self._detail_slider = QSlider(Qt.Horizontal)
-        self._detail_slider.setRange(0, 4)
-        self._detail_slider.setValue(2)
-        self._detail_slider.setTickPosition(QSlider.TicksBelow)
-        self._detail_slider.setTickInterval(1)
-        self._detail_slider.setToolTip("Controlla la finezza della mesh: da Molto Grossolana (celle grandi, mesh veloce) a Molto Fine (celle piccole, mesh accurata)")
-        self._detail_label = QLabel("Media")
-        self._detail_label.setAlignment(Qt.AlignCenter)
-        self._detail_label.setStyleSheet(f"font-weight: bold; color: {ORANGE_500};")
-        self._detail_slider.valueChanged.connect(self._on_detail_changed)
-        detail_layout.addWidget(self._detail_slider)
-        detail_layout.addWidget(self._detail_label)
-        mesh_layout.addWidget(detail_group)
-
-        btn_suggest = QPushButton("Auto-Suggest Cell Sizes")
-        btn_suggest.clicked.connect(self._on_suggest_sizes)
-        self._btn_suggest = btn_suggest
-        mesh_layout.addWidget(btn_suggest)
+        # Max/Min Cell Size, the cell estimate label, and Auto-Suggest all
+        # moved to the Advanced tab (manual override section) — see the
+        # Mesh Fineness slider above for why. Constructed further down,
+        # inside adv_layout, so the widgets still exist under the same
+        # self._max_cell / self._min_cell / self._btn_suggest names
+        # everything else in this file already refers to.
 
         bl_group = QGroupBox("Boundary Layers")
         bl_layout = QVBoxLayout(bl_group)
@@ -489,9 +481,49 @@ class ParamsPanel(QWidget):
         # "Automatic", where _on_mesher_changed would actually hide it.
         self._on_mesher_changed(self._mesher_combo.currentText())
 
+        # Manual override section — everything here is off/unused by
+        # default; the Mesh Fineness slider on the main tab is what
+        # actually drives sizing unless a user comes in here deliberately.
+        override_label = QLabel("Manual sizing override")
+        override_label.setStyleSheet("font-weight: bold;")
+        adv_layout.addWidget(override_label)
+
+        mesh_group = QGroupBox("Cell Sizes")
+        mesh_form = QFormLayout(mesh_group)
+        self._max_cell = QDoubleSpinBox()
+        self._max_cell.setRange(0.001, 100.0)
+        self._max_cell.setValue(0.05)
+        self._max_cell.setSingleStep(0.01)
+        self._max_cell.setDecimals(4)
+        self._max_cell.setSuffix(" m")
+        mesh_form.addRow("Max Cell Size:", self._max_cell)
+
+        self._min_cell = QDoubleSpinBox()
+        self._min_cell.setRange(0.0001, 10.0)
+        self._min_cell.setValue(0.01)
+        self._min_cell.setSingleStep(0.001)
+        self._min_cell.setDecimals(4)
+        self._min_cell.setSuffix(" m")
+        mesh_form.addRow("Min Cell Size:", self._min_cell)
+
+        self._cell_est_label = QLabel("Cells: --")
+        self._cell_est_label.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        mesh_form.addRow(self._cell_est_label)
+
+        self._prev_cell_params["max_cell"] = self._max_cell.value()
+        self._prev_cell_params["min_cell"] = self._min_cell.value()
+        self._max_cell.valueChanged.connect(self._on_max_cell_changed)
+        self._min_cell.valueChanged.connect(self._on_min_cell_changed)
+        adv_layout.addWidget(mesh_group)
+
+        btn_suggest = QPushButton("Auto-Suggest Cell Sizes")
+        btn_suggest.clicked.connect(self._on_suggest_sizes)
+        self._btn_suggest = btn_suggest
+        adv_layout.addWidget(btn_suggest)
+
         # Guides for the GMSH adaptive/automatic refinement (Tetrahedral
         # FEM / Polyhedral CFD mesher only): without these the "Max/Min
-        # Cell Size" fields above — always populated by Auto-Suggest —
+        # Cell Size" fields just above — always populated by Auto-Suggest —
         # silently forced the old uniform sizing every time, so the
         # adaptive algorithm never actually ran in practice. Two knobs:
         # a switch back to manual uniform sizing, and a direct cap on
@@ -499,16 +531,16 @@ class ParamsPanel(QWidget):
         # concern — the auto hardware budget only guides how fine small
         # features get resolved, it doesn't hard-cap the total count).
         self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (GMSH mesher, recommended)")
-        # Manual Max/Min Cell Size is authoritative by default.  Adaptive
-        # sizing is opt-in so the values visible in the main Mesh tab always
-        # describe the mesh that will actually be generated.
-        self._adaptive_sizing_check.setChecked(False)
+        # On by default, driven by the Mesh Fineness slider on the main
+        # tab — this IS the "one slider governs everything" path (Lorenzo's
+        # UX feedback). Unchecking here is the deliberate manual override:
+        # switches to the fixed Max/Min Cell Size above, entered by hand.
+        self._adaptive_sizing_check.setChecked(True)
         self._adaptive_sizing_check.setToolTip(
             "Refines only near small features/curved surfaces, coarse\n"
             "elsewhere, sized from the geometry itself and the available\n"
             "hardware — instead of one uniform size everywhere (the\n"
-            "Max/Min Cell Size fields above, still used when this is off,\n"
-            "or as a starting point Auto-Suggest fills in).\n"
+            "Max/Min Cell Size fields above, used when this is off).\n"
             "Only applies to the Tetrahedral (FEM) / Polyhedral (CFD) mesher."
         )
         adv_layout.addWidget(self._adaptive_sizing_check)
@@ -526,7 +558,13 @@ class ParamsPanel(QWidget):
         self._max_cells_target = QSpinBox()
         self._max_cells_target.setRange(0, 50_000_000)
         self._max_cells_target.setSingleStep(100_000)
-        self._max_cells_target.setValue(20_000_000)
+        # 0 = Auto: the Mesh Fineness slider's detail level already picks a
+        # sensible default cell budget. A nonzero target here is only meant
+        # for a deliberate "I want MORE resolution than this detail level's
+        # own ceiling" override — confirmed live that leaving a large fixed
+        # value here by default fights the slider (pulled a 3m part's bulk
+        # mesh far finer than "medium" should give, and stalled).
+        self._max_cells_target.setValue(0)
         self._max_cells_target.setSpecialValueText("Auto (hardware-based)")
         self._max_cells_target.setToolTip(
             "0 = decide automatically from free RAM/CPU cores.\n"
