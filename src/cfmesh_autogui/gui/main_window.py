@@ -644,14 +644,33 @@ class MainWindow(QMainWindow):
     def _settings() -> AppSettings:
         return AppSettings()
 
+    @staticmethod
+    def _pos_on_a_screen(pos) -> bool:
+        """True if a title-bar-sized area at *pos* would land on some
+        currently connected screen. Requires at least 40px so a window
+        barely clipped at a screen edge still counts as "on screen" (the
+        common case), while a position left over from a since-removed
+        monitor or an old higher-resolution/DPI setup does not."""
+        from PySide6.QtCore import QRect
+        probe = QRect(pos.x(), pos.y(), 40, 40)
+        return any(
+            screen.availableGeometry().intersects(probe)
+            for screen in QApplication.screens()
+        )
+
     def _restore_settings(self):
         s = self._settings()
         size = s.get_value("window/size")
         pos = s.get_value("window/pos")
         if size is not None:
             self.resize(size)
-        if pos is not None:
+        if pos is not None and self._pos_on_a_screen(pos):
             self.move(pos)
+        # Otherwise leave Qt's own default placement — a saved position
+        # from a monitor/resolution/DPI setup that no longer matches
+        # (external monitor unplugged, scaling changed, etc.) previously
+        # got applied unconditionally, opening the window partially off
+        # the current screen every time.
         self._viewer.restore_background(s.raw)
         self._params.restore_params(s.raw)
         self._ribbon_btns["expert"].setChecked(self._params.is_expert_mode())
