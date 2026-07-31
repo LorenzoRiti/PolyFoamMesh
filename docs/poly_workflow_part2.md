@@ -22,17 +22,29 @@ check, 78.9% residual bare tets):
    matches baseline within GMSH's own run-to-run variance. Method stays
    implemented, not called (same as (1)).
 
-`_merge_leftovers_safe` (also found on disk, guards against duplicate-face
-merges) exists but is not called either — untested against this repro.
+3. **Disjoint pair matching + `_merge_leftovers_safe` on top** (tested
+   2026-07-31, goal: push coverage toward 100%): residual tets 78.9%->0.3%
+   (99.7% poly), but checkMesh regresses to 3 failed checks (3,699 wrong-
+   oriented faces, NEW skewness failure max=225, NEW non-orthogonality
+   failures). The duplicate-face guard on `_merge_leftovers_safe` prevents
+   bad topology, not bad cell shape — layered on (2) it still produces
+   badly-shaped cells. Rejected, disabled.
 
-**Committed state as of `fd7bc29`**: TerminalFaceConverter ships at the
-mutual-agreement-only baseline (~21% poly coverage, 79 wrong-oriented faces,
-1 failed checkMesh check). All three merge strategies above exist in
-terminal_face.py as documented, unused starting points. If higher poly
-coverage is wanted later, the disjoint-pair-matching direction is the
-better-performing of the two tested so far — the open problem is why its
-non-mutual second-chance pairs orient worse, not the matching/pairing logic
-itself.
+**Committed state as of latest commit**: (2) is ENABLED — disjoint pair
+matching runs by default, ~80% poly coverage, 1-2 failed checkMesh checks
+(occasional borderline skewness fail from GMSH's own run-to-run
+non-determinism), same failure categories as the old baseline, no new ones.
+This is the best coverage/quality balance found across three tested
+configurations. `_merge_leftover_tets` and `_merge_leftovers_safe` both
+stay implemented, disabled, documented starting points.
+
+Genuine ~100% coverage without this tradeoff needs a shape-aware merge
+criterion (reject a candidate pair/merge if the resulting cell's aspect
+ratio or skewness would be bad, not just if it creates a duplicate face) or
+the dual/Voronoi rebuild below (Recommended Algorithm / TetPolyVolumeConverter)
+— a different algorithm class, not another leftover-sweep variant on the
+terminal-face approach. Neither `TetPolyVolumeConverter` nor
+`tet_poly_volume.py` exists yet; that remains unimplemented.
 
 Neither of TetPolyVolumeConverter (this doc's Recommended Algorithm) nor
 `tet_poly_volume.py` exists yet — Part 2's dual/aggregation design below is
