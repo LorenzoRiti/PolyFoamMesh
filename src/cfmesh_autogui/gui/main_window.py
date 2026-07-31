@@ -3148,6 +3148,38 @@ class MainWindow(QMainWindow):
             self._start_autopoly_worker(geom_path, self._run_id)
             return
 
+        if getattr(self, "_current_mesher_type", None) in ("gmsh_direct", "gmsh_direct_poly"):
+            # Same reasoning as the autopoly branch above, missing here
+            # until now: falling through to _direct_remesh() always runs
+            # cfMesh cartesianMesh, reading the Manual Max/Min Cell Size
+            # fields — which sit disabled/stale under Adaptive sizing
+            # (the default) and have nothing to do with whatever Max
+            # cells target or detail level actually drove the GMSH mesh
+            # that just failed. Confirmed live: a user with Adaptive on
+            # and Max cells target=9,000,000 saw their mesh silently
+            # replaced by an 80-then-320-cell cfMesh mesh after a poly
+            # quality-check failure — a completely different mesher, at
+            # completely unrelated cell sizes, with no indication the
+            # switch had happened. Retry the same GMSH pipeline instead,
+            # one detail level coarser, same as autopoly's own retry.
+            step_path = getattr(self, "_loaded_step_path", None)
+            if step_path is None:
+                self._log.append_log(
+                    f"{Tag.WARN} Quality auto-fix: no source geometry path saved, skipping."
+                )
+                return
+            slider = self._params._detail_slider
+            slider.setValue(max(0, slider.value() - 1))
+            self._log.append_log(
+                f"{Tag.FIX} Quality auto-fix #{n}: retrying GMSH at coarser detail "
+                f"({self._params.get_detail_level()})"
+            )
+            self._run_id += 1
+            self._params.set_meshing_enabled(False)
+            self._params.set_all_enabled(False)
+            self._start_gmsh_volume_worker(step_path, self._run_id)
+            return
+
         max_cell = self._params.get_max_cell()
         min_cell = self._params.get_min_cell()
         self._params._max_cell.setValue(max_cell * 1.3)
