@@ -323,12 +323,19 @@ class FeatureDetectWorker(QObject):
         if frozen:
             cmd = [sys.executable, "--feature-detect", self._step_path, self._detail, str(self._scale)]
         else:
-            cmd = [
-                sys.executable, "-m", "cfmesh_autogui.core.feature_detector",
-                self._step_path, self._detail, str(self._scale),
-            ]
-        # The dev-mode cwd anchors relative imports when invoking `-m` from
-        # an arbitrary working directory; a frozen exe is self-contained
+            # Direct file path, not `-m cfmesh_autogui.core.feature_detector`:
+            # `-m` fully imports the parent package first (whose __init__.py
+            # already imports several core/ modules), so by the time runpy
+            # executes this file as __main__ it's already in sys.modules —
+            # triggering Python's own "found in sys.modules ... prior to
+            # execution" RuntimeWarning on stderr, which can bury the real
+            # crash detail this worker's "native crash" fallback branch
+            # below relies on reading from stderr's tail. Same fix already
+            # applied to every subprocess launch in openfoam_runner.py.
+            script = str(Path(__file__).resolve())
+            cmd = [sys.executable, script, self._step_path, self._detail, str(self._scale)]
+        # The dev-mode cwd anchors relative imports when invoking the script
+        # from an arbitrary working directory; a frozen exe is self-contained
         # (PyInstaller resolves everything via sys._MEIPASS) and doesn't
         # need or benefit from it — inherit the parent's cwd instead.
         run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
