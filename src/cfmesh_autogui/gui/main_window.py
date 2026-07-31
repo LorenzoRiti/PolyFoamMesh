@@ -78,6 +78,7 @@ from cfmesh_autogui.core.openfoam_runner import (
     PolyDualWorker,
     QualityFixWorker,
     RetryRunner,
+    TerminalFaceWorker,
     WslCheckWorker,
     analyze_error,
 )
@@ -1341,18 +1342,18 @@ class MainWindow(QMainWindow):
             self._start_autopoly_worker(orig, my_id)
             return
         if mesher_type != "cfmesh":
-            # Auto-enable poly conversion for GMSH tet direct — the dual
-            # of a tet mesh produces genuinely irregular Voronoi-style
-            # polyhedra (7-23 faces/cell, verified), unlike the hex dual
-            # which stays grid-like.  Only auto-enables, never overrides
-            # an explicit user uncheck.
+            # Auto-enable poly conversion for GMSH tet direct — runs
+            # terminal-face conversion (see TerminalFaceWorker), not
+            # polyDualMesh, which has a confirmed structural defect on
+            # complex real geometry and is skipped for this mesher type.
+            # Only auto-enables, never overrides an explicit user uncheck.
             if mesher_type == "gmsh_direct" and not self._params.get_poly_conversion():
                 self._params._poly_check.setChecked(True)
                 logger.info(
-                    "GMSH direct mesher — auto-enabling polyDualMesh conversion."
+                    "GMSH direct mesher — auto-enabling polyhedral (terminal-face) conversion."
                 )
                 self._log.append_log(
-                    f"{Tag.CASE} GMSH direct: enabling polyhedral conversion (polyDualMesh)."
+                    f"{Tag.CASE} GMSH direct: enabling polyhedral conversion (terminal-face)."
                 )
             orig = getattr(self, "_loaded_step_path", None)
             if orig is None:
@@ -2300,22 +2301,17 @@ class MainWindow(QMainWindow):
         result_queue: queue.Queue = queue.Queue()
 
         def worker_fn():
-            # Dispatch through a fresh `python -m gmsh_wrapper` subprocess
-            # (same pattern GmshVolumeWorker already uses reliably),
-            # rather than calling wsl.exe directly from this long-lived
-            # GUI process — see gmsh_wrapper.py's "convert_to_foam" CLI
-            # branch for why.
+            # Dispatch through a fresh gmsh_wrapper.py subprocess (same
+            # pattern GmshVolumeWorker already uses reliably), rather than
+            # calling wsl.exe directly from this long-lived GUI process —
+            # see gmsh_wrapper.py's "convert_to_foam" CLI branch for why.
             import json
             import subprocess
             import traceback
+            from cfmesh_autogui.core.openfoam_runner import _gmsh_wrapper_script_cmd
             try:
-                frozen = getattr(sys, "frozen", False)
                 args = ["convert_to_foam", str(case_dir), msh_name]
-                if frozen:
-                    cmd = [sys.executable, "--gmsh-convert-to-foam"] + args[1:]
-                else:
-                    cmd = [sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper"] + args
-                run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+                cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-convert-to-foam")
                 result = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=300, cwd=run_cwd,
                 )
@@ -2381,6 +2377,7 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"[gmsh] polyMesh: {case_dir / 'constant' / 'polyMesh'}")
             self._log.append_log("[gmsh] Conversion complete.")
             self._progress.setVisible(False)
+
             try:
                 from cfmesh_autogui.core.boundary_reader import parse_boundary
                 from cfmesh_autogui.core.case_setup import setup_case
@@ -2985,18 +2982,31 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
             self._status.showMessage("Ready — mesh complete")
 
-            # Polyhedral conversion (polyDualMesh) — INCREASES cells
+            # Polyhedral conversion — DECREASES cells (terminal-face) or
+            # increases them (polyDualMesh), depending on path.
             poly_conv = self._params.get_poly_conversion()
             poly_done = getattr(self, "_poly_was_converted", False)
+            is_gmsh_tet = getattr(self, "_current_mesher_type", "") in {
+                "gmsh_direct", "gmsh_direct_poly",
+            }
             logger.info(
-                "Poly decision: get_poly_conversion()=%s _poly_was_converted=%s",
-                poly_conv, poly_done,
+                "Poly decision: get_poly_conversion()=%s _poly_was_converted=%s "
+                "is_gmsh_tet=%s",
+                poly_conv, poly_done, is_gmsh_tet,
             )
-            if poly_conv:
-                if not poly_done:
+            if poly_conv and not poly_done:
+                if is_gmsh_tet:
+                    # polyDualMesh has a confirmed structural defect on
+                    # complex real geometry (see TerminalFaceWorker's
+                    # docstring) — terminal-face conversion is this
+                    # pipeline's poly path for GMSH tet meshes instead.
+                    logger.info("Launching terminal-face conversion...")
+                    self._launch_terminal_face()
+                else:
                     logger.info("Launching polyDualMesh conversion...")
                     self._launch_polydual()
-                    return
+                return
+            if poly_conv and poly_done:
                 logger.info("Poly conversion already done, skipping.")
                 self._poly_was_converted = True
 
@@ -3168,6 +3178,88 @@ class MainWindow(QMainWindow):
                 )
         except Exception:
             pass
+        self._launch_checkmesh()
+
+    def _launch_terminal_face(self) -> None:
+        """Terminal-face tet -> polyhedral conversion for GMSH-direct
+        tetrahedral meshes — see TerminalFaceWorker's docstring for why
+        this replaces polyDualMesh on that path."""
+        if not self._case_dir:
+            return
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if not poly_points.exists():
+            self._log.append_log(
+                f"{Tag.WARN} Poly conversion: no mesh found in constant/polyMesh."
+            )
+            return
+        try:
+            from cfmesh_autogui.core.of_reader import of_list_count
+            self._cells_before_poly = of_list_count(
+                self._case_dir / "constant" / "polyMesh" / "owner"
+            )
+        except Exception:
+            self._cells_before_poly = 0
+        self._polydual_run_id = self._run_id
+        if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
+            self._polydual_thread.quit()
+            self._polydual_thread.wait(3000)
+        logger.info(
+            "Launching terminal-face conversion: case_dir=%s cells_before=%d",
+            self._case_dir, self._cells_before_poly,
+        )
+        self._log.append_log("[poly] Converting tet → polyhedral mesh (terminal-face)...")
+        self._status.showMessage("Polyhedral conversion...")
+        t = QThread()
+        w = TerminalFaceWorker(self._case_dir)
+        w.moveToThread(t)
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.finished.connect(self._on_terminal_face_finished, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        # Bound method, not a lambda/closure — see _launch_polydual's
+        # comment on the same pattern for why.
+        w.failed.connect(self._on_terminal_face_failed, Qt.QueuedConnection)
+        w.failed.connect(t.quit, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        self._polydual_thread = t
+        self._polydual_worker = w
+        self._polydual_start_time = time.monotonic()
+        heartbeat = QTimer(self)
+        heartbeat.setInterval(8000)
+        heartbeat.timeout.connect(self._on_polydual_heartbeat)
+        heartbeat.start()
+        self._polydual_heartbeat = heartbeat
+        t.start()
+
+    def _on_terminal_face_failed(self, msg: str) -> None:
+        self._stop_polydual_heartbeat()
+        self._log.append_log(f"[poly] FAILED: {msg}")
+        QMessageBox.warning(
+            self, "Polyhedral Conversion Failed",
+            f"Terminal-face conversion failed:\n\n{msg}\n\n"
+            "The tetrahedral mesh is still available. "
+            "You can skip polyhedral conversion and use it directly."
+        )
+
+    def _on_terminal_face_finished(self, result) -> None:
+        self._stop_polydual_heartbeat()
+        poly_run_id = getattr(self, "_polydual_run_id", self._run_id)
+        if poly_run_id != self._run_id:
+            logger.debug("Stale terminal-face callback ignored (%d != %d).", poly_run_id, self._run_id)
+            return
+        logger.info(
+            "Terminal-face conversion finished: %d tets -> %d polyhedra",
+            result.n_tets_before, result.n_polyhedra,
+        )
+        self._log.append_log("[poly] Polyhedral conversion complete.")
+        self._status.showMessage("Polyhedral mesh ready — running quality check...")
+        self._viewer.show_mesh(self._case_dir)
+        self._poly_was_converted = True
+        cells_before = getattr(self, "_cells_before_poly", 0)
+        if cells_before > 0 and result.n_polyhedra > 0:
+            pct = round((result.n_polyhedra / cells_before - 1) * 100, 1)
+            self._log.append_log(
+                f"[poly] Cells: {cells_before} → {result.n_polyhedra} ({pct:+.1f}%)."
+            )
         self._launch_checkmesh()
 
     def _launch_decomposepar(self) -> None:

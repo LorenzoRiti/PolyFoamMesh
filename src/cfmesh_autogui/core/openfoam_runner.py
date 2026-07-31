@@ -1057,6 +1057,55 @@ class PolyDualWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class TerminalFaceWorker(QObject):
+    """Runs TerminalFaceConverter (tet -> polyhedral, Salinas et al. 2023)
+    in a background QThread — this pipeline's poly path for GMSH-direct
+    tetrahedral meshes, replacing polyDualMesh there. polyDualMesh has a
+    confirmed structural defect on complex real geometry (600+
+    incorrectly-oriented faces reproduced across every tet-generation
+    strategy tried against the real Parte4 valve — see the poly_dual_risk
+    comment in gmsh_wrapper.py's _configure_adaptive_sizing), which is
+    why it's skipped for gmsh_direct/gmsh_direct_poly upstream of this.
+
+    Pure Python + numpy/scipy — unlike GMSH surface/volume generation,
+    it doesn't touch cadquery/OCP's OpenCASCADE, so it runs directly in
+    a QThread rather than needing subprocess isolation.
+    """
+
+    log_line = Signal(str)
+    finished = Signal(object)  # TerminalFaceResult
+    failed = Signal(str)
+
+    def __init__(self, case_dir: Path | str, parent=None):
+        super().__init__(parent)
+        self._case_dir = Path(case_dir).resolve()
+
+    @Slot()
+    def run(self):
+        from cfmesh_autogui.core.terminal_face import TerminalFaceConverter
+
+        self.log_line.emit("[poly] Converting tet -> polyhedral mesh (terminal-face)...")
+        try:
+            converter = TerminalFaceConverter(self._case_dir)
+            result = converter.run()
+        except Exception as exc:
+            self.log_line.emit(f"[poly] ERROR: {exc}")
+            self.failed.emit(str(exc))
+            return
+
+        if not result.success:
+            msg = "; ".join(result.errors) or "Unknown terminal-face conversion error"
+            self.log_line.emit(f"[poly] FAILED: {msg}")
+            self.failed.emit(msg)
+            return
+
+        self.log_line.emit(
+            f"[poly] Conversion OK: {result.n_tets_before} tets -> "
+            f"{result.n_polyhedra} polyhedra ({result.wall_time_s:.1f}s)"
+        )
+        self.finished.emit(result)
+
+
 class DecomposeParWorker(QObject):
     """Runs decomposePar -force in a background QThread to decompose an
     existing mesh into processorN/ directories for parallel SOLVING."""
@@ -1328,6 +1377,30 @@ class QualityFixWorker(QObject):
             self._checkmesh_thread.wait(3000)
 
 
+def _gmsh_wrapper_script_cmd(args: list[str], frozen_flag: str) -> tuple[list[str], str | None]:
+    """Build a subprocess command that runs gmsh_wrapper.py's CLI directly
+    by file path rather than via `python -m cfmesh_autogui.core.gmsh_wrapper`.
+
+    `-m` first fully imports the parent package (cfmesh_autogui.core),
+    whose __init__.py already imports gmsh_wrapper — so by the time
+    Python's runpy machinery goes to execute gmsh_wrapper as __main__,
+    it's already sitting in sys.modules under its real dotted name. That
+    triggers Python's own "found in sys.modules ... prior to execution;
+    this may result in unpredictable behaviour" RuntimeWarning and
+    re-executes the whole module a second time in the same process —
+    confirmed from a real run where that warning ended up as the ONLY
+    stderr content on a non-zero exit, masking whatever the actual
+    failure was. Running the file directly skips package init entirely.
+    """
+    import sys
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        return [sys.executable, frozen_flag] + args[1:], None
+    script = str(Path(__file__).resolve().with_name("gmsh_wrapper.py"))
+    run_cwd = str(Path(__file__).resolve().parents[2])
+    return [sys.executable, script] + args, run_cwd
+
+
 class GmshSurfaceWorker(QObject):
     """Runs GMSH surface STL generation + sizing in a subprocess.
 
@@ -1351,15 +1424,8 @@ class GmshSurfaceWorker(QObject):
     @Slot()
     def run(self):
         import sys, subprocess, json
-        frozen = getattr(sys, "frozen", False)
-        if frozen:
-            cmd = [sys.executable, "--gmsh-surface", self._geom_path, str(self._stl_out), self._detail]
-        else:
-            cmd = [
-                sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper",
-                "surface", self._geom_path, str(self._stl_out), self._detail,
-            ]
-        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+        args = ["surface", self._geom_path, str(self._stl_out), self._detail]
+        cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-surface")
         self.log_line.emit("[gmsh] Running surface STL generation in subprocess...")
         try:
             proc = subprocess.run(
@@ -1373,21 +1439,28 @@ class GmshSurfaceWorker(QObject):
             self.failed.emit(str(exc))
             return
 
+        # Parse stdout first — see _gmsh_wrapper_script_cmd's docstring and
+        # GmshVolumeWorker.run() for why returncode must not gate this.
+        result = None
+        stdout_lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+        if stdout_lines:
+            try:
+                result = json.loads(stdout_lines[-1])
+            except json.JSONDecodeError:
+                result = None
+
+        if result is not None:
+            if not result.get("success"):
+                self.failed.emit(result.get("error", "Unknown GMSH error"))
+                return
+            self.finished.emit(result)
+            return
+
         if proc.returncode != 0:
             self.failed.emit(proc.stderr.strip() or f"GMSH surface failed (exit {proc.returncode})")
             return
 
-        try:
-            result = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            self.failed.emit(f"GMSH surface: invalid JSON output: {e}")
-            return
-
-        if not result.get("success"):
-            self.failed.emit(result.get("error", "Unknown GMSH error"))
-            return
-
-        self.finished.emit(result)
+        self.failed.emit("GMSH surface: no JSON output produced")
 
 
 class GmshVolumeWorker(QObject):
@@ -1420,7 +1493,6 @@ class GmshVolumeWorker(QObject):
     @Slot()
     def run(self):
         import sys, subprocess, json
-        frozen = getattr(sys, "frozen", False)
         # Pass refinement zones as JSON via env var (avoids shell-escaping issues)
         zones_json = json.dumps(self._refinement_zones) if self._refinement_zones else ""
         args = [
@@ -1428,11 +1500,7 @@ class GmshVolumeWorker(QObject):
             str(self._n_layers), str(self._bl_thickness or 0), str(self._bl_expansion),
             str(self._max_cell_size), str(self._min_cell_size), str(self._max_cells_target),
         ]
-        if frozen:
-            cmd = [sys.executable, "--gmsh-volume"] + args[1:]
-        else:
-            cmd = [sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper"] + args
-        run_cwd = None if frozen else str(Path(__file__).resolve().parents[2])
+        cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
         import os
         env = os.environ.copy()
@@ -1450,21 +1518,38 @@ class GmshVolumeWorker(QObject):
             self.failed.emit(str(exc))
             return
 
+        # Parse stdout FIRST, even on a non-zero exit: the CLI's own
+        # except-block always reports a caught error as JSON on stdout
+        # ({"success": false, "error": "..."}) before calling sys.exit(1)
+        # — that's the real, specific failure reason. Checking returncode
+        # first (the previous order) discarded that message in favor of
+        # raw stderr, which can contain unrelated noise (e.g. Python's
+        # own "module found in sys.modules" RuntimeWarning from the -m
+        # invocation) that has nothing to do with why meshing failed —
+        # confirmed from a real user run where the surfaced error was
+        # just that warning while the actual cause never reached the UI.
+        # GMSH itself may print "Info:" lines to stdout before the JSON,
+        # so take the last non-empty line rather than the whole stream.
+        result = None
+        stdout_lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+        if stdout_lines:
+            try:
+                result = json.loads(stdout_lines[-1])
+            except json.JSONDecodeError:
+                result = None
+
+        if result is not None:
+            if not result.get("success"):
+                self.failed.emit(result.get("error", "Unknown GMSH error"))
+                return
+            self.finished.emit(result)
+            return
+
         if proc.returncode != 0:
             self.failed.emit(proc.stderr.strip() or f"GMSH volume failed (exit {proc.returncode})")
             return
 
-        try:
-            result = json.loads(proc.stdout)
-        except json.JSONDecodeError as e:
-            self.failed.emit(f"GMSH volume: invalid JSON output: {e}")
-            return
-
-        if not result.get("success"):
-            self.failed.emit(result.get("error", "Unknown GMSH error"))
-            return
-
-        self.finished.emit(result)
+        self.failed.emit("GMSH volume: no JSON output produced")
 
 
 class WatertightWorker(QObject):

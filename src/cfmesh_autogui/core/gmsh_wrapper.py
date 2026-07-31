@@ -220,9 +220,268 @@ def _detect_surface_gaps(gmsh_mod, max_extent: float, max_pairs: int = 4000) -> 
     return gaps[:50]  # cap field count — each becomes a Ball field below
 
 
+def _sample_curvature_size_field(
+    gmsh_mod, h_min: float, h_max: float, angle_sensitivity_rad: float,
+    max_samples: int = 20000,
+) -> tuple:
+    """A-priori curvature sampling: for every curve and surface, read the
+    local discrete curvature radius directly from GMSH's own OpenCASCADE
+    kernel (gmsh.model.getCurvature — exact for analytic CAD geometry,
+    unlike estimating curvature from a triangulated tessellation) and
+    convert it to a target element size via the standard chord-angle
+    relation: an element spanning a curvature radius R by an angular
+    tolerance ANGOLO_SENSIBILITA_RAD subtends a chord of length
+    ~= R * angle (the same relation GMSH's own MinimumElementsPerTwoPi
+    option encodes implicitly — made explicit and directly tunable here).
+
+    Returns (points[N,3], target_size[N]), NOT yet growth-rate limited —
+    see _relax_size_field_growth_rate.
+    """
+    import numpy as np
+
+    entities = gmsh_mod.model.getEntities(1) + gmsh_mod.model.getEntities(2)
+    if not entities:
+        return np.empty((0, 3)), np.empty((0,))
+
+    # Split the sample budget across all entities so a complex part
+    # (hundreds of curves/surfaces) stays bounded, with a floor so short
+    # curves still get resolved.
+    per_entity = max(4, max_samples // max(1, len(entities)))
+
+    points: list = []
+    sizes: list = []
+    for dim, tag in entities:
+        try:
+            lo, hi = gmsh_mod.model.getParametrizationBounds(dim, tag)
+        except Exception:
+            continue
+        if dim == 1:
+            us = np.linspace(lo[0], hi[0], per_entity)
+            param_coord = [float(u) for u in us]
+            try:
+                curvs = gmsh_mod.model.getCurvature(dim, tag, param_coord)
+                coords = gmsh_mod.model.getValue(dim, tag, param_coord)
+            except Exception:
+                continue
+            for i in range(len(us)):
+                c = curvs[i] if i < len(curvs) else 0.0
+                radius = (1.0 / c) if c > 1e-9 else math.inf
+                target = min(h_max, max(h_min, radius * angle_sensitivity_rad))
+                points.append(coords[3 * i:3 * i + 3])
+                sizes.append(target)
+        else:
+            n_side = max(2, int(math.sqrt(per_entity)))
+            us = np.linspace(lo[0], hi[0], n_side)
+            vs = np.linspace(lo[1], hi[1], n_side)
+            param_coord = []
+            for u in us:
+                for v in vs:
+                    param_coord.extend([float(u), float(v)])
+            try:
+                curvs = gmsh_mod.model.getCurvature(dim, tag, param_coord)
+                coords = gmsh_mod.model.getValue(dim, tag, param_coord)
+            except Exception:
+                continue
+            n_pts = len(param_coord) // 2
+            for i in range(n_pts):
+                c = curvs[i] if i < len(curvs) else 0.0
+                radius = (1.0 / c) if c > 1e-9 else math.inf
+                target = min(h_max, max(h_min, radius * angle_sensitivity_rad))
+                points.append(coords[3 * i:3 * i + 3])
+                sizes.append(target)
+
+    if not points:
+        return np.empty((0, 3)), np.empty((0,))
+    return np.asarray(points, dtype=np.float64), np.asarray(sizes, dtype=np.float64)
+
+
+def _relax_size_field_growth_rate(points, sizes, growth_rate: float, k_neighbors: int = 10):
+    """Limit the spatial gradient of a size field so it never grows
+    faster than GROWTH_RATE — a size field that's locally correct (fine
+    at a fillet, coarse a few cm away with nothing in between) still
+    produces poor-quality elements at the transition without this,
+    since nothing tells the mesher how fast it's allowed to grow.
+
+    Simplified Fast Marching: relaxed(p) is propagated outward from
+    every sample point via Dijkstra over a k-nearest-neighbor graph
+    (built with a KDTree), processing points in ascending size order
+    (a min-heap) and relaxing each neighbor to
+    min(current, size[p] + slope * dist(p, neighbor)), where
+    slope = growth_rate - 1 — the discrete form of the eikonal gradient
+    constraint |grad size| <= slope. growth_rate follows the usual CFD
+    meshing convention (1.2 = at most 20% size increase per unit
+    distance travelled); 1.0 means "no growth allowed" (uniform size).
+    """
+    import heapq
+
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    n = len(points)
+    if n == 0:
+        return sizes
+    relaxed = np.asarray(sizes, dtype=np.float64).copy()
+    slope = max(growth_rate - 1.0, 1e-6)
+    k = min(k_neighbors + 1, n)  # +1: query() always returns the point itself
+    tree = cKDTree(points)
+    _, neighbor_idx = tree.query(points, k=k)
+    if k == 1:
+        return relaxed
+    neighbor_idx = np.atleast_2d(neighbor_idx)
+
+    heap = [(float(relaxed[i]), i) for i in range(n)]
+    heapq.heapify(heap)
+    visited = np.zeros(n, dtype=bool)
+    while heap:
+        d, i = heapq.heappop(heap)
+        if visited[i] or d > relaxed[i] + 1e-12:
+            continue
+        visited[i] = True
+        for j in neighbor_idx[i]:
+            j = int(j)
+            if j == i or visited[j]:
+                continue
+            dist = float(np.linalg.norm(points[i] - points[j]))
+            candidate = relaxed[i] + slope * dist
+            if candidate < relaxed[j]:
+                relaxed[j] = candidate
+                heapq.heappush(heap, (candidate, j))
+    return relaxed
+
+
+def _advancing_front_1d(
+    gmsh_mod, dim: int, tag: int, size_tree, relaxed_sizes,
+    h_min: float, h_max: float, max_points: int = 500,
+) -> list:
+    """1D Advancing Front curve seeding: march along one curve's
+    arclength, querying the (growth-rate-limited) size field at each
+    step via KDTree nearest-neighbor lookup for the next step length.
+    Used only to seed embedded points GMSH's own curve mesher is told
+    to honor — it does not replace GMSH's node placement, which still
+    owns the final discretization.
+
+    Returns the parametric coordinates of the interior seed points
+    (curve endpoints excluded).
+    """
+    lo, hi = gmsh_mod.model.getParametrizationBounds(dim, tag)
+    u_lo, u_hi = lo[0], hi[0]
+    try:
+        length = gmsh_mod.model.occ.getMass(dim, tag)
+    except Exception:
+        length = None
+    if not length or length <= 1e-12:
+        return []
+
+    def size_at(u: float) -> float:
+        xyz = gmsh_mod.model.getValue(dim, tag, [u])
+        _, idx = size_tree.query(xyz)
+        return float(min(h_max, max(h_min, relaxed_sizes[idx])))
+
+    params: list = []
+    u = u_lo
+    for _ in range(max_points):
+        h = size_at(u)
+        du = h / length * (u_hi - u_lo)
+        if du <= 0:
+            break
+        u_next = u + du
+        if u_next >= u_hi:
+            break
+        params.append(u_next)
+        u = u_next
+    return params
+
+
+def _configure_curvature_size_field(
+    gmsh_mod,
+    h_min: float,
+    h_max: float,
+    angle_sensitivity_rad: float = math.radians(15.0),
+    growth_rate: float = 1.2,
+    max_samples: int = 20000,
+    seed_curves: bool = True,
+) -> dict:
+    """A-priori, geometry-based mesh adaptation: build an explicit local
+    Size Field from the CAD model's own discrete curvature (H_MIN/H_MAX/
+    ANGOLO_SENSIBILITA_RAD/GROWTH_RATE all configurable), gradient-limited
+    so transitions between fine and coarse regions stay smooth, and feed
+    it to GMSH via setSizeCallback — GMSH's own mesher still places every
+    node; this only tells it how big each element is allowed to be, at
+    every query point it makes across curves, surfaces, and the volume.
+
+    Failure here (an unusual CAD kernel entity, an empty model) degrades
+    to a no-op rather than blocking meshing — the existing Distance/
+    Threshold/Ball background fields in _configure_adaptive_sizing keep
+    working unchanged either way.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    points, raw_sizes = _sample_curvature_size_field(
+        gmsh_mod, h_min, h_max, angle_sensitivity_rad, max_samples
+    )
+    if len(points) == 0:
+        logger.warning("Curvature size field: no sample points found, skipping")
+        return {"n_samples": 0}
+
+    relaxed = _relax_size_field_growth_rate(points, raw_sizes, growth_rate)
+
+    # Advancing-front curve seeding densifies the sample set used by the
+    # KDTree lookup below — it does NOT touch the CAD model (no new OCC
+    # points/embeds). Mutating geometry mid-pipeline is exactly what
+    # introduced new defects earlier on the real valve part (native GMSH
+    # defeature/healShapes both did); this stays purely data-side, so a
+    # short curve just gets denser size-field coverage near it, sampled
+    # by 1D arclength marching instead of a uniform parametric grid.
+    n_seeded = 0
+    if seed_curves:
+        seed_tree = cKDTree(points)
+        extra_points: list = []
+        extra_sizes: list = []
+        for dim, tag in gmsh_mod.model.getEntities(1):
+            try:
+                params = _advancing_front_1d(
+                    gmsh_mod, dim, tag, seed_tree, relaxed, h_min, h_max
+                )
+                for u in params:
+                    xyz = gmsh_mod.model.getValue(dim, tag, [u])
+                    _, idx = seed_tree.query(xyz)
+                    extra_points.append(xyz)
+                    extra_sizes.append(float(relaxed[idx]))
+            except Exception:
+                continue  # best-effort seeding; the size callback alone still applies
+        if extra_points:
+            points = np.vstack([points, np.asarray(extra_points, dtype=np.float64)])
+            relaxed = np.concatenate([relaxed, np.asarray(extra_sizes, dtype=np.float64)])
+            n_seeded = len(extra_points)
+
+    tree = cKDTree(points)
+
+    def _callback(dim, tag, x, y, z, lc):
+        _, idx = tree.query([x, y, z])
+        target = float(relaxed[idx])
+        return min(lc, target) if lc > 0 else target
+
+    gmsh_mod.model.mesh.setSizeCallback(_callback)
+
+    logger.info(
+        "Curvature size field: %d samples, %d curve seed points, size range "
+        "[%.6f, %.6f] (H_MIN=%.6f H_MAX=%.6f angle=%.3frad growth_rate=%.2f)",
+        len(points), n_seeded, float(relaxed.min()), float(relaxed.max()),
+        h_min, h_max, angle_sensitivity_rad, growth_rate,
+    )
+    return {
+        "n_samples": len(points),
+        "n_seeded": n_seeded,
+        "size_min": float(relaxed.min()),
+        "size_max": float(relaxed.max()),
+    }
+
+
 def _configure_adaptive_sizing(
     gmsh_mod, detail: str, max_extent: float, feat: dict, hw: dict,
     cross_scale: float | None = None, domain_volume: float | None = None,
+    growth_rate: float = 1.2, use_curvature_size_field: bool = True,
 ) -> dict:
     """Local/adaptive sizing: fine near small curves (a Distance +
     Threshold background field) and near curved surfaces (GMSH's
@@ -377,6 +636,27 @@ def _configure_adaptive_sizing(
         except Exception:
             pass  # option name varies across GMSH versions; NumThreads alone still helps
 
+    # A-priori curvature size field: an explicit, growth-rate-limited
+    # size field built from the CAD kernel's own local curvature radius
+    # at each point (see _configure_curvature_size_field), layered on
+    # top of the Distance/Threshold/Ball fields above via GMSH's size
+    # callback mechanism (min-of-all-sources, so it can only make a
+    # point finer than what those fields already ask for, never coarser).
+    # angle_sensitivity defaults to the detail level's own curv_angle so
+    # it stays consistent with "Detail Level" instead of introducing an
+    # unrelated knob; best-effort — a failure here just means the
+    # existing background fields alone govern sizing, as before.
+    curvature_field_info: dict = {"n_samples": 0}
+    if use_curvature_size_field:
+        try:
+            curvature_field_info = _configure_curvature_size_field(
+                gmsh_mod, min_size, coarse_max,
+                angle_sensitivity_rad=math.radians(df["curv_angle"]),
+                growth_rate=growth_rate,
+            )
+        except Exception:
+            logger.exception("Curvature size field setup failed; continuing without it")
+
     # polyDualMesh risk heuristic: on the real valve part investigated
     # today (89 surfaces, 50 detected gaps — the detector's cap, i.e.
     # "at least 50") polyDualMesh reliably produced 600-1000
@@ -411,6 +691,8 @@ def _configure_adaptive_sizing(
         "min_size": min_size, "coarse_max": coarse_max,
         "n_small_curves": n_small, "n_gaps": len(gaps),
         "n_surfaces": n_surfaces, "poly_dual_risk": poly_dual_risk,
+        "curvature_field_samples": curvature_field_info.get("n_samples", 0),
+        "curvature_field_seeded": curvature_field_info.get("n_seeded", 0),
     }
 
 
@@ -910,7 +1192,9 @@ def generate_volume_mesh(
     # equivalent job with a better size estimate, so it doesn't need a
     # separate pre-check here.
     if user_lc and user_lc > 0:
-        MAX_GMSH_CELLS = 3_000_000
+        # Support production-scale direct meshes.  This is a safety ceiling,
+        # not a normal target; the GUI target can request anything up to 20M.
+        MAX_GMSH_CELLS = 20_000_000
         est_cells = vol / (user_lc ** 3)
         if est_cells > MAX_GMSH_CELLS:
             new_lc = (vol / MAX_GMSH_CELLS) ** (1.0 / 3.0)
