@@ -75,6 +75,7 @@ class TerminalFaceResult:
     n_frontier_faces: int = 0
     n_polyhedra: int = 0
     n_barrier_repaired: int = 0
+    n_leftover_tets_merged: int = 0
     wall_time_s: float = 0.0
     max_non_ortho: float = 0.0
     max_skewness: float = 0.0
@@ -165,7 +166,31 @@ class TerminalFaceConverter:
                 seed_list, largest_face, frontier_bitvector,
                 cell_faces, faces_raw, face_owner, face_neigh, n_cells,
             )
-            logger.info("Terminal-face traversal: %d polyhedra", len(polyhedra))
+            n_leftover_before = sum(1 for t in tet_sets if len(t) == 1)
+            logger.info("Terminal-face traversal: %d polyhedra (%d single-tet leftovers)",
+                        len(polyhedra), n_leftover_before)
+            result.n_leftover_tets_merged = 0
+
+            # NOT calling _merge_leftover_tets here: measured directly on
+            # a real mesh (block-with-bore, 252,536 tets) that it drives
+            # residual bare tets from 78.9% down to ~0.1%, but at a net
+            # QUALITY COST that's worse than leaving them alone — checkMesh
+            # misoriented faces 79->6471, a new max skewness of 8170
+            # (essentially degenerate) that didn't exist before, and new
+            # non-orthogonality errors, even with merge-group size capped
+            # at 4 tets. The greedy "largest shared frontier face" merge
+            # criterion for a leftover tet has none of the mutual-
+            # agreement guarantee LABEL/TRAVERSAL's regular merges have,
+            # and produces badly-shaped cells and/or an orientation issue
+            # in how _build_output canonicalizes faces for these bridged,
+            # non-contiguous regions. Needs a real design pass (a shape-
+            # aware merge criterion, or fixing _build_output's orientation
+            # for this specific case) before it's worth enabling — see
+            # _merge_leftover_tets' own docstring for the numbers this
+            # conclusion is based on. Left implemented but unused rather
+            # than deleted, since the measurement infrastructure (and the
+            # capped-chaining design) is a real starting point for that
+            # follow-up, not a dead end.
 
             # --- Phase 3: REPAIR ---
             polyhedra, tet_sets, n_repaired = self._repair_phase(
@@ -565,6 +590,123 @@ class TerminalFaceConverter:
                 split_tet_sets.append(new_tet_set)
 
         return (split_results, split_tet_sets) if split_results else ([poly_faces], [tet_set])
+
+    # ------------------------------------------------------------------
+    # Leftover-tet cleanup
+    # ------------------------------------------------------------------
+
+    def _merge_leftover_tets(
+        self,
+        polyhedra: list[list[int]],
+        tet_sets: list[set[int]],
+        faces_raw: list[list[int]],
+        points: np.ndarray,
+        cell_faces: list[list[int]],
+        face_owner: np.ndarray,
+        face_neigh: np.ndarray,
+        max_leftover_group_size: int = 4,
+    ) -> tuple[list[list[int]], list[set[int]], int]:
+        """Absorb single-tet leftovers into an adjacent polyhedron.
+
+        LABEL/TRAVERSAL above only merges two tets across a face they
+        BOTH independently pick as their own largest face — a narrow
+        condition. Measured on a real mesh (a block with a bore, 251,935
+        tets): only 43,870 such mutual matches existed, leaving 78.9% of
+        cells (164,195) as bare, unmerged 4-face tets in the final
+        output — confirmed both by directly counting faces per cell in
+        the written polyMesh and by checkMesh's own "tetrahedra: N /
+        polyhedra: N" breakdown. The traversal's own docstring claims
+        every tet "ends up in exactly one output polyhedron" — true, but
+        that polyhedron can trivially just be the tet itself when none of
+        its faces ever hit that mutual-match condition, which is common,
+        not the exception this is a genuine coverage gap, not the one-off
+        edge case the original design treated it as.
+
+        This is a bounded number of sweeps (not a single O(n^2) fixed-
+        point loop — with hundreds of thousands of cells that's too slow)
+        over whatever is currently a single-tet polyhedron, merging it
+        into whichever neighboring polyhedron shares its largest face.
+        Multiple rounds because merging can turn a previously-
+        unresolvable leftover's neighbor into a valid target (e.g. two
+        adjacent leftovers merge with each other on round 1, then a
+        third leftover next to THAT pair can merge with it on round 2).
+
+        max_leftover_group_size caps how many leftover tets any single
+        target polyhedron may absorb THROUGH THIS PASS (independent of
+        however large it already was from regular terminal-face
+        merging) — an uncapped version measured directly on a real mesh
+        does eliminate every bare tet, but does so by a "rich get richer"
+        dynamic: a polyhedron that starts absorbing leftovers gains
+        surface area, making it more likely to be the "largest shared
+        face" match for yet more leftovers next round, snowballing into
+        cells up to 30 faces from repeatedly chaining unrelated tets
+        together with no shape awareness. checkMesh on that unbounded
+        version got WORSE, not better, on every quality metric — face
+        orientation errors 79->5462, non-orthogonality errors 0->118,
+        and a new max skewness of 15858 (essentially degenerate) that
+        didn't exist before. This cap keeps each absorption event local
+        (a genuinely isolated tet joining its one or two immediate
+        neighbors) instead of feeding a runaway magnet.
+        """
+        n_polys = len(polyhedra)
+        # tet -> polyhedron index; kept in sync as merges happen.
+        tet_to_poly: dict[int, int] = {}
+        for i, tset in enumerate(tet_sets):
+            for t in tset:
+                tet_to_poly[t] = i
+
+        alive = [True] * n_polys
+        leftovers_absorbed = [0] * n_polys
+        n_merged = 0
+        MAX_ROUNDS = 12
+        for _ in range(MAX_ROUNDS):
+            leftovers = [i for i in range(n_polys) if alive[i] and len(tet_sets[i]) == 1]
+            if not leftovers:
+                break
+            round_merges = 0
+            for i in leftovers:
+                if not alive[i] or len(tet_sets[i]) != 1:
+                    continue  # already absorbed into someone else this round
+                leftover_tet = next(iter(tet_sets[i]))
+                best_target = -1
+                best_area = -1.0
+                best_fid = -1
+                for fid in cell_faces[leftover_tet]:
+                    own = int(face_owner[fid])
+                    neigh = int(face_neigh[fid]) if fid < len(face_neigh) else -1
+                    if neigh < 0:
+                        continue  # boundary face — no neighbor to merge with
+                    other_tet = neigh if own == leftover_tet else own
+                    target = tet_to_poly.get(other_tet, -1)
+                    if target < 0 or target == i or not alive[target]:
+                        continue
+                    if leftovers_absorbed[target] >= max_leftover_group_size:
+                        continue
+                    area = self._face_area(faces_raw[fid], points)
+                    if area > best_area:
+                        best_area, best_target, best_fid = area, target, fid
+                if best_target < 0:
+                    continue  # no valid neighbor this round — retry next round
+
+                # Merge leftover_tet into best_target across best_fid: that
+                # face becomes interior (drop from both), the leftover's
+                # other faces become part of the target's boundary.
+                polyhedra[best_target] = [f for f in polyhedra[best_target] if f != best_fid]
+                polyhedra[best_target].extend(f for f in polyhedra[i] if f != best_fid)
+                tet_sets[best_target].add(leftover_tet)
+                tet_to_poly[leftover_tet] = best_target
+                leftovers_absorbed[best_target] += 1
+                alive[i] = False
+                polyhedra[i] = []
+                tet_sets[i] = set()
+                n_merged += 1
+                round_merges += 1
+            if round_merges == 0:
+                break  # remaining leftovers are boundary-locked — stop retrying
+
+        new_polyhedra = [p for p, a in zip(polyhedra, alive) if a]
+        new_tet_sets = [t for t, a in zip(tet_sets, alive) if a]
+        return new_polyhedra, new_tet_sets, n_merged
 
     # ------------------------------------------------------------------
     # Convexity enforcement
