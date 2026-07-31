@@ -79,6 +79,13 @@ class FeatureDetector:
             # interpreter" the moment it stopped running on the GUI
             # thread. interruptible=False skips that call entirely.
             gmsh.initialize(interruptible=False)
+            # Same fix as gmsh_wrapper._ensure_gmsh(): without this, GMSH's
+            # OCC STEP importer ignores the file's declared unit and keeps
+            # raw coordinate values unconverted (a real mm-scale part read
+            # as if the numbers were already metres — 1000x too large).
+            # This is a separate GMSH session (its own gmsh.initialize(),
+            # not gmsh_wrapper's _ensure_gmsh()), so it needs its own copy.
+            gmsh.option.setString("Geometry.OCCTargetUnit", "M")
             self._gmsh_initialized = True
 
         gmsh.clear()

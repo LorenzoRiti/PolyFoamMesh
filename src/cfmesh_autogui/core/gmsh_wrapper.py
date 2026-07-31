@@ -741,6 +741,21 @@ def _ensure_gmsh():
                 # live). Skip the signal-handler install entirely.
                 gmsh.initialize(interruptible=False)
                 gmsh.option.setNumber("General.Terminal", 0)
+                # Without this, GMSH's OCC STEP/IGES importer ignores the
+                # unit declared in the file (its LENGTH_UNIT entity, e.g.
+                # SI_UNIT(.MILLI.,.METRE.)) and keeps the raw numeric
+                # coordinate values as-is — confirmed live: a STEP file
+                # explicitly declaring millimetres (cadquery's default
+                # export, and most mechanical CAD tools' default too) came
+                # through gmsh.open() with getBoundingBox() reporting the
+                # RAW file numbers unconverted, i.e. a real 2mm part read
+                # as a 2-METRE part internally — a 1000x scale mismatch
+                # against every other part of this app, which treats the
+                # same file as millimetres (see geometry.py's mm->m
+                # conversion). "M" tells GMSH to convert TO metres FROM
+                # whatever the file declares, rather than passing values
+                # through unconverted (the default, empty-string behavior).
+                gmsh.option.setString("Geometry.OCCTargetUnit", "M")
                 _GMSH_INITIALIZED = True
     import gmsh
     return gmsh
