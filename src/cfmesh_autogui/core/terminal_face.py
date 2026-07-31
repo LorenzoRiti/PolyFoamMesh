@@ -152,22 +152,23 @@ class TerminalFaceConverter:
             largest_face, frontier_bitvector, seed_list = self._label_phase(
                 points, faces_raw, cell_faces, face_owner, face_neigh, n_cells,
             )
-            # NOT calling _augment_disjoint_pair_matching here: measured on
-            # the same block-with-bore reference mesh (251,902 tets) that it
-            # raises poly coverage from 21.1% to 80.2% (78.9% -> 19.8%
-            # residual tets), but wrong-oriented faces go from 79 to 1,056
-            # (13x) — same single failed checkMesh check as the baseline
-            # (no new skewness/non-orthogonality failures), but a real
-            # regression on the metric that matters for CFD use. User
-            # decision 2026-07-31: keep the higher-quality baseline over
-            # higher poly coverage. Left implemented (mutual-agreement-first
-            # disjoint pair matching, bounded to pairs so it can't runaway-
-            # chain) as a starting point if orientation-safe second-chance
-            # matching is worth revisiting later.
+            # Goal: 100% poly coverage. Mutual-agreement-only left ~79% of
+            # cells as bare tets (measured); the disjoint pair matching
+            # below raises coverage to ~80% by accepting the best available
+            # match for every tet, not just cases where both sides agree —
+            # bounded to 2-tet pairs so it can't runaway-chain the way the
+            # rejected multi-cell leftover merge did.
+            n_pairs = self._augment_disjoint_pair_matching(
+                points, faces_raw, cell_faces, face_owner, face_neigh,
+                frontier_bitvector, n_cells,
+            )
+            seed_list = list(range(n_cells))
             result.n_terminal_faces = sum(1 for v in frontier_bitvector if not v)
             result.n_frontier_faces = sum(frontier_bitvector)
-            logger.info("Terminal-face label: %d terminal, %d frontier, %d seeds",
-                        result.n_terminal_faces, result.n_frontier_faces, len(seed_list))
+            logger.info(
+                "Terminal-face label: %d terminal, %d frontier, %d seeds, %d pair joins",
+                result.n_terminal_faces, result.n_frontier_faces, len(seed_list), n_pairs,
+            )
 
             # --- Phase 2: TRAVERSAL ---
             polyhedra, tet_sets = self._traversal_phase(
@@ -177,21 +178,23 @@ class TerminalFaceConverter:
             n_leftover_before = sum(1 for t in tet_sets if len(t) == 1)
             logger.info("Terminal-face traversal: %d polyhedra (%d single-tet leftovers)",
                         len(polyhedra), n_leftover_before)
-            # The bounded leftover merge is intentionally not enabled yet:
-            # on the reference mesh it reduced residual tets but introduced
-            # hundreds of wrong-oriented faces and skewness failures. Keep
-            # the clean baseline until a geometric quality gate is added.
             result.n_leftover_tets_merged = 0
 
-            # NOT calling _merge_leftover_tets here: measured directly on
-            # a real mesh (block-with-bore, 252,536 tets) that it drives
-            # residual bare tets from 78.9% down to ~0.1%, but at a net
-            # QUALITY COST that's worse than leaving them alone — checkMesh
-            # misoriented faces 79->6471, a new max skewness of 8170
-            # (essentially degenerate) that didn't exist before, and new
-            # non-orthogonality errors, even with merge-group size capped
-            # at 4 tets. The greedy "largest shared frontier face" merge
-            # criterion for a leftover tet has none of the mutual-
+            # NOT calling _merge_leftovers_safe here despite its topology
+            # guards (rejects duplicate-face merges, one leftover per
+            # target): measured on the same reference mesh, layered on top
+            # of disjoint pair matching above, it pushes coverage to 99.7%
+            # residual tets but checkMesh goes from 1 failed check (1,056
+            # wrong-oriented faces) to 3 (3,699 wrong-oriented + a new
+            # skewness failure, max 225 vs 2.78 without it, + new non-
+            # orthogonality errors). The guards prevent duplicate FACES,
+            # not bad cell SHAPES — a topologically-clean merge can still
+            # produce a badly-skewed cell. Reaching genuine 100% coverage
+            # without this tradeoff needs a shape-aware merge criterion or
+            # the dual/Voronoi-based rebuild in poly_workflow_part2.md's
+            # Recommended Algorithm, not another leftover-sweep variant.
+
+            # NOT calling _merge_leftover_tets (the unguarded version) here:
             # agreement guarantee LABEL/TRAVERSAL's regular merges have,
             # and produces badly-shaped cells and/or an orientation issue
             # in how _build_output canonicalizes faces for these bridged,
