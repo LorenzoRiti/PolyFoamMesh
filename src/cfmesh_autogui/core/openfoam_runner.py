@@ -1467,13 +1467,26 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
 
     Returns (returncode, stdout_lines, stderr_lines, timed_out).
     """
+    import os
     import subprocess
     import threading
     import time
 
+    # Decoding our end as UTF-8 isn't enough on its own: the child is a
+    # separate Python process (launched fresh via sys.executable), and on
+    # Windows it defaults to encoding ITS OWN stdout/stderr as cp1252 —
+    # confirmed live, a plain em dash in a logger.warning() call came
+    # through as a single mangled byte no matter how this end decoded it,
+    # because it was already the wrong bytes by the time we read them.
+    # PYTHONIOENCODING forces the child's own text streams to UTF-8
+    # regardless of the platform's console codepage.
+    child_env = dict(env) if env is not None else dict(os.environ)
+    child_env["PYTHONIOENCODING"] = "utf-8"
+
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=run_cwd, env=env, bufsize=1,
+        text=True, encoding="utf-8", errors="backslashreplace",
+        cwd=run_cwd, env=child_env, bufsize=1,
     )
     if proc_holder is not None:
         proc_holder["proc"] = proc
@@ -1482,22 +1495,29 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
     stderr_lines: list[str] = []
     last_activity = [time.monotonic()]
 
-    def _pump(stream, sink, echo):
+    def _pump(stream, sink, prefix):
         try:
             for line in iter(stream.readline, ""):
                 line = line.rstrip("\n")
                 sink.append(line)
                 last_activity[0] = time.monotonic()
-                if echo and line.strip():
-                    on_line(line)
+                if line.strip():
+                    on_line(prefix + line if prefix else line)
         finally:
             try:
                 stream.close()
             except Exception:
                 pass
 
-    t_out = threading.Thread(target=_pump, args=(proc.stdout, stdout_lines, True), daemon=True)
-    t_err = threading.Thread(target=_pump, args=(proc.stderr, stderr_lines, False), daemon=True)
+    # Both streams echoed live, not just stdout: Python's logging module
+    # sends WARNING+ to stderr by default (no handler configured in the
+    # gmsh_wrapper.py subprocess), so a logger.warning() call — e.g. the
+    # domain-scale sizing clamp's own warning — landed in stderr_lines
+    # and was silently swallowed until/unless the run failed, never
+    # reaching the live GUI log on an otherwise-successful run. The
+    # opposite of what a "show everything, always" log is supposed to do.
+    t_out = threading.Thread(target=_pump, args=(proc.stdout, stdout_lines, ""), daemon=True)
+    t_err = threading.Thread(target=_pump, args=(proc.stderr, stderr_lines, "[stderr] "), daemon=True)
     t_out.start()
     t_err.start()
 
