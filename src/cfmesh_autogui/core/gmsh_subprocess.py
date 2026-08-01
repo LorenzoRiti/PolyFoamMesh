@@ -39,13 +39,16 @@ def run_gmsh_volume(
     size_field_file: Path | str | None = None,
     on_line: LogFn = _noop,
     timeout_s: int = 3600,
+    threads: int = 0,
 ) -> dict:
     """Mesh *step_path* via gmsh_wrapper's ``volume`` CLI, returning its JSON.
 
     *user_lc*/*min_lc* <= 0 select the adaptive path (cross-section-aware
     bulk sizing). *size_field_file* is passed via the
     ``GMSH_SOLUTION_SIZE_FIELD`` env var the CLI reads — this is how the
-    SAMR loop tells GMSH where to refine.
+    SAMR loop tells GMSH where to refine. *threads* > 0 enables GMSH
+    multi-threaded meshing (``GMSH_NUM_THREADS``), the main lever for the
+    large remeshes near the end of the loop.
     """
     from cfmesh_autogui.core.openfoam_runner import _stream_subprocess
 
@@ -57,6 +60,8 @@ def run_gmsh_volume(
     cmd, run_cwd = _gmsh_cmd(args, "--gmsh-volume")
     env = dict(os.environ)
     env["GMSH_SOLUTION_SIZE_FIELD"] = str(size_field_file) if size_field_file else ""
+    if int(threads) > 0:
+        env["GMSH_NUM_THREADS"] = str(int(threads))
 
     last_err = ""
     for attempt in (1, 2):  # GMSH's OCC mesher intermittently dies natively
@@ -190,6 +195,7 @@ def remesh_from_cad(
     end_time: int,
     user_lc: float = 0.0,
     min_lc: float = 0.0,
+    threads: int = 0,
     on_line: LogFn = _noop,
 ) -> tuple[str, int]:
     """One SAMR remesh cycle: GMSH mesh from the ORIGINAL CAD with the new
@@ -201,7 +207,7 @@ def remesh_from_cad(
     msh = case_dir / f"mesh_{case_dir.name}.msh"
     payload = run_gmsh_volume(
         step_path, msh, detail=detail, user_lc=user_lc, min_lc=min_lc,
-        size_field_file=size_field_file, on_line=on_line,
+        size_field_file=size_field_file, on_line=on_line, threads=threads,
     )
     write_case_skeleton(case_dir)
     run_gmsh_to_foam(case_dir, msh.name, on_line=on_line)
