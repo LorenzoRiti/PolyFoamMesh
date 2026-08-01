@@ -913,16 +913,6 @@ def generate_fms(
         return None
 
 
-def _to_wsl_path_wsl(win_path: Path) -> str:
-    """Convert a Windows absolute path to a shell-quoted WSL2 /mnt/ path."""
-    win = win_path.resolve()
-    drive = win.drive[0].lower()
-    rel = str(win).split(":", 1)[1].replace("\\", "/")
-    raw = f"/mnt/{drive}{rel}"
-    import shlex
-    return shlex.quote(raw)
-
-
 # ------------------------------------------------------------------
 # V1.1: CheckMeshWorker — runs checkMesh in a background thread
 # ------------------------------------------------------------------

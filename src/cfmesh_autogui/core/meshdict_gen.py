@@ -43,31 +43,73 @@ def build_object_refinements(
 ) -> list[str]:
     """Build ``objectRefinements`` block for cfMesh meshDict.
 
-    Each high-curvature region is a dict with:
-      - centre (tuple[float,float,float])
-      - radius (float) — half-diagonal of the refinement box
-      - cell_size (float) — target cell size inside the box
+    Two zone schemas are accepted, so the pipeline-level zones (throat
+    auto-refinements) and the 3D-viewer refinement boxes can coexist in the
+    same list:
 
-    Emits box-shaped refinement regions.  Returns empty list when nothing
-    to refine.
+      - zone schema  ``{centre: (x,y,z), radius: float, cell_size: float}``
+        — legacy/auto zones.  ``radius`` is the half-diagonal; emitted as a
+        cube of side ``2*radius``.
+      - box schema   ``{xmin,xmax,ymin,ymax,zmin,zmax, cell_size: float}``
+        — placed with the in-viewer drag gizmo (``refinement_boxes.py``).
+        Emitted as the real axis-aligned box it represents (centre = midpoint,
+        lengthX/Y/Z = actual extents), so a non-cube box keeps its shape.
+
+    A malformed entry (missing keys, a NaN/zero cell size, non-numeric coords)
+    never aborts the run: it is skipped with a log warning and the valid zones
+    are still written.  Returns empty list when nothing to refine.
     """
     if not high_curvature_regions:
         return []
 
     lines = ["objectRefinements", "{"]
-    for i, region in enumerate(high_curvature_regions):
-        cx, cy, cz = region["centre"]
-        r = region["radius"]
-        cs = region["cell_size"]
-        lines.append(f"    refinementBox_{i}")
+    emitted = 0
+    for region in high_curvature_regions:
+        if not isinstance(region, dict):
+            logger.warning(
+                "Skipping malformed refinement zone: not a dict (%r)", region
+            )
+            continue
+        cell_size = region.get("cell_size")
+        if not cell_size or cell_size <= 0:
+            logger.warning(
+                "Skipping malformed refinement zone: bad cell_size (%r)", region
+            )
+            continue
+        try:
+            if region.get("type") == "box" or "xmin" in region:
+                # 3D-viewer box: exact axis-aligned cuboid.
+                xmin, xmax = float(region["xmin"]), float(region["xmax"])
+                ymin, ymax = float(region["ymin"]), float(region["ymax"])
+                zmin, zmax = float(region["zmin"]), float(region["zmax"])
+                cx = (xmin + xmax) / 2.0
+                cy = (ymin + ymax) / 2.0
+                cz = (zmin + zmax) / 2.0
+                len_x = abs(xmax - xmin)
+                len_y = abs(ymax - ymin)
+                len_z = abs(zmax - zmin)
+            else:
+                # Legacy zone: cube built from the half-diagonal radius.
+                # Kept formatting-identical to the historical output (the
+                # caller-provided numbers are emitted verbatim).
+                cx, cy, cz = region["centre"]
+                r = region["radius"]
+                len_x = len_y = len_z = abs(float(r)) * 2.0
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Skipping malformed refinement zone: %s (%r)", exc, region
+            )
+            continue
+        lines.append(f"    refinementBox_{emitted}")
         lines.append("    {")
         lines.append("        type    box;")
         lines.append(f"        centre  ({cx} {cy} {cz});")
-        lines.append(f"        lengthX {r * 2};")
-        lines.append(f"        lengthY {r * 2};")
-        lines.append(f"        lengthZ {r * 2};")
-        lines.append(f"        cellSize {cs};")
+        lines.append(f"        lengthX {len_x};")
+        lines.append(f"        lengthY {len_y};")
+        lines.append(f"        lengthZ {len_z};")
+        lines.append(f"        cellSize {cell_size};")
         lines.append("    }")
+        emitted += 1
     lines.append("}")
     lines.append("")
     return lines
@@ -101,8 +143,11 @@ def build_meshdict_lines(
         surface_file: path to the surface STL.
         bl_params: dict with keys nLayers, thicknessRatio, expansionRatio,
             wallPatches (list of patch names). If None, no boundary layers.
-        object_refinements: list of dicts with keys centre, radius, cell_size
-            for local refinement boxes. If None or empty, no local refinement.
+        object_refinements: list of dicts in either the zone schema
+            {centre, radius, cell_size} or the 3D-box schema
+            {type:"box", xmin, xmax, ymin, ymax, zmin, zmax, cell_size}.
+            If None or empty, no local refinement. Malformed entries are
+            skipped with a warning, never fatal.
     """
     lines: list[str] = [
         'FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }',

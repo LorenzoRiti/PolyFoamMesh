@@ -585,6 +585,9 @@ class MainWindow(QMainWindow):
         self._params.load_step_requested.connect(self._on_load_step)
         self._params.pick_refinement_requested.connect(self._on_pick_refinement)
         self._viewer.refinement_point_picked.connect(self._on_refinement_point_picked)
+        self._params.add_box_requested.connect(self._on_add_refinement_box)
+        self._params.refinements_changed.connect(self._on_refinements_changed)
+        self._viewer.refinement_boxes_changed.connect(self._on_refinement_boxes_changed)
         rl.addWidget(self._params)
 
         self._cell_count_label = QLabel("Cells: --")
@@ -1248,6 +1251,129 @@ class MainWindow(QMainWindow):
         self._log.append_log(
             f"{Tag.GEOM} Refinement zone at ({x:.4f}, {y:.4f}, {z:.4f})"
         )
+
+    # --- 3D refinement boxes -------------------------------------------------
+    def _refinement_boxes(self) -> list:
+        return [
+            dict(b) for b in self._params.get_manual_refinements()
+            if isinstance(b, dict) and b.get("type") == "box"
+        ]
+
+    def _refinement_box_base_size(self) -> float:
+        """Level-1 base cell size: the cross-section bulk size for the current
+        detail, falling back to the Max Cell Size field."""
+        from cfmesh_autogui.core.gmsh_wrapper import _GMSH_DETAIL
+        from cfmesh_autogui.core.refinement_boxes import base_bulk_size
+        detail = self._params.get_detail_level() or "medium"
+        cells_across = (_GMSH_DETAIL.get(detail) or {}).get("cells_across", 20)
+        cross = 0.0
+        if self._meshes:
+            ext = []
+            for m in self._meshes:
+                try:
+                    b = m.bounds
+                    ext.append([b[1][i] - b[0][i] for i in range(3)])
+                except Exception:
+                    continue
+            if ext:
+                dims = [max(ext[i][k] for i in range(len(ext))) for k in range(3)]
+                dims.sort()
+                cross = dims[1] if len(dims) == 3 else (dims[0] if dims else 0.0)
+        fallback = self._params.get_max_cell() or 0.01
+        return base_bulk_size(cross, cells_across, fallback=fallback)
+
+    def _mesh_bbox(self):
+        lo = [1e30] * 3
+        hi = [-1e30] * 3
+        for m in self._meshes:
+            try:
+                b = m.bounds
+                for i in range(3):
+                    lo[i] = min(lo[i], float(b[0][i]))
+                    hi[i] = max(hi[i], float(b[1][i]))
+            except Exception:
+                continue
+        return (lo, hi) if hi[0] > lo[0] else (None, None)
+
+    def _on_add_refinement_box(self):
+        """Add a 3D refinement box at the model centre, edited with the box
+        gizmo shown in the viewer (drag its handles). Only choice: the level."""
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        if not self._meshes:
+            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
+            return
+        lo, hi = self._mesh_bbox()
+        if lo is None:
+            QMessageBox.warning(self, "No Geometry",
+                                "Could not compute the model bounds.")
+            return
+        base = self._refinement_box_base_size()
+        level, ok = QInputDialog.getInt(
+            self, "Box Refinement Level",
+            "Livello di raffinamento:\n"
+            "  1 = dimensione base (nessun raffinamento extra)\n"
+            "  2 = meta delle celle\n"
+            "  3 = un quarto delle celle\n"
+            "  ... ogni livello dimezza la dimensione precedente\n\n"
+            "Poi trascina le maniglie sul box nel viewer per dimensionarlo.",
+            2, 1, 6, 1,
+        )
+        if not ok:
+            return
+        try:
+            from cfmesh_autogui.core.refinement_boxes import (
+                suggest_box, apply_level,
+            )
+            box = suggest_box(
+                lo, hi, fraction=0.5, level=level, base_size=base,
+            )
+            box["base_size"] = base
+            box = apply_level(box, level, base)
+            self._params.add_refinement_box(box)
+            self._log.append_log(
+                f"[refine] added box L{level} -> cell size "
+                f"{box['cell_size']:.5g} m - trascina il box nel viewer"
+            )
+            self._refresh_box_viewer()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Add refinement box failed")
+            self._log.append_log(f"{Tag.ERROR} Add box failed: {exc}")
+
+    def _refresh_box_viewer(self):
+        boxes = self._refinement_boxes()
+        if self._viewer is None:
+            return
+        self._viewer.show_refinement_boxes(boxes)
+        if boxes:
+            # Enter drag-edit mode so the arrows are immediately live
+            # (refinement_boxes_changed is already connected in __init__).
+            self._viewer.start_refinement_box_drag()
+
+    @Slot(object)
+    def _on_refinement_boxes_changed(self, boxes: list):
+        """A box's arrows were dragged to a new size — persist and refresh."""
+        if not boxes:
+            return
+        self._params.set_refinement_boxes(boxes)
+        self._log.append_log(
+            f"[refine] box resized: "
+            f"{boxes[-1].get('xmax', 0) - boxes[-1].get('xmin', 0):.3g} x "
+            f"{boxes[-1].get('ymax', 0) - boxes[-1].get('ymin', 0):.3g} x "
+            f"{boxes[-1].get('zmax', 0) - boxes[-1].get('zmin', 0):.3g} m"
+        )
+
+    @Slot(object)
+    def _on_refinements_changed(self, _all: object):
+        """Level changed in the panel — refresh the box rendering."""
+        self._refresh_box_viewer()
+
+    def _gmsh_refinement_zones(self) -> list:
+        """Zones passed to the GMSH volume mesher: throat-detected spheres plus
+        every manual zone (3D boxes and legacy spheres)."""
+        manual = self._params.get_manual_refinements()
+        spheres = [m for m in manual if isinstance(m, dict) and "centre" in m]
+        boxes = [b for b in self._refinement_boxes()]
+        return list(getattr(self, "_throat_zones", None) or []) + spheres + boxes
 
     def _on_set_case_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Select Case Directory")
@@ -2278,7 +2404,7 @@ class MainWindow(QMainWindow):
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
         t = QThread()
         w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
-                             refinement_zones=getattr(self, '_throat_zones', None) or [],
+                             refinement_zones=self._gmsh_refinement_zones(),
                              max_cell_size=max_cell, min_cell_size=min_cell,
                              max_cells_target=max_cells_target)
         w.moveToThread(t)
@@ -2356,7 +2482,7 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
             t = ctx["thread"]
             w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
-                                  refinement_zones=getattr(self, '_throat_zones', None) or [],
+                                  refinement_zones=self._gmsh_refinement_zones(),
                                   max_cell_size=self._params.get_max_cell(),
                                   min_cell_size=self._params.get_min_cell())
             w2.moveToThread(t)
@@ -3165,37 +3291,15 @@ class MainWindow(QMainWindow):
                 # to _auto_quality_fix: that re-meshes the tet at a coarser
                 # detail, silently discarding the polyhedral conversion (the
                 # exact silent-swap class of bug that cost earlier sessions a
-                # day).  Product decision (Lorenzo): if poly cannot pass, fall
-                # back to the validated tetrahedral mesh, which the worker
-                # preserved in constant/polyMesh_tet_backup before converting.
-                import shutil
-
-                backup = self._case_dir / "constant" / "polyMesh_tet_backup"
-                if backup.exists():
-                    poly_dir = self._case_dir / "constant" / "polyMesh"
-                    try:
-                        shutil.rmtree(poly_dir)
-                        shutil.copytree(backup, poly_dir)
-                    except OSError as exc:
-                        self._log.append_log(
-                            f"{Tag.ERROR} Poly rollback failed: {exc}"
-                        )
-                        return
-                    self._poly_was_converted = False
-                    self._poly_fallback_active = True
-                    self._log.append_log(
-                        f"{Tag.WARN} Polyhedral mesh failed checkMesh "
-                        f"({report.status}). Rolling back to the validated "
-                        "tetrahedral mesh (constant/polyMesh_tet_backup)."
-                    )
-                    self._viewer.show_mesh(self._case_dir)
-                    self._launch_checkmesh()
-                else:
-                    self._log.append_log(
-                        f"{Tag.WARN} Polyhedral mesh failed checkMesh "
-                        f"({report.status}) and no tet backup is available — "
-                        "keeping the polyhedral mesh with a visible warning."
-                    )
+                # day).  User decision: keep the polyhedral mesh and show it
+                # in the viewer anyway, with a visible warning, so the user
+                # can inspect it even though it did not pass checkMesh.
+                self._log.append_log(
+                    f"{Tag.WARN} Polyhedral mesh failed checkMesh "
+                    f"({report.status}). Keeping the polyhedral mesh and "
+                    "showing it anyway (it did not pass the quality check)."
+                )
+                self._viewer.show_mesh(self._case_dir)
                 return
             # Auto-fix: offer to relax cell sizes and re-mesh
             self._auto_quality_fix(report)
@@ -4176,18 +4280,35 @@ class MainWindow(QMainWindow):
         self._samr_amr_root = amr_root
         detail = self._params.get_detail_level()
 
+        # Auto-select parallelism: on meshes big enough that the fixed
+        # decompose/reconstruct overhead pays off, use up to 8 solve cores
+        # (the single biggest wall-time lever in the loop). GMSH meshing
+        # threads measured NO benefit on this mesher (valve medium 268 s
+        # single-thread vs 274 s with 8) so they stay off.
+        _cores = os.cpu_count() or 4
+        from cfmesh_autogui.core.boundary_reader import count_cells as _cc
+        n_cells_now = _cc(self._case_dir)
+        use_par = n_cells_now > 250_000
+        solve_cores = min(_cores, 8) if use_par else 1
+        mesh_threads = 1
+        self._log.append_log(
+            f"[adaptive] parallelism: solve on {solve_cores} core(s) "
+            f"({n_cells_now:,} cells)"
+        )
+
         def _remesh(size_field: Path, cycle: int):
             from cfmesh_autogui.core.gmsh_subprocess import remesh_from_cad
             case_dir = amr_root / f"cycle_{cycle}"
             case_dir.mkdir(parents=True, exist_ok=True)
             return remesh_from_cad(
                 step_path, case_dir, detail, size_field, inlet, end_time=400,
-                on_line=self._log.append_log,
+                threads=mesh_threads, on_line=self._log.append_log,
             )
 
         params = AdaptiveParams(
             inlet_velocity=inlet, max_cycles=cycles, max_cells=budget,
             solver_iterations=300, final_solver_iterations=600,
+            solve_cores=solve_cores,
         )
 
         self._run_id += 1

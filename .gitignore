@@ -29,3 +29,7 @@ Thumbs.db
 benchmarks/results/
 
 .firecrawl/
+
+# Deepwork session state (git-local)
+.slim/deepwork/
+
