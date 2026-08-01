@@ -683,11 +683,12 @@ def set_end_time(case_dir: Path | str, iterations: int) -> int:
     The iteration budget is part of the case, not the solver invocation, so a
     cycle that wants a longer run must edit the case before solving.
 
-    Also clamps ``writeInterval`` down to the new endTime: with
-    ``writeControl timeStep``, a writeInterval larger than endTime means the
-    solver writes NO time directory (seen live: 300 iterations ran 38 s and
-    wrote nothing — silently losing the solution the whole indicator step
-    depends on).
+    Also forces ``writeInterval`` to the new endTime. The loop only ever reads
+    the LAST time directory, so writing intermediates is pure waste (and a
+    writeInterval that does not divide endTime can silently miss the final
+    time entirely — seen live: endTime 300 with writeInterval 200 wrote only
+    time 200, so the indicator read a stale solution; the earlier "clamp if
+    larger" was wrong because a SMALL interval also misses endTime).
     """
     path = Path(case_dir) / "system" / "controlDict"
     text = path.read_text(encoding="ascii", errors="replace")
@@ -696,13 +697,11 @@ def set_end_time(case_dir: Path | str, iterations: int) -> int:
         f"endTime         {int(iterations)};",
         text, count=1, flags=re.MULTILINE,
     )
-    m_wi = re.search(r"^writeInterval\s+(\d+);", text, flags=re.MULTILINE)
-    if m_wi and int(m_wi.group(1)) > int(iterations):
-        text = re.sub(
-            r"^writeInterval\s+\d+;",
-            f"writeInterval   {int(iterations)};",
-            text, count=1, flags=re.MULTILINE,
-        )
+    text = re.sub(
+        r"^writeInterval\s+\d+;",
+        f"writeInterval   {int(iterations)};",
+        text, count=1, flags=re.MULTILINE,
+    )
     path.write_text(text, encoding="ascii")
     return int(iterations)
 
@@ -854,9 +853,26 @@ def run_solver(
             on_line(f"[solve] ERROR: {line}")
 
     start = time.monotonic()
-    rc, stdout, stderr, timed_out = _stream_subprocess(
-        cmd, run_cwd=None, timeout_s=timeout_s, on_line=handle, heartbeat_s=30,
-    )
+    # The parallel path works on native WSL tmpfs via mpirun, which is
+    # occasionally flaky (seen live: the same 971k-cell case solved fine once
+    # and aborted on the next run). The script is stateless per invocation
+    # (fresh tmpfs copy), so a single retry is safe and worth it for a step
+    # that costs minutes.
+    attempts = 2 if n_cores > 1 else 1
+    rc = timed_out = None
+    stdout = stderr = []
+    for attempt in range(attempts):
+        rc, stdout, stderr, timed_out = _stream_subprocess(
+            cmd, run_cwd=None, timeout_s=timeout_s, on_line=handle,
+            heartbeat_s=30,
+        )
+        if rc == 0 and not timed_out:
+            break
+        if attempt == 0 and attempts > 1:
+            on_line(
+                "[solve] parallel run failed — retrying once "
+                "(mpirun on WSL tmpfs is occasionally flaky)"
+            )
     elapsed = time.monotonic() - start
 
     if timed_out:
@@ -1022,11 +1038,22 @@ class SolutionAdaptiveRefiner:
         # engineering quantity is trustworthy. See AdaptiveParams docs.
         iters = p.final_solver_iterations if cycle >= p.max_cycles else p.solver_iterations
         set_end_time(case_dir, iters)
-        self.log(f"[cycle {cycle}] solving on {rep.cells_before:,} cells (endTime={iters})...")
+
+        # Auto-switch to serial on small meshes: decomposePar + reconstruct
+        # cost ~1 min of fixed overhead, so parallel only pays once the mesh
+        # is large enough that it amortises (same rule the GUI uses).
+        cores = p.solve_cores if rep.cells_before >= 250_000 else 1
+        if cores != p.solve_cores:
+            self.log(
+                f"[cycle {cycle}] <250k cells: solving serial "
+                f"(decompose/reconstruct overhead not worth it)"
+            )
+        self.log(f"[cycle {cycle}] solving on {rep.cells_before:,} cells "
+                 f"(endTime={iters}, {'serial' if cores == 1 else str(cores) + ' cores'})...")
         t0 = time.monotonic()
         solve = run_solver(
             case_dir, self.of_config, timeout_s=p.solver_timeout_s,
-            on_line=self.log, n_cores=p.solve_cores,
+            on_line=self.log, n_cores=cores,
         )
         rep.solve_time_s = time.monotonic() - t0
         rep.solver_iterations_run = solve["iterations"]
@@ -1112,13 +1139,25 @@ class SolutionAdaptiveRefiner:
             # The unrefined bulk does not need to be in this field: GMSH
             # min-combines it with the geometry-based sizing, which reproduces
             # the near-wall refinement on its own.
-            refined = h_base < h_orig * 0.999
             baseline = float(np.max(h_orig))
-            for attempt in range(4):
+            # Scale is clamped just under max_refine_ratio: h_base is already
+            # bounded below by h_orig/max_refine_ratio (target_size_field's
+            # clamp), so at scale == max_refine_ratio every h_try collapses to
+            # h_orig and NOTHING is refined any more - the "still" mask goes
+            # empty and the loop would otherwise fall back to scattering the
+            # current near-wall sizes, which re-poses the poison floor and
+            # pins the prediction (seen live: stuck at 8.53M across 3 no-op
+            # relaxations). Clamping keeps a non-empty still mask so the
+            # prediction curve (smooth, crosses the budget around scale
+            # 2.8-3.0 on the venturi) can actually be walked down to it.
+            scale_ceil = p.max_refine_ratio * 0.97
+            for attempt in range(6):
                 h_try = np.minimum(h_base * scale, h_orig)
                 still = h_try < h_orig * 0.999
                 if not np.any(still):
-                    still = refined  # scale grew so far nothing is refined
+                    # Scale saturates the refine ratio - keep the previous
+                    # field (the fullest refinement computed) and stop.
+                    break
                 sf = write_structured_size_field(
                     size_field_path, ind["centres"][still], h_try[still], bounds,
                     resolution=p.grid_resolution, growth_rate=p.grid_growth_rate,
@@ -1140,17 +1179,20 @@ class SolutionAdaptiveRefiner:
                 )
                 sf["lat_sum"], sf["geom_sum"] = lat_sum, geom_sum
                 tgt["h_target"] = h_try
-                if predicted <= p.max_cells or attempt == 3:
+                if predicted <= p.max_cells or attempt == 5:
                     if predicted > p.max_cells:
                         self.log(
                             f"[cycle {cycle}] WARNING: still predicting "
                             f"{predicted:,.0f} cells (> {p.max_cells:,}) after "
-                            "4 relaxations — proceeding anyway."
+                            "6 relaxations — proceeding anyway."
                         )
                     break
                 # 1.02 leaves a little headroom so we land just under, not on,
                 # the cap after the next rebuild's re-smearing.
-                scale *= (predicted / p.max_cells) ** (1.0 / 3.0) * 1.02
+                scale = min(
+                    scale * (predicted / p.max_cells) ** (1.0 / 3.0) * 1.02,
+                    scale_ceil,
+                )
                 self.log(
                     f"[cycle {cycle}] lattice predicts {predicted:,.0f} cells "
                     f"(> budget {p.max_cells:,}) — relaxing target size by "
