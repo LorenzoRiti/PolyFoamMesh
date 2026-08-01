@@ -420,6 +420,30 @@ def infer_patch_roles(
     return roles
 
 
+def mesh_bounds(case_dir: Path | str) -> tuple[float, float, float, float, float, float]:
+    """(xmin, xmax, ymin, ymax, zmin, zmax) of the polyMesh points (metres)."""
+    geo = _PolyMeshGeometry(case_dir)
+    pts = geo.points
+    if not pts:
+        raise RuntimeError(f"No points in {case_dir}/constant/polyMesh")
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    zs = [p[2] for p in pts]
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
+
+def suggest_flow_direction(case_dir: Path | str) -> tuple[float, float, float]:
+    """Unit vector along the dominant (largest-extent) mesh axis — the
+    obvious default flow direction for an internal-flow passage."""
+    bounds = mesh_bounds(case_dir)
+    ext = (bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4])
+    axis = int(max(range(3), key=lambda k: ext[k]))
+    u = [0.0, 0.0, 0.0]
+    if ext[axis] > 0:
+        u[axis] = 1.0
+    return (u[0], u[1], u[2])
+
+
 def _boundary_block(
     patches: list[PatchInfo],
     field_name: str,
