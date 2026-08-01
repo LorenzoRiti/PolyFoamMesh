@@ -1129,6 +1129,65 @@ class TerminalFaceWorker(QObject):
         self.finished.emit(result)
 
 
+class DualPolyWorker(QObject):
+    """Runs TetPolyDualConverter (tet -> polyhedral by barycentric dual) in a
+    background QThread.
+
+    Unlike TerminalFaceWorker above, this does not merge tetrahedra: it builds
+    the dual complex of the tet mesh (one cell per primal vertex), so poly
+    coverage is 100% by construction and the boundary is an exact subdivision
+    of the original surface triangles. See docs/poly_dual_converter.md for the
+    measured comparison against the terminal-face path on identical inputs.
+
+    Pure Python + numpy, so — like TerminalFaceWorker — it runs directly in a
+    QThread rather than needing subprocess isolation.
+    """
+
+    log_line = Signal(str)
+    finished = Signal(object)  # DualPolyResult
+    failed = Signal(str)
+
+    def __init__(self, case_dir: Path | str, parent=None):
+        super().__init__(parent)
+        self._case_dir = Path(case_dir).resolve()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self):
+        from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter
+
+        self.log_line.emit(
+            "[poly] Converting tet -> polyhedral mesh (barycentric dual)..."
+        )
+        try:
+            converter = TetPolyDualConverter(
+                self._case_dir,
+                log=self.log_line.emit,
+                cancel=lambda: self._cancelled,
+            )
+            result = converter.run()
+        except Exception as exc:
+            self.log_line.emit(f"[poly] ERROR: {exc}")
+            self.failed.emit(str(exc))
+            return
+
+        if not result.success:
+            msg = "; ".join(result.errors) or "Unknown dual conversion error"
+            self.log_line.emit(f"[poly] FAILED: {msg}")
+            self.failed.emit(msg)
+            return
+
+        self.log_line.emit(
+            f"[poly] Conversion OK: {result.n_tets_before:,} tets -> "
+            f"{result.n_cells_after:,} polyhedra, residual tetrahedra "
+            f"{result.n_residual_tets} ({result.stage_times.get('total', 0)}s)"
+        )
+        self.finished.emit(result)
+
+
 class DecomposeParWorker(QObject):
     """Runs decomposePar -force in a background QThread to decompose an
     existing mesh into processorN/ directories for parallel SOLVING."""
@@ -1648,8 +1707,13 @@ class GmshVolumeWorker(QObject):
                  bl_expansion: float = 1.2, refinement_zones: list | None = None,
                  max_cell_size: float = 0, min_cell_size: float = 0,
                  max_cells_target: int = 0,
+                 size_field_file: str | Path | None = None,
                  parent=None):
         super().__init__(parent)
+        # Solution-derived target-size lattice (core.solution_adaptive). Passed
+        # to the subprocess by env var like refinement_zones — the CLI already
+        # takes ten positional args and an eleventh would be unreadable.
+        self._size_field_file = str(size_field_file) if size_field_file else ""
         self._step_path = step_path
         self._msh_path = msh_path
         self._detail = detail
@@ -1692,6 +1756,11 @@ class GmshVolumeWorker(QObject):
         env = os.environ.copy()
         if zones_json:
             env["GMSH_REFINEMENT_ZONES"] = zones_json
+        if self._size_field_file:
+            env["GMSH_SOLUTION_SIZE_FIELD"] = self._size_field_file
+            self.log_line.emit(
+                f"[gmsh] solution-adaptive size field: {self._size_field_file}"
+            )
         try:
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=env,
@@ -1842,3 +1911,80 @@ class ExportWorker(QObject):
         except Exception as e:
             self.error_occurred.emit(str(e))
 
+
+
+class SolutionAdaptiveWorker(QObject):
+    """Runs the solution-adaptive refinement loop in a background QThread.
+
+    The loop is solve -> compute a refinement indicator -> remesh from the
+    original CAD with a solution-derived size field, repeated until the
+    engineering quantity of interest stops moving (see
+    ``core.solution_adaptive``). Every stage is emitted on ``log_line`` so the
+    visible GUI log shows solve progress, residuals, indicator statistics, the
+    target sizing chosen and the cell counts — a multi-minute loop that logged
+    nothing would be indistinguishable from a hang.
+
+    The remesh half is supplied by the caller as *remesh_fn* rather than being
+    hard-coded here, because the GUI already owns the mesh-generation path
+    (geometry, detail level, BL settings, patch naming) and duplicating it
+    would let the adaptive mesh silently diverge from the normal one.
+    """
+
+    log_line = Signal(str)
+    finished = Signal(object)  # AdaptiveResult
+    failed = Signal(str)
+    cycle_done = Signal(int, int)  # (cycle, n_cells)
+
+    def __init__(self, case_dir: Path | str, bounds: tuple, remesh_fn,
+                 params=None, of_config: OFConfig | None = None, parent=None):
+        super().__init__(parent)
+        self._case_dir = Path(case_dir).resolve()
+        self._bounds = bounds
+        self._remesh_fn = remesh_fn
+        self._params = params
+        self._of_config = of_config or OFConfig()
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        self._cancelled = True
+        self.log_line.emit(
+            "[adaptive] Cancel requested — will stop after the current stage."
+        )
+
+    @Slot()
+    def run(self):
+        from cfmesh_autogui.core.solution_adaptive import (
+            AdaptiveParams, SolutionAdaptiveRefiner,
+        )
+
+        params = self._params or AdaptiveParams()
+
+        def _remesh(size_field: Path, cycle: int):
+            if self._cancelled:
+                raise RuntimeError("cancelled by user")
+            case_dir, n_cells = self._remesh_fn(size_field, cycle)
+            self.cycle_done.emit(cycle, n_cells)
+            return case_dir, n_cells
+
+        try:
+            refiner = SolutionAdaptiveRefiner(
+                params=params, of_config=self._of_config,
+                on_line=self.log_line.emit,
+            )
+            result = refiner.run(
+                initial_case_dir=self._case_dir,
+                bounds=self._bounds,
+                remesh_fn=_remesh,
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced to the GUI
+            logger.exception("Solution-adaptive refinement worker failed")
+            self.failed.emit(str(exc))
+            return
+
+        for line in result.summary().splitlines():
+            self.log_line.emit(f"[adaptive] {line}")
+        if result.errors and not result.cycles:
+            self.failed.emit("; ".join(result.errors))
+            return
+        self.finished.emit(result)

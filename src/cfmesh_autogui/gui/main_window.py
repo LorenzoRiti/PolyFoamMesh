@@ -78,6 +78,7 @@ from cfmesh_autogui.core.openfoam_runner import (
     PolyDualWorker,
     QualityFixWorker,
     RetryRunner,
+    DualPolyWorker,
     TerminalFaceWorker,
     WslCheckWorker,
     analyze_error,
@@ -264,7 +265,44 @@ class MainWindow(QMainWindow):
         # real project rather than what it actually is: a demo/sample.
         tm.addAction("Load Sample Cylinder (demo geometry)", self._on_test_cylinder)
         tm.addSeparator()
+        conv_menu = tm.addMenu("Polyhedral Converter")
+        self._conv_dual_action = conv_menu.addAction(
+            "Barycentric dual (100% polyhedral)"
+        )
+        self._conv_tf_action = conv_menu.addAction("Terminal-face (legacy, ~80%)")
+        self._conv_dual_action.setCheckable(True)
+        self._conv_tf_action.setCheckable(True)
+        self._conv_dual_action.triggered.connect(
+            lambda: self._on_poly_converter_change("dual")
+        )
+        self._conv_tf_action.triggered.connect(
+            lambda: self._on_poly_converter_change("terminal_face")
+        )
+        self._sync_poly_converter_menu()
+        tm.addSeparator()
         tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
+
+    def _poly_converter(self) -> str:
+        """Which tet->poly converter the poly workflow should use."""
+        val = AppSettings().get_value("mesh/poly_converter", "dual")
+        return "terminal_face" if str(val) == "terminal_face" else "dual"
+
+    def _sync_poly_converter_menu(self) -> None:
+        mode = self._poly_converter()
+        self._conv_dual_action.setChecked(mode == "dual")
+        self._conv_tf_action.setChecked(mode == "terminal_face")
+
+    def _on_poly_converter_change(self, mode: str) -> None:
+        AppSettings().set_value("mesh/poly_converter", mode)
+        self._sync_poly_converter_menu()
+        label = (
+            "barycentric dual" if mode == "dual" else "terminal-face (legacy)"
+        )
+        # Which converter produced a mesh must never change silently — that
+        # exact class of silent swap was the dominant source of confusion in
+        # earlier sessions, so say it in the visible log, not just the status bar.
+        self._log.append_log(f"[poly] Polyhedral converter set to: {label}.")
+        self._status.showMessage(f"Polyhedral converter: {label}", 4000)
 
     def _on_theme_change(self, mode: str) -> None:
         from cfmesh_autogui.gui.theme import apply_theme, set_theme_mode
@@ -3356,14 +3394,28 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
             self._polydual_thread.quit()
             self._polydual_thread.wait(3000)
+        mode = self._poly_converter()
         logger.info(
-            "Launching terminal-face conversion: case_dir=%s cells_before=%d",
-            self._case_dir, self._cells_before_poly,
+            "Launching %s poly conversion: case_dir=%s cells_before=%d",
+            mode, self._case_dir, self._cells_before_poly,
         )
-        self._log.append_log("[poly] Converting tet → polyhedral mesh (terminal-face)...")
+        # Always name the converter in the visible log: the mesh the user ends
+        # up with differs substantially between the two (the dual rebuilds one
+        # cell per primal vertex, so the cell count drops ~5.5x), and a silent
+        # swap here is exactly what made earlier runs impossible to interpret.
+        if mode == "dual":
+            self._log.append_log(
+                "[poly] Converting tet → polyhedral mesh (barycentric dual, "
+                "100% polyhedral)..."
+            )
+            w = DualPolyWorker(self._case_dir)
+        else:
+            self._log.append_log(
+                "[poly] Converting tet → polyhedral mesh (terminal-face, legacy)..."
+            )
+            w = TerminalFaceWorker(self._case_dir)
         self._status.showMessage("Polyhedral conversion...")
         t = QThread()
-        w = TerminalFaceWorker(self._case_dir)
         w.moveToThread(t)
         w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
         w.finished.connect(self._on_terminal_face_finished, Qt.QueuedConnection)
@@ -3388,7 +3440,7 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"[poly] FAILED: {msg}")
         QMessageBox.warning(
             self, "Polyhedral Conversion Failed",
-            f"Terminal-face conversion failed:\n\n{msg}\n\n"
+            f"Polyhedral conversion failed ({self._poly_converter()}):\n\n{msg}\n\n"
             "The tetrahedral mesh is still available. "
             "You can skip polyhedral conversion and use it directly."
         )
