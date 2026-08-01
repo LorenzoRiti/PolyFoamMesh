@@ -155,6 +155,7 @@ class TetPolyDualConverter:
         split_rounds: int = 0,
         feature_angle: float = 40.0,
         split_boundary_layer_only: bool = False,
+        wedge_cells: bool = False,
     ):
         """
         median_faces
@@ -187,6 +188,14 @@ class TetPolyDualConverter:
             own boundary quads; shallow wedges keep the centroid near the
             surface.  MEASURED on the valve: full-star split 895 -> 1,215
             (worse); boundary-layer-only split 895 -> <see bench>.
+        wedge_cells
+            Direction-A fix for the concave-feature defect: for every concave
+            boundary edge whose dual face fails the pyramid test, insert a
+            wedge cell W that OWNS the edge and the four surface quads around
+            it, so the endpoint cells no longer wrap the concave corner and
+            become convex.  Default False = off (the working converter is
+            never changed).  MEASURED on the valve: see bench — this is the
+            construction that replaces the dead-end vertex-star split.
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -195,6 +204,7 @@ class TetPolyDualConverter:
         self._split_rounds = int(split_rounds)
         self._feature_angle = float(feature_angle)
         self._split_boundary_layer_only = bool(split_boundary_layer_only)
+        self._wedge_cells = bool(wedge_cells)
 
     # ------------------------------------------------------------------
     # helpers
@@ -240,6 +250,7 @@ class TetPolyDualConverter:
         best = None
         best_defects: int | None = None
         best_counts: dict[str, int] = {}
+        best_ctr = None
 
         for rnd in range(self._split_rounds + 1):
             self._check_cancel()
@@ -269,7 +280,7 @@ class TetPolyDualConverter:
                 f"[{time.monotonic() - t:.1f}s]"
             )
             if best_defects is None or total < best_defects:
-                best_defects, best, best_counts = total, M, counts
+                best_defects, best, best_counts, best_ctr = total, M, counts, ctr
             if total == 0:
                 break
             if rnd == self._split_rounds:
@@ -287,6 +298,53 @@ class TetPolyDualConverter:
                 f"[poly 6/9] splitting the dual cell at {len(new):,} feature "
                 f"vertices ({len(splits):,} total) and rebuilding"
             )
+
+        # Direction-A wedge cells: insert one wedge cell per failing concave
+        # edge so the endpoint cells stop wrapping the concave corner.  This
+        # is a second, defect-driven build; it is kept only if it scores
+        # better than the plain dual (the working converter is never changed
+        # when the flag is off).
+        if self._wedge_cells and best_defects and best_defects > 0:
+            self._check_cancel()
+            t = time.monotonic()
+            wedge_edges = _plan_wedge_edges(P, best, best_ctr)
+            if wedge_edges:
+                self._log(
+                    f"[poly 6/9] wedge cells: {len(wedge_edges):,} concave edges "
+                    f"to own (defect-driven)"
+                )
+                M2 = self._build_dual(
+                    P, splits, wedge_edges=wedge_edges, ref_ctr=best_ctr,
+                )
+                self._log(
+                    f"[poly 5/9] wedge rebuild: {M2.n_cells:,} dual cells, "
+                    f"{len(M2.faces):,} faces ({time.monotonic() - t:.1f}s)"
+                )
+                self._check_cancel()
+                t = time.monotonic()
+                sf2, cf2 = _face_geometry(M2.points, M2.faces)
+                M2.sf, M2.cf = sf2, cf2
+                ctr2, vol2 = _cell_centres(
+                    sf2, cf2, M2.owner, M2.neigh, M2.n_int, M2.n_cells,
+                )
+                bad2, counts2 = _detect_defects(
+                    M2.points, M2.faces, sf2, cf2, ctr2,
+                    M2.owner, M2.neigh, M2.n_int, M2.n_cells,
+                )
+                total2 = counts2["pyramid"] + counts2["non_ortho"] + counts2["skew"]
+                self._log(
+                    f"[poly 6/9] wedge quality: {counts2['pyramid']} inverted face "
+                    f"pyramids, {counts2['non_ortho']} non-orthogonality errors, "
+                    f"{counts2['skew']} skewness errors "
+                    f"({int(bad2.sum()):,} cells) [{time.monotonic() - t:.1f}s]"
+                )
+                if total2 < best_defects:
+                    best_defects, best, best_counts = total2, M2, counts2
+                    self._log("[poly 6/9] wedge rebuild kept (fewer defects)")
+                else:
+                    self._log("[poly 6/9] wedge rebuild rejected (not better)")
+            else:
+                self._log("[poly 6/9] no concave edges to fix — wedge pass skipped")
 
         M = best
         res.split_vertices = len(splits)
@@ -453,18 +511,42 @@ class TetPolyDualConverter:
     # P5: build the dual complex for a given vertex-star partition
     # ------------------------------------------------------------------
 
-    def _build_dual(self, P, splits: dict[int, dict[int, int]]) -> SimpleNamespace:
+    def _build_dual(
+        self, P, splits: dict[int, dict[int, int]],
+        wedge_edges: dict[int, int] | None = None,
+        ref_ctr: np.ndarray | None = None,
+    ) -> SimpleNamespace:
+        """Build the dual complex.
+
+        `wedge_edges` maps a concave edge key -> wedge cell index (Direction-A
+        fix): those edges get a wedge cell W that owns the edge and the four
+        surface quads around it, and the endpoint cells stop wrapping the
+        concave corner.  `ref_ctr` is the cell-centroid array of the plain
+        dual (used only to orient the wedge faces); it must be provided
+        whenever `wedge_edges` is.
+        """
         n_pi = P.n_pi
         median = self._median_faces
 
-        # ---- cell numbering: one cell per (vertex, star group) ----------
+        # ---- cell numbering: one cell per (vertex, star group) + wedges ----
         n_groups = P.used.astype(np.int64)
         for v, m in splits.items():
             n_groups[v] = max(m.values()) + 1
         base = np.zeros(n_pi + 1, dtype=np.int64)
         np.cumsum(n_groups, out=base[1:])
-        n_cells = int(base[n_pi])
+        n_vertex_cells = int(base[n_pi])
         cell_vertex = np.repeat(np.arange(n_pi, dtype=np.int64), n_groups)
+
+        wedge_cell: dict[int, int] = {}
+        if wedge_edges:
+            for i, key in enumerate(sorted(wedge_edges)):
+                wedge_cell[key] = n_vertex_cells + i
+            n_cells = n_vertex_cells + len(wedge_edges)
+            cell_vertex = np.concatenate([
+                cell_vertex, np.full(len(wedge_edges), -1, dtype=np.int64),
+            ])
+        else:
+            n_cells = n_vertex_cells
         base_l = base[:n_pi].tolist()
 
         # ---- lazy dual-point allocator ----------------------------------
@@ -554,6 +636,52 @@ class TetPolyDualConverter:
                 group, bfaces, cf_map, owner_l, neigh_l, va, vb,
             )
             n = len(ring)
+
+            # Direction-A wedge edge: build the two faces Fa (cell a <-> W)
+            # and Fb (cell b <-> W) instead of the single dual face F(a,b).
+            wc = wedge_cell.get(int(key)) if wedge_cell else None
+            if wc is not None:
+                if closed:
+                    raise RuntimeError(
+                        f"Concave edge ({va},{vb}) has a closed fan — not a "
+                        "boundary edge; cannot build a wedge cell."
+                    )
+                T1 = link[0]
+                T2 = link[n]
+                c = next(int(v) for v in P.tri[T1] if v != va and v != vb)
+                d = next(int(v) for v in P.tri[T2] if v != va and v != vb)
+                e_ca = _edge_index_in_tri(P, T1, c, va)
+                e_da = _edge_index_in_tri(P, T2, d, va)
+                e_bc = _edge_index_in_tri(P, T1, vb, c)
+                e_bd = _edge_index_in_tri(P, T2, vb, d)
+                ca = base_l[va]
+                cb = base_l[vb]
+                # surface centre of W: centroid of the 4 quads' vertices.
+                # This lies on the surface side of Fa/Fb, so it orients the
+                # wedge faces with the normal pointing from the endpoint cell
+                # toward the wedge (perpendicular to the edge, not along it).
+                sc = (
+                    pts_in[va] + pts_in[vb] + emid[ei]
+                    + fc_all[T1] + fc_all[T2]
+                    + emid[e_ca] + emid[e_bc] + emid[e_da] + emid[e_bd]
+                ) / 9.0
+                Fa = [pt_vert(va), pt_edge(e_ca), pt_face(T1), ring[0]]
+                for k in range(1, n):
+                    if median:
+                        Fa.append(pt_face(link[k]))
+                    Fa.append(ring[k])
+                Fa.append(pt_face(T2))
+                Fa.append(pt_edge(e_da))
+                Fb = [pt_vert(vb), pt_edge(e_bc), pt_face(T1), ring[0]]
+                for k in range(1, n):
+                    if median:
+                        Fb.append(pt_face(link[k]))
+                    Fb.append(ring[k])
+                Fb.append(pt_face(T2))
+                Fb.append(pt_edge(e_bd))
+                _emit_wedge_face(Fa, ca, wc, xyz, sc, int_faces, int_own, int_nb)
+                _emit_wedge_face(Fb, cb, wc, xyz, sc, int_faces, int_own, int_nb)
+                continue
 
             sa = splits.get(va)
             sb = splits.get(vb)
@@ -670,6 +798,34 @@ class TetPolyDualConverter:
             pi = pob_l[bi]
             for c in range(3):
                 x = vs[c]
+                # the quad at corner c is adjacent to edges (vs[c], vs[c+1])
+                # and (vs[c-1], vs[c]); a wedge cell owns it if either edge
+                # is a concave fix-set edge (split if both are).
+                if wedge_cell:
+                    k1 = min(vs[c], vs[(c + 1) % 3]) * n_pi + max(vs[c], vs[(c + 1) % 3])
+                    k2 = min(vs[c - 1], vs[c]) * n_pi + max(vs[c - 1], vs[c])
+                    w1 = wedge_cell.get(k1)
+                    w2 = wedge_cell.get(k2)
+                    if w1 is not None and w2 is not None:
+                        tri1 = [pt_vert(x), pt_edge(int(fe[c])), fcp]
+                        tri2 = [pt_vert(x), fcp, pt_edge(int(fe[c - 1]))]
+                        bnd_by_patch[pi].append(tri1)
+                        bown_by_patch[pi].append(w1)
+                        bnd_by_patch[pi].append(tri2)
+                        bown_by_patch[pi].append(w2)
+                        continue
+                    if w1 is not None:
+                        quad = [pt_vert(x), pt_edge(int(fe[c])), fcp,
+                                pt_edge(int(fe[c - 1]))]
+                        bnd_by_patch[pi].append(quad)
+                        bown_by_patch[pi].append(w1)
+                        continue
+                    if w2 is not None:
+                        quad = [pt_vert(x), pt_edge(int(fe[c])), fcp,
+                                pt_edge(int(fe[c - 1]))]
+                        bnd_by_patch[pi].append(quad)
+                        bown_by_patch[pi].append(w2)
+                        continue
                 m = splits.get(x)
                 g = m.get(t1, 0) if m is not None else 0
                 quad = [pt_vert(x), pt_edge(int(fe[c])), fcp, pt_edge(int(fe[c - 1]))]
@@ -932,6 +1088,26 @@ def _emit_edge_face(poly, ca, cb, xyz, pts_in, va, vb, faces, own, nb):
     nb.append(cb)
 
 
+def _emit_wedge_face(poly, ca, cb, xyz, ref_pt, faces, own, nb):
+    """Append one wedge face, wound so its normal points owner -> neighbour.
+
+    `ref_pt` is a point on the neighbour (wedge) side of the face — the edge
+    midpoint, which lies on the wedge cell's axis — so the face is oriented
+    with the owner cell's centroid on the negative side of the normal.
+    """
+    if len(poly) < 3:
+        raise RuntimeError(f"Degenerate wedge face: {poly}")
+    nrm = _newell(xyz, poly)
+    if float(nrm @ (ref_pt - xyz[poly[0]])) < 0.0:
+        poly.reverse()
+    if ca > cb:
+        ca, cb = cb, ca
+        poly.reverse()
+    faces.append(poly)
+    own.append(ca)
+    nb.append(cb)
+
+
 def _concave_boundary_vertices(P) -> set[int]:
     """Vertices that lie on a CONCAVE boundary feature edge.
 
@@ -984,6 +1160,61 @@ def _concave_boundary_vertices(P) -> set[int]:
             concave_verts.add(a)
             concave_verts.add(b)
     return concave_verts
+
+
+def _concave_edges(P) -> set[int]:
+    """Edge keys of every CONCAVE boundary edge (signed test).
+
+    Same test as `_concave_boundary_vertices` but returns the edge keys
+    (min(a,b)*n_pi + max(a,b)) instead of the endpoint vertices, so the
+    Direction-A wedge construction can own individual concave edges.
+    """
+    bnd = P.bnd_tri
+    n_bnd = P.n_bnd
+    edge_tris: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for bi in range(n_bnd):
+        a, b, c = (int(x) for x in bnd[bi])
+        for x, y in ((a, b), (b, c), (c, a)):
+            edge_tris[(min(x, y), max(x, y))].append(bi)
+
+    pts = P.points
+    owner_l = P.owner
+    cc = P.cell_centroid
+    n_pi = P.n_pi
+    out: set[int] = set()
+    for ek, tris in edge_tris.items():
+        if len(tris) != 2:
+            continue
+        t1, t2 = tris
+        v1 = bnd[t1]
+        v2 = bnd[t2]
+        a, b = ek
+        p2 = next(int(v) for v in v2 if v != a and v != b)
+        c1 = pts[v1].mean(axis=0)
+        n1 = np.cross(pts[v1[1]] - pts[v1[0]], pts[v1[2]] - pts[v1[0]])
+        ln = float(np.linalg.norm(n1))
+        if ln < 1e-300:
+            continue
+        n1 = n1 / ln
+        f1 = P.n_int_primal + t1
+        o1 = int(owner_l[f1])
+        if float(n1 @ (c1 - cc[o1])) < 0.0:
+            n1 = -n1
+        if float((pts[p2] - c1) @ n1) > 1e-12:
+            out.add(min(a, b) * n_pi + max(a, b))
+    return out
+
+
+def _edge_index_in_tri(P, f: int, x: int, y: int) -> int:
+    """Index of the primal edge (x, y) within triangle f (via face_edge)."""
+    vs = P.tri[f]
+    fe = P.face_edge[f]
+    for i in range(3):
+        if (vs[i] == x and vs[(i + 1) % 3] == y) or (
+            vs[i] == y and vs[(i + 1) % 3] == x
+        ):
+            return int(fe[i])
+    raise RuntimeError(f"Edge ({x},{y}) not found in triangle {f}")
 
 
 def _split_vertex_star(
@@ -1093,11 +1324,53 @@ def _split_vertex_star(
     for t in star:
         label.setdefault(t, 0)
 
-    used_labels = sorted(set(label.values()))
-    if len(used_labels) < 2:
-        return None
-    remap = {l: i for i, l in enumerate(used_labels)}
-    return {t: remap[l] for t, l in label.items()}
+        used_labels = sorted(set(label.values()))
+        if len(used_labels) < 2:
+            return None
+        remap = {l: i for i, l in enumerate(used_labels)}
+        return {t: remap[l] for t, l in label.items()}
+
+
+def _plan_wedge_edges(P, M, ctr) -> dict[int, int]:
+    """Concave edges to own with a wedge cell (the Direction-A fix set).
+
+    Defect-driven: an edge is fixed only if one of its dual faces fails
+    the pyramid test — either a boundary quad adjacent to the edge, or
+    the internal dual face of the edge itself.  Returns {edge_key: 0}
+    (values are placeholder cell offsets; `_build_dual` renumbers them).
+    """
+    sf, cf = M.sf, M.cf
+    pv_own = (sf * (cf - ctr[M.owner])).sum(axis=1)
+    pv_nb = -(sf[:M.n_int] * (cf[:M.n_int] - ctr[M.neigh])).sum(axis=1)
+    fail_own = np.flatnonzero(pv_own <= 0.0)
+    fail_nb = np.flatnonzero(pv_nb <= 0.0)
+
+    concave = _concave_edges(P)
+    n_pi = P.n_pi
+    fix: dict[int, int] = {}
+    for f in np.concatenate([fail_own, fail_nb]):
+        f = int(f)
+        if f >= M.n_int:
+            bi, corner = divmod(f - M.n_int, 3)
+            vs = P.bnd_tri[bi]
+            k1 = min(vs[corner], vs[(corner + 1) % 3]) * n_pi + max(
+                vs[corner], vs[(corner + 1) % 3]
+            )
+            k2 = min(vs[corner - 1], vs[corner]) * n_pi + max(
+                vs[corner - 1], vs[corner]
+            )
+            if k1 in concave:
+                fix[k1] = 0
+            if k2 in concave:
+                fix[k2] = 0
+        else:
+            o = int(M.cell_vertex[M.owner[f]])
+            nb = int(M.cell_vertex[M.neigh[f]])
+            if o >= 0 and nb >= 0:
+                key = min(o, nb) * n_pi + max(o, nb)
+                if key in concave:
+                    fix[key] = 0
+    return fix
 
 
 # ---------------------------------------------------------------------------

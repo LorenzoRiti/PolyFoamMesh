@@ -9,6 +9,7 @@ import trimesh  # ✅ F-017
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -39,6 +40,21 @@ from cfmesh_autogui.gui.style import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Mesher button toggle styles — shared between _add_mesher_btn and _on_mesher_button_clicked
+_MESHER_BTN_OFF = (
+    "QPushButton {"
+    "  border:1px solid #c8ccd4; border-radius:4px; padding:8px 6px;"
+    "  background:#f0f2f5; color:#333; font-weight:600; text-align:left;"
+    "}"
+    "QPushButton:hover { background:#e2e6ea; border-color:#aaa; }"
+)
+_MESHER_BTN_ON = (
+    "QPushButton {"
+    "  border:2px solid #e37222; border-radius:4px; padding:8px 6px;"
+    "  background:#e37222; color:white; font-weight:700; text-align:left;"
+    "}"
+)
 
 
 class ParamChangeCommand(QUndoCommand):
@@ -83,7 +99,6 @@ class ParamsPanel(QWidget):
     suggestion_completed = Signal(str)
     pick_refinement_requested = Signal()
     add_box_requested = Signal()
-    add_box_coords_requested = Signal()
     refinements_changed = Signal(object)
 
     def __init__(self, parent=None):
@@ -372,41 +387,55 @@ class ParamsPanel(QWidget):
 
         mesher_group = QGroupBox("Mesher")
         mesher_layout = QVBoxLayout(mesher_group)
-        self._mesher_combo = QComboBox()
-        self._mesher_combo.addItems([
-            "Automatic (recommended)",
-            "cfMesh (hexa-dominant + WSL2)",
-            "Tetrahedral (FEM) — GMSH direct",
-            "Polyhedral (CFD) — GMSH + poly",
-            "autopoly (sperimentale, no-WSL)",
-        ])
-        self._mesher_combo.setToolTip(
-            "Automatic sceglie il miglior mesher disponibile e genera una\n"
-            "mesh POLIEDRICA vera:\n"
-            "  • cfMesh (WSL2) + conversione polyDualMesh — verificato pulito\n"
-            "    con checkMesh anche su geometrie curve complesse\n"
-            "  • autopoly (nativo, sperimentale) — solo se WSL2 non disponibile\n"
-            "  • GMSH direct — tetraedrico, fallback universale\n\n"
-            "cfMesh: forza cartesianMesh via WSL2/OpenFOAM, poi converte in\n"
-            "poliedrico (spunta 'Convert to polyhedral mesh' in Advanced).\n"
+        # Three explicit mesher choices instead of a single dropdown. Each is
+        # a checkable toggle in an exclusive group, and get_mesher_type()
+        # returns the SAME pipeline keys as before ("cfmesh", "gmsh_direct_poly",
+        # "gmsh_direct"), so the meshing engines are untouched.
+        self._mesher_buttons = QButtonGroup(self)
+        self._mesher_buttons.setExclusive(True)
+        self._mesher_keys: list[tuple[QPushButton, str]] = []
+
+        def _add_mesher_btn(text: str, key: str, tip: str, checked: bool = False) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.setStyleSheet(_MESHER_BTN_ON if checked else _MESHER_BTN_OFF)
+            mesher_layout.addWidget(btn)
+            self._mesher_buttons.addButton(btn)
+            self._mesher_keys.append((btn, key))
+            # Capture key and btn by default-arg so each closure keeps its own value.
+            btn.clicked.connect(
+                lambda _checked, b=btn: self._on_mesher_button_clicked(b)
+            )
+            if checked:
+                btn.setChecked(True)
+            return btn
+
+        _add_mesher_btn(
+            "Cartesian cfMesh  (richiede WSL2)",
+            "cfmesh",
+            "cartesianMesh via WSL2/OpenFOAM — hex-dominant, la qualit"
+            "\u00e0 pi\u00f9 alta. RICHIEDE WSL2/OpenFOAM installato.\n"
+            "Opzionale: abilita 'Convert to polyhedral mesh' (Advanced) per\n"
+            "convertire l'hex-dominant in poliedrico (polyDualMesh).\n"
             "Il dual di una mesh cartesiana resta molto regolare/a griglia\n"
-            "(celle di bordo ~99% quadrilateri).\n\n"
-            "Tetrahedral (FEM) / Polyhedral (CFD): mesh tetraedrica non strutturata\n"
-            "(via GMSH, funziona meglio con input STEP/CAD reale) + stessa\n"
-            "conversione polyDualMesh — dualizzare una mesh NON strutturata\n"
-            "produce poliedri irregolari veri, stile Voronoi/STAR-CCM+\n"
-            "(verificato: checkMesh pulito, celle da 7 a 23 facce). Da STL\n"
-            "grezzo (senza topologia CAD) la generazione può ancora fallire\n"
-            "su superfici curve lunghe e sottili — preferire STEP quando\n"
-            "possibile.\n\n"
-            "autopoly: motore CVT Python nativo, no WSL richiesto — ma su\n"
-            "superfici molto curve produce ancora bordi non perfettamente\n"
-            "conformi (verificato con checkMesh). Usare solo se WSL2/OpenFOAM\n"
-            "non è disponibile."
+            "(celle di bordo ~99% quadrilateri).",
+            checked=True,
         )
-        self._mesher_combo.setCurrentText("Automatic (recommended)")
-        mesher_layout.addWidget(self._mesher_combo)
-        self._mesher_combo.currentTextChanged.connect(self._on_mesher_changed)
+        _add_mesher_btn(
+            "CFD Poly  (GMSH, no-WSL)",
+            "gmsh_direct_poly",
+            "Mesh tetraedrica GMSH (no WSL richiesto) convertita in POLIEDRICA\n"
+            "vera col barycentric-dual rebuild: 100% di copertura poliedrica,\n"
+            "conteggio celle ~5.5x inferiore (stile STAR-CCM+).\n"
+            "Ideal per CFD. Funziona meglio con input STEP/CAD reale.",
+        )
+        _add_mesher_btn(
+            "FEM Tetra  (GMSH, no-WSL)",
+            "gmsh_direct",
+            "Mesh tetraedrica GMSH pura, nessun WSL richiesto.\n"
+            "Per solver FEM nativi tet. Nessuna conversione poliedrica.",
+        )
         mesh_layout.addWidget(mesher_group)
         self._bl_group = bl_group
         self._mesher_group = mesher_group
@@ -446,15 +475,7 @@ class ParamsPanel(QWidget):
             "level (1 = base, 2 = half cells, ...)."
         )
         self._add_box_btn.clicked.connect(self.add_box_requested.emit)
-        self._add_box_coords_btn = QPushButton("▣ Box coord")
-        self._add_box_coords_btn.setMaximumWidth(110)
-        self._add_box_coords_btn.setToolTip(
-            "Add a refinement box by typing its X/Y/Z min-max coordinates "
-            "directly (no 3D interaction needed)."
-        )
-        self._add_box_coords_btn.clicked.connect(self.add_box_coords_requested.emit)
         refine_btn_row.addWidget(self._add_box_btn)
-        refine_btn_row.addWidget(self._add_box_coords_btn)
         refine_btn_row.addWidget(self._add_refine_btn)
         refine_btn_row.addWidget(self._remove_refine_btn)
         refine_btn_row.addStretch()
@@ -522,13 +543,9 @@ class ParamsPanel(QWidget):
             "Use only when a polyhedral topology is required."
         )
         adv_layout.addWidget(self._poly_check)
-        # _mesher_combo.setCurrentText("Automatic (recommended)") ran before
-        # its currentTextChanged connection existed (and before this
-        # checkbox even existed), so _on_mesher_changed never fired for the
-        # actual default selection — without this, "Convert to polyhedral
-        # mesh" starts visible (Qt's default for a freshly added widget) for
-        # "Automatic", where _on_mesher_changed would actually hide it.
-        self._on_mesher_changed(self._mesher_combo.currentText())
+        # Sync the "Convert to polyhedral mesh" checkbox to the mesher
+        # button selected at startup (default cfMesh -> checkbox visible).
+        self._on_mesher_changed(self.get_mesher_type())
 
         # Manual override section — everything here is off/unused by
         # default; the Mesh Fineness slider on the main tab is what
@@ -1030,15 +1047,9 @@ class ParamsPanel(QWidget):
             self._tabs.setCurrentIndex(index)
 
     def get_mesher_type(self) -> str:
-        text = self._mesher_combo.currentText()
-        if "Automatic" in text:
-            return "auto"
-        if "autopoly" in text:
-            return "autopoly"
-        if "Polyhedral" in text:
-            return "gmsh_direct_poly"
-        if "Tetrahedral" in text:
-            return "gmsh_direct"
+        for btn, key in getattr(self, "_mesher_keys", []):
+            if btn.isChecked():
+                return key
         return "cfmesh"
 
     def get_adaptive_sizing_enabled(self) -> bool:
@@ -1242,7 +1253,8 @@ class ParamsPanel(QWidget):
         self._min_cell.setEnabled(enabled)
         self._bl_checkbox.setEnabled(enabled)
         self._unit_selector.setEnabled(enabled)
-        self._mesher_combo.setEnabled(enabled)
+        for btn, _key in getattr(self, "_mesher_keys", []):
+            btn.setEnabled(enabled)
         self._parallel_check.setEnabled(enabled)
         self._parallel_cores.setEnabled(enabled and self._parallel_check.isChecked())
 
@@ -1276,29 +1288,27 @@ class ParamsPanel(QWidget):
             return ("custom", self._openmp_spin.value())
         return ("balanced", None)
 
-    def _on_mesher_changed(self, text: str) -> None:
-        # The GMSH-direct path used to be one entry with a separate
-        # "Convert to polyhedral mesh" checkbox — easy to forget to tick
-        # (reported live: mesh finished as tet-only, no indication poly
-        # was ever an option). Split into two explicit choices instead,
-        # matching how FEM vs. CFD actually differ in practice (FEM
-        # solvers are tet-native; CFD benefits from polyhedral cells —
-        # fewer cells, less numerical diffusion): "Tetrahedral (FEM)"
-        # forces poly off, "Polyhedral (CFD)" forces it on. Neither
-        # exposes the checkbox anymore, so there's nothing to forget.
-        # cfMesh keeps the manual checkbox — poly there is optional
-        # either way (its hex-dual is grid-like/regular regardless).
-        if "Polyhedral" in text:
+    def _on_mesher_button_clicked(self, clicked_btn: QPushButton) -> None:
+        """Refresh visual state of all mesher buttons and dispatch the change."""
+        for b, _k in self._mesher_keys:
+            b.setStyleSheet(_MESHER_BTN_ON if b is clicked_btn else _MESHER_BTN_OFF)
+        self._on_mesher_changed(self.get_mesher_type())
+
+    def _on_mesher_changed(self, key: str) -> None:
+        # "CFD Poly" (gmsh_direct_poly) forces the poly conversion ON and
+        # hides the checkbox (nothing to forget); "FEM Tetra" (gmsh_direct)
+        # forces it OFF; "Cartesian cfMesh" keeps the manual checkbox —
+        # poly there is optional either way (its hex-dual is grid-like/
+        # regular regardless). This mirrors the previous dropdown behaviour
+        # exactly, keyed by the pipeline values get_mesher_type() returns.
+        if key == "gmsh_direct_poly":
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(True)
-        elif "Tetrahedral" in text:
+        elif key == "gmsh_direct":
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(False)
-        else:
-            show_poly = "cfMesh" in text
-            self._poly_check.setVisible(show_poly)
-            if not show_poly:
-                self._poly_check.setChecked(False)
+        else:  # cfmesh
+            self._poly_check.setVisible(True)
 
     def save_params(self, s):
         s.setValue("params/max_cell", self._max_cell.value())

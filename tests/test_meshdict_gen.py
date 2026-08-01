@@ -116,6 +116,76 @@ def test_write_with_bl():
     print("PASS: write with BL")
 
 
+def test_manual_refinement_box_schema_emits_real_box():
+    """A 3D-viewer refinement box (refinement_boxes.py schema, no 'centre'
+    key) must not crash and must be written as the exact box it is — centre
+    = midpoint and lengthX/Y/Z = the real extents, not a cube of the
+    diagonal."""
+    box = {
+        "type": "box",
+        "xmin": 0.0, "xmax": 0.4,
+        "ymin": -0.1, "ymax": 0.1,
+        "zmin": 0.0, "zmax": 0.2,
+        "level": 2,
+        "cell_size": 0.005,
+    }
+    lines = build_meshdict_lines(object_refinements=[box])
+    content = "\n".join(lines)
+    assert "refinementBox_0" in content
+    assert "centre  (0.2 -0.0 0.1);" in content or "centre  (0.2 0.0 0.1);" in content
+    assert "lengthX 0.4;" in content
+    assert "lengthY 0.2;" in content
+    assert "lengthZ 0.2;" in content
+    assert "cellSize 0.005;" in content
+    print("PASS: 3D box zone written with real extents")
+
+
+def test_mixed_legacy_and_box_zones_no_crash():
+    """Throat auto-zones (legacy centre/radius) and viewer boxes can share
+    one object_refinements list without a KeyError."""
+    refs = [
+        {"centre": (0.0, 0.0, 0.5), "radius": 0.15, "cell_size": 0.008},
+        {"type": "box",
+         "xmin": 0.0, "xmax": 0.4, "ymin": -0.1, "ymax": 0.1,
+         "zmin": 0.0, "zmax": 0.2, "level": 2, "cell_size": 0.005},
+    ]
+    content = "\n".join(build_meshdict_lines(object_refinements=refs))
+    assert "refinementBox_0" in content
+    assert "refinementBox_1" in content
+    assert "centre  (0.0 0.0 0.5);" in content
+    assert "lengthX 0.4;" in content
+    print("PASS: legacy + box zones coexist")
+
+
+def test_malformed_refinement_zone_is_skipped_not_fatal():
+    """A zone without 'centre' (or otherwise malformed) must never abort the
+    whole meshDict write: it is skipped with a warning and the rest is still
+    emitted."""
+    refs = [
+        {"center": (0, 0, 0), "radius": 0.1, "cell_size": 0.01},  # typo: no 'centre'
+        {"type": "box", "xmin": "n/a", "xmax": 0.4, "ymin": 0, "ymax": 1,
+         "zmin": 0, "zmax": 1, "cell_size": 0.005},
+        {"centre": (0.0, 0.0, 0.5), "radius": 0.15, "cell_size": 0.008},
+    ]
+    content = "\n".join(build_meshdict_lines(object_refinements=refs))
+    # only the valid legacy zone survives
+    assert content.count("refinementBox_") == 1
+    assert "refinementBox_0" in content
+    assert "centre  (0.0 0.0 0.5);" in content
+    print("PASS: malformed zones skipped, write continues")
+
+
+def test_legacy_zone_still_cube():
+    """Backward compatibility: legacy {centre,radius,cell_size} zones keep
+    the historical cube semantics (lengthX = lengthY = lengthZ = 2*radius)."""
+    refs = [{"centre": (0.0, 0.0, 0.5), "radius": 0.1, "cell_size": 0.01}]
+    content = "\n".join(build_meshdict_lines(object_refinements=refs))
+    assert "lengthX 0.2;" in content
+    assert "lengthY 0.2;" in content
+    assert "lengthZ 0.2;" in content
+    print("PASS: legacy cube semantics preserved")
+
+
 if __name__ == "__main__":
     test_basic_has_robust_flags()
     test_basic_no_bl()
