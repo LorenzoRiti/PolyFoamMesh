@@ -1162,6 +1162,23 @@ class DualPolyWorker(QObject):
         self.log_line.emit(
             "[poly] Converting tet -> polyhedral mesh (barycentric dual)..."
         )
+        # Back the pristine tet mesh up BEFORE converting, so a later
+        # checkMesh failure on the poly mesh can be rolled back to the tet
+        # (the quality-gate policy is a product decision, but the rollback
+        # must always be possible — the converter overwrites polyMesh).
+        try:
+            import shutil
+
+            poly_dir = self._case_dir / "constant" / "polyMesh"
+            backup = self._case_dir / "constant" / "polyMesh_tet_backup"
+            if poly_dir.exists() and not backup.exists():
+                shutil.copytree(poly_dir, backup)
+                self.log_line.emit(
+                    "[poly] Tet mesh backed up to constant/polyMesh_tet_backup "
+                    "(rollback available)"
+                )
+        except Exception as exc:  # noqa: BLE001 - backup is best-effort
+            self.log_line.emit(f"[poly] WARN: tet backup failed: {exc}")
         try:
             converter = TetPolyDualConverter(
                 self._case_dir,

@@ -1,5 +1,14 @@
 # Poly Workflow Part 2: Safe Volumetric Tetra To Poly
 
+> **SUPERSEDED — see `docs/poly_converter.md`.** The tet->poly converter is now
+> the barycentric dual rebuild in `core/tet_poly_dual.py` (100% poly coverage,
+> Mesh OK on the reference case, best measured on every axis). The terminal-face
+> merge approach described below is retired and unreachable from the GUI. This
+> file is kept as historical context only; the "Recommended Algorithm" section
+> below was the design that led to the dual, and the dual is its implementation
+> with the boundary-clipping step removed (the median dual needs no clipping —
+> see `docs/poly_converter.md`).
+
 ## Status (2026-07-31, Claude Code — owns this plan going forward)
 
 Two leftover-tet merge strategies measured empirically on the same repro

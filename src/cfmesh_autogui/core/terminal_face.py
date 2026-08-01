@@ -31,6 +31,8 @@ from pathlib import Path
 
 import numpy as np
 
+from . import foam_mesh_io
+
 logger = logging.getLogger(__name__)
 
 
@@ -1535,97 +1537,23 @@ class TerminalFaceConverter:
         boundary_patches: list[dict],
     ) -> None:
         """Write OpenFOAM polyMesh files SAFELY — temp dir first, then replace.
-
-        This prevents corruption of the original polyMesh if the write
-        fails partway through.
+        Delegates to :mod:`cfmesh_autogui.core.foam_mesh_io`.
         """
-        import shutil
-        import tempfile
-
-        poly_dir = self._case_dir / "constant" / "polyMesh"
-
-        # Write to a temp directory first
-        tmp_dir = Path(tempfile.mkdtemp(prefix="terminal_face_"))
-        tmp_poly = tmp_dir / "polyMesh"
-        tmp_poly.mkdir(parents=True, exist_ok=True)
-
-        try:
-            # Write all files to temp dir
-            self._write_points(tmp_poly / "points", points)
-            self._write_faces(tmp_poly / "faces", faces)
-            self._write_label_list(tmp_poly / "owner", owner)
-            self._write_label_list(tmp_poly / "neighbour", neighbour)
-            self._write_boundary(tmp_poly / "boundary", boundary_patches, len(faces))
-
-            # Verify all files were written and are non-empty
-            for fname in ["points", "faces", "owner", "neighbour", "boundary"]:
-                fpath = tmp_poly / fname
-                if not fpath.exists() or fpath.stat().st_size == 0:
-                    raise RuntimeError(f"Verification failed: {fname} is empty or missing")
-
-            # All good — atomically replace original
-            if poly_dir.exists():
-                shutil.rmtree(poly_dir)
-            shutil.move(str(tmp_poly), str(poly_dir))
-
-            logger.info("Terminal-face: wrote %d points, %d faces, %d owner, %d boundary patches",
-                         len(points), len(faces), len(owner), len(boundary_patches))
-        finally:
-            # Clean up temp dir
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        foam_mesh_io.write_polymesh(
+            self._case_dir / "constant" / "polyMesh",
+            points, faces, owner, neighbour, boundary_patches,
+        )
 
     def _write_points(self, path: Path, points: np.ndarray) -> None:
-        header = (
-            "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
-            "    class       vectorField;\n    object      points;\n}\n"
-        )
-        with open(path, "w", encoding="ascii") as f:
-            f.write(header)
-            f.write(f"{len(points)}\n(\n")
-            for p in points:
-                f.write(f"({p[0]:.10e} {p[1]:.10e} {p[2]:.10e})\n")
-            f.write(")\n")
+        foam_mesh_io.write_points(path, points)
 
     def _write_faces(self, path: Path, faces: list[list[int]]) -> None:
-        header = (
-            "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
-            "    class       faceList;\n    object      faces;\n}\n"
-        )
-        with open(path, "w", encoding="ascii") as f:
-            f.write(header)
-            f.write(f"{len(faces)}\n(\n")
-            for face in faces:
-                f.write(f"{len(face)}({' '.join(str(v) for v in face)})\n")
-            f.write(")\n")
+        foam_mesh_io.write_faces(path, faces)
 
     def _write_label_list(self, path: Path, data: np.ndarray) -> None:
-        header = (
-            "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
-            f"    class       labelList;\n    object      {path.name};\n}}\n"
-        )
-        with open(path, "w", encoding="ascii") as f:
-            f.write(header)
-            f.write(f"{len(data)}\n(\n")
-            for v in data:
-                f.write(f"{int(v)}\n")
-            f.write(")\n")
+        foam_mesh_io.write_labels(path, data)
 
     def _write_boundary(
         self, path: Path, patches: list[dict], n_internal_faces: int,
     ) -> None:
-        header = (
-            "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
-            "    class       polyBoundaryMesh;\n    object      boundary;\n}\n"
-        )
-        with open(path, "w", encoding="ascii") as f:
-            f.write(header)
-            f.write(f"{len(patches)}\n(\n")
-            for p in patches:
-                name = p["name"]
-                n_faces = p.get("nFaces", 0)
-                start = p.get("startFace", 0)
-                ptype = p.get("type", "patch")
-                f.write(f'    {name}\n    {{\n        type    {ptype};\n')
-                f.write(f"        nFaces  {n_faces};\n")
-                f.write(f"        startFace {start};\n    }}\n")
-            f.write(")\n")
+        foam_mesh_io.write_boundary(path, patches)
