@@ -1379,6 +1379,72 @@ def _apply_gmsh_thread_env(gmsh_mod) -> None:
             logger.warning("Could not set GMSH_NUM_THREADS=%s: %s", nt, exc)
 
 
+def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
+    """Turn refinement-zone dicts into GMSH size fields, returning their tags.
+
+    Supports two zone shapes (the caller MIN-combines the returned fields with
+    the base adaptive sizing):
+
+    * ``{"type": "box", xmin, xmax, ymin, ymax, zmin, zmax, cell_size}`` —
+      a true axis-aligned box (GMSH ``Box`` field). Used by the GUI's manual
+      3D refinement-box editor.
+    * ``{"centre": (cx,cy,cz), "radius": r, "cell_size": cs}`` — a sphere
+      (GMSH ``Ball`` field); the legacy throat-detector / picker zones.
+
+    All fields set ``VOut = -1`` so they only shrink size inside the zone and
+    never coarsen what surrounds it (a refinement zone must be refinement-only).
+    """
+    zone_fields = []
+    for i, z in enumerate(zones):
+        if z.get("type") == "box":
+            try:
+                bf = gmsh_mod.model.mesh.field.add("Box")
+                for k, v in (
+                    ("XMin", z.get("xmin")), ("XMax", z.get("xmax")),
+                    ("YMin", z.get("ymin")), ("YMax", z.get("ymax")),
+                    ("ZMin", z.get("zmin")), ("ZMax", z.get("zmax")),
+                    ("VIn", z.get("cell_size")),
+                ):
+                    if v is None:
+                        raise ValueError(f"box zone {i} missing {k}")
+                    gmsh_mod.model.mesh.field.setNumber(bf, k, float(v))
+                gmsh_mod.model.mesh.field.setNumber(bf, "VOut", -1)
+                zone_fields.append(bf)
+                logger.info(
+                    "GMSH refinement box %d: x[%.4g,%.4g] y[%.4g,%.4g] "
+                    "z[%.4g,%.4g] cell_size=%.5g",
+                    i, z["xmin"], z["xmax"], z["ymin"], z["ymax"],
+                    z["zmin"], z["zmax"], z["cell_size"],
+                )
+            except Exception as exc:
+                logger.warning("Failed to add GMSH refinement box %d: %s", i, exc)
+            continue
+        cx, cy, cz = z.get("centre", (0, 0, 0))
+        r = z.get("radius", 0.1)
+        cs = z.get("cell_size", 0.01)
+        try:
+            ball_field = gmsh_mod.model.mesh.field.add("Ball")
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "VIn", cs)
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "VOut", -1)
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "Radius", r)
+            # Centre keys are XCenter/YCenter/ZCenter — the bare X/Y/Z names
+            # are unknown options, which silently made every manually-placed
+            # sphere zone fail to build (found by extracting this into the
+            # _add_refinement_zone_fields helper and unit-testing it).
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "XCenter", cx)
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "YCenter", cy)
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "ZCenter", cz)
+            zone_fields.append(ball_field)
+            logger.info(
+                "GMSH refinement zone %d: centre=(%.4f,%.4f,%.4f) "
+                "radius=%.4f cell_size=%.5f",
+                i, cx, cy, cz, r, cs,
+            )
+        except Exception as exc:
+            logger.warning("Failed to add GMSH refinement zone %d: %s", i, exc)
+    return zone_fields
+
+
 def generate_volume_mesh(
     filepath: Path | str,
     output_msh: Path | str,
@@ -1577,38 +1643,7 @@ def generate_volume_mesh(
     # Each zone creates a field that maps distance-from-centre → cell size,
     # then a Min field combines them all with the base adaptive sizing.
     if refinement_zones:
-        zone_fields = []
-        for i, z in enumerate(refinement_zones):
-            cx, cy, cz = z["centre"]
-            r = z["radius"]
-            cs = z["cell_size"]
-            try:
-                # Use "Points" field (GMSH 4.x+) — works on any geometry kernel
-                # without needing geo.addPoint() which can conflict with STL.
-                dist_field = gmsh.model.mesh.field.add("Distance")
-                # "Points" field type accepts coordinate list directly
-                pts_field = gmsh.model.mesh.field.add("Points")
-                gmsh.model.mesh.field.setNumbers(pts_field, "Coordinates", [cx, cy, cz])
-                # Re-use the Points field as input to Distance
-                # Actually, Distance field needs PointsList of existing points.
-                # Fall back to using Ball field which is self-contained.
-                gmsh.model.mesh.field.remove(dist_field)
-                gmsh.model.mesh.field.remove(pts_field)
-                ball_field = gmsh.model.mesh.field.add("Ball")
-                gmsh.model.mesh.field.setNumber(ball_field, "VIn", cs)
-                gmsh.model.mesh.field.setNumber(ball_field, "VOut", -1)  # don't override outside
-                gmsh.model.mesh.field.setNumber(ball_field, "Radius", r)
-                gmsh.model.mesh.field.setNumber(ball_field, "X", cx)
-                gmsh.model.mesh.field.setNumber(ball_field, "Y", cy)
-                gmsh.model.mesh.field.setNumber(ball_field, "Z", cz)
-                zone_fields.append(ball_field)
-                logger.info(
-                    "GMSH refinement zone %d: centre=(%.4f,%.4f,%.4f) "
-                    "radius=%.4f cell_size=%.5f",
-                    i, cx, cy, cz, r, cs,
-                )
-            except Exception as exc:
-                logger.warning("Failed to add GMSH refinement zone %d: %s", i, exc)
+        zone_fields = _add_refinement_zone_fields(gmsh, refinement_zones)
         # Combine all zone fields with Min (smallest cell size wins)
         if len(zone_fields) == 1:
             bg_field_tag = zone_fields[0]

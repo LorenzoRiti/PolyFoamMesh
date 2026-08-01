@@ -82,6 +82,8 @@ class ParamsPanel(QWidget):
     param_changed = Signal(str, object)
     suggestion_completed = Signal(str)
     pick_refinement_requested = Signal()
+    add_box_requested = Signal()
+    refinements_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -435,10 +437,48 @@ class ParamsPanel(QWidget):
         self._remove_refine_btn.setMaximumWidth(32)
         self._remove_refine_btn.setToolTip("Remove selected refinement zone")
         self._remove_refine_btn.clicked.connect(self._on_remove_refinement)
+        self._add_box_btn = QPushButton("▣ Box")
+        self._add_box_btn.setMaximumWidth(72)
+        self._add_box_btn.setToolTip(
+            "Add a 3D refinement box: appears in the viewer with arrows on its "
+            "faces — drag the arrows to size it. You only choose the level "
+            "(1 = base size, 2 = half, 3 = quarter cells, ...)."
+        )
+        self._add_box_btn.clicked.connect(self.add_box_requested.emit)
+        refine_btn_row.addWidget(self._add_box_btn)
         refine_btn_row.addWidget(self._add_refine_btn)
         refine_btn_row.addWidget(self._remove_refine_btn)
         refine_btn_row.addStretch()
         refine_layout.addLayout(refine_btn_row)
+
+        # Per-selected-zone refinement LEVEL (1..6). Applies to both spheres
+        # and boxes; for boxes it is THE user choice (size comes from it).
+        level_row = QHBoxLayout()
+        level_row.addWidget(QLabel("Livello:"))
+        self._refine_level_spin = QSpinBox()
+        self._refine_level_spin.setRange(1, 6)
+        self._refine_level_spin.setValue(2)
+        self._refine_level_spin.setToolTip(
+            "Livello di raffinamento della zona selezionata:\n"
+            "  1 = dimensione base (nessun raffinamento extra)\n"
+            "  2 = metà celle\n"
+            "  3 = un quarto delle celle\n"
+            "  ... ogni livello dimezza la dimensione precedente"
+        )
+        self._refine_level_spin.valueChanged.connect(self._on_refine_level_changed)
+        self._refine_level_spin.setEnabled(False)
+        level_row.addWidget(self._refine_level_spin)
+        self._refine_level_hint = QLabel(
+            "1=base 2=metà 3=¼ 4=⅛ …"
+        )
+        self._refine_level_hint.setStyleSheet("color: gray; font-size: 10px;")
+        level_row.addWidget(self._refine_level_hint)
+        level_row.addStretch()
+        refine_layout.addLayout(level_row)
+
+        self._refine_list.itemSelectionChanged.connect(
+            self._on_refine_selection_changed
+        )
         mesh_layout.addWidget(self._refine_group)
 
         mesh_layout.addStretch()
@@ -1083,6 +1123,79 @@ class ParamsPanel(QWidget):
         has_items = self._refine_list.count() > 0
         self._refine_placeholder.setVisible(not has_items)
         self._refine_list.setVisible(has_items)
+
+    # --- 3D refinement boxes -------------------------------------------------
+    def add_refinement_box(self, box: dict) -> None:
+        """Add a box entry to the manual-refinement list."""
+        from cfmesh_autogui.core.refinement_boxes import label_for
+        box = dict(box)
+        box.setdefault("type", "box")
+        item = QListWidgetItem(label_for(box))
+        item.setData(Qt.UserRole, box)
+        item.setToolTip(
+            f"Level {int(box.get('level', 2))} -> cell size "
+            f"{box.get('cell_size', 0):.5g} m. Trascina le frecce nel viewer "
+            "per dimensionarlo."
+        )
+        self._refine_list.addItem(item)
+        self._refresh_refine_placeholder()
+        self._refine_list.setCurrentItem(item)
+        self._on_refine_selection_changed()
+
+    def set_refinement_boxes(self, boxes: list) -> None:
+        """Replace the stored box entries after a viewer drag (same order)."""
+        from cfmesh_autogui.core.refinement_boxes import label_for
+        box_items = [i for i in range(self._refine_list.count())
+                     if isinstance(self._refine_list.item(i).data(Qt.UserRole), dict)
+                     and self._refine_list.item(i).data(Qt.UserRole).get("type") == "box"]
+        if len(box_items) < len(boxes):
+            return
+        for idx, box in zip(box_items, boxes):
+            item = self._refine_list.item(idx)
+            item.setData(Qt.UserRole, dict(box))
+            item.setText(label_for(box))
+            item.setToolTip(
+                f"Level {int(box.get('level', 2))} -> cell size "
+                f"{box.get('cell_size', 0):.5g} m"
+            )
+        # keep the level spin in sync if the selected item was edited
+        self._on_refine_selection_changed()
+
+    def _on_refine_selection_changed(self) -> None:
+        item = self._refine_list.currentItem()
+        if item is None:
+            self._refine_level_spin.setEnabled(False)
+            return
+        data = item.data(Qt.UserRole)
+        if not isinstance(data, dict):
+            self._refine_level_spin.setEnabled(False)
+            return
+        lvl = int(data.get("level", 2))
+        self._refine_level_spin.blockSignals(True)
+        self._refine_level_spin.setValue(lvl)
+        self._refine_level_spin.blockSignals(False)
+        self._refine_level_spin.setEnabled(True)
+
+    def _on_refine_level_changed(self, level: int) -> None:
+        item = self._refine_list.currentItem()
+        if item is None:
+            return
+        data = item.data(Qt.UserRole)
+        if not isinstance(data, dict):
+            return
+        base = float(data.get("base_size") or 0.01)
+        from cfmesh_autogui.core.refinement_boxes import (
+            apply_level, label_for, box_cell_size,
+        )
+        data["level"] = int(level)
+        data["cell_size"] = box_cell_size(int(level), base)
+        item.setData(Qt.UserRole, data)
+        item.setText(label_for(data))
+        item.setToolTip(
+            f"Level {int(level)} -> cell size {data['cell_size']:.5g} m"
+        )
+        # Notify the caller (main window) so the viewer label can refresh.
+        self.refinements_changed.emit(self.get_manual_refinements())
 
     def get_parallel_params(self) -> tuple[bool, int]:
         """(enabled, n_cores) for MPI-parallel cartesianMesh."""
