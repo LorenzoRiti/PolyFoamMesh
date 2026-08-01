@@ -517,6 +517,7 @@ class ViewerWidget(QWidget):
     face_picked = Signal(str)
     distance_measured = Signal(str)
     refinement_point_picked = Signal(float, float, float)
+    refinement_boxes_changed = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1441,6 +1442,124 @@ class ViewerWidget(QWidget):
         self._plotter.render()
 
     # ✅ F-011: rimosso set_clip_plane() (mai chiamato, logica unificata in _on_section_toggled)
+
+    # ------------------------------------------------------------------
+    # Manual refinement BOXES: translucent cuboids with a 3D box gizmo.
+    # Each box is a vtk BoxWidget (PyVista add_box_widget) - the standard VTK
+    # 3D widget with handles on every face/edge to drag-size the cuboid along
+    # each axis, plus translation. It cooperates with the camera interaction
+    # natively (a hand-rolled drag handler on top of the camera style was
+    # jittery/unreliable - seen live). The level selector in the panel is the
+    # only other user input; cell_size derives from it.
+    # ------------------------------------------------------------------
+
+    def __init_ref_box_state(self):
+        if not hasattr(self, "_ref_box_actors"):
+            self._ref_box_actors = []
+        if not hasattr(self, "_ref_box_widgets"):
+            self._ref_box_widgets = []
+        if not hasattr(self, "_ref_box_data"):
+            self._ref_box_data = []
+
+    def show_refinement_boxes(self, boxes: list):
+        """Render refinement boxes as translucent cuboids.
+
+        *boxes* is a list of ``{type:'box', xmin..zmax, level, cell_size}``.
+        Subsequent calls replace the previous rendering. Drag-sizing is
+        entered separately via start_refinement_box_drag().
+        """
+        self.__init_ref_box_state()
+        self.stop_refinement_box_drag()
+        if self._plotter is None:
+            return
+        try:
+            self._plotter.disable_picking()
+        except Exception:
+            pass
+        for actor in self._ref_box_actors:
+            try:
+                self._plotter.remove_actor(actor)
+            except Exception:
+                pass
+        self._ref_box_actors = []
+        self._ref_box_data = list(boxes)
+        for b in boxes:
+            x0, x1 = b["xmin"], b["xmax"]
+            y0, y1 = b["ymin"], b["ymax"]
+            z0, z1 = b["zmin"], b["zmax"]
+            mesh = pv.Box(bounds=(x0, x1, y0, y1, z0, z1))
+            actor = self._plotter.add_mesh(
+                mesh, color="orange", opacity=0.18, style="surface",
+                pickable=False, show_edges=True, edge_color="darkorange",
+            )
+            self._ref_box_actors.append(actor)
+        if boxes and self._plotter:
+            self._plotter.render()
+
+    def start_refinement_box_drag(self):
+        """Enable drag-sizing of the boxes with the vtk BoxWidget gizmo."""
+        self.__init_ref_box_state()
+        if self._plotter is None:
+            return
+        self.stop_refinement_box_drag()
+        widgets = []
+        for i, b in enumerate(self._ref_box_data):
+            bounds = (b["xmin"], b["xmax"], b["ymin"], b["ymax"],
+                      b["zmin"], b["zmax"])
+            try:
+                w = self._plotter.add_box_widget(
+                    callback=self._make_box_widget_cb(i),
+                    bounds=bounds, color="orange", opacity=0.15,
+                    rotation_enabled=False, use_planes=True,
+                    interaction_event="end",
+                )
+                widgets.append(w)
+            except Exception as exc:
+                logger.warning("BoxWidget %d failed: %s", i, exc)
+        self._ref_box_widgets = widgets
+        if widgets and self._plotter:
+            self._plotter.render()
+
+    def _make_box_widget_cb(self, i: int):
+        def cb(bounds):
+            if i >= len(self._ref_box_data):
+                return
+            b = self._ref_box_data[i]
+            (b["xmin"], b["xmax"], b["ymin"], b["ymax"],
+             b["zmin"], b["zmax"]) = [float(v) for v in bounds]
+            self._sync_box_actor(i)
+            self.refinement_boxes_changed.emit(
+                [dict(x) for x in self._ref_box_data]
+            )
+        return cb
+
+    def _sync_box_actor(self, i: int) -> None:
+        """Move the translucent box actor to match the widget bounds."""
+        if self._plotter is None or i >= len(self._ref_box_actors):
+            return
+        b = self._ref_box_data[i]
+        mesh = pv.Box(bounds=(b["xmin"], b["xmax"], b["ymin"], b["ymax"],
+                              b["zmin"], b["zmax"]))
+        try:
+            self._ref_box_actors[i].mapper.SetInputData(mesh)
+            self._ref_box_actors[i].Render()
+        except Exception:
+            pass
+        if self._plotter:
+            self._plotter.render()
+
+    def stop_refinement_box_drag(self):
+        self.__init_ref_box_state()
+        for w in self._ref_box_widgets:
+            try:
+                self._plotter.remove_box_widget(w)
+            except Exception:
+                try:
+                    w.off()
+                except Exception:
+                    pass
+        self._ref_box_widgets = []
+
 
     @property
     def plotter(self):
