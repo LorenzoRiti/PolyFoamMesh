@@ -446,8 +446,12 @@ class PolyAggregator:
             neighbour = _read_owner_neighbour(poly_dir / "neighbour")
             boundary_patches = _read_boundary_patches(poly_dir / "boundary")
 
-            # Count cells from owner array
-            n_cells = int(owner.max()) + 1
+            # Count cells from owner array.  Some cells may only ever appear
+            # as a NEIGHBOUR (never an owner) when the mesh writer assigns
+            # non-contiguous cell indices, so the true cell count is the max
+            # over BOTH arrays — using owner.max()+1 alone under-sizes the
+            # adjacency and crashes with an IndexError on such meshes.
+            n_cells = int(max(owner.max(), neighbour.max())) + 1
             result.cells_before = n_cells
             if n_cells == 0:
                 raise RuntimeError("No cells found in tet mesh")

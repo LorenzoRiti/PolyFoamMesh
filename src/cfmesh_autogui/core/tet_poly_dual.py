@@ -255,6 +255,7 @@ class TetPolyDualConverter:
 
             t = time.monotonic()
             sf, cf = _face_geometry(M.points, M.faces)
+            M.sf, M.cf = sf, cf  # reused by _validate (saves a recompute)
             ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
             bad, counts = _detect_defects(
                 M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int, M.n_cells,
@@ -762,7 +763,12 @@ class TetPolyDualConverter:
             if len(f) < 3 or len(set(f)) != len(f):
                 raise RuntimeError(f"Degenerate output face: {f}")
 
-        sf, cf = _face_geometry(points, faces)
+        # Reuse the face geometry already computed for the quality check when
+        # available (the run loop computes it once per round) — recomputing it
+        # here costs ~2.5s on the valve for identical values.
+        sf, cf = getattr(M, "sf", None), getattr(M, "cf", None)
+        if sf is None or cf is None:
+            sf, cf = _face_geometry(points, faces)
 
         closure = np.zeros((n_cells, 3), dtype=np.float64)
         np.add.at(closure, owner, sf)
@@ -912,8 +918,11 @@ def _emit_edge_face(poly, ca, cb, xyz, pts_in, va, vb, faces, own, nb):
     """Append one dual face, wound so its normal points owner -> neighbour."""
     if len(poly) < 3:
         raise RuntimeError(f"Degenerate dual face at edge ({va},{vb}).")
-    nrm = _newell(xyz, poly)
-    if float(nrm @ (pts_in[vb] - pts_in[va])) < 0.0:
+    # Orientation sign only: Newell normal dotted with (vb - va).  Computed
+    # inline (no normal array allocation) — this runs once per primal edge
+    # (~1M times on the valve), so it is the single hottest path in the
+    # converter and a pure-Python loop beats numpy for these small polygons.
+    if _newell_dot(xyz, poly, pts_in[vb] - pts_in[va]) < 0.0:
         poly.reverse()
     if ca > cb:
         ca, cb = cb, ca
@@ -1096,13 +1105,39 @@ def _split_vertex_star(
 # ---------------------------------------------------------------------------
 
 def _newell(points: np.ndarray, verts: list[int]) -> np.ndarray:
-    p = points[verts]
-    q = np.roll(p, -1, axis=0)
-    n = np.empty(3, dtype=np.float64)
-    n[0] = float(((p[:, 1] - q[:, 1]) * (p[:, 2] + q[:, 2])).sum())
-    n[1] = float(((p[:, 2] - q[:, 2]) * (p[:, 0] + q[:, 0])).sum())
-    n[2] = float(((p[:, 0] - q[:, 0]) * (p[:, 1] + q[:, 1])).sum())
-    return 0.5 * n
+    """Newell area-vector of a polygon (pure Python — faster than numpy for
+    the small polygons this converter builds, and this is the hottest path)."""
+    n0 = n1 = n2 = 0.0
+    p = points
+    k = len(verts)
+    for i in range(k):
+        j = i + 1
+        if j == k:
+            j = 0
+        vi = p[verts[i]]
+        vj = p[verts[j]]
+        n0 += (vi[1] - vj[1]) * (vi[2] + vj[2])
+        n1 += (vi[2] - vj[2]) * (vi[0] + vj[0])
+        n2 += (vi[0] - vj[0]) * (vi[1] + vj[1])
+    return 0.5 * np.array([n0, n1, n2])
+
+
+def _newell_dot(points: np.ndarray, verts: list[int], d: np.ndarray) -> float:
+    """Newell area-vector of a polygon dotted with `d`, without allocating
+    the normal array.  Used for face-orientation decisions (sign only)."""
+    n0 = n1 = n2 = 0.0
+    p = points
+    k = len(verts)
+    for i in range(k):
+        j = i + 1
+        if j == k:
+            j = 0
+        vi = p[verts[i]]
+        vj = p[verts[j]]
+        n0 += (vi[1] - vj[1]) * (vi[2] + vj[2])
+        n1 += (vi[2] - vj[2]) * (vi[0] + vj[0])
+        n2 += (vi[0] - vj[0]) * (vi[1] + vj[1])
+    return 0.5 * (n0 * d[0] + n1 * d[1] + n2 * d[2])
 
 
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):
