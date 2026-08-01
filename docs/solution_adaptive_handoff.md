@@ -462,3 +462,89 @@ cd <scratchpad> && "<py311>" test_indicator.py
 # the GMSH structured-field probe
 cd <scratchpad> && "<py311>" probe_structured.py
 ```
+
+---
+
+## 7. Night session results (2026-08-01, after commit 1513a39)
+
+Night-session additions are committed (5945c6c, 4af9b7b, e879768, e3e79f7)
+on top of the earlier SAMR commits (33e586f, b76c979, f052946, 0de7cac). The only
+uncommitted pieces are the GUI button in `gui/main_window.py` (mixed with the
+concurrent poly-converter workstream — left unstaged for that agent to
+reconcile) and the concurrent agent's own poly-dual files.
+
+### 7.1 Real valve `Parte4.stp` — the auto-resolution fix CONFIRMED (Part 3.4)
+
+`tools/valve_resolution_check.py --detail medium|fine` on the 3.0 x 0.255 x
+0.255 m part, adaptive path (`max_cell_size=0`):
+
+| detail | cells | wall time | checkMesh |
+|---|---|---|---|
+| medium | 6,122,424 | 268 s | passed | maxNonOrtho 89.7, skew 1.058, neg 0 |
+| fine   | 10,460,040 | 635 s | passed | maxNonOrtho 89.7, skew 1.094, neg 0 |
+
+This directly answers Lorenzo's long-standing complaint: the old auto mode
+gave 750k–2.2M (bulk ~1,800 cells on this part). The `cells_across` /
+cross-section sizing fix is real and measured: medium alone now lands at
+6.1M — above his 9M commercial target was never reached at the default
+detail; "fine" gives 10.5M. Both pass checkMesh. Caveat: maxNonOrtho ~89.7
+(> the 70° target) comes from the near-wall/surface refinement on this
+89-surface part, and `poly_dual_risk=True` (89 surfaces, 50 gaps) — the SAMR
+loop should stay on the tet mesh here.
+
+### 7.2 Short-solve hypothesis MEASURED (Part 4.3)
+
+`tools/short_solve_correlation.py`, same 76,659-cell venturi mesh solved to
+200 / 400 / 3000 iterations:
+
+| budget | Pearson r vs 3000 | rel-L2 vs 3000 |
+|---|---|---|
+| 200 | 0.800 | 0.398 |
+| 400 | 0.938 | 0.233 |
+
+The 3000-iteration reference did NOT itself converge (SIMPLE residuals
+oscillate ~1e-2, `SIMPLE solution converged` never fired), so these numbers
+understate the correlation with a genuinely converged field. Verdict:
+**solver_iterations=400 is defensible for WHERE to refine** (r=0.94 captures
+the spatial structure), but the indicator MAGNITUDE is not quantitatively
+converged — keep the final-cycle long-solve / residualControlled run for any
+number you report as a result. r at 200 (0.80) is too low; do not lower the
+intermediate budget.
+
+### 7.3 Budget fix confirmed (Part 4.4)
+
+Multi-cycle run (`--max-cells 2500000 --cycles 3`, mesh-size 10): cycle 2's
+prediction (after the calibration split fix and in-run recalibration 5.10 ->
+7.09 -> 3.71) landed at 1,677,559 cells — under the 2.5M budget. The old
+broken model produced 10.3M. The QoI criterion (pressure-drop change < 2%)
+has still not been observed firing; cycle-2 QoI moved +11% (32.669 ->
+36.271) because resolving the throat raises peak velocity (12.66 -> 14.4 m/s)
+and hence the loss — physically right, just not converged yet at 3 cycles.
+Pressure drops in the report are proxy values from the internal-field VTU
+(first/last 5% of the flow-axis cells), not true area-weighted patch values.
+
+### 7.4 GUI button (Part 4.2) — in the working tree, NOT committed
+
+Ribbon button **"Solve Adaptive"** (`_on_solution_adaptive` in
+`main_window.py`) + `core/gmsh_subprocess.py` (committed). Flow: requires a
+meshed runnable case -> three QInputDialogs (inlet |U|, cycles, cell budget)
+-> `SolutionAdaptiveWorker` with a remesh_fn using `gmsh_subprocess.
+remesh_from_cad` on the ORIGINAL CAD. It reuses the exact out-of-process
+GMSH path. Keep changes to `main_window.py` strictly additive (concurrent
+agent owns it too).
+
+### 7.5 Valve SAMR loop (Part 4.1) — honest runtime verdict
+
+Measured solver scaling: 76,659 cells -> 300 iters in 41 s
+(~1.78e-6 s/cell/iter). Extrapolating: a 6M-cell solve at 300 iters is
+~54 min per intermediate cycle; a multi-cycle valve loop is impractical at
+default detail. **Recommended cut: mesh the valve coarse (or "medium"
+non-adaptive) for the FIRST indicator solve, let the loop refine from
+there, cap cycles at 2.** The engine supports this naturally — the initial
+mesh is just the first case; the loop refines it.
+
+### 7.6 Tests (Part 4.5)
+
+26 tests in the SAMR set, all green, no OpenFOAM needed:
+`test_solution_adaptive` (13) + `test_infer_patch_roles` (4) +
+`test_case_setup_runnable` (4) + `test_gmsh_cells_across` (5).
