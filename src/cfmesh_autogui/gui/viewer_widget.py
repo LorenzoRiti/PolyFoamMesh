@@ -1489,8 +1489,9 @@ class ViewerWidget(QWidget):
             z0, z1 = b["zmin"], b["zmax"]
             mesh = pv.Box(bounds=(x0, x1, y0, y1, z0, z1))
             actor = self._plotter.add_mesh(
-                mesh, color="orange", opacity=0.18, style="surface",
-                pickable=False, show_edges=True, edge_color="darkorange",
+                mesh, color="orange", opacity=0.35, style="surface",
+                pickable=False, show_edges=True, edge_color="red",
+                line_width=2,
             )
             self._ref_box_actors.append(actor)
         if boxes and self._plotter:
@@ -1509,29 +1510,61 @@ class ViewerWidget(QWidget):
             try:
                 w = self._plotter.add_box_widget(
                     callback=self._make_box_widget_cb(i),
-                    bounds=bounds, color="orange", opacity=0.15,
+                    bounds=bounds, color="lime",
                     rotation_enabled=False, use_planes=True,
                     interaction_event="end",
                 )
                 widgets.append(w)
             except Exception as exc:
-                logger.warning("BoxWidget %d failed: %s", i, exc)
+                logger.exception("BoxWidget %d failed: %s", i, exc)
         self._ref_box_widgets = widgets
         if widgets and self._plotter:
             self._plotter.render()
 
     def _make_box_widget_cb(self, i: int):
-        def cb(bounds):
+        def cb(arg):
+            try:
+                # pyvista's add_box_widget hands the callback the widget's
+                # vtkPlanes on interaction, not a bounds tuple — translate.
+                if hasattr(arg, "GetNormals"):
+                    bounds = self._bounds_from_vtk_planes(arg)
+                else:
+                    bounds = [float(v) for v in arg][:6]
+                if len(bounds) != 6:
+                    return
+            except Exception:
+                return
             if i >= len(self._ref_box_data):
                 return
             b = self._ref_box_data[i]
             (b["xmin"], b["xmax"], b["ymin"], b["ymax"],
-             b["zmin"], b["zmax"]) = [float(v) for v in bounds]
+             b["zmin"], b["zmax"]) = bounds
             self._sync_box_actor(i)
             self.refinement_boxes_changed.emit(
                 [dict(x) for x in self._ref_box_data]
             )
         return cb
+
+    @staticmethod
+    def _bounds_from_vtk_planes(planes) -> list:
+        """Axis-aligned bounds (xmin,xmax,ymin,ymax,zmin,zmax) from the 6 box
+        planes: for a unit normal n, a plane's origin o has n.dot(o) = d, and
+        d = +/- that axis bound depending on the normal's sign."""
+        import numpy as _np
+        pts = _np.asarray(planes.GetPoints().GetData(), dtype=float).reshape(-1, 3)
+        nrm = _np.asarray(planes.GetNormals().GetData(), dtype=float).reshape(-1, 3)
+        bounds = [None] * 6
+        for k in range(3):
+            for o, n in zip(pts, nrm):
+                d = float(o @ n)
+                if n[k] > 0.5:
+                    bounds[2 * k + 1] = d
+                elif n[k] < -0.5:
+                    bounds[2 * k] = -d
+        for idx, v in enumerate(bounds):
+            if v is None:
+                return (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+        return [float(v) for v in bounds]
 
     def _sync_box_actor(self, i: int) -> None:
         """Move the translucent box actor to match the widget bounds."""
