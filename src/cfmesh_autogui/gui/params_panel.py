@@ -83,6 +83,7 @@ class ParamsPanel(QWidget):
     suggestion_completed = Signal(str)
     pick_refinement_requested = Signal()
     add_box_requested = Signal()
+    add_box_coords_requested = Signal()
     refinements_changed = Signal(object)
 
     def __init__(self, parent=None):
@@ -437,15 +438,23 @@ class ParamsPanel(QWidget):
         self._remove_refine_btn.setMaximumWidth(32)
         self._remove_refine_btn.setToolTip("Remove selected refinement zone")
         self._remove_refine_btn.clicked.connect(self._on_remove_refinement)
-        self._add_box_btn = QPushButton("▣ Box")
-        self._add_box_btn.setMaximumWidth(72)
+        self._add_box_btn = QPushButton("▣ Box 3D")
+        self._add_box_btn.setMaximumWidth(90)
         self._add_box_btn.setToolTip(
-            "Add a 3D refinement box: appears in the viewer with arrows on its "
-            "faces — drag the arrows to size it. You only choose the level "
-            "(1 = base size, 2 = half, 3 = quarter cells, ...)."
+            "Add a 3D refinement box edited in the viewer with the box gizmo: "
+            "drag the handles on its faces to size it. You only choose the "
+            "level (1 = base, 2 = half cells, ...)."
         )
         self._add_box_btn.clicked.connect(self.add_box_requested.emit)
+        self._add_box_coords_btn = QPushButton("▣ Box coord")
+        self._add_box_coords_btn.setMaximumWidth(110)
+        self._add_box_coords_btn.setToolTip(
+            "Add a refinement box by typing its X/Y/Z min-max coordinates "
+            "directly (no 3D interaction needed)."
+        )
+        self._add_box_coords_btn.clicked.connect(self.add_box_coords_requested.emit)
         refine_btn_row.addWidget(self._add_box_btn)
+        refine_btn_row.addWidget(self._add_box_coords_btn)
         refine_btn_row.addWidget(self._add_refine_btn)
         refine_btn_row.addWidget(self._remove_refine_btn)
         refine_btn_row.addStretch()
