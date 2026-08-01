@@ -396,6 +396,22 @@ class MainWindow(QMainWindow):
             "OODA closed-loop adaptive meshing: auto-detects quality issues, "
             "applies local corrections, iterates until convergence."
         )
+        # Solution-adaptive refinement (SAMR): solve -> refine where the FLOW
+        # demands it -> remesh from CAD -> repeat. Distinct from the OODA
+        # engine above, which remediates mesh QUALITY; this one needs a first
+        # mesh to exist and refines from the actual velocity field.
+        self._ribbon_btns["samr"] = _make_ribbon_btn(
+            "Solve Adaptive", "adaptive", self._on_solution_adaptive,
+            checkable=False,
+        )
+        samr_btn = self._ribbon_btns["samr"]
+        samr_btn.setCheckable(False)
+        samr_btn.setAutoExclusive(False)
+        samr_btn.setToolTip(
+            "Solution-adaptive refinement: runs a CFD solve, finds where the "
+            "flow is under-resolved (velocity-gradient based), and re-meshes "
+            "finer there automatically — no manual refinement zones needed."
+        )
         # The Mesh tab's "Generate Mesh" button already turns into "Cancel"
         # while a run is active, but that button lives on one specific tab
         # — if meshing was started from the ribbon's Quick Mesh while
@@ -2882,6 +2898,16 @@ class MainWindow(QMainWindow):
         ):
             self._cleanup_thread(thread_attr, worker_attr)
 
+        # Solution-adaptive refinement worker: honours cancel via its own
+        # slot (the engine checks it between stages) — the solve itself is a
+        # long block, but cancel at least stops further remesh/solve cycles.
+        samr_worker = getattr(self, "_samr_worker", None)
+        if samr_worker is not None:
+            cancel = getattr(samr_worker, "cancel", None)
+            if callable(cancel):
+                cancel()
+        self._cleanup_thread("_samr_thread", "_samr_worker")
+
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
@@ -4049,6 +4075,200 @@ class MainWindow(QMainWindow):
         self._adaptive_thread.started.connect(self._adaptive_worker.run)
         self._adaptive_thread.finished.connect(self._adaptive_thread.deleteLater)
         self._adaptive_thread.start()
+
+    # ------------------------------------------------------------------
+    # Solution-adaptive refinement (SAMR)
+    # ------------------------------------------------------------------
+    def _on_solution_adaptive(self):
+        """One-click solution-adaptive mesh refinement.
+
+        Runs the solve -> indicator -> remesh loop from
+        ``core.solution_adaptive`` via ``SolutionAdaptiveWorker``. The remesh
+        half reuses the exact same out-of-process GMSH path the app already
+        uses (``core.gmsh_subprocess``), so adaptive results never diverge from
+        normal meshes. No manual refinement zones required — the refinement
+        map comes from the flow itself.
+        """
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+        if not self._meshes:
+            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
+            return
+        step_path = getattr(self, "_loaded_step_path", None)
+        if not step_path or not Path(step_path).exists():
+            QMessageBox.warning(
+                self, "No CAD", "No source CAD path saved — re-load the geometry."
+            )
+            return
+        if not self._case_dir or not (
+            self._case_dir / "constant" / "polyMesh" / "points"
+        ).exists():
+            QMessageBox.warning(
+                self, "No Mesh",
+                "Build a mesh first (Generate Mesh / Quick Mesh), then run "
+                "Solve Adaptive on it.",
+            )
+            return
+        if getattr(self, "_samr_thread", None) and self._samr_thread.isRunning():
+            QMessageBox.information(
+                self, "Already Running",
+                "Solution-adaptive refinement is already running.",
+            )
+            return
+
+        vel, ok1 = QInputDialog.getDouble(
+            self, "Inlet velocity", "Inlet velocity magnitude [m/s]:",
+            self._samr_default_inlet_velocity(), 0.001, 1000.0, 4,
+        )
+        if not ok1:
+            return
+        cycles, ok2 = QInputDialog.getInt(
+            self, "Refinement cycles", "Number of solve-remesh cycles:",
+            3, 1, 6, 1,
+        )
+        if not ok2:
+            return
+        budget, ok3 = QInputDialog.getInt(
+            self, "Cell budget", "Max total cells (loop stops if exceeded):",
+            3_000_000, 100_000, 30_000_000, 100_000,
+        )
+        if not ok3:
+            return
+
+        from cfmesh_autogui.core.case_setup import (
+            mesh_bounds, suggest_flow_direction,
+        )
+        from cfmesh_autogui.core.gmsh_subprocess import assemble_runnable_case
+        from cfmesh_autogui.core.openfoam_runner import SolutionAdaptiveWorker
+        from cfmesh_autogui.core.solution_adaptive import AdaptiveParams
+
+        fd = suggest_flow_direction(self._case_dir)
+        inlet = (vel * fd[0], vel * fd[1], vel * fd[2])
+        self._log.append_log(
+            f"[adaptive] Solution-adaptive refinement: inlet U={inlet}, "
+            f"cycles={cycles}, budget={budget:,} cells"
+        )
+
+        # Make the existing mesh a runnable case (inlet velocity, wall
+        # functions, roles) so the first cycle can actually solve it.
+        try:
+            assemble_runnable_case(
+                self._case_dir, inlet_velocity=inlet, end_time=400,
+                on_line=self._log.append_log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not make the initial case runnable")
+            QMessageBox.critical(
+                self, "SAMR Error", f"Could not set up the solve case:\n{exc}"
+            )
+            return
+
+        bounds = mesh_bounds(self._case_dir)
+        root = self._resolve_case_root()
+        amr_root = root / f"{Path(self._case_dir).name}_samr"
+        amr_root.mkdir(parents=True, exist_ok=True)
+        self._samr_amr_root = amr_root
+        detail = self._params.get_detail_level()
+
+        def _remesh(size_field: Path, cycle: int):
+            from cfmesh_autogui.core.gmsh_subprocess import remesh_from_cad
+            case_dir = amr_root / f"cycle_{cycle}"
+            case_dir.mkdir(parents=True, exist_ok=True)
+            return remesh_from_cad(
+                step_path, case_dir, detail, size_field, inlet, end_time=400,
+                on_line=self._log.append_log,
+            )
+
+        params = AdaptiveParams(
+            inlet_velocity=inlet, max_cycles=cycles, max_cells=budget,
+            solver_iterations=300, final_solver_iterations=600,
+        )
+
+        self._run_id += 1
+        my_id = self._run_id
+        self._params.set_meshing_state(True)
+        self._params.set_all_enabled(False)
+        self._ribbon_btns["cancel"].setVisible(True)
+        self._progress.setRange(0, 0)
+        self._progress.setVisible(True)
+        self._status.showMessage("Solution-adaptive refinement...")
+
+        self._cleanup_thread("_samr_thread", "_samr_worker")
+        t = QThread()
+        w = SolutionAdaptiveWorker(
+            case_dir=self._case_dir, bounds=bounds, remesh_fn=_remesh,
+            params=params, of_config=self._of_config,
+        )
+        w.moveToThread(t)
+        self._samr_thread = t
+        self._samr_worker = w
+        self._samr_my_id = my_id
+
+        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w.cycle_done.connect(self._on_samr_cycle_done, Qt.QueuedConnection)
+        w.finished.connect(self._on_samr_finished, Qt.QueuedConnection)
+        w.failed.connect(self._on_samr_failed, Qt.QueuedConnection)
+        w.finished.connect(t.quit, Qt.QueuedConnection)
+        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
+        t.started.connect(w.run)
+        t.finished.connect(self._on_samr_thread_done, Qt.QueuedConnection)
+        t.finished.connect(t.deleteLater)
+        t.start()
+
+    @staticmethod
+    def _samr_default_inlet_velocity() -> float:
+        return 1.0
+
+    def _on_samr_cycle_done(self, cycle: int, n_cells: int):
+        self._log.append_log(
+            f"[adaptive] cycle {cycle} remesh produced {n_cells:,} cells"
+        )
+        self._status.showMessage(f"Solution-adaptive: cycle {cycle} done "
+                                 f"({n_cells:,} cells)")
+
+    @Slot(object)
+    def _on_samr_finished(self, result):
+        self._log.append_log(f"{Tag.DONE} Solution-adaptive refinement complete.")
+        try:
+            summary = result.summary()
+            self._log.append_log(f"[adaptive] {summary}")
+        except Exception:  # noqa: BLE001
+            pass
+        # Show the final cycle's mesh in the viewer. The last remesh lives in
+        # the highest-numbered cycle dir under the SAMR root.
+        try:
+            amr_root = getattr(self, "_samr_amr_root", None)
+            case_dir = None
+            if amr_root:
+                cyc = sorted(
+                    (d for d in amr_root.glob("cycle_*") if d.name[6:].isdigit()),
+                    key=lambda d: int(d.name[6:]),
+                )
+                if cyc:
+                    case_dir = cyc[-1]
+            case_dir = case_dir or self._case_dir
+            from cfmesh_autogui.core.boundary_reader import count_cells
+            if case_dir and (case_dir / "constant" / "polyMesh" / "points").exists():
+                n = count_cells(case_dir)
+                self._log.append_log(
+                    f"[adaptive] final mesh: {case_dir} ({n:,} cells)"
+                )
+                try:
+                    self._viewer.show_mesh(case_dir)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Viewer failed to show SAMR mesh")
+        except Exception:  # noqa: BLE001
+            logger.exception("SAMR finish handling failed")
+
+    def _on_samr_failed(self, msg: str):
+        self._log.append_log(f"{Tag.ERROR} Solution-adaptive refinement failed: {msg}")
+
+    def _on_samr_thread_done(self):
+        self._params.set_meshing_state(False)
+        self._params.set_all_enabled(True)
+        self._progress.setVisible(False)
+        self._ribbon_btns["cancel"].setVisible(False)
+        self._status.showMessage("Done")
 
     def _on_auto_fix_quality(self, _action: str):
         if not self._case_dir:
