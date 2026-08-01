@@ -676,6 +676,12 @@ def set_end_time(case_dir: Path | str, iterations: int) -> int:
 
     The iteration budget is part of the case, not the solver invocation, so a
     cycle that wants a longer run must edit the case before solving.
+
+    Also clamps ``writeInterval`` down to the new endTime: with
+    ``writeControl timeStep``, a writeInterval larger than endTime means the
+    solver writes NO time directory (seen live: 300 iterations ran 38 s and
+    wrote nothing — silently losing the solution the whole indicator step
+    depends on).
     """
     path = Path(case_dir) / "system" / "controlDict"
     text = path.read_text(encoding="ascii", errors="replace")
@@ -684,6 +690,13 @@ def set_end_time(case_dir: Path | str, iterations: int) -> int:
         f"endTime         {int(iterations)};",
         text, count=1, flags=re.MULTILINE,
     )
+    m_wi = re.search(r"^writeInterval\s+(\d+);", text, flags=re.MULTILINE)
+    if m_wi and int(m_wi.group(1)) > int(iterations):
+        text = re.sub(
+            r"^writeInterval\s+\d+;",
+            f"writeInterval   {int(iterations)};",
+            text, count=1, flags=re.MULTILINE,
+        )
     path.write_text(text, encoding="ascii")
     return int(iterations)
 
