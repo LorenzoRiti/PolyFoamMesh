@@ -37,16 +37,24 @@ _GMSH_DETAIL = {
     # GUI slider ("Molto Grossolana".."Molto Fine") — without these, the two
     # extreme slider positions fell back silently to "medium" (the dict
     # lookup default), making them look broken/no-op in the UI.
+    # cells_across: how many cells to put across the domain's CROSS-SECTION
+    # (the bounding box's median dimension). This is the physically meaningful
+    # resolution knob for CFD and the one that decides whether a mesh is usable
+    # at all — see the "cross-section resolution" block in
+    # _configure_adaptive_sizing for why max_mult alone was not enough.
+    # Rules of thumb: <10 across a passage cannot resolve a developing profile;
+    # ~20 is a usable RANS bulk; 30-50 is what a hand-built production mesh
+    # uses. Boundary layers and curvature refinement are layered on top of this.
     "very_coarse": {"curv_angle": 45, "min_mult": 0.08,  "max_mult": 2.5,  "vol_mult": 0.03,
-                     "min_size": 0.002, "max_size": 0.06},
+                     "min_size": 0.002, "max_size": 0.06, "cells_across": 8},
     "coarse": {"curv_angle": 30, "min_mult": 0.05,  "max_mult": 2.0,  "vol_mult": 0.02,
-               "min_size": 0.001, "max_size": 0.04},
+               "min_size": 0.001, "max_size": 0.04, "cells_across": 13},
     "medium": {"curv_angle": 18, "min_mult": 0.02,  "max_mult": 1.5,  "vol_mult": 0.015,
-               "min_size": 0.0004, "max_size": 0.03},
+               "min_size": 0.0004, "max_size": 0.03, "cells_across": 20},
     "fine":   {"curv_angle": 10, "min_mult": 0.01,  "max_mult": 1.0,  "vol_mult": 0.01,
-               "min_size": 0.0002, "max_size": 0.02},
+               "min_size": 0.0002, "max_size": 0.02, "cells_across": 32},
     "very_fine": {"curv_angle": 6, "min_mult": 0.005, "max_mult": 0.75, "vol_mult": 0.007,
-                  "min_size": 0.0001, "max_size": 0.015},
+                  "min_size": 0.0001, "max_size": 0.015, "cells_across": 48},
 }
 
 
@@ -87,6 +95,44 @@ def _available_ram_bytes() -> int:
     return 4 * 1024**3  # unknown platform/failure: assume 4 GB free, conservative
 
 
+def _total_ram_bytes() -> int:
+    """Total physical RAM, best-effort.
+
+    Used as a floor under the cell budget so a machine that merely happens to
+    be busy right now (browser open, previous mesh still in the viewer) doesn't
+    silently produce a much coarser mesh than the same machine would when idle.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _MEMSTAT(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = _MEMSTAT()
+            stat.dwLength = ctypes.sizeof(_MEMSTAT)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            if stat.ullTotalPhys:
+                return int(stat.ullTotalPhys)
+        except Exception:
+            pass
+    try:
+        return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+    except Exception:
+        pass
+    return 8 * 1024**3
+
+
 def _hardware_budget(max_cells_override: int | None = None) -> dict:
     """CPU/RAM snapshot used to keep automatic mesh refinement bounded
     on the machine actually running it, instead of a single global
@@ -99,11 +145,24 @@ def _hardware_budget(max_cells_override: int | None = None) -> dict:
     if is_explicit_target:
         max_cells = max_cells_override
     else:
-        # ~2.5 KB/cell covers GMSH's own tet storage plus the downstream
-        # copies that exist at once (meshio conversion, the OpenFOAM
-        # case, checkMesh, the viewer). Use at most 40% of currently-free
-        # RAM so WSL, the GUI itself, and everything else still has room.
-        max_cells = max(80_000, int((ram_bytes * 0.4) / 2500))
+        # Bytes per cell. The old 2.5 KB/cell was far too pessimistic and was
+        # the second reason automatic meshes came out too coarse for CFD (the
+        # first being the cross-section sizing — see _configure_adaptive_sizing).
+        # A tet mesh costs roughly: nodes ~ N/5.5 at 24 B, plus 4 int32 per tet
+        # = ~20 B/cell in GMSH's own storage. Even allowing generously for
+        # meshio's arrays and the OpenFOAM polyMesh written afterwards, 1 KB per
+        # cell is already several times the real peak — and those stages run
+        # SEQUENTIALLY, not all at once, which the old "copies that exist at
+        # once" reasoning assumed. At 2.5 KB/cell a 32 GB machine with 16 GB
+        # free was capped at 2.5M cells, when the same part needs ~9M to be a
+        # usable CFD mesh.
+        #
+        # Also floor the estimate against TOTAL RAM, not just what happens to
+        # be free right now: with a browser open, "available" can halve, and
+        # the mesh budget should not silently depend on that.
+        by_available = (ram_bytes * 0.5) / 1000
+        by_total = (_total_ram_bytes() * 0.25) / 1000
+        max_cells = max(200_000, int(max(by_available, by_total)))
     return {
         "cpu_count": cpu_count, "ram_available_bytes": ram_bytes,
         "max_cells": max_cells, "is_explicit_target": is_explicit_target,
@@ -505,6 +564,34 @@ def _configure_adaptive_sizing(
     lc_user = max_extent * 0.02
     coarse_max_detail = lc_user * df["max_mult"]
 
+    # --- cross-section resolution -------------------------------------------
+    # coarse_max_detail above is a fixed fraction of the LARGEST bounding-box
+    # dimension. On an elongated part that is the length, which has nothing to
+    # do with the passage the flow actually goes through, and the bulk mesh
+    # comes out unusable for CFD: the 3.0 x 0.255 x 0.255 m valve at "medium"
+    # got 3.0 * 0.02 * 1.5 = 9 cm cells against a 25.5 cm passage — fewer than
+    # 3 cells across the bore. That is the long-standing "automatic mode gives
+    # too few cells" problem; a commercial tool needed ~9M cells with MANUAL
+    # refinement on the same part, and auto mode here was landing at 750k-2.2M
+    # almost entirely from curvature/small-feature refinement, with a bulk that
+    # resolved nothing.
+    #
+    # Size the bulk off the CROSS-SECTION (bounding box median dimension)
+    # instead, asking for cells_across cells through it. Take whichever of the
+    # two is finer, so this can only ever improve resolution, never coarsen a
+    # geometry the old rule already handled well (on a roughly cubic domain the
+    # two agree closely and nothing changes).
+    cells_across = df.get("cells_across", 20)
+    coarse_max_cross = cross_scale / max(cells_across, 1)
+    if coarse_max_cross < coarse_max_detail:
+        logger.info(
+            "Cross-section sizing binds: %.5g (=%.4g/%d across) is finer than "
+            "the extent-based %.5g — bulk mesh sized for the passage, not the "
+            "overall length.",
+            coarse_max_cross, cross_scale, cells_across, coarse_max_detail,
+        )
+    coarse_max_detail = min(coarse_max_detail, coarse_max_cross)
+
     # Hardware floor: keeps the finest allowed size bounded by the cell
     # budget, so a machine with little free RAM backs off automatically
     # rather than grinding for minutes/hours or exhausting memory — the
@@ -629,12 +716,14 @@ def _configure_adaptive_sizing(
         gmsh_mod.model.mesh.field.setNumber(f_ball, "ZCenter", cz)
         active_fields.append(f_ball)
 
+    bg_field: int | None = None
     if len(active_fields) == 1:
-        gmsh_mod.model.mesh.field.setAsBackgroundMesh(active_fields[0])
+        bg_field = active_fields[0]
+        gmsh_mod.model.mesh.field.setAsBackgroundMesh(bg_field)
     elif len(active_fields) > 1:
-        f_min = gmsh_mod.model.mesh.field.add("Min")
-        gmsh_mod.model.mesh.field.setNumbers(f_min, "FieldsList", active_fields)
-        gmsh_mod.model.mesh.field.setAsBackgroundMesh(f_min)
+        bg_field = gmsh_mod.model.mesh.field.add("Min")
+        gmsh_mod.model.mesh.field.setNumbers(bg_field, "FieldsList", active_fields)
+        gmsh_mod.model.mesh.field.setAsBackgroundMesh(bg_field)
 
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", min_size)
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", coarse_max)
@@ -705,6 +794,13 @@ def _configure_adaptive_sizing(
     )
     return {
         "min_size": min_size, "coarse_max": coarse_max,
+        # Tag of the background size field this function installed (None if
+        # it installed none). Returned so a caller layering an additional
+        # size field on top — the solution-adaptive one, see
+        # apply_solution_size_field — can MIN-combine with it instead of
+        # calling setAsBackgroundMesh() again and silently discarding all
+        # the geometry-based sizing computed here.
+        "bg_field": bg_field,
         "n_small_curves": n_small, "n_gaps": len(gaps),
         "n_surfaces": n_surfaces, "poly_dual_risk": poly_dual_risk,
         "curvature_field_samples": curvature_field_info.get("n_samples", 0),
@@ -1177,6 +1273,97 @@ motionControl
     }
 
 
+def apply_solution_size_field(
+    gmsh_mod,
+    size_field_file: Path | str,
+    existing_bg_field: int | None = None,
+) -> dict:
+    """Install a solution-derived target-cell-size field as background sizing.
+
+    *size_field_file* is a GMSH ``Structured`` field file (text format) written
+    by ``core.solution_adaptive.write_structured_size_field`` — a regular
+    lattice of target cell sizes sampled from a CFD solution's refinement
+    indicator. Unlike the ``refinement_zones`` ball primitives, this is a
+    genuinely spatially-continuous field: GMSH trilinearly interpolates it, so
+    a refined region can follow the actual shape of a shear layer or a
+    contraction instead of being approximated by axis-aligned spheres.
+
+    Two things this deliberately does NOT do the obvious way:
+
+    1. It MIN-combines with *existing_bg_field* rather than calling
+       setAsBackgroundMesh() on its own. Calling it directly would replace the
+       geometry-adaptive field (curvature/small-feature/gap sizing) outright —
+       which is exactly what the older ``refinement_zones`` block does, and why
+       zones silently coarsen everything the geometry sizing had refined.
+       Min-combining means the solution field can only ever ASK FOR SMALLER
+       cells than geometry already demanded, never larger, which is the correct
+       semantics for a refinement indicator.
+
+    2. It lowers ``Mesh.CharacteristicLengthMin`` to the field's own minimum.
+       Verified directly against GMSH 4.15.2: that option is a hard floor
+       applied AFTER the background field is evaluated — a probe box meshed
+       with a background field asking for 0.02 produced 27,263 nodes with the
+       floor at 0, and 443 nodes with the floor left at the field's coarse
+       value 0.15. Without this line the whole refinement request is silently
+       clamped away and the "refined" mesh comes back essentially unchanged.
+
+    Returns a dict with the field's min/max target size and the tag installed.
+    """
+    path = Path(size_field_file)
+    if not path.exists():
+        raise RuntimeError(f"Solution size field file not found: {path}")
+
+    # Parse the field's value range so the CharacteristicLengthMin floor can be
+    # dropped to match it (see point 2 above). The first three lines are
+    # origin / spacing / counts; everything after is the value lattice.
+    tokens = path.read_text(encoding="ascii").split()
+    if len(tokens) < 10:
+        raise RuntimeError(f"Solution size field file is malformed: {path}")
+    values = [float(t) for t in tokens[9:]]
+    if not values:
+        raise RuntimeError(f"Solution size field file has no values: {path}")
+    f_min, f_max = min(values), max(values)
+
+    f_struct = gmsh_mod.model.mesh.field.add("Structured")
+    gmsh_mod.model.mesh.field.setString(f_struct, "FileName", str(path))
+    gmsh_mod.model.mesh.field.setNumber(f_struct, "TextFormat", 1)
+    # Outside the sampled lattice, return something enormous so the MIN below
+    # always defers to the geometry field there rather than imposing a size.
+    gmsh_mod.model.mesh.field.setNumber(f_struct, "SetOutsideValue", 1)
+    gmsh_mod.model.mesh.field.setNumber(f_struct, "OutsideValue", 1e22)
+
+    if existing_bg_field is not None:
+        f_bg = gmsh_mod.model.mesh.field.add("Min")
+        gmsh_mod.model.mesh.field.setNumbers(
+            f_bg, "FieldsList", [f_struct, existing_bg_field]
+        )
+    else:
+        f_bg = f_struct
+    gmsh_mod.model.mesh.field.setAsBackgroundMesh(f_bg)
+
+    try:
+        current_floor = gmsh_mod.option.getNumber("Mesh.CharacteristicLengthMin")
+    except Exception:
+        current_floor = 0.0
+    new_floor = min(current_floor, f_min) if current_floor > 0 else f_min
+    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", new_floor)
+
+    logger.info(
+        "Solution size field applied: %s (target size %.6g..%.6g, %d samples), "
+        "min-combined with bg_field=%s, CharacteristicLengthMin %.6g -> %.6g",
+        path.name, f_min, f_max, len(values), existing_bg_field,
+        current_floor, new_floor,
+    )
+    return {
+        "field_tag": f_struct,
+        "bg_field": f_bg,
+        "min_size": f_min,
+        "max_size": f_max,
+        "n_samples": len(values),
+        "length_min_floor": new_floor,
+    }
+
+
 def generate_volume_mesh(
     filepath: Path | str,
     output_msh: Path | str,
@@ -1188,6 +1375,7 @@ def generate_volume_mesh(
     refinement_zones: list[dict] | None = None,
     min_cell_size: float | None = None,
     max_cells_override: int | None = None,
+    size_field_file: Path | str | None = None,
 ) -> tuple[Path, list[str]]:
     """Generate a full tetrahedral volume mesh using GMSH (direct flow).
 
@@ -1200,6 +1388,14 @@ def generate_volume_mesh(
       3. Generate 3D tetrahedral mesh with optional BL
       4. Export as MSH (.msh)
       5. Convert to OpenFOAM polyMesh via meshio
+
+    Args:
+        size_field_file: optional GMSH ``Structured`` field file holding a
+            solution-derived target cell size lattice (see
+            ``apply_solution_size_field``). Min-combined with whatever
+            geometry-based sizing this function set up, so it can only refine
+            further, never coarsen. This is the re-meshing hook for
+            solution-adaptive refinement.
 
     Returns:
         (path_to_msh, list_of_patch_names)
@@ -1265,6 +1461,12 @@ def generate_volume_mesh(
             if min_cell_size and min_cell_size > 0:
                 min_cell_size = min(min_cell_size, user_lc * 0.1)
 
+    # Tag of the background size field currently installed, threaded through
+    # the sizing branches below so a solution-adaptive size field can be
+    # min-combined with it rather than replacing it (see
+    # apply_solution_size_field).
+    bg_field_tag: int | None = None
+
     if user_lc:
         # Explicit user override: use user's cell sizes directly
         df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
@@ -1314,6 +1516,7 @@ def generate_volume_mesh(
         sizing_info = _configure_adaptive_sizing(
             gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=vol,
         )
+        bg_field_tag = sizing_info.get("bg_field")
         logger.info(
             "generate_volume_mesh adaptive sizing: %s (feature scan: min=%.5f "
             "small_curves=%d)",
@@ -1392,11 +1595,21 @@ def generate_volume_mesh(
                 logger.warning("Failed to add GMSH refinement zone %d: %s", i, exc)
         # Combine all zone fields with Min (smallest cell size wins)
         if len(zone_fields) == 1:
-            gmsh.model.mesh.field.setAsBackgroundMesh(zone_fields[0])
-        else:
-            min_field = gmsh.model.mesh.field.add("Min")
-            gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", zone_fields)
-            gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
+            bg_field_tag = zone_fields[0]
+            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field_tag)
+        elif zone_fields:
+            bg_field_tag = gmsh.model.mesh.field.add("Min")
+            gmsh.model.mesh.field.setNumbers(bg_field_tag, "FieldsList", zone_fields)
+            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field_tag)
+
+    # Solution-adaptive sizing: a target-cell-size lattice computed from a CFD
+    # solution's refinement indicator. Applied last so it layers on top of
+    # every geometry-based source above, and min-combined so it can only
+    # refine further. This is the re-mesh half of the AMR loop in
+    # core.solution_adaptive.
+    if size_field_file:
+        sf_info = apply_solution_size_field(gmsh, size_field_file, bg_field_tag)
+        bg_field_tag = sf_info["bg_field"]
 
     # Generate 3D mesh
     try:
@@ -1512,10 +1725,14 @@ if __name__ == "__main__":
                 refinement_zones = json.loads(zones_json)
             except json.JSONDecodeError:
                 refinement_zones = None
+        # Solution-adaptive size field, passed the same way (an env var rather
+        # than yet another positional argv slot in an already 10-deep list).
+        size_field_file = os.environ.get("GMSH_SOLUTION_SIZE_FIELD", "") or None
         msh_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             result_path, names = generate_volume_mesh(
                 step_path, msh_path, detail=detail,
+                size_field_file=size_field_file,
                 n_layers=n_layers, bl_thickness=bl_thickness,
                 bl_expansion=bl_expansion,
                 refinement_zones=refinement_zones,
