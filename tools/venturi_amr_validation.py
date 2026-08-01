@@ -189,6 +189,9 @@ def main() -> None:
     ap.add_argument("--detail", default="medium")
     ap.add_argument("--max-cells", type=int, default=3_000_000,
                     help="cell budget the refinement may not exceed")
+    ap.add_argument("--cores", type=int, default=None,
+                    help="solve with this many MPI cores (decomposePar/mpirun/"
+                    "reconstructPar); None = serial")
     ap.add_argument("--no-solve", action="store_true",
                     help="build geometry + mesh + case only")
     args = ap.parse_args()
@@ -272,6 +275,7 @@ def main() -> None:
     initial_case, initial_cells = make_case(0, None)
 
     print("\n=== stage 3: adaptive loop ===")
+    solve_cores = args.cores if args.cores and args.cores > 1 else 1
     params = AdaptiveParams(
         inlet_velocity=(1.0, 0.0, 0.0),
         solver_iterations=args.solve_iters,
@@ -279,7 +283,11 @@ def main() -> None:
         max_cycles=args.cycles,
         qoi_tolerance=0.02,
         max_cells=args.max_cells,
+        solve_cores=solve_cores,
     )
+    if solve_cores > 1:
+        print(f"[adaptive] parallel solve on {solve_cores} cores "
+              "(decomposePar/mpirun/reconstructPar)")
     refiner = SolutionAdaptiveRefiner(params=params, of_config=cfg,
                                       on_line=lambda m: print(m))
     result = refiner.run(

@@ -548,3 +548,54 @@ mesh is just the first case; the loop refines it.
 26 tests in the SAMR set, all green, no OpenFOAM needed:
 `test_solution_adaptive` (13) + `test_infer_patch_roles` (4) +
 `test_case_setup_runnable` (4) + `test_gmsh_cells_across` (5).
+
+### 7.7 Hardware/performance optimization (night session part 2)
+
+Goal: make the loop actually usable at scale, not just correct. Commits
+`7530c8e`, `06b9dec`, `57c65cb`.
+
+**Parallel solver — the big one.** The serial solve dominates the per-cycle
+wall time and scales superlinearly with cells. `run_solver(n_cores=N)` now
+solves in parallel on native WSL tmpfs (the app's parallel-mesh pattern —
+OpenMPI segfaults on /mnt/c): copy case to /tmp -> decomposePar -> mpirun
+`solver -parallel` -> reconstructPar -> copy the latest time dir back.
+`AdaptiveParams.solve_cores` threads it through the loop; the engine (and the
+GUI button) auto-stays-serial below 250k cells where the ~1 min
+decompose/reconstruct overhead isn't worth it.
+
+Measured, same 971k-cell mesh:
+| mode | 300 iters | vs serial |
+|---|---|---|
+| serial | ~1350s (extrapolated from 100-it runs) | 1x |
+| 8 cores | 279-314s | ~4x |
+
+Two real bugs found making it work: decomposePar does NOT copy the uniform
+constant/ dictionaries (transportProperties etc.) into `processorN/` — rank 0
+aborts — and the file is `constant/transportProperties` (no dot), so a
+`*.transportProperties` glob never matched. Both fixed.
+
+**GMSH threading: measured ~no benefit** (valve medium 268 s single-thread
+vs 274 s with 8) — the HXT/curvature workload is not OpenMP-friendly here.
+The GMSH_NUM_THREADS hook exists but the GUI deliberately leaves meshing
+single-threaded (`06b9dec`).
+
+**Three more real bugs found by running the optimized loop** (`57c65cb`):
+1. Budget relaxation stalled at a false floor: scale reaching `max_refine_ratio`
+   collapses every `h_try` to `h_orig`, the still-mask went empty, and the
+   fallback scattered current near-wall sizes — prediction pinned at 8.53M
+   across no-op relaxations (the calibration-floor bug resurfacing). Scale is
+   now clamped to `max_refine_ratio*0.97`; verified 47M -> one relaxation ->
+   1.73M <= 2M budget.
+2. `writeInterval` smaller than `endTime` (200 vs 300) made the solver write
+   only time 200, so the indicator read a stale solution. `set_end_time` now
+   forces `writeInterval = endTime`.
+3. mpirun on WSL tmpfs is occasionally flaky (the same case solved once and
+   aborted to next run) — `run_solver` retries once for the parallel path.
+
+**End-to-end after optimization** (venturi, 76k -> ~1M): 2 cycles in ~6 min,
+cycle 2 (971k cells, 300 iters, 8 cores) = 314 s vs ~1350 s serial. Combined
+with the coarse-first-mesh guidance (Part 7.5), a 6M-cell valve loop is now
+~15-20 min/cycle instead of ~55 min — much closer to usable.
+
+**GUI**: `_on_solution_adaptive` auto-selects 1-8 solve cores by cell count
+and logs the choice; `--cores` added to `tools/venturi_amr_validation.py`.
