@@ -123,6 +123,12 @@ class AdaptiveParams:
     solver_iterations: int = 400
     final_solver_iterations: int = 1500
     residual_control: float = 1e-4
+    # --- parallelism -------------------------------------------------------
+    # simpleFoam cores per solve (1 = serial). The serial solve dominates the
+    # per-cycle wall time and scales superlinearly with cells, so a multi-core
+    # solve is the difference between usable and unusable at the 6M-cell scale
+    # of the real valve part (see tools/valve_resolution_check.py).
+    solve_cores: int = 1
 
     # --- indicator / sizing ----------------------------------------------
     # Cells whose indicator exceeds this quantile of the (volume-weighted)
@@ -701,26 +707,114 @@ def set_end_time(case_dir: Path | str, iterations: int) -> int:
     return int(iterations)
 
 
+def _build_parallel_solve_cmd(
+    cfg: OFConfig,
+    case_dir: Path,
+    application: str,
+    n_cores: int,
+) -> list[str]:
+    """Build a WSL command that solves in parallel on native tmpfs.
+
+    OpenMPI on WSL2 segfaults when the case lives on /mnt/c (9P filesystem)
+    — the app's ``ParallelMeshEngine`` already works around this by copying
+    the case to a native /tmp dir, running there, and copying results back.
+    This mirrors that exact pattern for the solver: copy case -> tmpfs,
+    decomposePar, ``mpirun ... -parallel``, reconstructPar, copy the latest
+    time directory back.
+    """
+    linux_case = cfg.wsl_linux_case_path(case_dir)
+    env_q = shlex.quote(cfg.env_script)
+    app_q = shlex.quote(application)
+    n = n_cores
+    script = (
+        "#!/bin/bash\n"
+        f"export OMPI_MCA_btl=^openib,openfabric,uct\n"
+        f"source {env_q} 2>/dev/null\n"
+        f"SRC={shlex.quote(linux_case)}\n"
+        f"TMPD=$(mktemp -d /tmp/cfmesh_solve_XXXXX)\n"
+        f"cp -r \"$SRC/system\" \"$TMPD/\" 2>/dev/null\n"
+        f"cp -r \"$SRC/0\" \"$TMPD/\" 2>/dev/null\n"
+        f"mkdir -p \"$TMPD/constant\"\n"
+        f"cp -r \"$SRC/constant/polyMesh\" \"$TMPD/constant/\" 2>/dev/null\n"
+        # Exact filenames: the file is constant/transportProperties (no dot),
+        # so a glob like *.transportProperties would never match.
+        f'cp -f "$SRC/constant/transportProperties" "$SRC/constant/turbulenceProperties" '
+        f'"$TMPD/constant/" 2>/dev/null\n'
+        f"cd \"$TMPD\"\n"
+        f"cat > system/decomposeParDict << 'EOF'\n"
+        f"FoamFile {{ version 2.0; format ascii; class dictionary; object decomposeParDict; }}\n"
+        f"numberOfSubdomains {n};\n"
+        f"method scotch;\n"
+        f"scotchCoeffs {{ preservePatches (boundary); }}\n"
+        f"EOF\n"
+        f"decomposePar -force 2>&1 | tail -15\n"
+        f"RC1=${{PIPESTATUS[0]}}\n"
+        # decomposePar writes the decomposed mesh + 0/ fields into processorN/
+        # but NOT the uniform constant/ dictionaries (transportProperties,
+        # turbulenceProperties ...) — the parallel solver aborts on rank 0
+        # with "cannot find file processorN/constant/transportProperties".
+        # Copy them into every rank before mpirun (exact names, see above).
+        f"for i in $(seq 0 {n - 1}); do\n"
+        f"  cp -f \"$TMPD/constant/transportProperties\" "
+        f"\"$TMPD/constant/turbulenceProperties\" \"$TMPD/processor$i/constant/\" 2>/dev/null\n"
+        f"done\n"
+        f"SOLVE_RC=1\n"
+        f"if [ $RC1 -eq 0 ]; then\n"
+        f"  mpirun --allow-run-as-root --oversubscribe -np {n} {app_q} -parallel "
+        f"2>&1 | tee \"$TMPD/solver_parallel.log\" | tail -400\n"
+        f"  SOLVE_RC=${{PIPESTATUS[0]}}\n"
+        f"fi\n"
+        f"if [ $SOLVE_RC -eq 0 ]; then\n"
+        f"  reconstructPar -latestTime 2>&1 | tail -10\n"
+        f"  RC3=${{PIPESTATUS[0]}}\n"
+        f"  LATEST=$(ls -d [0-9]*/ 2>/dev/null | tr -d '/' | sort -n | tail -1)\n"
+        f"  if [ -n \"$LATEST\" ] && [ $RC3 -eq 0 ]; then\n"
+        f"    cp -r \"$TMPD/$LATEST\" \"$SRC/\" 2>/dev/null\n"
+        f"  fi\n"
+        f"else\n"
+        f"  RC3=$SOLVE_RC\n"
+        f"fi\n"
+        f"cp \"$TMPD/solver_parallel.log\" \"$SRC/\" 2>/dev/null\n"
+        f"rm -rf \"$TMPD\"\n"
+        f"exit $RC3\n"
+    )
+    script_path = case_dir / "system" / "_run_parallel_solve.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script, encoding="ascii", newline="")
+    linux_script = cfg.wsl_linux_case_path(script_path)
+    return cfg._build_wsl_cmd(f"bash {shlex.quote(linux_script)}")
+
+
 def run_solver(
     case_dir: Path | str,
     of_config: OFConfig | None = None,
     application: str = "simpleFoam",
     timeout_s: int = 3600,
     on_line: LogFn = _noop_log,
+    n_cores: int = 1,
 ) -> dict[str, Any]:
     """Run the solver, streaming its log live, and report how it ended.
 
     Streaming matters here beyond tidiness: a solve is the single longest step
     in the loop, and a silent one is indistinguishable from a hang.
+
+    Passing *n_cores* > 1 solves in parallel (decomposePar -> mpirun ->
+    reconstructPar on native WSL tmpfs, see ``_build_parallel_solve_cmd``).
+    This is the single biggest lever for making the loop usable at scale: the
+    serial solve dominates the per-cycle wall time (~2.4 s/iter at 1.26M
+    cells, ~11 s/iter at 6M cells) and scales poorly.
     """
     from cfmesh_autogui.core.openfoam_runner import _stream_subprocess
 
     case_dir = Path(case_dir).resolve()
     cfg = of_config or OFConfig()
-    cmd = cfg._build_wsl_cmd(
-        f"source {shlex.quote(cfg.env_script)} 2>/dev/null; "
-        f"cd {cfg._quoted_linux_path(case_dir)} && {shlex.quote(application)}"
-    )
+    if n_cores > 1:
+        cmd = _build_parallel_solve_cmd(cfg, case_dir, application, n_cores)
+    else:
+        cmd = cfg._build_wsl_cmd(
+            f"source {shlex.quote(cfg.env_script)} 2>/dev/null; "
+            f"cd {cfg._quoted_linux_path(case_dir)} && {shlex.quote(application)}"
+        )
 
     iteration = [0]
     residuals: dict[str, float] = {}
@@ -932,7 +1026,7 @@ class SolutionAdaptiveRefiner:
         t0 = time.monotonic()
         solve = run_solver(
             case_dir, self.of_config, timeout_s=p.solver_timeout_s,
-            on_line=self.log,
+            on_line=self.log, n_cores=p.solve_cores,
         )
         rep.solve_time_s = time.monotonic() - t0
         rep.solver_iterations_run = solve["iterations"]
