@@ -1364,6 +1364,21 @@ def apply_solution_size_field(
     }
 
 
+def _apply_gmsh_thread_env(gmsh_mod) -> None:
+    """Honour GMSH_NUM_THREADS by setting General.NumThreads before meshing.
+
+    GMSH defaults to a single thread; on an 89-surface valve part the volume
+    mesh takes minutes. The meshing subprocess is passed the env var so
+    large remeshes can use multiple cores without changing the Python API.
+    """
+    nt = os.environ.get("GMSH_NUM_THREADS", "").strip()
+    if nt:
+        try:
+            gmsh_mod.option.setNumber("General.NumThreads", int(nt))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not set GMSH_NUM_THREADS=%s: %s", nt, exc)
+
+
 def generate_volume_mesh(
     filepath: Path | str,
     output_msh: Path | str,
@@ -1402,6 +1417,7 @@ def generate_volume_mesh(
     """
     gmsh = _ensure_gmsh()
     gmsh.clear()
+    _apply_gmsh_thread_env(gmsh)
     filepath_str = str(Path(filepath).resolve())
     output_msh = str(Path(output_msh).resolve())
     gmsh.open(filepath_str)
