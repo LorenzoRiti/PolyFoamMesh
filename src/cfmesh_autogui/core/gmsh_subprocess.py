@@ -58,31 +58,35 @@ def run_gmsh_volume(
     env = dict(os.environ)
     env["GMSH_SOLUTION_SIZE_FIELD"] = str(size_field_file) if size_field_file else ""
 
-    t0 = time.monotonic()
-    rc, stdout, stderr, timed_out = _stream_subprocess(
-        cmd, run_cwd, timeout_s, on_line, env=env, heartbeat_s=30,
-    )
-    if timed_out:
-        raise RuntimeError(f"GMSH volume meshing timed out after {timeout_s}s")
-    if rc != 0:
-        tail = "\n".join((stdout + stderr)[-40:])
-        raise RuntimeError(f"GMSH volume meshing failed (exit {rc}):\n{tail}")
+    last_err = ""
+    for attempt in (1, 2):  # GMSH's OCC mesher intermittently dies natively
+        t0 = time.monotonic()
+        rc, stdout, stderr, timed_out = _stream_subprocess(
+            cmd, run_cwd, timeout_s, on_line, env=env, heartbeat_s=30,
+        )
+        if timed_out:
+            last_err = f"GMSH volume meshing timed out after {timeout_s}s"
+        elif rc != 0:
+            tail = "\n".join((stdout + stderr)[-40:])
+            last_err = f"GMSH volume meshing failed (exit {rc}):\n{tail}"
+        else:
+            payload = None
+            for line in reversed(stdout):
+                if line.strip().startswith("{"):
+                    try:
+                        payload = json.loads(line)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            if payload is not None and payload.get("success"):
+                payload["wall_time_s"] = time.monotonic() - t0
+                return payload
+            tail = "\n".join(stdout[-10:])
+            last_err = f"GMSH subprocess produced no JSON result:\n{tail}"
+        if attempt == 1:
+            on_line(f"[gmsh] attempt {attempt} failed, retrying: {last_err.splitlines()[0]}")
 
-    payload = None
-    for line in reversed(stdout):
-        if line.strip().startswith("{"):
-            try:
-                payload = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                continue
-    if payload is None:
-        tail = "\n".join(stdout[-10:])
-        raise RuntimeError(f"GMSH subprocess produced no JSON result:\n{tail}")
-    if not payload.get("success"):
-        raise RuntimeError(f"GMSH volume meshing failed: {payload.get('error')}")
-    payload["wall_time_s"] = time.monotonic() - t0
-    return payload
+    raise RuntimeError(last_err)
 
 
 def run_gmsh_to_foam(
