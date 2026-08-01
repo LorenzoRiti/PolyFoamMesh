@@ -1,0 +1,221 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2512                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _bd2b6720-20260127 OPENFOAM=2512 version=2512
+Arch   : "LSB;label=32;scalar=64"
+Exec   : checkMesh
+Date   : Aug 01 2026
+Time   : 12:54:55
+Host   : DESKTOP-K5QPEJ4
+PID    : 4462
+I/O    : uncollated
+Case   : /mnt/c/polybench2/fixture_valve
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+memory pool : not available
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+--> FOAM Warning : 
+    From static Foam::instantList Foam::timeSelector::select0(Foam::Time&, const Foam::argList&)
+    in file db/Time/timeSelector.C at line 284
+    No time specified or available, selecting 'constant'
+Create mesh for time = constant
+
+Check mesh...
+
+Time = constant
+
+Mesh stats 
+    points:           1051199
+    internal points:  824661
+    faces:            1241048
+    internal faces:   1014506
+    cells:            152086
+    faces per cell:   14.8308
+    boundary patches: 89
+    point zones:      0
+    face zones:       0
+    cell zones:       0
+
+Overall number of cells of each type:
+    hexahedra:     1
+    prisms:        1
+    wedges:        0
+    pyramids:      0
+    tet wedges:    0
+    tetrahedra:    0
+    polyhedra:     152084
+    Breakdown of polyhedra by number of faces:
+        faces   number of cells
+            6   1
+            7   7
+            8   27
+            9   276
+           10   1281
+           11   4802
+           12   11783
+           13   20835
+           14   28792
+           15   31275
+           16   23960
+           17   14791
+           18   7806
+           19   3680
+           20   1653
+           21   642
+           22   252
+           23   119
+           24   46
+           25   22
+           26   13
+           27   8
+           28   3
+           29   4
+           30   1
+           31   1
+           37   1
+           40   1
+           44   2
+
+Checking topology...
+    Boundary definition OK.
+    Cell to face addressing OK.
+    Point usage OK.
+    Upper triangular ordering OK.
+    Face vertices OK.
+    Number of regions: 1 (OK).
+
+Checking patch topology for multiply connected surfaces...
+                   Patch    Faces   Points  Surface topology
+               surface_1      204      241  ok (non-closed singly connected)
+               surface_2       63       83  ok (non-closed singly connected)
+               surface_3       63       83  ok (non-closed singly connected)
+               surface_4     4737     4883  ok (non-closed singly connected)
+               surface_5       81      103  ok (non-closed singly connected)
+               surface_6     4737     4883  ok (non-closed singly connected)
+               surface_7     1053     1105  ok (non-closed singly connected)
+               surface_8      462      505  ok (non-closed singly connected)
+               surface_9      666      713  ok (non-closed singly connected)
+              surface_10     3036     3131  ok (non-closed singly connected)
+              surface_11      534      577  ok (non-closed singly connected)
+              surface_12      171      211  ok (non-closed singly connected)
+              surface_13       81      103  ok (non-closed singly connected)
+              surface_14     1620     1677  ok (non-closed singly connected)
+              surface_15      684      727  ok (non-closed singly connected)
+              surface_16      141      179  ok (non-closed singly connected)
+              surface_17       63       83  ok (non-closed singly connected)
+              surface_18       63       83  ok (non-closed singly connected)
+              surface_19     4731     4877  ok (non-closed singly connected)
+              surface_20       81      103  ok (non-closed singly connected)
+              surface_21     4737     4883  ok (non-closed singly connected)
+              surface_22     1068     1121  ok (non-closed singly connected)
+              surface_23      501      545  ok (non-closed singly connected)
+              surface_24      666      713  ok (non-closed singly connected)
+              surface_25     3036     3131  ok (non-closed singly connected)
+              surface_26      540      583  ok (non-closed singly connected)
+              surface_27      171      211  ok (non-closed singly connected)
+              surface_28       81      103  ok (non-closed singly connected)
+              surface_29     1638     1695  ok (non-closed singly connected)
+              surface_30      765      809  ok (non-closed singly connected)
+              surface_31      204      241  ok (non-closed singly connected)
+              surface_32       63       83  ok (non-closed singly connected)
+              surface_33       63       83  ok (non-closed singly connected)
+              surface_34     4737     4883  ok (non-closed singly connected)
+              surface_35       81      103  ok (non-closed singly connected)
+              surface_36     4737     4883  ok (non-closed singly connected)
+              surface_37     1053     1105  ok (non-closed singly connected)
+              surface_38      462      505  ok (non-closed singly connected)
+              surface_39      666      713  ok (non-closed singly connected)
+              surface_40     3036     3131  ok (non-closed singly connected)
+              surface_41      534      577  ok (non-closed singly connected)
+              surface_42      171      211  ok (non-closed singly connected)
+              surface_43       81      103  ok (non-closed singly connected)
+              surface_44     1620     1677  ok (non-closed singly connected)
+              surface_45      684      727  ok (non-closed singly connected)
+              surface_46     4329     4515  ok (non-closed singly connected)
+              surface_47     4329     4515  ok (non-closed singly connected)
+              surface_48     4329     4515  ok (non-closed singly connected)
+              surface_49     4335     4521  ok (non-closed singly connected)
+              surface_50      204      241  ok (non-closed singly connected)
+              surface_51       63       83  ok (non-closed singly connected)
+              surface_52       63       83  ok (non-closed singly connected)
+              surface_53     4737     4883  ok (non-closed singly connected)
+              surface_54       81      103  ok (non-closed singly connected)
+              surface_55     4737     4883  ok (non-closed singly connected)
+              surface_56     1068     1121  ok (non-closed singly connected)
+              surface_57      462      505  ok (non-closed singly connected)
+              surface_58      666      713  ok (non-closed singly connected)
+              surface_59     3174     3269  ok (non-closed singly connected)
+              surface_60      546      589  ok (non-closed singly connected)
+              surface_61      171      211  ok (non-closed singly connected)
+              surface_62       81      103  ok (non-closed singly connected)
+              surface_63     1620     1677  ok (non-closed singly connected)
+              surface_64      777      821  ok (non-closed singly connected)
+              surface_65      252      273  ok (non-closed singly connected)
+              surface_66     2316     2356  ok (non-closed singly connected)
+              surface_67     5898     6030  ok (non-closed singly connected)
+              surface_68     2112     2344  ok (non-closed singly connected)
+              surface_69    14076    14312  ok (non-closed singly connected)
+              surface_70     2100     2240  ok (non-closed singly connected)
+              surface_71     4914     5230  ok (non-closed singly connected)
+              surface_72     4668     5082  ok (non-closed singly connected)
+              surface_73     5730     5986  ok (non-closed singly connected)
+              surface_74     2784     2843  ok (non-closed singly connected)
+              surface_75    10479    10580  ok (non-closed singly connected)
+              surface_76    14214    14502  ok (non-closed singly connected)
+              surface_77      258      279  ok (non-closed singly connected)
+              surface_78    17649    18358  ok (non-closed singly connected)
+              surface_79    15396    15632  ok (non-closed singly connected)
+              surface_80     2934     3036  ok (non-closed singly connected)
+              surface_81     2910     3068  ok (non-closed singly connected)
+              surface_82      858     1026  ok (non-closed singly connected)
+              surface_83     3468     3634  ok (non-closed singly connected)
+              surface_84      795      958  ok (non-closed singly connected)
+              surface_85     2457     2612  ok (non-closed singly connected)
+              surface_86     7974     8132  ok (non-closed singly connected)
+              surface_87     1806     1976  ok (non-closed singly connected)
+              surface_88     9810     9916  ok (non-closed singly connected)
+              surface_89      246      267  ok (non-closed singly connected)
+                    ".*"   226542   226538      ok (closed singly connected)
+
+
+Checking faceZone topology for multiply connected surfaces...
+    No faceZones found.
+
+Checking basic cellZone addressing...
+    No cellZones found.
+
+Checking basic pointZone addressing...
+    No pointZones found.
+
+Checking geometry...
+    Overall domain bounding box (-1.47727 -0.0987368 -0.126703) (1.52273 0.155762 0.126629)
+    Mesh has 3 geometric (non-empty/wedge) directions (1 1 1)
+    Mesh has 3 solution (non-empty) directions (1 1 1)
+    Boundary openness (1.3927e-16 -1.71321e-17 5.58308e-17) OK.
+    Max cell openness = 2.6916e-16 OK.
+    Max aspect ratio = 778.671 OK.
+    Minimum face area = 6.0239e-10. Maximum face area = 0.00203648.  Face area magnitudes OK.
+    Min volume = 1.15354e-14. Max volume = 0.000188752.  Total volume = 0.121835.  Cell volumes OK.
+    Mesh non-orthogonality Max: 123.25 average: 14.2311
+   *Number of severely non-orthogonal (> 70 degrees) faces: 247.
+ ***Number of non-orthogonality errors: 55.
+  <<Writing 302 non-orthogonal faces to set nonOrthoFaces
+ ***Error in face pyramids: 895 faces are incorrectly oriented.
+  <<Writing 895 faces with incorrect orientation to set wrongOrientedFaces
+ ***Max skewness = 44.328, 111 highly skew faces detected which may impair the quality of the results
+  <<Writing 111 skew faces to set skewFaces
+    Coupled point location match (average 0) OK.
+
+Failed 3 mesh checks.
+
+End
+

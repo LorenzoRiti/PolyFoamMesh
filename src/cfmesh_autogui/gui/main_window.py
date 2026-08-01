@@ -79,7 +79,6 @@ from cfmesh_autogui.core.openfoam_runner import (
     QualityFixWorker,
     RetryRunner,
     DualPolyWorker,
-    TerminalFaceWorker,
     WslCheckWorker,
     analyze_error,
 )
@@ -156,6 +155,9 @@ class MainWindow(QMainWindow):
         self._run_id = 0
         self._quality_fix_attempts = 0
         self._poly_was_converted = False
+        # Set when a polyhedral mesh failed checkMesh and was rolled back to
+        # the tet mesh — prevents re-converting the same tet mesh in a loop.
+        self._poly_fallback_active = False
         self._unscaled_meshes: list[trimesh.Trimesh] = []
         self._scaled_meshes: list[trimesh.Trimesh] | None = None
         self._current_scale: float = 1.0
@@ -265,44 +267,7 @@ class MainWindow(QMainWindow):
         # real project rather than what it actually is: a demo/sample.
         tm.addAction("Load Sample Cylinder (demo geometry)", self._on_test_cylinder)
         tm.addSeparator()
-        conv_menu = tm.addMenu("Polyhedral Converter")
-        self._conv_dual_action = conv_menu.addAction(
-            "Barycentric dual (100% polyhedral)"
-        )
-        self._conv_tf_action = conv_menu.addAction("Terminal-face (legacy, ~80%)")
-        self._conv_dual_action.setCheckable(True)
-        self._conv_tf_action.setCheckable(True)
-        self._conv_dual_action.triggered.connect(
-            lambda: self._on_poly_converter_change("dual")
-        )
-        self._conv_tf_action.triggered.connect(
-            lambda: self._on_poly_converter_change("terminal_face")
-        )
-        self._sync_poly_converter_menu()
-        tm.addSeparator()
         tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
-
-    def _poly_converter(self) -> str:
-        """Which tet->poly converter the poly workflow should use."""
-        val = AppSettings().get_value("mesh/poly_converter", "dual")
-        return "terminal_face" if str(val) == "terminal_face" else "dual"
-
-    def _sync_poly_converter_menu(self) -> None:
-        mode = self._poly_converter()
-        self._conv_dual_action.setChecked(mode == "dual")
-        self._conv_tf_action.setChecked(mode == "terminal_face")
-
-    def _on_poly_converter_change(self, mode: str) -> None:
-        AppSettings().set_value("mesh/poly_converter", mode)
-        self._sync_poly_converter_menu()
-        label = (
-            "barycentric dual" if mode == "dual" else "terminal-face (legacy)"
-        )
-        # Which converter produced a mesh must never change silently — that
-        # exact class of silent swap was the dominant source of confusion in
-        # earlier sessions, so say it in the visible log, not just the status bar.
-        self._log.append_log(f"[poly] Polyhedral converter set to: {label}.")
-        self._status.showMessage(f"Polyhedral converter: {label}", 4000)
 
     def _on_theme_change(self, mode: str) -> None:
         from cfmesh_autogui.gui.theme import apply_theme, set_theme_mode
@@ -1377,6 +1342,7 @@ class MainWindow(QMainWindow):
 
         self._run_id += 1
         self._poly_was_converted = False
+        self._poly_fallback_active = False
         my_id = self._run_id
         logger.info("Starting meshing run #%d.", my_id)
 
@@ -3169,14 +3135,17 @@ class MainWindow(QMainWindow):
                 "is_gmsh_tet=%s",
                 poly_conv, poly_done, is_gmsh_tet,
             )
-            if poly_conv and not poly_done:
+            if poly_conv and not poly_done and not getattr(
+                self, "_poly_fallback_active", False
+            ):
                 if is_gmsh_tet:
                     # polyDualMesh has a confirmed structural defect on
-                    # complex real geometry (see TerminalFaceWorker's
-                    # docstring) — terminal-face conversion is this
-                    # pipeline's poly path for GMSH tet meshes instead.
-                    logger.info("Launching terminal-face conversion...")
-                    self._launch_terminal_face()
+                    # complex real geometry, and terminal-face merging only
+                    # reaches ~80% polyural coverage — this pipeline's poly
+                    # path for GMSH tet meshes is the barycentric dual
+                    # rebuild, which is 100% poly and the best measured.
+                    logger.info("Launching barycentric dual conversion...")
+                    self._launch_gmsh_poly_dual()
                 else:
                     logger.info("Launching polyDualMesh conversion...")
                     self._launch_polydual()
@@ -3191,6 +3160,43 @@ class MainWindow(QMainWindow):
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
             self._status.showMessage("Mesh quality check failed")
+            if getattr(self, "_poly_was_converted", False):
+                # The POLYHEDRAL mesh failed checkMesh.  Do NOT fall through
+                # to _auto_quality_fix: that re-meshes the tet at a coarser
+                # detail, silently discarding the polyhedral conversion (the
+                # exact silent-swap class of bug that cost earlier sessions a
+                # day).  Product decision (Lorenzo): if poly cannot pass, fall
+                # back to the validated tetrahedral mesh, which the worker
+                # preserved in constant/polyMesh_tet_backup before converting.
+                import shutil
+
+                backup = self._case_dir / "constant" / "polyMesh_tet_backup"
+                if backup.exists():
+                    poly_dir = self._case_dir / "constant" / "polyMesh"
+                    try:
+                        shutil.rmtree(poly_dir)
+                        shutil.copytree(backup, poly_dir)
+                    except OSError as exc:
+                        self._log.append_log(
+                            f"{Tag.ERROR} Poly rollback failed: {exc}"
+                        )
+                        return
+                    self._poly_was_converted = False
+                    self._poly_fallback_active = True
+                    self._log.append_log(
+                        f"{Tag.WARN} Polyhedral mesh failed checkMesh "
+                        f"({report.status}). Rolling back to the validated "
+                        "tetrahedral mesh (constant/polyMesh_tet_backup)."
+                    )
+                    self._viewer.show_mesh(self._case_dir)
+                    self._launch_checkmesh()
+                else:
+                    self._log.append_log(
+                        f"{Tag.WARN} Polyhedral mesh failed checkMesh "
+                        f"({report.status}) and no tet backup is available — "
+                        "keeping the polyhedral mesh with a visible warning."
+                    )
+                return
             # Auto-fix: offer to relax cell sizes and re-mesh
             self._auto_quality_fix(report)
 
@@ -3229,6 +3235,7 @@ class MainWindow(QMainWindow):
             )
             self._run_id += 1
             self._poly_was_converted = False
+            self._poly_fallback_active = False
             self._params.set_meshing_enabled(False)
             self._params.set_all_enabled(False)
             self._start_autopoly_worker(geom_path, self._run_id)
@@ -3270,6 +3277,7 @@ class MainWindow(QMainWindow):
             # conversion entirely for the new mesh, leaving it pure tet
             # forever with no error or warning anywhere.
             self._poly_was_converted = False
+            self._poly_fallback_active = False
             self._params.set_meshing_enabled(False)
             self._params.set_all_enabled(False)
             self._start_gmsh_volume_worker(step_path, self._run_id)
@@ -3397,10 +3405,11 @@ class MainWindow(QMainWindow):
             pass
         self._launch_checkmesh()
 
-    def _launch_terminal_face(self) -> None:
-        """Terminal-face tet -> polyhedral conversion for GMSH-direct
-        tetrahedral meshes — see TerminalFaceWorker's docstring for why
-        this replaces polyDualMesh on that path."""
+    def _launch_gmsh_poly_dual(self) -> None:
+        """Barycentric-dual tet -> polyhedral conversion for GMSH-direct
+        tetrahedral meshes — the one and only tet->poly converter this
+        pipeline uses (100% polyhedral, best measured on every axis; the
+        merge-based terminal-face converter is retired and unreachable)."""
         if not self._case_dir:
             return
         poly_points = self._case_dir / "constant" / "polyMesh" / "points"
@@ -3420,26 +3429,19 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
             self._polydual_thread.quit()
             self._polydual_thread.wait(3000)
-        mode = self._poly_converter()
         logger.info(
-            "Launching %s poly conversion: case_dir=%s cells_before=%d",
-            mode, self._case_dir, self._cells_before_poly,
+            "Launching barycentric dual poly conversion: case_dir=%s cells_before=%d",
+            self._case_dir, self._cells_before_poly,
         )
-        # Always name the converter in the visible log: the mesh the user ends
-        # up with differs substantially between the two (the dual rebuilds one
-        # cell per primal vertex, so the cell count drops ~5.5x), and a silent
-        # swap here is exactly what made earlier runs impossible to interpret.
-        if mode == "dual":
-            self._log.append_log(
-                "[poly] Converting tet → polyhedral mesh (barycentric dual, "
-                "100% polyhedral)..."
-            )
-            w = DualPolyWorker(self._case_dir)
-        else:
-            self._log.append_log(
-                "[poly] Converting tet → polyhedral mesh (terminal-face, legacy)..."
-            )
-            w = TerminalFaceWorker(self._case_dir)
+        # Always name the converter in the visible log: the dual rebuilds one
+        # cell per primal vertex, so the cell count drops ~5.5x vs the input
+        # tets, and a silent swap here is exactly what made earlier runs
+        # impossible to interpret.
+        self._log.append_log(
+            "[poly] Converting tet → polyhedral mesh (barycentric dual, "
+            "100% polyhedral)..."
+        )
+        w = DualPolyWorker(self._case_dir)
         self._status.showMessage("Polyhedral conversion...")
         t = QThread()
         w.moveToThread(t)
@@ -3466,7 +3468,7 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"[poly] FAILED: {msg}")
         QMessageBox.warning(
             self, "Polyhedral Conversion Failed",
-            f"Polyhedral conversion failed ({self._poly_converter()}):\n\n{msg}\n\n"
+            f"Polyhedral conversion failed (barycentric dual):\n\n{msg}\n\n"
             "The tetrahedral mesh is still available. "
             "You can skip polyhedral conversion and use it directly."
         )
@@ -3489,7 +3491,11 @@ class MainWindow(QMainWindow):
         if cells_before > 0 and result.n_polyhedra > 0:
             pct = round((result.n_polyhedra / cells_before - 1) * 100, 1)
             self._log.append_log(
-                f"[poly] Cells: {cells_before} → {result.n_polyhedra} ({pct:+.1f}%)."
+                f"[poly] Cells: {cells_before} → {result.n_polyhedra} ({pct:+.1f}%). "
+                "The barycentric dual rebuilds one polyhedral cell per primal "
+                "vertex, so the cell count drops ~5.5x — the normal, desirable "
+                "gain of a polyhedral mesh. For a target resolution, mesh finer "
+                "upstream (the tet mesh) to compensate."
             )
         self._launch_checkmesh()
 

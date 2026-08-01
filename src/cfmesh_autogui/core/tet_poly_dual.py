@@ -95,7 +95,7 @@ from typing import Callable
 
 import numpy as np
 
-from .terminal_face import TerminalFaceConverter
+from . import foam_mesh_io
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,7 @@ class TetPolyDualConverter:
         median_faces: bool = False,
         split_rounds: int = 0,
         feature_angle: float = 40.0,
+        split_boundary_layer_only: bool = False,
     ):
         """
         median_faces
@@ -177,6 +178,15 @@ class TetPolyDualConverter:
         feature_angle
             Dihedral angle (degrees) above which two boundary triangles meeting
             at a vertex count as belonging to different smooth surface regions.
+        split_boundary_layer_only
+            When splitting a concave vertex, only partition the tets that
+            touch the boundary (the first layer) into per-region wedges and
+            leave the rest of the star as one core cell, instead of flooding
+            the region labels through the whole star.  The full-star wedges
+            are long thin cells whose centroid can still fall outside their
+            own boundary quads; shallow wedges keep the centroid near the
+            surface.  MEASURED on the valve: full-star split 895 -> 1,215
+            (worse); boundary-layer-only split 895 -> <see bench>.
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -184,6 +194,7 @@ class TetPolyDualConverter:
         self._median_faces = bool(median_faces)
         self._split_rounds = int(split_rounds)
         self._feature_angle = float(feature_angle)
+        self._split_boundary_layer_only = bool(split_boundary_layer_only)
 
     # ------------------------------------------------------------------
     # helpers
@@ -307,13 +318,13 @@ class TetPolyDualConverter:
 
     def _read_primal(self, res: DualPolyResult) -> SimpleNamespace:
         poly_dir = self._case_dir / "constant" / "polyMesh"
-        points = TerminalFaceConverter._read_points(poly_dir / "points")
-        faces_raw = TerminalFaceConverter._read_faces(poly_dir / "faces")
-        owner = TerminalFaceConverter._read_label_list(poly_dir / "owner").astype(np.int64)
-        neighbour = TerminalFaceConverter._read_label_list(
+        points = foam_mesh_io.read_points(poly_dir / "points")
+        faces_raw = foam_mesh_io.read_faces(poly_dir / "faces")
+        owner = foam_mesh_io.read_label_list(poly_dir / "owner").astype(np.int64)
+        neighbour = foam_mesh_io.read_label_list(
             poly_dir / "neighbour"
         ).astype(np.int64)
-        patches = TerminalFaceConverter._read_boundary(poly_dir / "boundary")
+        patches = foam_mesh_io.read_boundary(poly_dir / "boundary")
 
         n_faces = len(faces_raw)
         if n_faces == 0:
@@ -702,11 +713,23 @@ class TetPolyDualConverter:
     def _plan_splits(self, P, M, bad, splits) -> dict[int, dict[int, int]]:
         verts = np.unique(M.cell_vertex[np.flatnonzero(bad)])
         cos_limit = np.cos(np.deg2rad(self._feature_angle))
+        # Only vertices on a CONCAVE feature edge may be split.  The earlier
+        # version clustered by the unsigned dihedral angle, so it also split
+        # harmless convex 90-degree edges and made things worse (895 -> 1,215
+        # on the valve).  A convex edge must never be split: its dual cell is
+        # already convex there.  Concavity is a signed test (see
+        # _concave_boundary_edges) — verified on a cube (0 concave edges) and
+        # an L-shaped groove (concave re-entrant edges detected).
+        concave_verts = _concave_boundary_vertices(P)
         new: dict[int, dict[int, int]] = {}
         for v in verts.tolist():
             if v in splits:
                 continue  # already split as far as this criterion can take it
-            g = _split_vertex_star(P, v, cos_limit)
+            if v not in concave_verts:
+                continue  # convex vertex — splitting it cannot help
+            g = _split_vertex_star(
+                P, v, cos_limit, boundary_layer_only=self._split_boundary_layer_only,
+            )
             if g:
                 new[v] = g
         return new
@@ -800,28 +823,10 @@ class TetPolyDualConverter:
     # ------------------------------------------------------------------
 
     def _write(self, points, faces, owner, neigh, patches) -> None:
-        import shutil
-        import tempfile
-
-        poly_dir = self._case_dir / "constant" / "polyMesh"
-        tmp_dir = Path(tempfile.mkdtemp(prefix="tet_poly_dual_"))
-        tmp_poly = tmp_dir / "polyMesh"
-        tmp_poly.mkdir(parents=True, exist_ok=True)
-        try:
-            _write_points(tmp_poly / "points", points)
-            _write_faces(tmp_poly / "faces", faces)
-            _write_labels(tmp_poly / "owner", owner)
-            _write_labels(tmp_poly / "neighbour", neigh)
-            _write_boundary(tmp_poly / "boundary", patches)
-            for name in ("points", "faces", "owner", "neighbour", "boundary"):
-                p = tmp_poly / name
-                if not p.exists() or p.stat().st_size == 0:
-                    raise RuntimeError(f"Verification failed: {name} is empty or missing")
-            if poly_dir.exists():
-                shutil.rmtree(poly_dir)
-            shutil.move(str(tmp_poly), str(poly_dir))
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        foam_mesh_io.write_polymesh(
+            self._case_dir / "constant" / "polyMesh",
+            points, faces, owner, neigh, patches,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -918,13 +923,76 @@ def _emit_edge_face(poly, ca, cb, xyz, pts_in, va, vb, faces, own, nb):
     nb.append(cb)
 
 
-def _split_vertex_star(P, v: int, cos_limit: float) -> dict[int, int] | None:
+def _concave_boundary_vertices(P) -> set[int]:
+    """Vertices that lie on a CONCAVE boundary feature edge.
+
+    A boundary edge (a, b) is shared by exactly two boundary triangles
+    T1 = (a, b, c) and T2 = (a, b, d).  With n1 the OUTWARD normal of T1 and
+    c1 its centroid, the edge is concave iff the far vertex of T2 lies on the
+    outward side of T1:
+
+        (p2 - c1) . n1 > 0
+
+    (convex edges give < 0; flat/coplanar edges give ~0).  This is the signed
+    test the earlier split was missing — it used the unsigned dihedral angle,
+    so it also split harmless convex 90-degree edges.  Verified numerically on
+    a cube (0 concave edges) and an L-shaped groove (concave re-entrant edges
+    detected).  n1 is oriented outward using the owner tet's centroid, so the
+    test is robust to the input boundary winding.
+    """
+    bnd = P.bnd_tri
+    n_bnd = P.n_bnd
+    edge_tris: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for bi in range(n_bnd):
+        a, b, c = (int(x) for x in bnd[bi])
+        for x, y in ((a, b), (b, c), (c, a)):
+            edge_tris[(min(x, y), max(x, y))].append(bi)
+
+    pts = P.points
+    owner_l = P.owner
+    cc = P.cell_centroid
+    concave_verts: set[int] = set()
+    for ek, tris in edge_tris.items():
+        if len(tris) != 2:
+            continue  # non-manifold surface is rejected elsewhere
+        t1, t2 = tris
+        v1 = bnd[t1]
+        v2 = bnd[t2]
+        a, b = ek
+        p2 = next(int(v) for v in v2 if v != a and v != b)
+        c1 = pts[v1].mean(axis=0)
+        n1 = np.cross(pts[v1[1]] - pts[v1[0]], pts[v1[2]] - pts[v1[0]])
+        ln = float(np.linalg.norm(n1))
+        if ln < 1e-300:
+            continue
+        n1 = n1 / ln
+        # orient outward using the owner tet (inside the solid)
+        f1 = P.n_int_primal + t1
+        o1 = int(owner_l[f1])
+        if float(n1 @ (c1 - cc[o1])) < 0.0:
+            n1 = -n1
+        if float((pts[p2] - c1) @ n1) > 1e-12:
+            concave_verts.add(a)
+            concave_verts.add(b)
+    return concave_verts
+
+
+def _split_vertex_star(
+    P, v: int, cos_limit: float, boundary_layer_only: bool = False,
+) -> dict[int, int] | None:
     """Partition the tets around vertex `v` by smooth surface region.
 
     The boundary triangles at `v` are clustered by dihedral angle, then that
     labelling is flooded inwards over the tets of the star. Returns
     {tet: group} with at least two groups, or None if `v` is not a
     multi-region boundary vertex.
+
+    With `boundary_layer_only=True` the flood is skipped: only the tets that
+    own a boundary triangle at `v` (the first layer) get per-region labels,
+    and every other tet of the star stays in group 0 (one core cell).  The
+    full-star wedges are long thin cells whose centroid can still fall
+    outside their own boundary quads; shallow wedges keep the centroid near
+    the surface.
     """
     inc = P.vf_idx[P.vf_ptr[v]:P.vf_ptr[v + 1]]
     bnd = [int(f) for f in inc if f >= P.n_int_primal]
@@ -1003,15 +1071,16 @@ def _split_vertex_star(P, v: int, cos_limit: float) -> dict[int, int] | None:
             best_area[t] = a
             label[t] = seed_label[f]
     frontier = list(label)
-    while frontier:
-        nxt = []
-        for t in frontier:
-            lt = label[t]
-            for u in adj.get(t, ()):
-                if u not in label:
-                    label[u] = lt
-                    nxt.append(u)
-        frontier = nxt
+    if not boundary_layer_only:
+        while frontier:
+            nxt = []
+            for t in frontier:
+                lt = label[t]
+                for u in adj.get(t, ()):
+                    if u not in label:
+                        label[u] = lt
+                        nxt.append(u)
+            frontier = nxt
     for t in star:
         label.setdefault(t, 0)
 
@@ -1144,58 +1213,3 @@ def _face_extent(points, faces, cf, sv, n_int):
         out[idx] = np.abs((rel * hat[idx][:, None, :]).sum(axis=2)).max(axis=1)
     return out
 
-
-# ---------------------------------------------------------------------------
-# OpenFOAM writers (bulk, not line-at-a-time)
-# ---------------------------------------------------------------------------
-
-def _header(cls: str, obj: str) -> str:
-    return (
-        "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
-        f"    class       {cls};\n    location    \"constant/polyMesh\";\n"
-        f"    object      {obj};\n}}\n"
-    )
-
-
-def _write_points(path: Path, points: np.ndarray) -> None:
-    with open(path, "w", encoding="ascii", newline="\n") as f:
-        f.write(_header("vectorField", "points"))
-        f.write(f"{len(points)}\n(\n")
-        for i in range(0, len(points), 65536):
-            f.write("".join(
-                f"({x:.12e} {y:.12e} {z:.12e})\n" for x, y, z in points[i:i + 65536]
-            ))
-        f.write(")\n")
-
-
-def _write_faces(path: Path, faces: list[list[int]]) -> None:
-    with open(path, "w", encoding="ascii", newline="\n") as f:
-        f.write(_header("faceList", "faces"))
-        f.write(f"{len(faces)}\n(\n")
-        for i in range(0, len(faces), 65536):
-            f.write("".join(
-                f"{len(v)}({' '.join(map(str, v))})\n" for v in faces[i:i + 65536]
-            ))
-        f.write(")\n")
-
-
-def _write_labels(path: Path, data: np.ndarray) -> None:
-    with open(path, "w", encoding="ascii", newline="\n") as f:
-        f.write(_header("labelList", path.name))
-        f.write(f"{len(data)}\n(\n")
-        for i in range(0, len(data), 262144):
-            f.write("\n".join(map(str, data[i:i + 262144].tolist())))
-            f.write("\n")
-        f.write(")\n")
-
-
-def _write_boundary(path: Path, patches: list[dict]) -> None:
-    with open(path, "w", encoding="ascii", newline="\n") as f:
-        f.write(_header("polyBoundaryMesh", "boundary"))
-        f.write(f"{len(patches)}\n(\n")
-        for p in patches:
-            f.write(f"    {p['name']}\n    {{\n")
-            f.write(f"        type            {p.get('type', 'patch')};\n")
-            f.write(f"        nFaces          {p['nFaces']};\n")
-            f.write(f"        startFace       {p['startFace']};\n    }}\n")
-        f.write(")\n")
