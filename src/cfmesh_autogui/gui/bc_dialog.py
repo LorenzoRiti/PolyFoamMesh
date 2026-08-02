@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 
-from cfmesh_autogui.gui.design_tokens import COLOR_SURFACE, COLOR_BORDER
 from cfmesh_autogui.gui.style import COLOR_ACCENT, COLOR_DANGER, COLOR_PASS, COLOR_TEXT_DIM
 
 logger = logging.getLogger(__name__)

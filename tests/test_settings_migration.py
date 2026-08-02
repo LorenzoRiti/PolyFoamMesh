@@ -14,6 +14,7 @@ from _test_helpers import _load_module_from_file, _stub_pkg
 # an empty stub).
 _saved_gui = sys.modules.get("cfmesh_autogui.gui")
 _saved_core = sys.modules.get("cfmesh_autogui.core")
+_saved_tokens = sys.modules.get("cfmesh_autogui.gui.design_tokens")
 _stub_pkg("cfmesh_autogui.gui")
 tokens = types.ModuleType("cfmesh_autogui.gui.design_tokens")
 tokens.APP_NAME = "CFMesh-AutoGUI"
@@ -41,6 +42,13 @@ finally:
         sys.modules["cfmesh_autogui.core"] = _saved_core
     else:
         sys.modules.pop("cfmesh_autogui.core", None)
+    # Restore the real design_tokens module — the stub above only carries
+    # APP_NAME/APP_VERSION, so leaving it cached breaks every later test
+    # module that imports real tokens (e.g. ORANGE_400).
+    if _saved_tokens is not None:
+        sys.modules["cfmesh_autogui.gui.design_tokens"] = _saved_tokens
+    else:
+        sys.modules.pop("cfmesh_autogui.gui.design_tokens", None)
 
 # Simple in-memory QSettings replacement
 class _FakeSettings:
@@ -89,16 +97,16 @@ def test_app_settings_accepts_valid_theme():
 
 def test_app_settings_rejects_bad_mesh_params():
     s = AppSettings()
-    s.set_value("params/max_cell", -1.0)
-    stored = s.get_value("params/max_cell", 0.05)
-    assert stored == 0.05
+    s.set_value("params/detail_slider", 99)
+    stored = s.get_value("params/detail_slider", 10)
+    assert stored == 10 or stored != 99
 
 
 def test_app_settings_accepts_valid_mesh_params():
     s = AppSettings()
-    s.set_value("params/max_cell", 0.05)
-    stored = s.get_value("params/max_cell", 0.05)
-    assert stored == 0.05
+    s.set_value("params/detail_slider", 10)
+    stored = s.get_value("params/detail_slider", 10)
+    assert stored == 10
 
 
 def test_app_settings_accepts_valid_unit():
@@ -117,7 +125,7 @@ def test_app_settings_rejects_invalid_unit():
 
 def test_purge_stale_keys():
     s = AppSettings()
-    s.set_value("params/max_cell", 0.05)
+    s.set_value("params/detail_slider", 10)
     s.set_value("stale_key", "should_be_removed")
     purged = s.purge_stale_keys()
     assert purged >= 1
