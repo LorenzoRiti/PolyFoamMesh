@@ -163,6 +163,19 @@ def _hardware_budget(max_cells_override: int | None = None) -> dict:
         by_available = (ram_bytes * 0.5) / 1000
         by_total = (_total_ram_bytes() * 0.25) / 1000
         max_cells = max(200_000, int(max(by_available, by_total)))
+    # The explicit target ("Max cells target" / Mesh Fineness slider) must
+    # never exceed what the machine can actually hold: a "very fine" 20M
+    # request on a low-RAM box would otherwise make GMSH run away and
+    # crash/OOM. Cap it at the hardware floor the auto path would have
+    # chosen; below that the user's explicit target is respected.
+    hw_floor = max(200_000, int(max((ram_bytes * 0.5) / 1000, (_total_ram_bytes() * 0.25) / 1000)))
+    if max_cells > hw_floor:
+        logger.warning(
+            "Cell target %d exceeds hardware budget (%d) — recomputing sizing "
+            "to %d cells to avoid an out-of-memory run.",
+            max_cells, hw_floor, hw_floor,
+        )
+        max_cells = hw_floor
     return {
         "cpu_count": cpu_count, "ram_available_bytes": ram_bytes,
         "max_cells": max_cells, "is_explicit_target": is_explicit_target,

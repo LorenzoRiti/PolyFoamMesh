@@ -2381,10 +2381,21 @@ class MainWindow(QMainWindow):
         # sizing with the old uniform behavior — Max/Min Cell Size are
         # always populated by Auto-Suggest, so the adaptive algorithm
         # added earlier today never actually ran in the live GUI.
+        #
+        # The Mesh Fineness slider now ALSO sets an explicit target cell
+        # count (10K..20M). When that target is nonzero we let GMSH derive
+        # the sizing from the REAL geometry + target count (adaptive path),
+        # instead of overriding it with max_cell_size derived from a 1m
+        # default bbox — which is what made "very fine" blow up on parts
+        # larger than the default.
         adaptive = self._params.get_adaptive_sizing_enabled()
-        max_cell = 0 if adaptive else self._params.get_max_cell()
-        min_cell = 0 if adaptive else self._params.get_min_cell()
         max_cells_target = self._params.get_max_cells_target()
+        if adaptive or max_cells_target > 0:
+            max_cell = 0
+            min_cell = 0
+        else:
+            max_cell = self._params.get_max_cell()
+            min_cell = self._params.get_min_cell()
 
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
         t = QThread()
