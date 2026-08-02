@@ -156,6 +156,9 @@ class TetPolyDualConverter:
         feature_angle: float = 40.0,
         split_boundary_layer_only: bool = False,
         wedge_cells: bool = False,
+        smooth: bool = True,
+        smooth_iters: int = 3,
+        smooth_relax: float = 0.5,
     ):
         """
         median_faces
@@ -196,6 +199,17 @@ class TetPolyDualConverter:
             become convex.  Default False = off (the working converter is
             never changed).  MEASURED on the valve: see bench — this is the
             construction that replaces the dead-end vertex-star split.
+        smooth
+            Quality-driven Laplacian smoothing of interior dual vertices after
+            the construction, guided by the in-process checkMesh replica and
+            keep-best (never writes a worse mesh). Boundary vertices are
+            pinned, topology is unchanged. Default True.
+        smooth_iters
+            Maximum smoothing passes. Each pass is accepted only if the total
+            defect count does not increase and no cell volume turns
+            non-positive.
+        smooth_relax
+            Laplacian relaxation factor in (0, 1]; 0.5 is a safe default.
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -205,6 +219,9 @@ class TetPolyDualConverter:
         self._feature_angle = float(feature_angle)
         self._split_boundary_layer_only = bool(split_boundary_layer_only)
         self._wedge_cells = bool(wedge_cells)
+        self._smooth = bool(smooth)
+        self._smooth_iters = int(smooth_iters)
+        self._smooth_relax = float(smooth_relax)
 
     # ------------------------------------------------------------------
     # helpers
@@ -352,6 +369,33 @@ class TetPolyDualConverter:
         res.defect_breakdown = dict(best_counts)
         res.n_internal_faces = M.n_int
         res.n_boundary_faces = len(M.faces) - M.n_int
+
+        # Quality-driven smoothing of interior vertices (keep-best against
+        # the in-process checkMesh replica; boundary pinned, topology fixed).
+        if self._smooth and best_defects is not None and best_defects > 0:
+            self._check_cancel()
+            t = time.monotonic()
+            from cfmesh_autogui.core.poly_smoother import smooth_dual_mesh
+
+            pts, counts = smooth_dual_mesh(
+                M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
+                _detect_defects, _face_geometry, _cell_centres,
+                iterations=self._smooth_iters,
+                relaxation=self._smooth_relax,
+                log=self._log,
+            )
+            if pts is not M.points:
+                M.points = pts
+                best_counts = dict(counts)
+                total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+                best_defects = total
+                res.residual_defects = int(total)
+                res.defect_breakdown = dict(counts)
+                self._log(
+                    f"[poly 7/9] smoothing applied: defects now "
+                    f"{counts['pyramid']}/{counts['non_ortho']}/{counts['skew']} "
+                    f"[{time.monotonic() - t:.1f}s]"
+                )
 
         t = time.monotonic()
         self._validate(res, M, P)
