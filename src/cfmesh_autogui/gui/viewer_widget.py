@@ -1392,15 +1392,18 @@ class ViewerWidget(QWidget):
             self._mesh_retry_count = 0
             self._foam_to_vtk_attempted = False
 
-            # Invalidate VTU cache so foamToVTK regenerates from current
-            # polyMesh — prevents showing stale tet mesh after poly conversion.
+            # Invalidate VTU cache: delete entire VTK_view directory so
+            # foamToVTK regenerates from current polyMesh.  Just deleting
+            # the marker is not enough — the old tet boundary VTP files
+            # remain alongside new poly ones, causing the viewer to show
+            # BOTH tet and poly patches simultaneously.
             try:
+                import shutil
                 vtk_dir = Path(case_dir) / "VTK_view"
-                marker = vtk_dir / ".source_mtime"
-                if marker.exists():
-                    marker.unlink()
-                    logger.debug("Invalidated VTU cache marker for %s", case_dir)
-            except OSError:
+                if vtk_dir.exists():
+                    shutil.rmtree(vtk_dir, ignore_errors=True)
+                    logger.debug("Deleted VTK_view cache for %s", case_dir)
+            except Exception:
                 pass
 
             # Read stats for the label (fast, header-only 16KB reads)
