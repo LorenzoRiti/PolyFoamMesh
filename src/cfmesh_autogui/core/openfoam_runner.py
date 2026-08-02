@@ -1174,6 +1174,7 @@ class DualPolyWorker(QObject):
                 self._case_dir,
                 log=self.log_line.emit,
                 cancel=lambda: self._cancelled,
+                wedge_cells=True,
             )
             result = converter.run()
         except Exception as exc:
