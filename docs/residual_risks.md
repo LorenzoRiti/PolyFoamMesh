@@ -17,7 +17,9 @@ source of truth.
 ## Polyhedral Conversion
 
 - The barycentric dual is the only tet->poly path in use. `wedge_cells` and
-  `median_faces` are enabled by default (measured best). On CAD parts with
+  `median_faces` are enabled by default (measured best); a post-construction
+  quality smoothing pass (`core/poly_smoother.py`, keep-best, interior
+  vertices only, boundary pinned) is enabled by default. On CAD parts with
   many concave re-entrant features the dual can still produce a small number
   of non-convex boundary cells (a few hundred on the reference valve),
   failing checkMesh; the poly mesh is then kept and shown with a warning
@@ -26,6 +28,14 @@ source of truth.
   defects on the reference part. Re-measure before enabling.
 - `TerminalFaceWorker` was removed as dead code; `terminal_face.py` remains
   only for the historical benchmark harness (`tests/bench_tet_poly.py`).
+- **BL + poly path (P3a validated)**: `tools/bench_bl_poly.py` runs
+  cartesianMesh (hex) -> polyDualMesh -> checkMesh on the venturi. Result:
+  poly mesh has 2848 prism cells + 2720 polyhedra, checkMesh `Mesh OK`
+  (skew 1.29, NOmax 54.6). This matches the historical documented value
+  (2848 prism cells for venturi) and confirms the cfMesh path already
+  produces the prism+poly combo required for wall-resolved CFD. The hex
+  mesh before polyDualMesh reports 0 prisms for this geometry/config — the
+  prisms appear through the dualisation itself; see bench for details.
 
 ## Viewer
 
