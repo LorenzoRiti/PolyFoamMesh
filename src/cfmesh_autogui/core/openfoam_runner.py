@@ -1070,67 +1070,18 @@ class PolyDualWorker(QObject):
             self.failed.emit(str(exc))
 
 
-class TerminalFaceWorker(QObject):
-    """Runs TerminalFaceConverter (tet -> polyhedral, Salinas et al. 2023)
-    in a background QThread — this pipeline's poly path for GMSH-direct
-    tetrahedral meshes, replacing polyDualMesh there. polyDualMesh has a
-    confirmed structural defect on complex real geometry (600+
-    incorrectly-oriented faces reproduced across every tet-generation
-    strategy tried against the real Parte4 valve — see the poly_dual_risk
-    comment in gmsh_wrapper.py's _configure_adaptive_sizing), which is
-    why it's skipped for gmsh_direct/gmsh_direct_poly upstream of this.
-
-    Pure Python + numpy/scipy — unlike GMSH surface/volume generation,
-    it doesn't touch cadquery/OCP's OpenCASCADE, so it runs directly in
-    a QThread rather than needing subprocess isolation.
-    """
-
-    log_line = Signal(str)
-    finished = Signal(object)  # TerminalFaceResult
-    failed = Signal(str)
-
-    def __init__(self, case_dir: Path | str, parent=None):
-        super().__init__(parent)
-        self._case_dir = Path(case_dir).resolve()
-
-    @Slot()
-    def run(self):
-        from cfmesh_autogui.core.terminal_face import TerminalFaceConverter
-
-        self.log_line.emit("[poly] Converting tet -> polyhedral mesh (terminal-face)...")
-        try:
-            converter = TerminalFaceConverter(self._case_dir)
-            result = converter.run()
-        except Exception as exc:
-            self.log_line.emit(f"[poly] ERROR: {exc}")
-            self.failed.emit(str(exc))
-            return
-
-        if not result.success:
-            msg = "; ".join(result.errors) or "Unknown terminal-face conversion error"
-            self.log_line.emit(f"[poly] FAILED: {msg}")
-            self.failed.emit(msg)
-            return
-
-        self.log_line.emit(
-            f"[poly] Conversion OK: {result.n_tets_before} tets -> "
-            f"{result.n_polyhedra} polyhedra ({result.wall_time_s:.1f}s)"
-        )
-        self.finished.emit(result)
-
-
 class DualPolyWorker(QObject):
     """Runs TetPolyDualConverter (tet -> polyhedral by barycentric dual) in a
     background QThread.
 
-    Unlike TerminalFaceWorker above, this does not merge tetrahedra: it builds
+    This is the one and only tet->poly worker this pipeline uses: it builds
     the dual complex of the tet mesh (one cell per primal vertex), so poly
     coverage is 100% by construction and the boundary is an exact subdivision
     of the original surface triangles. See docs/poly_dual_converter.md for the
-    measured comparison against the terminal-face path on identical inputs.
+    measured comparison against the retired terminal-face path.
 
-    Pure Python + numpy, so — like TerminalFaceWorker — it runs directly in a
-    QThread rather than needing subprocess isolation.
+    Pure Python + numpy, so it runs directly in a QThread rather than
+    needing subprocess isolation.
     """
 
     log_line = Signal(str)

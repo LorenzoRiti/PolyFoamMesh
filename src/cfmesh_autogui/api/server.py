@@ -156,7 +156,7 @@ def create_app(data_dir: str | None = None) -> Any:
     async def create_mesh_job(
         file_id: str = Form(...),
         params: str = Form("{}"),
-        background_tasks: BackgroundTasks | None = None,
+        background_tasks: BackgroundTasks = None,
     ):
         """Submit a meshing job.
 
