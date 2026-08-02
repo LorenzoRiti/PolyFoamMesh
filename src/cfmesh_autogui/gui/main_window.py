@@ -1958,6 +1958,7 @@ class MainWindow(QMainWindow):
             time_str = f"{est_secs/3600:.1f}h"
         self._cell_count_label.setText(f"~{est:,} cells (~{time_str})")
         self._params.set_cell_estimate(f"~{est:,} cells (~{time_str}), range {lo:,}-{hi:,}")
+        self._params.set_geometry_cell_estimate(lo, est, hi)
         self._log.append_log(f"{Tag.EST} ~{est:,} cells (~{time_str}), range {lo:,}-{hi:,}")
 
         if not self._confirm_large_mesh(est, est_secs, safe_max, safe_min):
@@ -4565,5 +4566,4 @@ class MainWindow(QMainWindow):
         gmsh_shutdown()
         octo.log_event("main_window", "close", "app closed")
         super().closeEvent(event)
-
 
