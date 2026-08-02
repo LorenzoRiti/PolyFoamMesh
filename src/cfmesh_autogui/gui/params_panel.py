@@ -31,7 +31,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cfmesh_autogui.gui.design_tokens import ORANGE_500
+from cfmesh_autogui.gui.design_tokens import (
+    NEUTRAL_100,
+    NEUTRAL_200,
+    NEUTRAL_300,
+    NEUTRAL_800,
+    ORANGE_500,
+    ORANGE_600,
+    RIBBON_TEXT,
+)
 from cfmesh_autogui.gui.style import (
     COLOR_DANGER,
     COLOR_TEXT_DIM,
@@ -43,17 +51,18 @@ logger = logging.getLogger(__name__)
 
 # Mesher button toggle styles — shared between _add_mesher_btn and _on_mesher_button_clicked
 _MESHER_BTN_OFF = (
-    "QPushButton {"
-    "  border:1px solid #c8ccd4; border-radius:4px; padding:8px 6px;"
-    "  background:#f0f2f5; color:#333; font-weight:600; text-align:left;"
-    "}"
-    "QPushButton:hover { background:#e2e6ea; border-color:#aaa; }"
+    f"QPushButton {{"
+    f"  border:1px solid {NEUTRAL_200}; border-radius:4px; padding:8px 6px;"
+    f"  background:{NEUTRAL_100}; color:{NEUTRAL_800}; font-weight:600; text-align:left;"
+    f"}}"
+    f"QPushButton:hover {{ background:{NEUTRAL_200}; border-color:{NEUTRAL_300}; }}"
 )
 _MESHER_BTN_ON = (
-    "QPushButton {"
-    "  border:2px solid #e37222; border-radius:4px; padding:8px 6px;"
-    "  background:#e37222; color:white; font-weight:700; text-align:left;"
-    "}"
+    f"QPushButton {{"
+    f"  border:2px solid {ORANGE_500}; border-radius:4px; padding:8px 6px;"
+    f"  background:{ORANGE_500}; color:{RIBBON_TEXT}; font-weight:700; text-align:left;"
+    f"}}"
+    f"QPushButton:hover {{ background:{ORANGE_600}; }}"
 )
 
 
