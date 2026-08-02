@@ -750,7 +750,7 @@ def _configure_adaptive_sizing(
         "Mesh.MaxNumThreads2D", "Mesh.MaxNumThreads3D",
     ):
         try:
-            gmsh_mod.option.setNumber(opt, hw["cpu_count"])
+            gmsh_mod.option.setNumber(opt, _gmsh_thread_count())
         except Exception:
             pass  # option name varies across GMSH versions; NumThreads alone still helps
 
@@ -1377,19 +1377,41 @@ def apply_solution_size_field(
     }
 
 
+def _gmsh_thread_count() -> int:
+    """Number of threads GMSH should use for meshing.
+
+    Honours an explicit ``GMSH_NUM_THREADS`` override; otherwise falls back
+    to a conservative cap instead of every logical core.  GMSH threading
+    gives essentially no wall-time benefit (measured on the reference valve:
+    268 s single-thread vs 274 s with 8 threads — the SAMR path already
+    forces 1 for the same reason), but it DOES saturate every core while it
+    runs, which froze the whole system during a long STL/CAD volume mesh
+    (the user-visible "mesh di gmsh impalla il sistema" symptom).  Leaving
+    at least half the machine free keeps the OS and GUI responsive.
+    """
+    env = os.environ.get("GMSH_NUM_THREADS", "").strip()
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    cpus = os.cpu_count() or 4
+    return max(1, min(cpus // 2, 8))
+
+
 def _apply_gmsh_thread_env(gmsh_mod) -> None:
-    """Honour GMSH_NUM_THREADS by setting General.NumThreads before meshing.
+    """Set General.NumThreads from GMSH_NUM_THREADS (or a capped default).
 
     GMSH defaults to a single thread; on an 89-surface valve part the volume
     mesh takes minutes. The meshing subprocess is passed the env var so
     large remeshes can use multiple cores without changing the Python API.
+    When the env var is absent the capped default keeps the system
+    responsive instead of pinning every logical core.
     """
-    nt = os.environ.get("GMSH_NUM_THREADS", "").strip()
-    if nt:
-        try:
-            gmsh_mod.option.setNumber("General.NumThreads", int(nt))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not set GMSH_NUM_THREADS=%s: %s", nt, exc)
+    try:
+        gmsh_mod.option.setNumber("General.NumThreads", _gmsh_thread_count())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not set GMSH threads: %s", exc)
 
 
 def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:

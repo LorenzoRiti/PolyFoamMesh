@@ -2398,6 +2398,19 @@ class MainWindow(QMainWindow):
             max_cell = self._params.get_max_cell()
             min_cell = self._params.get_min_cell()
 
+        # Propagate the user's OpenMP thread selection to the GMSH
+        # subprocess so a "Custom" thread count also applies to GMSH
+        # meshing (GMSH_NUM_THREADS is honoured by gmsh_wrapper). When the
+        # user leaves the auto/balanced modes, no override is set and
+        # gmsh_wrapper's own capped default keeps the system responsive
+        # instead of GMSH pinning every logical core (the "mesh di gmsh
+        # impalla il sistema" freeze).
+        _openmp_mode, _openmp_threads = self._params.get_openmp_params()
+        if _openmp_mode == "custom" and _openmp_threads is not None:
+            os.environ["GMSH_NUM_THREADS"] = str(_openmp_threads)
+        else:
+            os.environ.pop("GMSH_NUM_THREADS", None)
+
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
         t = QThread()
         w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,

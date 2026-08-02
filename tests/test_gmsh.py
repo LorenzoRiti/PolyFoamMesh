@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import os as _os
+from unittest import mock
 try:
     import OCP as _ocp
     _d = _os.path.dirname(_ocp.__file__)
@@ -147,4 +148,42 @@ def test_mesh_stats_readability():
     assert "18,340" in msg
     assert "12,100" in msg
     print(f"PASS: mesh stats format: {msg}")
+
+
+# ------------------------------------------------------------------
+# GMSH freeze fix: thread count must never pin every logical core
+# ------------------------------------------------------------------
+def test_gmsh_thread_count_caps_cores_when_no_override():
+    """Without GMSH_NUM_THREADS the default must be capped below the
+    full logical core count so a long mesh run can't saturate the system
+    (the "mesh di gmsh impalla il sistema" freeze)."""
+    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {}, clear=False):
+        _os.environ.pop("GMSH_NUM_THREADS", None)
+        n = gw._gmsh_thread_count()
+    cpus = _os.cpu_count() or 4
+    assert n >= 1
+    assert n <= max(1, min(cpus // 2, 8))
+
+
+def test_gmsh_thread_count_honours_explicit_override():
+    """An explicit GMSH_NUM_THREADS must be respected exactly."""
+    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {"GMSH_NUM_THREADS": "2"}, clear=False):
+        assert gw._gmsh_thread_count() == 2
+    with mock.patch.dict(_os.environ, {"GMSH_NUM_THREADS": "16"}, clear=False):
+        assert gw._gmsh_thread_count() == 16
+
+
+def test_gmsh_thread_count_ignores_bad_override():
+    """A non-numeric GMSH_NUM_THREADS must fall back to the capped default."""
+    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {"GMSH_NUM_THREADS": "abc"}, clear=False):
+        n = gw._gmsh_thread_count()
+    cpus = _os.cpu_count() or 4
+    assert n >= 1
+    assert n <= max(1, min(cpus // 2, 8))
 
