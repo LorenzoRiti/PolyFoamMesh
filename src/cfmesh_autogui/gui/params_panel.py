@@ -443,7 +443,7 @@ class ParamsPanel(QWidget):
         self._refine_group = QGroupBox("Local Refinement")
         refine_layout = QVBoxLayout(self._refine_group)
         self._auto_refine_check = QCheckBox("Auto-refine narrow sections")
-        self._auto_refine_check.setChecked(True)
+        self._auto_refine_check.setChecked(False)
         self._auto_refine_check.setToolTip(
             "Automatically detect throats/constrictions in duct-like geometries "
             "and create local refinement zones with finer cells."
