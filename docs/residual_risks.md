@@ -46,6 +46,16 @@ source of truth.
 - The GMSH adaptive path sizes from real geometry features; the cfMesh path
   uses the derived Max/Min cell sizes. The two meshers can therefore produce
   different cell counts for the same slider position.
+- Pre-existing test failure (not caused by the hardening pass, reproduced on
+  commit d0337b5): `tests/test_sizing_resolves_features.py` fails because
+  `cq.Workplane` fixtures are authored in millimetres while
+  `tessellate_patches` converts to metres — local thickness is measured
+  ~1000x smaller than the test expects (p1 ≈ 5.99e-05 vs 0.06). The
+  unit-of-authoring contract for in-memory CAD fixtures needs a product
+  decision (author fixtures in metres, or scale before tessellation); do not
+  patch the failing assertions to hide it.
+- `test_watertight_meshdict.py::test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop`
+  is order-sensitive (shared QApplication state); it passes in isolation.
 
 ## Packaging And Runtime
 
