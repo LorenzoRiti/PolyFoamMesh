@@ -1259,6 +1259,49 @@ class ViewerWidget(QWidget):
             return
         self._mesh_retry_count = 0
         self._cancel_display_timeout()
+        # --- Try loading internal 3D mesh (polyhedral cells) first ---
+        # Boundary patches (VTP) show the outer surface, which looks
+        # identical for tet and poly.  The real difference is in the
+        # INTERNAL cells — load internal.vtu to show polyhedral wireframe.
+        case_dir = Path(self._mesh_case_dir)
+        vtk_dir = case_dir / "VTK_view"
+        internal_vtu = None
+        if vtk_dir.exists():
+            candidates = sorted(vtk_dir.glob("*_0/internal.vtu"))
+            if candidates:
+                internal_vtu = candidates[0]
+        if internal_vtu is not None:
+            try:
+                grid = pv.read(str(internal_vtu))
+                n_cells = grid.n_cells
+                logger.info("Loading internal volume mesh: %d cells from %s", n_cells, internal_vtu)
+                show_decimated = n_cells > self.DECIMATE_THRESHOLD
+                self._plotter.clear()
+                ec = self._edge_color()
+                if show_decimated:
+                    try:
+                        grid = grid.decimate_pro(self.DECIMATE_TARGET)
+                    except Exception:
+                        pass
+                # Render as semi-transparent surface with wireframe edges
+                # so the polyhedral cell structure is visible
+                self._plotter.add_mesh(
+                    grid, show_edges=True, edge_color=ec,
+                    color="#b0b0b0", opacity=0.6,
+                    style="surface",
+                )
+                if show_decimated:
+                    self._plotter.add_text(
+                        f"Visualizzazione semplificata ({n_cells:,} celle). "
+                        "Il file di mesh reale \u00e8 invariato.",
+                        color=self._text_color, font_size=10,
+                    )
+                self._plotter.view_isometric()
+                self._plotter.render()
+                return
+            except Exception as exc:
+                logger.warning("Failed to load internal VTU %s: %s — falling back to boundary patches", internal_vtu, exc)
+        # --- Fallback: boundary surface patches only ---
         total_faces = sum(pd.n_cells for pd in patches.values())
         logger.info(
             "Loaded %d mesh patches (%d total faces) for %s",
