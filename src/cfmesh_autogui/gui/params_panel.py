@@ -243,22 +243,29 @@ class ParamsPanel(QWidget):
         # fixed defaults (5cm/1cm) that don't scale to whatever geometry is
         # loaded — a single geometry-aware slider can't drift out of scale
         # the same way.
+        # Mesh Fineness is the SINGLE sizing control: a cell-count scale
+        # from ~10K to ~20M cells (log). It governs everything — the GMSH
+        # max_cells_target, and the derived max/min cell sizes used by
+        # cfMesh. Manual numeric override no longer exists as the primary
+        # input (see _slider-controlled sizing under the Advanced tab).
         detail_group = QGroupBox("Mesh Fineness")
         detail_layout = QVBoxLayout(detail_group)
         detail_caption = QLabel(
-            "Controlla tutto — di solito basta questo. Per interventi "
-            "manuali (dimensione celle, ecc.) vedi la scheda Advanced."
+            "Dimensioni della mesh finale (⚠ celle totali indicativo):"
         )
         detail_caption.setWordWrap(True)
         detail_caption.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         detail_layout.addWidget(detail_caption)
         self._detail_slider = QSlider(Qt.Horizontal)
-        self._detail_slider.setRange(0, 4)
-        self._detail_slider.setValue(2)
+        self._detail_slider.setRange(0, 20)
+        self._detail_slider.setValue(10)
         self._detail_slider.setTickPosition(QSlider.TicksBelow)
-        self._detail_slider.setTickInterval(1)
-        self._detail_slider.setToolTip("Controlla la finezza della mesh: da Molto Grossolana (celle grandi, mesh veloce) a Molto Fine (celle piccole, mesh accurata)")
-        self._detail_label = QLabel("Media")
+        self._detail_slider.setTickInterval(2)
+        self._detail_slider.setToolTip(
+            "Controlla la dimensione della mesh finale da ~10K a ~20M celle.\n"
+            "Questo unico controllo guida cell size, target celle e qualità."
+        )
+        self._detail_label = QLabel("")
         self._detail_label.setAlignment(Qt.AlignCenter)
         self._detail_label.setStyleSheet(f"font-weight: bold; color: {ORANGE_500}; font-size: 14px;")
         self._detail_slider.valueChanged.connect(self._on_detail_changed)
@@ -514,21 +521,19 @@ class ParamsPanel(QWidget):
         # button selected at startup (default cfMesh -> checkbox visible).
         self._on_mesher_changed(self.get_mesher_type())
 
-        # Manual override section — everything here is off/unused by
-        # default; the Mesh Fineness slider on the main tab is what
-        # actually drives sizing unless a user comes in here deliberately.
-        override_label = QLabel("Manual sizing override")
-        override_label.setStyleSheet("font-weight: bold;")
-        adv_layout.addWidget(override_label)
-
-        mesh_group = QGroupBox("Cell Sizes")
+        # Cell sizes are derived from the Mesh Fineness slider (single
+        # control). They are shown here read-only so the user always sees
+        # what sizes the slider set — never edited by hand.
+        mesh_group = QGroupBox("Cell Sizes (derivati dallo slider)")
         mesh_form = QFormLayout(mesh_group)
         self._max_cell = QDoubleSpinBox()
-        self._max_cell.setRange(0.001, 100.0)
+        self._max_cell.setRange(0.0001, 100.0)
         self._max_cell.setValue(0.05)
         self._max_cell.setSingleStep(0.01)
         self._max_cell.setDecimals(4)
         self._max_cell.setSuffix(" m")
+        self._max_cell.setReadOnly(True)
+        self._max_cell.setToolTip("Derivato automaticamente dallo slider Mesh Fineness.")
         mesh_form.addRow("Max Cell Size:", self._max_cell)
 
         self._min_cell = QDoubleSpinBox()
@@ -537,6 +542,8 @@ class ParamsPanel(QWidget):
         self._min_cell.setSingleStep(0.001)
         self._min_cell.setDecimals(4)
         self._min_cell.setSuffix(" m")
+        self._min_cell.setReadOnly(True)
+        self._min_cell.setToolTip("Derivato automaticamente dallo slider Mesh Fineness.")
         mesh_form.addRow("Min Cell Size:", self._min_cell)
 
         self._cell_est_label = QLabel("Cells: --")
@@ -549,40 +556,21 @@ class ParamsPanel(QWidget):
         self._min_cell.valueChanged.connect(self._on_min_cell_changed)
         adv_layout.addWidget(mesh_group)
 
+        # The old peer controls (Auto-Suggest, Adaptive checkbox, max cells
+        # target spinbox) are superseded by the single Mesh Fineness slider.
+        # Kept as hidden attributes so existing code that references them
+        # keeps working; they are no longer a user input surface.
         btn_suggest = QPushButton("Auto-Suggest Cell Sizes")
         btn_suggest.clicked.connect(self._on_suggest_sizes)
         self._btn_suggest = btn_suggest
+        btn_suggest.setVisible(False)
         adv_layout.addWidget(btn_suggest)
 
-        # Guides for the GMSH adaptive/automatic refinement (Tetrahedral
-        # FEM / Polyhedral CFD mesher only): without these the "Max/Min
-        # Cell Size" fields just above — always populated by Auto-Suggest —
-        # silently forced the old uniform sizing every time, so the
-        # adaptive algorithm never actually ran in practice. Two knobs:
-        # a switch back to manual uniform sizing, and a direct cap on
-        # how large the mesh is allowed to grow (the "8M tet cells"
-        # concern — the auto hardware budget only guides how fine small
-        # features get resolved, it doesn't hard-cap the total count).
         self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (GMSH mesher, recommended)")
-        # On by default, driven by the Mesh Fineness slider on the main
-        # tab — this IS the "one slider governs everything" path (Lorenzo's
-        # UX feedback). Unchecking here is the deliberate manual override:
-        # switches to the fixed Max/Min Cell Size above, entered by hand.
         self._adaptive_sizing_check.setChecked(False)
-        self._adaptive_sizing_check.setToolTip(
-            "Refines only near small features/curved surfaces, coarse\n"
-            "elsewhere, sized from the geometry itself and the available\n"
-            "hardware — instead of one uniform size everywhere (the\n"
-            "Max/Min Cell Size fields above, used when this is off).\n"
-            "Only applies to the Tetrahedral (FEM) / Polyhedral (CFD) mesher."
-        )
+        self._adaptive_sizing_check.setToolTip("Superseded by the Mesh Fineness slider.")
+        self._adaptive_sizing_check.setVisible(False)
         adv_layout.addWidget(self._adaptive_sizing_check)
-        # Max/Min Cell Size stayed visible, editable, and full of a
-        # plausible-looking number even when Adaptive was checked and
-        # silently ignoring them (see _on_run_meshing: `0 if adaptive else
-        # get_max_cell()`) — nothing told the user their typed values were
-        # about to be discarded. Grey them out instead so the panel tells
-        # the truth about what's actually authoritative.
         self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
         self._on_adaptive_sizing_toggled(self._adaptive_sizing_check.isChecked())
 
@@ -600,12 +588,18 @@ class ParamsPanel(QWidget):
         self._max_cells_target.setValue(0)
         self._max_cells_target.setSpecialValueText("Auto (hardware-based)")
         self._max_cells_target.setToolTip(
-            "0 = decide automatically from free RAM/CPU cores.\n"
-            "Set a value to cap it directly instead — e.g. if an 8M-cell\n"
-            "tetrahedral mesh feels like more than you want to wait on."
+            "Superseded by the Mesh Fineness slider (hidden)."
         )
         max_cells_row.addWidget(self._max_cells_target)
         adv_layout.addLayout(max_cells_row)
+        # Whole "Max cells target" row is superseded by the slider.
+        max_cells_target_label = max_cells_row.itemAt(0).widget()
+        if max_cells_target_label is not None:
+            max_cells_target_label.setVisible(False)
+        self._max_cells_target.setVisible(False)
+        # Initialize the Mesh Fineness label + derived cell sizes from the
+        # slider's default value (now that _max_cell/_min_cell exist).
+        self._on_detail_changed(self._detail_slider.value())
 
         openmp_group = QGroupBox("OpenMP Acceleration")
         openmp_group_layout = QVBoxLayout(openmp_group)
@@ -948,14 +942,71 @@ class ParamsPanel(QWidget):
     def get_poly_conversion(self) -> bool:
         return self._poly_check.isChecked()
 
+    # Cell-count scale for the Mesh Fineness slider (log: 10K .. 20M cells).
+    _CELL_TARGET_MIN = 10_000
+    _CELL_TARGET_MAX = 20_000_000
+    _CELL_TARGET_BUCKETS = 20
+
     _DETAIL_LABELS = ["Molto Grossolana", "Grossolana", "Media", "Fine", "Molto Fine"]
     _DETAIL_MAP = {0: "very_coarse", 1: "coarse", 2: "medium", 3: "fine", 4: "very_fine"}
 
+    def _slider_to_cells(self, value: int) -> int:
+        """Map slider position 0..20 to a target cell count (log 10K..20M)."""
+        t = max(0, min(self._CELL_TARGET_BUCKETS, int(value))) / self._CELL_TARGET_BUCKETS
+        import math
+        cells = self._CELL_TARGET_MIN * (self._CELL_TARGET_MAX / self._CELL_TARGET_MIN) ** t
+        return int(round(cells))
+
+    def _cells_label(self, cells: int) -> str:
+        if cells >= 1_000_000:
+            return f"{cells / 1e6:.1f}M"
+        if cells >= 1_000:
+            return f"{round(cells / 1e3)}K"
+        return str(cells)
+
     def _on_detail_changed(self, value: int):
-        self._detail_label.setText(self._DETAIL_LABELS[value])
+        """Slider now drives the target cell count AND the derived cell sizes."""
+        cells = self._slider_to_cells(value)
+        detail = self.get_detail_level()
+        self._detail_label.setText(
+            f"{self._DETAIL_LABELS[self._DETAIL_INDEX[detail]]} · ~{self._cells_label(cells)} celle"
+        )
+        self._derive_cell_sizes_from_target(cells)
+
+    _DETAIL_INDEX = {v: k for k, v in _DETAIL_MAP.items()}
+
+    def _derive_cell_sizes_from_target(self, cells: int) -> None:
+        """Set _max_cell/_min_cell from the target cell count + known bbox.
+
+        cell size ~ (bbox_volume / cells)^(1/3), max a bit above, min a
+        bit below. bbox defaults to 1m when geometry hasn't been loaded.
+        """
+        if not hasattr(self, "_max_cell") or not hasattr(self, "_min_cell"):
+            return
+        bbox = getattr(self, "_bbox_dim", 1.0) or 1.0
+        import math
+        cell_size = (bbox ** 3 / max(cells, 1)) ** (1.0 / 3.0)
+        s_max = cell_size * 1.6
+        s_min = cell_size * 0.5
+        self._max_cell.blockSignals(True)
+        self._max_cell.setValue(max(s_max, 1e-4))
+        self._max_cell.blockSignals(False)
+        self._min_cell.blockSignals(True)
+        self._min_cell.setValue(max(s_min, 1e-5))
+        self._min_cell.blockSignals(False)
 
     def get_detail_level(self) -> str:
-        return self._DETAIL_MAP.get(self._detail_slider.value(), "medium")
+        """5-level detail derived from the 0..20 cell-count slider."""
+        value = self._detail_slider.value() if hasattr(self, "_detail_slider") else 10
+        bucket = int(round(value / 5.0))
+        bucket = max(0, min(4, bucket))
+        return self._DETAIL_MAP.get(bucket, "medium")
+
+    def get_target_cells(self) -> int:
+        """Target cell count driven by the Mesh Fineness slider."""
+        if not hasattr(self, "_detail_slider"):
+            return 500_000
+        return self._slider_to_cells(self._detail_slider.value())
 
     def set_current_tab(self, index: int) -> None:
         if hasattr(self, "_tabs") and 0 <= index < self._tabs.count():
@@ -971,8 +1022,8 @@ class ParamsPanel(QWidget):
         return getattr(self, "_adaptive_sizing_check", None) is not None and self._adaptive_sizing_check.isChecked()
 
     def get_max_cells_target(self) -> int:
-        w = getattr(self, "_max_cells_target", None)
-        return w.value() if w is not None else 0
+        """Target cell count (GMSH) — driven by the Mesh Fineness slider."""
+        return self.get_target_cells()
 
     def get_auto_refine_enabled(self) -> bool:
         return getattr(self, "_auto_refine_check", None) is not None and self._auto_refine_check.isChecked()
@@ -1227,19 +1278,16 @@ class ParamsPanel(QWidget):
             self._poly_check.setVisible(True)
 
     def save_params(self, s):
-        s.setValue("params/max_cell", self._max_cell.value())
-        s.setValue("params/min_cell", self._min_cell.value())
+        s.setValue("params/detail_slider", self._detail_slider.value())
         s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
         s.setValue("params/unit", self._unit_selector.currentText())
         s.setValue("ui/expert_mode", self._expert_mode)
 
     def restore_params(self, s):
-        max_cell = s.value("params/max_cell", None)
-        if max_cell is not None:
-            self._max_cell.setValue(float(max_cell))
-        min_cell = s.value("params/min_cell", None)
-        if min_cell is not None:
-            self._min_cell.setValue(float(min_cell))
+        slider = s.value("params/detail_slider", None)
+        if slider is not None:
+            self._detail_slider.setValue(int(slider))
+            self._on_detail_changed(self._detail_slider.value())
         bl = s.value("params/bl_checked", None, type=bool)
         if bl is not None:
             self._bl_checkbox.setChecked(bool(bl))
