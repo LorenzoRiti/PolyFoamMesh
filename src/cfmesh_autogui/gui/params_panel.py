@@ -962,7 +962,8 @@ class ParamsPanel(QWidget):
         return getattr(self, "_adaptive_sizing_check", None) is not None and self._adaptive_sizing_check.isChecked()
 
     def get_max_cells_target(self) -> int:
-        return getattr(self, "_max_cells_target", None) and self._max_cells_target.value() or 0
+        w = getattr(self, "_max_cells_target", None)
+        return w.value() if w is not None else 0
 
     def get_auto_refine_enabled(self) -> bool:
         return getattr(self, "_auto_refine_check", None) is not None and self._auto_refine_check.isChecked()
