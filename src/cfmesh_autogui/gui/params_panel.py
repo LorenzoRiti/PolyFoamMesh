@@ -274,6 +274,9 @@ class ParamsPanel(QWidget):
         mesh_layout.addWidget(detail_group)
 
         self._bbox_dim = 1.0
+        self._bbox_extents = (1.0, 1.0, 1.0)
+        self._geometry_volume = 0.0
+        self._geometry_estimate: tuple[int, int, int] | None = None
 
         # Max/Min Cell Size, the cell estimate label, and Auto-Suggest all
         # moved to the Advanced tab (manual override section) — see the
@@ -868,17 +871,37 @@ class ParamsPanel(QWidget):
         extent = max(dx, dy, dz)
         # (0, 0, 0) is the reset/no-geometry state, not a micron-sized part.
         self._bbox_dim = extent if extent > 0 else 1.0
+        self._bbox_extents = (
+            (dx, dy, dz) if extent > 0 else (1.0, 1.0, 1.0)
+        )
         if hasattr(self, "_detail_slider"):
             self._on_detail_changed(self._detail_slider.value())
 
     def set_suggest_meshes(self, meshes: list) -> None:
         self._suggest_meshes = list(meshes) if meshes else []
+        self._geometry_volume = self._safe_geometry_volume()
+        if hasattr(self, "_detail_slider"):
+            self._on_detail_changed(self._detail_slider.value())
 
     def set_cell_estimate(self, text: str):
         self._cell_est_label.setText(text)
 
+    def set_geometry_cell_estimate(self, low: int, nominal: int, high: int):
+        """Set the pre-mesh estimate computed by the full pipeline.
+
+        The main window knows patch-specific refinement sizes, so its
+        estimate is more representative than the panel-only volume fallback.
+        Keep it as the source for the slider label too.
+        """
+        self._geometry_estimate = (int(low), int(nominal), int(high))
+        if hasattr(self, "_detail_slider"):
+            self._on_detail_changed(self._detail_slider.value())
+
     def set_real_cell_count(self, count: int):
+        self._geometry_estimate = (int(count), int(count), int(count))
         self._cell_est_label.setText(f"Cells: {count:,}")
+        if hasattr(self, "_detail_slider"):
+            self._on_detail_changed(self._detail_slider.value())
 
     def _on_run(self):
         if self._meshing_state:
@@ -977,10 +1000,28 @@ class ParamsPanel(QWidget):
         """Slider now drives the target cell count AND the derived cell sizes."""
         cells = self._slider_to_cells(value)
         detail = self.get_detail_level()
-        self._detail_label.setText(
-            f"{self._DETAIL_LABELS[self._DETAIL_INDEX[detail]]} · ~{self._cells_label(cells)} celle"
-        )
         self._derive_cell_sizes_from_target(cells)
+        estimate = self._geometry_estimate or self._geometry_cell_estimate()
+        name = self._DETAIL_LABELS[self._DETAIL_INDEX[detail]]
+        if estimate is None:
+            self._detail_label.setText(
+                f"{name} · cap ~{self._cells_label(cells)} celle"
+            )
+            if hasattr(self, "_cell_est_label"):
+                self._cell_est_label.setText(
+                    "Stima geometrica: carica una geometria valida"
+                )
+        else:
+            lo, nominal, hi = estimate
+            self._detail_label.setText(
+                f"{name} · cap ~{self._cells_label(cells)} · "
+                f"stima ~{self._cells_label(nominal)} celle"
+            )
+            if hasattr(self, "_cell_est_label"):
+                self._cell_est_label.setText(
+                    f"Stima geometrica: ~{nominal:,} celle "
+                    f"(range {lo:,}-{hi:,})"
+                )
 
     _DETAIL_INDEX = {v: k for k, v in _DETAIL_MAP.items()}
 
@@ -1007,6 +1048,40 @@ class ParamsPanel(QWidget):
         self._min_cell.blockSignals(True)
         self._min_cell.setValue(s_min)
         self._min_cell.blockSignals(False)
+
+    def _safe_geometry_volume(self) -> float:
+        """Return a trustworthy solid volume, or zero when unavailable."""
+        if not getattr(self, "_suggest_meshes", None):
+            return 0.0
+        try:
+            from cfmesh_autogui.core.geometry import compute_volume
+
+            volume = float(compute_volume(self._suggest_meshes))
+        except Exception as exc:
+            logger.debug("Geometry volume estimate skipped: %s", exc)
+            return 0.0
+        dx, dy, dz = self._bbox_extents
+        bbox_volume = max(dx * dy * dz, 0.0)
+        # A summed patch volume outside the bbox volume is a sign that the
+        # tessellation is open/duplicated; do not present that as precision.
+        if volume <= 0.0 or bbox_volume <= 0.0 or volume > bbox_volume * 1.05:
+            return 0.0
+        return volume
+
+    def _geometry_cell_estimate(self) -> tuple[int, int, int] | None:
+        """Estimate cells from actual solid volume and derived cell sizes."""
+        volume = float(getattr(self, "_geometry_volume", 0.0))
+        if volume <= 0.0 or not hasattr(self, "_max_cell"):
+            return None
+        try:
+            from cfmesh_autogui.core.geometry import estimate_cell_count
+
+            return estimate_cell_count(
+                volume, self._max_cell.value(), self._min_cell.value(),
+            )
+        except Exception as exc:
+            logger.debug("Geometry cell estimate skipped: %s", exc)
+            return None
 
     def get_detail_level(self) -> str:
         """5-level detail derived from the 0..20 cell-count slider."""

@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+import trimesh  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cfmesh_autogui.core.geometry import validate_cell_sizes  # noqa: E402
@@ -64,3 +65,18 @@ def test_core_validation_preserves_sub_0_1mm_sizes():
     )
     assert safe_max > safe_min > 0
     assert safe_min / safe_max < 0.5
+
+
+def test_slider_label_uses_geometry_estimate_when_volume_is_available(panel):
+    panel.set_bbox(1.0, 1.0, 1.0)
+    panel.set_suggest_meshes([trimesh.creation.box(extents=[1.0, 1.0, 1.0])])
+    panel._detail_slider.setValue(20)
+    assert "cap ~20.0M" in panel._detail_label.text()
+    assert "stima ~" in panel._detail_label.text()
+    assert "range" in panel._cell_est_label.text()
+
+
+def test_pipeline_estimate_overrides_panel_fallback(panel):
+    panel.set_geometry_cell_estimate(500_000, 677_384, 950_000)
+    assert "677K" in panel._detail_label.text()
+    assert "500,000-950,000" in panel._cell_est_label.text()
