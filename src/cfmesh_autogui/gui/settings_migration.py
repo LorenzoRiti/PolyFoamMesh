@@ -26,8 +26,7 @@ logger = logging.getLogger(__name__)
 # Schema: every key that can appear in QSettings and its expected type
 _SETTINGS_SCHEMA: dict[str, type] = {
     "ui/theme_mode": str,
-    "params/max_cell": float,
-    "params/min_cell": float,
+    "params/detail_slider": int,
     "params/unit": str,
     "params/bl_checked": bool,
     "window/size": object,  # QSize

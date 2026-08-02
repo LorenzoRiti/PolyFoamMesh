@@ -278,13 +278,9 @@ _SETTINGS_VALIDATORS: dict[str, callable] = {
         _ok() if isinstance(v, str) and v in VALID_THEME_MODES
         else _err(f"Theme must be one of {VALID_THEME_MODES}, got {v!r}")
     ),
-    "params/max_cell": lambda v: (
-        validate_cell_size(float(v), 0.001) if isinstance(v, (int, float)) and float(v) > 0
-        else _err(f"max_cell must be a positive number, got {v!r}")
-    ),
-    "params/min_cell": lambda v: (
-        _ok() if isinstance(v, (int, float)) and float(v) > 0
-        else _err(f"min_cell must be a positive number, got {v!r}")
+    "params/detail_slider": lambda v: (
+        _ok() if isinstance(v, int) and 0 <= int(v) <= 20
+        else _err(f"detail_slider must be an int in 0..20, got {v!r}")
     ),
     "params/unit": lambda v: (
         _ok() if isinstance(v, str) and v in {"m", "mm", "cm", "inch", "ft"}

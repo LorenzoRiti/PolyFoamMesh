@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
-from cfmesh_autogui.gui.design_tokens import COLOR_SURFACE, COLOR_BORDER
+from cfmesh_autogui.gui.design_tokens import NEUTRAL_50, NEUTRAL_300
 from cfmesh_autogui.gui.style import COLOR_ACCENT, COLOR_PASS, COLOR_TEXT_DIM
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class TemplateCard(QFrame):
         self.setFrameShape(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet(
-            f"TemplateCard {{ background:{COLOR_SURFACE}; border:1px solid {COLOR_BORDER}; "
+            f"TemplateCard {{ background:{NEUTRAL_50}; border:1px solid {NEUTRAL_300}; "
             "border-radius:8px; padding:12px; }"
             "TemplateCard:hover { border:2px solid " + COLOR_ACCENT + "; }"
         )
