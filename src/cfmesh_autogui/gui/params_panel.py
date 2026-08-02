@@ -601,7 +601,7 @@ class ParamsPanel(QWidget):
         # tab — this IS the "one slider governs everything" path (Lorenzo's
         # UX feedback). Unchecking here is the deliberate manual override:
         # switches to the fixed Max/Min Cell Size above, entered by hand.
-        self._adaptive_sizing_check.setChecked(True)
+        self._adaptive_sizing_check.setChecked(False)
         self._adaptive_sizing_check.setToolTip(
             "Refines only near small features/curved surfaces, coarse\n"
             "elsewhere, sized from the geometry itself and the available\n"
