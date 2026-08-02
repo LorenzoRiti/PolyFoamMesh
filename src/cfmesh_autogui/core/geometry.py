@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import TypedDict
 import numpy as np
@@ -669,18 +670,16 @@ def validate_cell_sizes(
         )
         logger.warning(warnings[-1])
 
-    # The GUI's cell-size spinboxes round to 4 decimals on setValue() — an
-    # exact 50% ratio computed here can independently round each value to a
-    # slightly different 4-decimal number and land the STORED pair just
-    # over 50%, which then hard-blocks meshing in validate_cell_size()
-    # (verified live: a real user's auto-suggested 0.09375/0.1875 pair,
-    # exactly 50% before rounding, became 0.0938/0.1875 = 50.03% after —
-    # "min_cell exceeds 50% of max_cell", no way to proceed without manually
-    # editing a spinbox). Round to that same precision here and clamp to
-    # 49%, not 50%, so the 0.00005 max rounding error on each side can never
-    # push the stored ratio over the strict check.
-    safe_max = round(safe_max, 4)
-    safe_min = round(min(safe_min, safe_max * 0.49), 4)
+    # Match the GUI precision while preserving micron/nanometre-scale meshes.
+    # Older code always rounded to four decimals; on a millimetre part that
+    # turned both derived values into 0.0000. Use four decimals for ordinary
+    # metre-scale values and significant extra digits below 1e-4.
+    smallest = max(min(abs(safe_max), abs(safe_min)), 1e-15)
+    decimals = 4
+    if smallest < 1e-4:
+        decimals = min(12, max(7, int(math.ceil(-math.log10(smallest))) + 2))
+    safe_max = round(safe_max, decimals)
+    safe_min = round(min(safe_min, safe_max * 0.49), decimals)
 
     if safe_max > bbox_max_dim / 10.0:
         warnings.append(
