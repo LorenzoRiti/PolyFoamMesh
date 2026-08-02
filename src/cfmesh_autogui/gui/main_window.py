@@ -2939,51 +2939,53 @@ class MainWindow(QMainWindow):
         self._kill_wsl_processes()
         if getattr(self._runner, "is_running", False):
             self._runner.terminate()
-        parallel_worker = getattr(self, "_parallel_worker", None)
-        if parallel_worker is not None:
-            parallel_worker.cancel()
-        parallel_thread = getattr(self, "_parallel_thread", None)
-        if parallel_thread is not None and parallel_thread.isRunning():
-            parallel_thread.requestInterruption()
-            if not parallel_thread.wait(5000):
-                parallel_thread.terminate()
-                parallel_thread.wait(3000)
 
-        # GMSH-direct path (Tetrahedral/Polyhedral): none of the above
-        # ever touched it. _kill_wsl_processes only targets WSL, and
-        # cartesianMesh's _runner/thread machinery is a separate path —
-        # GmshVolumeWorker/GmshSurfaceWorker/CheckMeshWorker/
-        # WatertightWorker each spawn their own native subprocess via
-        # _stream_subprocess, and NOTHING here ever called into it.
-        # Confirmed live: Cancel reset the UI but the GMSH child process
-        # kept running orphaned, and starting a new run then meant two
-        # GMSH processes running at once — reported as both "Cancel does
-        # nothing" and "processes overlap". .cancel() kills the actual
-        # subprocess by PID; _cleanup_thread below then tears down the
-        # QThread cleanly since run() can now return promptly instead of
-        # sitting in _stream_subprocess's poll loop until the 3s timeout
-        # forces a QThread.terminate() that never touched the orphan.
-        for worker_attr in ("_gmsh_worker", "_checkmesh_worker", "_watertight_worker"):
-            worker = getattr(self, worker_attr, None)
+        # Cancel every worker that exposes a .cancel() and tear down every
+        # known background QThread.  The list below is the full set of
+        # (thread_attr, worker_attr) pairs the app can run; each worker is
+        # asked to cancel its own subprocess first (so the QThread can quit
+        # promptly instead of sitting in a poll loop), then _cleanup_thread
+        # disconnects signals + quits + waits + deleteLater.
+        all_workers = [
+            ("_parallel_thread", "_parallel_worker"),
+            ("_gmsh_thread", "_gmsh_worker"),
+            ("_gmsh_conv_thread", "_gmsh_conv_worker"),
+            ("_wsl_check_thread", "_wsl_check_worker"),
+            ("_feature_thread", "_feature_worker"),
+            ("_polydual_thread", "_polydual_worker"),
+            ("_checkmesh_thread", "_checkmesh_worker"),
+            ("_quality_fix_thread", "_quality_fix_worker"),
+            ("_decompose_thread", "_decompose_worker"),
+            ("_watertight_thread", "_watertight_worker"),
+            ("_export_thread", "_export_worker"),
+            ("_samr_thread", "_samr_worker"),
+        ]
+        for _t_attr, w_attr in all_workers:
+            worker = getattr(self, w_attr, None)
             cancel = getattr(worker, "cancel", None)
             if callable(cancel):
-                cancel()
-        for thread_attr, worker_attr in (
-            ("_gmsh_thread", "_gmsh_worker"),
-            ("_checkmesh_thread", "_checkmesh_worker"),
-            ("_watertight_thread", "_watertight_worker"),
-        ):
-            self._cleanup_thread(thread_attr, worker_attr)
+                try:
+                    cancel()
+                except Exception as exc:
+                    logger.debug("cancel() failed for %s: %s", w_attr, exc)
+            self._cleanup_thread(_t_attr, w_attr)
 
-        # Solution-adaptive refinement worker: honours cancel via its own
-        # slot (the engine checks it between stages) — the solve itself is a
-        # long block, but cancel at least stops further remesh/solve cycles.
-        samr_worker = getattr(self, "_samr_worker", None)
-        if samr_worker is not None:
-            cancel = getattr(samr_worker, "cancel", None)
-            if callable(cancel):
-                cancel()
-        self._cleanup_thread("_samr_thread", "_samr_worker")
+        # autopoly runs as a raw daemon thread + a poll timer, not a QThread.
+        # Stop polling; any late result is discarded by the my_id guard.
+        if hasattr(self, "_autopoly_poll_timer"):
+            try:
+                self.killTimer(self._autopoly_poll_timer)
+            except Exception:
+                pass
+
+        # foamToVTK viewer process (not a WSL meshing process, but it can
+        # still be mid-run and must not be left running after cancel).
+        viewer_cancel = getattr(self._viewer, "cancel_vtk_process", None)
+        if callable(viewer_cancel):
+            try:
+                viewer_cancel()
+            except Exception as exc:
+                logger.debug("viewer cancel failed: %s", exc)
 
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)

@@ -703,13 +703,12 @@ class ParamsPanel(QWidget):
         btn_reset_layout.addWidget(self._btn_reset)
         outer.addLayout(btn_reset_layout)
 
-        # Default to simple mode: hide the knobs a first-time user doesn't
-        # need yet (boundary layers, mesher choice, parallel/polyhedral).
-        # Cell sizes + detail level + Generate Mesh are enough to get a
-        # working mesh; set_expert_mode(True) reveals the rest for users
-        # who want to tune them.
-        self._expert_mode = False
-        self.set_expert_mode(False)
+        # Advanced mode ON by default: the mesher choice buttons, boundary
+        # layers and the Advanced tab are all visible from the start. Hiding
+        # them behind "simple mode" confused users (e.g. the 3 mesher buttons
+        # were invisible), so the simple mode is disabled by default.
+        self._expert_mode = True
+        self.set_expert_mode(True)
 
     def is_expert_mode(self) -> bool:
         return self._expert_mode
