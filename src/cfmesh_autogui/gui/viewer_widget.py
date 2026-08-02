@@ -1259,6 +1259,47 @@ class ViewerWidget(QWidget):
             return
         self._mesh_retry_count = 0
         self._cancel_display_timeout()
+        # --- Load internal 3D mesh (polyhedral cells) when available ---
+        # After poly conversion (tet→poly, cfMesh polyDualMesh, etc.), the
+        # internal.vtu file contains the real 3D cell data — not just the
+        # outer boundary skin.  Show this when it exists so the user sees
+        # the polyhedral mesh, not the original tetrahedra.
+        case_dir = Path(self._mesh_case_dir)
+        vtk_dir = case_dir / "VTK_view"
+        internal_vtu = None
+        if vtk_dir.exists():
+            candidates = sorted(vtk_dir.glob("*_0/internal.vtu"))
+            if candidates:
+                internal_vtu = candidates[0]
+        if internal_vtu is not None:
+            try:
+                grid = pv.read(str(internal_vtu))
+                n_cells = grid.n_cells
+                logger.info("Loading internal volume mesh: %d cells from %s", n_cells, internal_vtu)
+                show_decimated = n_cells > self.DECIMATE_THRESHOLD
+                self._plotter.clear()
+                ec = self._edge_color()
+                if show_decimated:
+                    try:
+                        grid = grid.decimate_pro(self.DECIMATE_TARGET)
+                    except Exception:
+                        pass
+                self._plotter.add_mesh(
+                    grid, show_edges=True, edge_color=ec,
+                    color="#d0d0d0", opacity=0.85,
+                )
+                if show_decimated:
+                    self._plotter.add_text(
+                        f"Visualizzazione semplificata ({n_cells:,} celle). "
+                        "Il file di mesh reale \u00e8 invariato.",
+                        color=self._text_color, font_size=10,
+                    )
+                self._plotter.view_isometric()
+                self._plotter.render()
+                return
+            except Exception as exc:
+                logger.warning("Failed to load internal VTU: %s — falling back to boundary patches", exc)
+        # --- Fallback: boundary surface patches only ---
         total_faces = sum(pd.n_cells for pd in patches.values())
         logger.info(
             "Loaded %d mesh patches (%d total faces) for %s",
