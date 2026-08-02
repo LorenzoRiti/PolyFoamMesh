@@ -527,20 +527,20 @@ class ParamsPanel(QWidget):
         mesh_group = QGroupBox("Cell Sizes (derivati dallo slider)")
         mesh_form = QFormLayout(mesh_group)
         self._max_cell = QDoubleSpinBox()
-        self._max_cell.setRange(0.0001, 100.0)
+        self._max_cell.setRange(1e-10, 100.0)
         self._max_cell.setValue(0.05)
         self._max_cell.setSingleStep(0.01)
-        self._max_cell.setDecimals(4)
+        self._max_cell.setDecimals(10)
         self._max_cell.setSuffix(" m")
         self._max_cell.setReadOnly(True)
         self._max_cell.setToolTip("Derivato automaticamente dallo slider Mesh Fineness.")
         mesh_form.addRow("Max Cell Size:", self._max_cell)
 
         self._min_cell = QDoubleSpinBox()
-        self._min_cell.setRange(0.0001, 10.0)
+        self._min_cell.setRange(1e-10, 10.0)
         self._min_cell.setValue(0.01)
         self._min_cell.setSingleStep(0.001)
-        self._min_cell.setDecimals(4)
+        self._min_cell.setDecimals(10)
         self._min_cell.setSuffix(" m")
         self._min_cell.setReadOnly(True)
         self._min_cell.setToolTip("Derivato automaticamente dallo slider Mesh Fineness.")
@@ -865,7 +865,11 @@ class ParamsPanel(QWidget):
 
     def set_bbox(self, dx: float, dy: float, dz: float):
         self._domain_label.setText(f"Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m")
-        self._bbox_dim = max(dx, dy, dz, 1e-6)
+        extent = max(dx, dy, dz)
+        # (0, 0, 0) is the reset/no-geometry state, not a micron-sized part.
+        self._bbox_dim = extent if extent > 0 else 1.0
+        if hasattr(self, "_detail_slider"):
+            self._on_detail_changed(self._detail_slider.value())
 
     def set_suggest_meshes(self, meshes: list) -> None:
         self._suggest_meshes = list(meshes) if meshes else []
@@ -888,10 +892,16 @@ class ParamsPanel(QWidget):
         max_val = self._max_cell.value()
         min_val = self._min_cell.value()
         if max_val <= min_val:
+            # Repair a stale/clamped pair after a geometry change or an old
+            # saved state that used the previous 1e-4 spinbox floor.
+            self._derive_cell_sizes_from_target(self.get_target_cells())
+            max_val = self._max_cell.value()
+            min_val = self._min_cell.value()
+        if max_val <= min_val:
             QMessageBox.warning(
                 self, "Invalid Mesh Parameters",
-                f"Max Cell Size ({max_val:.4f} m) must be strictly greater than "
-                f"Min Cell Size ({min_val:.4f} m).\n\n"
+                f"Max Cell Size ({max_val:.6g} m) must be strictly greater than "
+                f"Min Cell Size ({min_val:.6g} m).\n\n"
                 "Please adjust the values before generating the mesh.",
             )
             return False
@@ -985,13 +995,17 @@ class ParamsPanel(QWidget):
         bbox = getattr(self, "_bbox_dim", 1.0) or 1.0
         import math
         cell_size = (bbox ** 3 / max(cells, 1)) ** (1.0 / 3.0)
-        s_max = cell_size * 1.6
-        s_min = cell_size * 0.5
+        floor = 1e-10
+        s_max = max(cell_size * 1.6, floor * 2.0)
+        # Keep a strict gap after QDoubleSpinBox precision/clamping.
+        s_min = max(min(cell_size * 0.5, s_max * 0.45), floor)
+        if s_min >= s_max:
+            s_min = s_max * 0.4
         self._max_cell.blockSignals(True)
-        self._max_cell.setValue(max(s_max, 1e-4))
+        self._max_cell.setValue(s_max)
         self._max_cell.blockSignals(False)
         self._min_cell.blockSignals(True)
-        self._min_cell.setValue(max(s_min, 1e-5))
+        self._min_cell.setValue(s_min)
         self._min_cell.blockSignals(False)
 
     def get_detail_level(self) -> str:
