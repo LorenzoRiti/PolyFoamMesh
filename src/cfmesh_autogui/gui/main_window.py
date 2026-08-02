@@ -834,23 +834,8 @@ class MainWindow(QMainWindow):
     _CASE_SETUP_SUPPORTED_SOLVERS = {"simpleFoam"}
 
     def _case_setup_kwargs(self) -> dict:
-        """application/turbulence_model to pass to setup_case(), honouring
-        whatever case template the user applied (if any) — never silently."""
-        picked = self._params.get_template_solver_turbulence()
-        if picked is None:
-            return {}
-        solver, turbulence = picked
-        kwargs: dict = {"turbulence_model": turbulence}
-        if solver in self._CASE_SETUP_SUPPORTED_SOLVERS:
-            kwargs["application"] = solver
-        else:
-            self._log.append_log(
-                f"{Tag.WARN} Template solver '{solver}' needs case files this "
-                "version doesn't generate yet — applied turbulence model only "
-                f"({turbulence}); solver/scheme setup for '{solver}' must be "
-                "done manually."
-            )
-        return kwargs
+        """application/turbulence_model to pass to setup_case()."""
+        return {}
 
     def _heal_geometry(self, meshes: list[trimesh.Trimesh]) -> None:
         """Repair small CAD defects right after loading, before anything else
