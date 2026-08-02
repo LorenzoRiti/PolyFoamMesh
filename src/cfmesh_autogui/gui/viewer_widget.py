@@ -1379,18 +1379,29 @@ class ViewerWidget(QWidget):
         self._display_mesh()
 
     def show_mesh(self, case_dir: Path | str):
-        """Show mesh status and ParaView launch link.
+        """Show mesh — always regenerates VTU from current polyMesh.
 
-        The built-in 3D viewer (PyVista/QtInteractor) often freezes on
-        Windows due to OpenGL issues.  Instead of rendering the mesh in
-        our viewer, we show a clear message and a button to open ParaView
-        — which the user has confirmed works correctly.
+        Invalidates the VTU cache marker so foamToVTK always runs after
+        meshing/conversion, ensuring the viewer shows the CURRENT mesh
+        (poly after tet→poly conversion) and not a stale cached version.
         """
         try:
             self._mesh_case_dir = str(case_dir)
             self._cancel_display_timeout()
             self._mesh_display_in_progress = False
             self._mesh_retry_count = 0
+            self._foam_to_vtk_attempted = False
+
+            # Invalidate VTU cache so foamToVTK regenerates from current
+            # polyMesh — prevents showing stale tet mesh after poly conversion.
+            try:
+                vtk_dir = Path(case_dir) / "VTK_view"
+                marker = vtk_dir / ".source_mtime"
+                if marker.exists():
+                    marker.unlink()
+                    logger.debug("Invalidated VTU cache marker for %s", case_dir)
+            except OSError:
+                pass
 
             # Read stats for the label (fast, header-only 16KB reads)
             try:
