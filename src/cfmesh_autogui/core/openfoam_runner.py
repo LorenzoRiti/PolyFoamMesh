@@ -1709,7 +1709,11 @@ class GmshVolumeWorker(QObject):
     log_line = Signal(str)
     failed = Signal(str)
 
-    VOLUME_TIMEOUT_S = 600
+    # Keep in sync with gmsh_subprocess.run_gmsh_volume's default (3600 s)
+    # and solution_adaptive's solver timeout: a Very Fine 20M-cap mesh can
+    # legitimately take far longer than the old 600 s, which produced false
+    # "GMSH volume exceeded" failures on real runs.
+    VOLUME_TIMEOUT_S = 3600
 
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  n_layers: int = 0, bl_thickness: float | None = None,

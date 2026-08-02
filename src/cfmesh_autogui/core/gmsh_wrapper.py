@@ -1847,7 +1847,7 @@ if __name__ == "__main__":
             from cfmesh_autogui.config import OFConfig
             cfg = OFConfig()
             wsl_cmd = cfg.build_gmsh_to_foam_cmd(case_dir_arg, msh_filename)
-            r = subprocess.run(wsl_cmd, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(wsl_cmd, capture_output=True, text=True, timeout=900)
             print(json.dumps({
                 "success": r.returncode == 0,
                 "returncode": r.returncode,
