@@ -1252,26 +1252,15 @@ class ViewerWidget(QWidget):
                         grid = grid.decimate_pro(self.DECIMATE_TARGET)
                     except Exception:
                         pass
-                if not show_decimated:
-                    # Cell-colour: each polyhedral cell gets its own colour
-                    # (deterministic seed), so the cells read as distinct
-                    # polygonal volumes — unmistakably NOT tetrahedra. The
-                    # boundary surface is left dark so the cell faces pop.
-                    import numpy as _np
-                    rng = _np.random.default_rng(7)
-                    n = grid.n_cells
-                    colors = (rng.random((n, 3)) * 0.75 + 0.15).astype(float)
-                    grid.cell_data["__cell_color"] = colors
-                    self._plotter.add_mesh(
-                        grid, scalars="__cell_color", rgb=True,
-                        show_edges=True, edge_color=ec, line_width=0.6,
-                        opacity=0.95,
-                    )
-                else:
-                    # Large mesh: full wireframe (already decimated).
-                    self._plotter.add_mesh(
-                        grid, style="wireframe", color=ec, line_width=0.8,
-                    )
+                # Wireframe only: do not fill or alpha-blend hundreds of
+                # thousands of cells. The previous random per-cell RGB fill
+                # made the viewer look opaque/translucent and unreadable.
+                # Wireframe also keeps the actual polyhedral edges visible
+                # without adding a second CAD/tet-looking surface underneath.
+                self._plotter.add_mesh(
+                    grid, style="wireframe", color=ec,
+                    line_width=0.6 if not show_decimated else 0.8,
+                )
                 if show_decimated:
                     self._plotter.add_text(
                         f"Visualizzazione semplificata ({n_cells:,} celle). "
