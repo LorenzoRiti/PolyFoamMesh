@@ -35,7 +35,7 @@ PATCH_COLORS = [
     (0.16, 0.50, 0.73),
 ]
 
-VIEW_MODES = ["CAD Surfaces", "Volume Mesh"]
+VIEW_MODES = ["CAD Surfaces", "Volume Mesh", "Surface + Edges"]
 
 _MAX_CLIP_FACES = 50_000
 
@@ -550,7 +550,7 @@ class ViewerWidget(QWidget):
         self._view_selector.addItems(VIEW_MODES)
         self._view_selector.setCurrentIndex(-1)
         self._view_selector.setEnabled(False)
-        self._view_selector.setToolTip("Switch between CAD surfaces and volume mesh views.")
+        self._view_selector.setToolTip("Switch between CAD surfaces, volume mesh (wireframe), or surface with edges.")
         self._view_selector.currentIndexChanged.connect(self._on_view_changed)
         toolbar.addWidget(self._view_selector)
 
@@ -880,6 +880,8 @@ class ViewerWidget(QWidget):
                 self._display_cad()
             elif mode == "Volume Mesh":
                 self._display_mesh()
+            elif mode == "Surface + Edges":
+                self._display_surface_edges()
         finally:
             self._view_selector.blockSignals(False)
 
@@ -1117,6 +1119,119 @@ class ViewerWidget(QWidget):
         QTimer.singleShot(0, self._step_vtu_for_mesh)
         # _mesh_display_in_progress is cleared when _do_load_patches completes
 
+    def _display_surface_edges(self):
+        """Render the mesh with filled surfaces and visible edges (like
+        ParaView 'Surface with Edges'). Uses the internal volume VTU
+        with style='surface' and show_edges=True."""
+        if self._plotter is None or not self._mesh_case_dir:
+            return
+        if getattr(self, "_mesh_display_in_progress", False):
+            logger.debug("_display_surface_edges already in progress — skipping")
+            return
+        self._mesh_display_in_progress = True
+        # Show "Loading..." immediately
+        try:
+            self._plotter.clear()
+            self._plotter.add_text(
+                "Loading Surface + Edges...",
+                color=self._text_color, font_size=14,
+            )
+            self._plotter.render()
+        except Exception as exc:
+            logger.error("Plotter failed to show loading message: %s", exc)
+        QApplication.processEvents()
+        self._start_display_timeout(90)
+        QTimer.singleShot(0, self._step_vtu_for_surface_edges)
+
+    def _step_vtu_for_surface_edges(self):
+        """Step 1: ensure VTU exists, then load with surface+edges style."""
+        self._do_step_vtu(
+            on_vtu_ready=lambda ok: QTimer.singleShot(0, self._do_load_surface_edges),
+        )
+
+    def _do_load_surface_edges(self, _unused: bool = False):
+        """Load the internal volume mesh and render as surface with edges."""
+        self._mesh_display_in_progress = False
+        self._cancel_display_timeout()
+        case_dir = Path(self._mesh_case_dir) if self._mesh_case_dir else None
+        if case_dir is None:
+            return
+
+        # Try internal volume VTU first
+        vtk_dir = case_dir / "VTK_view"
+        internal_vtu = None
+        if vtk_dir.exists():
+            candidates = sorted(vtk_dir.glob("*_0/internal.vtu"))
+            if candidates:
+                internal_vtu = candidates[0]
+
+        if internal_vtu is not None:
+            try:
+                grid = pv.read(str(internal_vtu))
+                n_cells = grid.n_cells
+                logger.info("Loading surface+edges: %d cells from %s", n_cells, internal_vtu)
+                show_decimated = n_cells > self.DECIMATE_THRESHOLD
+                self._plotter.clear()
+                ec = self._edge_color()
+                if show_decimated:
+                    try:
+                        grid = grid.decimate_pro(self.DECIMATE_TARGET)
+                    except Exception:
+                        pass
+                # Surface with edges: filled surfaces + wireframe overlay.
+                # lightgray surface reads on both light and dark backgrounds.
+                self._plotter.add_mesh(
+                    grid, style="surface", show_edges=True,
+                    edge_color=ec, color="lightgray",
+                    line_width=0.5 if not show_decimated else 0.7,
+                    opacity=1.0,
+                )
+                if show_decimated:
+                    self._plotter.add_text(
+                        f"Visualizzazione semplificata ({n_cells:,} celle). "
+                        "Il file di mesh reale \u00e8 invariato.",
+                        color=self._text_color, font_size=10,
+                    )
+                self._plotter.view_isometric()
+                self._plotter.render()
+                return
+            except Exception as exc:
+                logger.warning("Failed to load internal VTU for surface+edges: %s — falling back to patches", exc)
+
+        # Fallback: boundary patches with edges
+        patches = read_openfoam_mesh_patches(self._mesh_case_dir)
+        if not patches:
+            self._show_mesh_too_large("VTU non disponibile (usa ParaView)")
+            return
+
+        total_faces = sum(pd.n_cells for pd in patches.values())
+        show_decimated = total_faces > self.DECIMATE_THRESHOLD
+        try:
+            self._plotter.clear()
+            ec = self._edge_color()
+            for i, (name, pd) in enumerate(patches.items()):
+                if show_decimated:
+                    try:
+                        pd = pd.decimate_pro(self.DECIMATE_TARGET)
+                    except Exception:
+                        pass
+                color = PATCH_COLORS[i % len(PATCH_COLORS)]
+                self._plotter.add_mesh(
+                    pd, scalars="color", rgb=True,
+                    show_edges=True, edge_color=ec, label=name,
+                )
+            if show_decimated:
+                self._plotter.add_text(
+                    f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
+                    "Il file di mesh reale \u00e8 invariato.",
+                    color=self._text_color, font_size=10,
+                )
+            self._plotter.view_isometric()
+            self._plotter.render()
+        except Exception as exc:
+            logger.error("Plotter display failed (surface+edges): %s", exc)
+            self._show_mesh_too_large(f"Errore display: {exc}")
+
     def _display_mesh_section(self):
         self._plotter.clear()
         self._plotter.add_text(
@@ -1252,14 +1367,15 @@ class ViewerWidget(QWidget):
                         grid = grid.decimate_pro(self.DECIMATE_TARGET)
                     except Exception:
                         pass
-                # Wireframe only: do not fill or alpha-blend hundreds of
-                # thousands of cells. The previous random per-cell RGB fill
-                # made the viewer look opaque/translucent and unreadable.
-                # Wireframe also keeps the actual polyhedral edges visible
-                # without adding a second CAD/tet-looking surface underneath.
+                # ParaView-style "Surface with Edges": a uniform, fully opaque
+                # surface with contrasting edges — the standard mesh view.
+                # No per-cell random colours, no alpha blending: the surface
+                # is readable and the polyhedral edges stay clearly visible.
                 self._plotter.add_mesh(
-                    grid, style="wireframe", color=ec,
-                    line_width=0.6 if not show_decimated else 0.8,
+                    grid, style="surface", color="lightgray",
+                    show_edges=True, edge_color=ec,
+                    line_width=0.5 if not show_decimated else 0.7,
+                    opacity=1.0,
                 )
                 if show_decimated:
                     self._plotter.add_text(
@@ -1484,12 +1600,14 @@ class ViewerWidget(QWidget):
                 self._stats_label.setText("Mesh ready — usa Strumenti > Launch ParaView")
             self._view_selector.setEnabled(True)
             # A completed meshing run must switch away from the CAD surface
-            # view. Leaving index 0 selected made the finished mesh look like
-            # an opaque/translucent CAD overlay even though the mesh existed.
+            # view to the ParaView-style "Surface + Edges" mesh view — filled
+            # surfaces with visible edges, the standard readable mesh display.
+            # Leaving index 0 selected made the finished mesh look like an
+            # opaque/translucent CAD overlay even though the mesh existed.
             # Block the signal here because the deferred render below is the
             # single display request for this new case.
             self._view_selector.blockSignals(True)
-            self._view_selector.setCurrentIndex(VIEW_MODES.index("Volume Mesh"))
+            self._view_selector.setCurrentIndex(VIEW_MODES.index("Surface + Edges"))
             self._view_selector.blockSignals(False)
             # Actually render the mesh (deferred so the stats label above
             # paints first). _delayed_display_mesh no-ops if the view
