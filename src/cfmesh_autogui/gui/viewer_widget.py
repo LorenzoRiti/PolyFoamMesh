@@ -1462,6 +1462,10 @@ class ViewerWidget(QWidget):
             self._mesh_display_in_progress = False
             self._mesh_retry_count = 0
             self._foam_to_vtk_attempted = False
+            # Kill any foamToVTK still running from a previous display so the
+            # new mesh (e.g. the poly result after tet->poly conversion) is
+            # generated from scratch instead of racing the old process.
+            self._cancel_vtk_process()
 
             # Invalidate VTU cache: delete entire VTK_view directory so
             # foamToVTK regenerates from current polyMesh.  Just deleting
