@@ -992,6 +992,10 @@ class ViewerWidget(QWidget):
             self._vtk_process.deleteLater()
             self._vtk_process = None
 
+    def cancel_vtk_process(self):
+        """Public alias used by the main window's Cancel handler."""
+        self._cancel_vtk_process()
+
     def _start_vtk_qprocess(self, case_dir: Path, vtk_subdir: str,
                              on_finished: callable) -> None:
         """Start foamToVTK via QProcess. Calls ``on_finished(ok)`` when done."""
