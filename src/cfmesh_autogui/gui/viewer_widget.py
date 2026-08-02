@@ -1494,6 +1494,14 @@ class ViewerWidget(QWidget):
             else:
                 self._stats_label.setText("Mesh ready — usa Strumenti > Launch ParaView")
             self._view_selector.setEnabled(True)
+            # A completed meshing run must switch away from the CAD surface
+            # view. Leaving index 0 selected made the finished mesh look like
+            # an opaque/translucent CAD overlay even though the mesh existed.
+            # Block the signal here because the deferred render below is the
+            # single display request for this new case.
+            self._view_selector.blockSignals(True)
+            self._view_selector.setCurrentIndex(VIEW_MODES.index("Volume Mesh"))
+            self._view_selector.blockSignals(False)
             # Actually render the mesh (deferred so the stats label above
             # paints first). _delayed_display_mesh no-ops if the view
             # selector got disabled above (mesh too large).
