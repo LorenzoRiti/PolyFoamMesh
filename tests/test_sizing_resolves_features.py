@@ -38,20 +38,29 @@ from cfmesh_autogui.core.geometry import (  # noqa: E402
     tessellate_patches,
 )
 
+# Fixture dimensions are authored in cadquery's native MILLIMETRES and
+# the test asserts in METRES — the app's internal unit contract (cadquery
+# normalizes to mm; tessellate_patches converts mm -> m). This was the
+# documented pre-existing failure (residual_risks.md): the fixtures used
+# ROD_RADIUS=0.1 (mm) while the assertions expected 0.2 m, i.e. a rod
+# 1000x smaller than the test believed. The fixtures are now authored at
+# metre scale in mm (100 mm = 0.1 m) so both sides agree.
+ROD_RADIUS_MM = 100      # 0.1 m
+THROAT_RADIUS_MM = 30    # 0.03 m
 ROD_RADIUS = 0.1
 THROAT_RADIUS = 0.03
 
 
 def _rod():
     return tessellate_patches(
-        classify_faces(cq.Workplane("XY").circle(ROD_RADIUS).extrude(1.0).val())
+        classify_faces(cq.Workplane("XY").circle(ROD_RADIUS_MM).extrude(1000).val())
     )
 
 
 def _constricted_rod():
-    lower = cq.Workplane("XY").circle(ROD_RADIUS).extrude(0.45)
-    waist = cq.Workplane("XY").circle(THROAT_RADIUS).extrude(0.1).translate((0, 0, 0.45))
-    upper = cq.Workplane("XY").circle(ROD_RADIUS).extrude(0.45).translate((0, 0, 0.55))
+    lower = cq.Workplane("XY").circle(ROD_RADIUS_MM).extrude(450)
+    waist = cq.Workplane("XY").circle(THROAT_RADIUS_MM).extrude(100).translate((0, 0, 450))
+    upper = cq.Workplane("XY").circle(ROD_RADIUS_MM).extrude(450).translate((0, 0, 550))
     return tessellate_patches(classify_faces(lower.union(waist).union(upper).val()))
 
 
