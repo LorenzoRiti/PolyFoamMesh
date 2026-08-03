@@ -21,9 +21,7 @@ def test_meshing_algorithm_enum():
     assert MeshingAlgorithm.TETRAHEDRAL.value == "Tetrahedral"
     assert MeshingAlgorithm.SNAPPY_HEX_MESH.value == "SnappyHexMesh"
     assert MeshingAlgorithm.MMG_ADAPTATION.value == "MmgAdaptation"
-    # +1: NATIVE_POLY (experimental native cut-cell -> dual, Fasi 1-3)
-    assert MeshingAlgorithm.NATIVE_POLY.value == "NativePoly"
-    assert len(MeshingAlgorithm) == 10
+    assert len(MeshingAlgorithm) == 9
 
 
 def test_algorithm_info_all_present():

@@ -304,16 +304,6 @@ class MainWindow(QMainWindow):
         self._theme_dark_action.triggered.connect(lambda: self._on_theme_change("dark"))
         self._theme_system_action.triggered.connect(lambda: self._on_theme_change("system"))
 
-        # EXPERIMENTAL meshers — isolated, never touched by the standard flow
-        xm = self.menuBar().addMenu("&Tools")
-        xm.addAction(
-            "Experimental: Native Poly (100% poly, nativo)...",
-            self._on_experimental_native_poly,
-        )
-        xm.addAction(
-            "Experimental: Native Poly — help",
-            self._on_experimental_native_poly_help,
-        )
         self._sync_theme_menu()
 
         tm = self.menuBar().addMenu("&Tools")
@@ -1673,22 +1663,6 @@ class MainWindow(QMainWindow):
             self._params.set_all_enabled(False)
             self._start_autopoly_worker(orig, my_id)
             return
-        if mesher_type == "native_poly":
-            # EXPERIMENTAL native cut-cell -> median dual (Fasi 1-3).  The
-            # loaded trimesh surfaces are used directly (read-only); no temp
-            # geometry file is needed.  Never escalates to another mesher.
-            if not self._meshes:
-                QMessageBox.warning(
-                    self, "Native Poly Needs Geometry",
-                    "No geometry loaded. Load a STEP, STL, or use the "
-                    "test cylinder first.",
-                )
-                return
-            self._params.set_meshing_enabled(False)
-            self._params.set_all_enabled(False)
-            logger.info("Dispatching native-poly worker: run_id=%d", my_id)
-            self._start_native_poly_worker(list(self._meshes), my_id)
-            return
         if mesher_type != "cfmesh":
             # No auto-enable needed here: for gmsh_direct/gmsh_direct_poly
             # the mesher combo's own _on_mesher_changed already forces the
@@ -2977,118 +2951,6 @@ class MainWindow(QMainWindow):
                              f"Polyhedral meshing failed:\n\n{msg}")
 
     # ------------------------------------------------------------------
-    # EXPERIMENTAL native poly mesher (Fasi 1-3): cut-cell nativo -> dual
-    # ------------------------------------------------------------------
-
-    def _start_native_poly_worker(self, meshes: list, my_id: int):
-        """Run the experimental native cut-cell → median-dual mesher."""
-        from cfmesh_autogui.commercial.native_poly_bridge import (
-            NativePolyParams,
-            run_native_poly,
-        )
-
-        self._log.append_log(
-            "[native-poly] cut-cell nativo -> dual 100% poly (sperimentale)...")
-        self._status.showMessage("native-poly: cut-cell + dual ...")
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = self._resolve_case_root()
-        self._case_dir = root / f"native_poly_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
-        self._params.set_case_dir(str(self._case_dir))
-
-        detail = self._params.get_detail_level()
-        params = NativePolyParams(detail_level=detail)
-
-        self._cleanup_thread("_native_poly_thread", "_native_poly_worker")
-
-        def worker_fn(worker):
-            try:
-                def progress_cb(pct: int, stage: str, msg: str):
-                    worker.report_progress(f"{stage}: {msg}", float(pct))
-                return run_native_poly(meshes, self._case_dir, params,
-                                       progress=progress_cb)
-            except Exception as e:
-                raise RuntimeError(str(e)) from e
-
-        self._native_poly_worker = worker_fn
-        self._native_poly_start_time = time.time()
-
-        def on_progress(_name, stage, pct):
-            self._progress.setRange(0, 100)
-            self._progress.setValue(int(pct))
-            self._log.append_log(f"[native-poly] {stage}")
-            self._status.showMessage(f"native-poly: {stage} ({pct:.0f}%)")
-
-        def on_finished(_name, result):
-            self._on_native_poly_finished(result, my_id)
-
-        def on_failed(_name, msg):
-            self._on_native_poly_failed(msg, my_id)
-
-        self._submit_task(
-            "native_poly", FunctionWorker(worker_fn),
-            on_finished=on_finished,
-            on_failed=on_failed,
-            on_progress=on_progress,
-            heartbeat_timeout_s=600.0,
-        )
-
-    def _on_native_poly_finished(self, result, my_id: int):
-        """Handle successful native-poly meshing completion."""
-        if my_id != self._run_id:
-            return
-        self._progress.setVisible(False)
-        elapsed = time.time() - getattr(
-            self, "_native_poly_start_time", time.time())
-        if result.success:
-            self._log.append_log(
-                f"[native-poly] DONE: {result.n_cells:,} celle 100% poly "
-                f"({result.n_hex_cells:,} hex + {result.n_cut_cells:,} cut "
-                f"primali) in {elapsed:.1f}s — "
-                f"skew={result.max_skewness:.2f} "
-                f"nonOrtho={result.max_non_ortho:.1f}° "
-                f"defects={result.defects}"
-            )
-            self._status.showMessage(
-                f"native-poly: {result.n_cells:,} cells ready")
-            self._params.set_all_enabled(True)
-            self._params.set_real_cell_count(result.n_cells)
-            poly_dir = self._case_dir / "constant" / "polyMesh"
-            try:
-                from cfmesh_autogui.core.boundary_reader import parse_boundary
-                from cfmesh_autogui.core.case_setup import setup_case
-                boundary_path = poly_dir / "boundary"
-                if boundary_path.exists():
-                    patches = parse_boundary(boundary_path)
-                    setup_case(self._case_dir, patches,
-                               **self._case_setup_kwargs())
-                    self._log.append_log(
-                        "[setup] Case files generated (0/, system/).")
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Case setup after native-poly: %s", e)
-            self._viewer.show_mesh(self._case_dir)
-            if poly_dir.exists():
-                self._launch_checkmesh()
-        else:
-            self._log.append_log(
-                f"[native-poly] FAILED: {result.message}")
-            self._params.set_all_enabled(True)
-            if result.errors:
-                QMessageBox.critical(
-                    self, "Native Poly Failed",
-                    f"Native Poly fallito:\n\n{result.message}\n\n"
-                    + "\n".join(result.errors))
-
-    def _on_native_poly_failed(self, msg: str, my_id: int):
-        """Handle native-poly failure."""
-        if my_id != self._run_id:
-            return
-        self._log.append_log(f"[native-poly] ERROR: {msg}")
-        self._progress.setVisible(False)
-        self._params.set_all_enabled(True)
-        QMessageBox.critical(self, "Native Poly Failed",
-                             f"Native Poly fallito:\n\n{msg}")
-
     def _on_cell_count_found(self, count: int):
         from cfmesh_autogui.gui.design_tokens import SUCCESS
         self._cell_count_label.setText(f"Mesh cells: {count:,}")
@@ -4326,7 +4188,6 @@ class MainWindow(QMainWindow):
             algo_map = {
                 "CartesianHex": 0, "Tetrahedral": 1,
                 "Polyhedral": 2, "HexCorePoly": 3,
-                "NativePoly": 4,
             }
             idx = algo_map.get(preset.metadata.solver, 0)
             self._params._algorithm_combo.setCurrentIndex(idx)
@@ -4396,79 +4257,6 @@ class MainWindow(QMainWindow):
                 self._on_quick_mesh()
             else:
                 self._set_workflow_stage("mesh", "active")
-
-    def _on_experimental_native_poly_help(self):
-        """Explain the experimental native mesher (Fasi 1-3)."""
-        from PySide6.QtWidgets import QMessageBox
-
-        QMessageBox.information(
-            self, "Native Poly (sperimentale)",
-            "Mesher sperimentale nativo (algoritmo nostro, puro Python, Fasi 1-3):\n\n"
-            "1. cut-cell castellated dalla tessellazione CAD (core/native_mesher.py)\n"
-            "2. dual mediano -> mesh 100% poliedrica (core/hex_poly_dual.py)\n\n"
-            "Nessun GMSH/cfMesh per generare; WSL usato solo dalla validazione "
-            "checkMesh.\n\n"
-            "Limiti noti (misurati):\n"
-            "- funziona bene su superfici curve (es. sfera);\n"
-            "- su pareti parallele alla griglia (es. venturi) il dual puo' fallire: "
-            "serve lo snapping (non ancora implementato);\n"
-            "- la qualita' (skewness/non-ortho) del dual nativo e' peggiore di "
-            "quella del dual da mesh cfMesh.\n\n"
-            "Il mesh nativo viene conservato in constant/polyMesh_hex_native; "
-            "il mesh 100% poly e' in constant/polyMesh.",
-        )
-
-    def _on_experimental_native_poly(self):
-        """Run the EXPERIMENTAL native cut-cell -> median-dual mesher.
-
-        Isolated: uses only the loaded geometry + case dir; the standard
-        cfMesh/quick-mesh flow is untouched.  The engine never escalates
-        away from NATIVE_POLY — a failure is reported, not substituted.
-        """
-        from PySide6.QtWidgets import QMessageBox
-
-        if not self._meshes:
-            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
-            return
-        if not getattr(self, "_case_dir", None):
-            QMessageBox.warning(
-                self, "No Case Directory", "Set a case directory first.")
-            return
-        self._log.append_log(
-            "[experimental] Native Poly: cut-cell nativo -> dual 100% poly")
-        self._set_workflow_stage("generate", "active")
-        try:
-            from cfmesh_autogui.commercial.mesh_engine import (
-                MeshEngine, MeshingAlgorithm,
-            )
-
-            engine = MeshEngine()
-            engine._params.algorithm = MeshingAlgorithm.NATIVE_POLY
-            engine._params.detail_level = self._params.get_detail_level()
-            geometry_path = getattr(self, "_geometry_path", "") or ""
-            result = engine.run(
-                self._case_dir, meshes=self._meshes,
-                geometry_path=geometry_path,
-            )
-            self._log.append_log(
-                f"[experimental] Native Poly: {result.cell_count:,} celle "
-                f"100% poly, quality_passed={result.quality_passed}, "
-                f"escalation={result.escalation_steps}")
-            self._set_workflow_stage("mesh", "active")
-            self._log.append_log(
-                "[experimental] Mesh 100% poly in constant/polyMesh; "
-                "castellation in constant/polyMesh_hex_native.")
-            QMessageBox.information(
-                self, "Native Poly",
-                f"Mesh 100% poliedrico creato: {result.cell_count:,} celle.\n"
-                f"Quality (checkMesh): "
-                f"{'PASS' if result.quality_passed else 'FAIL — vedi log/quality panel'}.\n"
-                f"Hex nativo conservato in constant/polyMesh_hex_native.",
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._log.append_log(f"[experimental] Native Poly FAILED: {exc}")
-            QMessageBox.critical(
-                self, "Native Poly", f"Native Poly fallito:\n{exc}")
 
     def _on_quick_mesh(self):
         if not self._meshes:
