@@ -197,7 +197,7 @@ def _ray_hits_triangles(o, d, tris):
     return t[hit]
 
 
-def _drop_contained_coplanar(surface, res):
+def _drop_contained_coplanar(surface, res=None):
     """Remove triangles contained in a coplanar triangle of the same
     orientation (a common CAD-export artifact: one coarse triangle covering
     several finer overlapping ones).  Overlapping coplanar triangles
@@ -249,7 +249,8 @@ def _drop_contained_coplanar(surface, res):
                 kept_here.append(i)
     if not dropped:
         return surface, keep
-    res.n_surface_tris_dropped = dropped
+    if res is not None:
+        res.n_surface_tris_dropped = dropped
     return (trimesh.Trimesh(
         vertices=verts, faces=surface.faces[keep], process=False), keep)
 

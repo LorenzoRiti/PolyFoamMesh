@@ -522,7 +522,10 @@ class TetPolyDualConverter:
 
         neigh = np.full(n_faces, -1, dtype=np.int64)
         neigh[: len(neighbour)] = neighbour
-        n_int_primal = int(len(neighbour))
+        # neighbour may be unpadded (length == n_internal, the write_polymesh
+        # convention) or padded with -1 for boundary faces (the
+        # msh_to_of_polymesh convention) — count the real internal faces.
+        n_int_primal = int((neighbour >= 0).sum())
         n_tets = int(max(owner.max(), neigh.max())) + 1
         res.n_tets_before = n_tets
 

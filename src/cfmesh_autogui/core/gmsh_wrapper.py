@@ -1561,7 +1561,10 @@ def generate_volume_mesh(
         gmsh.model.mesh.classifySurfaces(
             angle=40 * math.pi / 180,
             boundary=True,
-            forReparametrization=False,
+            # forReparametrization=True unblocks "Invalid exterior boundary
+            # mesh for parametrization" on closed discrete surfaces (e.g. a
+            # sphere STL); the old default (False) fails there.
+            forReparametrization=True,
             curveAngle=180 * math.pi / 180,
         )
         gmsh.model.mesh.createGeometry()
