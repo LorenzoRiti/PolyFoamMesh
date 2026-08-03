@@ -147,6 +147,30 @@ def test_watchdog_detects_stall(qapp):
     mgr.shutdown()
 
 
+def test_silent_worker_not_stall_cancelled_with_adequate_budget(qapp):
+    """Regression: silent-but-working jobs (MPI meshing, exports) used to
+    be stall-cancelled after a too-short watchdog budget, then
+    force-terminated — GIL deadlock (hang) or destroyed-while-running
+    (Qt fail-fast). A generous budget must keep them running silently."""
+    mgr = TaskManager(stall_poll_ms=50)
+    stalled: list = []
+    finished: list = []
+
+    def fn(worker):
+        time.sleep(1.2)  # silent, well under the default budget
+        return {"ok": True}
+
+    mgr.submit(
+        "t_silent", FunctionWorker(fn),
+        on_finished=lambda name, result: finished.append(result),
+    )
+    mgr.stalled.connect(lambda name, secs: stalled.append(name))
+    assert _wait_until(lambda: finished, timeout_s=5.0)
+    assert stalled == [], "silent worker was wrongly stall-cancelled"
+    assert finished == [{"ok": True}]
+    mgr.shutdown()
+
+
 def test_shutdown_terminates_running_tasks_within_budget(qapp):
     mgr = TaskManager()
 

@@ -71,6 +71,42 @@ mesh itself (business/geometry, root in the uncommitted `core/geometry.py`
 work). With the flood protection + the fixes above, a pathological run keeps
 the UI responsive, cancellable and bounded.
 
+### Third wave — deterministic BEX64 crash (Qt6Core fail-fast) + watchdog auto-cancel
+
+Follow-up: another geometry + poly crashes (BEX64, deterministic: 5/5 dumps at
+11:00-11:02, `c0000409`/`0x7` fail-fast in Qt6Core+0x1CF68, main thread deep in
+Python recursion) plus recurring AppHangB1. Minidump analysis
+(`%LOCALAPPDATA%\CrashDumps`, custom parser) showed the faulting main thread
+hundreds of Python frames deep at the Qt boundary.
+
+Root causes found and fixed (concurrency scope):
+
+- **Watchdog auto-cancel of silent-but-working jobs**: `TaskManager` default
+  heartbeat budget was 30 s — MPI parallel meshing, watertight checks, mesh
+  exports, decomposePar and disk cleanup emit little or no live output for
+  minutes, so the watchdog stall-fired and cancelled healthy runs, then the
+  force-teardown `terminate()` on a Python worker holding the GIL deadlocks
+  the process (AppHang bucket), and a QThread whose thread is still running
+  being destroyed makes Qt fail-fast `__fastfail(0x7)` → BEX64 (crash
+  bucket). Fixes: default budget raised to 120 s, silent workers given
+  explicit budgets (parallel 3600 s, decompose 1800 s, watertight/export 600 s,
+  startup cleanup 600 s, nested-loop exports inherit the safety timeout).
+- **Never `terminate()` from the GUI thread**: `_force_cleanup`/`shutdown`
+  now detach a stuck task to a zombie (reparent + keep-alive + warning)
+  instead of terminating; cooperative workers exit on their own once the
+  token is set.
+- **Forced exit**: `closeEvent` calls `os._exit(1)` if any task is still
+  running after `shutdown(2500)` — skips Python/Qt teardown entirely, so a
+  straggler thread can never be destroyed while running (fail-fast) and the
+  app never hangs at close with a job in progress (acceptance criterion 5).
+- Regression tests: silent worker with an adequate budget is NOT
+  stall-cancelled; watchdog still fires for genuinely stuck tasks.
+
+Residual: the exact `Qt6Core+0x1CF68` frame could not be symbolicated
+(no Qt PDB); the dump signature (fail-fast at the Qt/Python boundary with a
+deep main-thread stack) is consistent with the destroyed-while-running /
+terminate paths now eliminated. Re-run with a real geometry to confirm.
+
 ## Audit corrections
 
 - `main_window.py:3654` (audit): `_make_fix_action` was flagged as running

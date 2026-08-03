@@ -189,7 +189,10 @@ class MainWindow(QMainWindow):
 
             # Disk scan + rmtree of old cases must not run on the UI thread
             # at startup; defer and run in a background task.
-            self._submit_task("startup_cleanup", FunctionWorker(work))
+            self._submit_task(
+                "startup_cleanup", FunctionWorker(work),
+                heartbeat_timeout_s=600.0,
+            )
 
         QTimer.singleShot(3000, _startup_cleanup)
 
@@ -999,6 +1002,7 @@ class MainWindow(QMainWindow):
             "watertight", w,
             on_finished=lambda _n, result: on_watertight_result(result),
             on_failed=on_watertight_failed,
+            heartbeat_timeout_s=600.0,
         )
 
     def _check_watertight_sync(self, meshes: list[trimesh.Trimesh]) -> None:
@@ -1073,6 +1077,7 @@ class MainWindow(QMainWindow):
         self._submit_task(
             "watertight_sync", FunctionWorker(work),
             on_finished=on_done, on_failed=on_error,
+            heartbeat_timeout_s=600.0,
         )
 
     def _rebuild_scaled_meshes(self) -> None:
@@ -2312,6 +2317,9 @@ class MainWindow(QMainWindow):
             on_failed=on_failed,
             on_cancelled=on_cancelled,
             signal_shapes={"cancelled": 0},
+            # MPI runs emit no live output for many minutes — a short
+            # watchdog budget would stall-fire and auto-cancel a healthy run.
+            heartbeat_timeout_s=3600.0,
         )
 
     def _make_temp_geometry_for_gmsh(self) -> str | None:
@@ -3600,6 +3608,7 @@ class MainWindow(QMainWindow):
             on_failed=lambda _n, msg: self._log.append_log(
                 f"{Tag.WARN} decomposePar FAILED: {msg} — mesh still usable for serial solving."
             ),
+            heartbeat_timeout_s=1800.0,
         )
 
     def _make_fix_action(self):
@@ -3796,6 +3805,7 @@ class MainWindow(QMainWindow):
             "export", self._export_worker,
             on_finished=lambda _n, out_path: self._on_export_finished(out_path),
             on_failed=lambda _n, msg: self._on_export_error(msg),
+            heartbeat_timeout_s=600.0,
         )
 
     def _on_export_finished(self, out_path: str):
@@ -4565,7 +4575,14 @@ class MainWindow(QMainWindow):
         safety.setSingleShot(True)
         safety.timeout.connect(lambda: (_bad("timeout", "timed out"), loop.quit()))
         safety.start(int(timeout_s * 1000))
-        self._submit_task(name, FunctionWorker(fn), on_finished=_done, on_failed=_bad, on_cancelled=_bad)
+        # The watchdog budget must cover the whole blocking call: these
+        # tasks emit no progress while a native library does the work, so a
+        # 30s default would stall-fire and cancel a legitimately busy export.
+        self._submit_task(
+            name, FunctionWorker(fn),
+            on_finished=_done, on_failed=_bad, on_cancelled=_bad,
+            heartbeat_timeout_s=timeout_s,
+        )
         loop.exec()
         safety.stop()
         return box.get("ok", False), box.get("result", box.get("error"))
@@ -4654,6 +4671,18 @@ class MainWindow(QMainWindow):
             self._runner.request_stop()
         if hasattr(self, "_tasks"):
             self._tasks.shutdown(timeout_ms=2500)
+            stragglers = self._tasks.running + self._tasks.zombies
+            if stragglers:
+                logger.warning(
+                    "closeEvent: %d task(s) still running — forcing exit",
+                    len(stragglers),
+                )
+                # A worker that ignored cancellation (e.g. a native call
+                # holding the GIL) would otherwise be destroyed with its
+                # QThread at interpreter teardown — Qt fail-fast (BEX64) —
+                # or deadlock the process on the GIL. Skip Python/Qt
+                # teardown entirely; the OS reaps the straggler threads.
+                os._exit(1)
         gmsh_shutdown()
         octo.log_event("main_window", "close", "app closed")
         super().closeEvent(event)

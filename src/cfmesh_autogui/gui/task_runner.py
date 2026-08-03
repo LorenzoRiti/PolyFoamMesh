@@ -258,7 +258,7 @@ class TaskManager(QObject):
     def __init__(
         self,
         parent: QObject | None = None,
-        heartbeat_timeout_s: float = 30.0,
+        heartbeat_timeout_s: float = 120.0,
         stall_poll_ms: int = 1000,
         cancel_grace_ms: int = 2500,
     ) -> None:
@@ -268,6 +268,7 @@ class TaskManager(QObject):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._task_of_sender: dict[int, str] = {}
         self._retired: list[dict[str, Any]] = []
+        self._zombies: list[tuple] = []
         self._watchdog = QTimer(self)
         self._watchdog.setInterval(stall_poll_ms)
         self._watchdog.timeout.connect(self._check_stalls)
@@ -443,10 +444,14 @@ class TaskManager(QObject):
             if remaining > 0 and thread.wait(int(remaining * 1000)):
                 continue
             if thread.isRunning():
-                logger.warning("TaskManager.shutdown: terminating '%s'", task["name"])
-                thread.terminate()
-                thread.wait(1000)
+                # NEVER terminate() from the GUI thread: killing a Python
+                # worker while it holds the GIL deadlocks the process, and
+                # destroying a QThread whose thread is still running makes
+                # Qt fail-fast (BEX64). Detach instead: the token was set,
+                # so cooperative workers exit on their own; the app forces
+                # os._exit() in closeEvent when stragglers remain.
                 all_clean = False
+                self._detach_zombie(task)
         self._tasks.clear()
         self._task_of_sender.clear()
         return all_clean
@@ -582,29 +587,79 @@ class TaskManager(QObject):
         logger.warning("TaskManager: forcing cleanup of '%s' (%s)", name, reason)
         self._invoke_cancel_hook(task)
         thread.quit()
-        if not thread.wait(1000):
-            thread.terminate()
-            thread.wait(1000)
+        if thread.wait(1000):
+            # Worker exited cooperatively after the hook — finish like a
+            # normal teardown (finished/deleteLater chain + release).
+            relay = task["relay"]
+            self._task_of_sender.pop(id(relay), None)
+            task["state"] = "done"
+            task["terminal"] = True
+            cb = task.get("on_cancelled")
+            if cb:
+                try:
+                    cb(name, reason)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("on_cancelled callback for '%s' raised: %s", name, exc)
+            self.task_cancelled.emit(name, reason)
+            relay.deleteLater()
+            thread.finished.connect(task["worker"].deleteLater, Qt.QueuedConnection)
+            thread.finished.connect(thread.deleteLater, Qt.QueuedConnection)
+            thread.destroyed.connect(
+                lambda: self._release(task), Qt.QueuedConnection,
+            )
+            self._retired.append(task)
+            return
+        if thread.isRunning():
+            # Worker ignored the cancellation (e.g. blocked in a native call
+            # holding the GIL). NEVER terminate() from the GUI thread — GIL
+            # deadlock; and never let the QThread be destroyed while its
+            # thread is still running — Qt fail-fast (BEX64). Detach it and
+            # let it finish on its own; closeEvent() forces os._exit() if
+            # any zombie remains at app close.
+            self._detach_zombie(task)
+
+    def _detach_zombie(self, task: dict) -> None:
+        """Keep a running thread alive but out of the manager's ownership.
+
+        Reparenting to None + keeping a strong reference means the QThread
+        C++ object is never destroyed while its thread is running (the
+        fail-fast source), and the GUI never blocks on it (the GIL-deadlock
+        source). The token was already set, so cooperative workers exit on
+        their own; anything still running at process exit is reaped by the
+        OS when closeEvent() calls os._exit().
+        """
+        name = task["name"]
+        thread = task["thread"]
+        worker = task["worker"]
         relay = task["relay"]
+        logger.error(
+            "TaskManager: '%s' still running after cancel grace — detached as "
+            "zombie (will be reaped at process exit)", name,
+        )
+        try:
+            thread.setParent(None)  # never destroyed by the manager
+        except RuntimeError:
+            pass
+        self._zombies.append((name, worker, thread, relay))
+        self._tasks.pop(name, None)
         self._task_of_sender.pop(id(relay), None)
         task["state"] = "done"
         task["terminal"] = True
         cb = task.get("on_cancelled")
         if cb:
             try:
-                cb(name, reason)
+                cb(name, "cancelled (stuck task detached)")
             except Exception as exc:  # noqa: BLE001
                 logger.error("on_cancelled callback for '%s' raised: %s", name, exc)
-        self.task_cancelled.emit(name, reason)
-        # Tear down like a normal finish: worker/thread deleted via the
-        # finished->deleteLater chain, Python refs released on destroyed.
-        relay.deleteLater()
-        thread.finished.connect(task["worker"].deleteLater, Qt.QueuedConnection)
-        thread.finished.connect(thread.deleteLater, Qt.QueuedConnection)
-        thread.destroyed.connect(
-            lambda: self._release(task), Qt.QueuedConnection,
-        )
-        self._retired.append(task)
+        try:
+            self.task_cancelled.emit(name, "cancelled (stuck task detached)")
+        except RuntimeError:
+            # Object being torn down concurrently — nothing to report to.
+            pass
+
+    @property
+    def zombies(self) -> list[str]:
+        return [name for name, *_ in self._zombies]
 
     @Slot()
     def _check_stalls(self) -> None:
