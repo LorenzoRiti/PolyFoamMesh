@@ -26,45 +26,41 @@ logger = logging.getLogger(__name__)
 # Cell topology: for each GMSH element type, list the vertex-index lists
 # of its faces. Vertex indices are LOCAL to the cell (0..N-1).
 # ---------------------------------------------------------------------------
-# Tetrahedron (GMSH type 4): 4 faces, each a triangle.
-# KNOWN BUG, not yet fixed: OpenFOAM derives a face's normal from its
-# vertex winding and requires an internal face's owner (lower cell index)
-# to have that normal point toward the neighbour. Real GMSH tet meshes
-# converted through this function come out with ~40-100% negative-volume
-# cells and thousands of "incorrectly oriented face" checkMesh errors —
-# reproduced on a real STEP-derived 8665-tet mesh. Simply flipping the
-# two faces whose winding looked wrong for a single isolated tet (by hand
-# reference-triangle derivation) made it substantially WORSE (45% -> 99.7%
-# negative-volume cells), which means the actual problem is not just this
-# per-cell face template — it's very likely also missing the owner<
-# neighbour swap-and-flip step for shared internal faces. Left as the
-# original values pending a proper fix; do not "fix" this template in
-# isolation again without also auditing the owner/neighbour assignment
-# in msh_to_of_polymesh(). This was never exposed before today because
-# generate_volume_mesh() always silently produced 0 tetrahedra (see
-# gmsh_wrapper.py) — there was never any real tet data to expose it.
-_TETRA_FACES = [[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]]
+# Every template below is wound so that every face normal points OUT of the
+# cell, verified numerically on reference cells (right-hand-rule normal with
+# dot(normal, centroid - face_center) < 0 on every face, plus closure of the
+# area vectors: sum over faces == 0). OpenFOAM computes cell volume via the
+# divergence theorem over the stored face normals, so inward faces directly
+# produce negative-volume cells; the old templates had 2 of 4 tet faces,
+# 2 of 6 hex faces, 3 of 5 wedge faces and 2 of 5 pyramid faces wound
+# inward. An earlier attempt that flipped two tet faces in isolation made
+# things dramatically worse (45% -> 99.7% negative-volume cells) because it
+# reversed the two faces that were ALREADY outward and left the genuinely
+# inward ones untouched. Both halves of the fix are here: the outward
+# templates below + owner-winding storage of internal faces in
+# msh_to_of_polymesh().
+_TETRA_FACES = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]]
 # Hexahedron (GMSH type 5): 6 faces, each a quad
 _HEX_FACES = [
-    [0, 1, 2, 3], [4, 5, 6, 7],  # bottom, top
+    [0, 3, 2, 1], [4, 5, 6, 7],  # bottom, top
     [0, 1, 5, 4], [2, 3, 7, 6],  # front, back
-    [1, 2, 6, 5], [0, 3, 7, 4],  # right, left
+    [1, 2, 6, 5], [0, 4, 7, 3],  # right, left
 ]
 # Wedge / Prism (GMSH type 6): 5 faces — 2 triangles + 3 quads
 _WEDGE_FACES = [
-    [0, 1, 2],              # top triangle
-    [3, 5, 4],              # bottom triangle (note: different winding)
+    [0, 2, 1],              # top triangle
+    [3, 4, 5],              # bottom triangle (opposite winding)
     [0, 1, 4, 3],           # quad side 1
     [1, 2, 5, 4],           # quad side 2
-    [0, 2, 5, 3],           # quad side 3
+    [0, 3, 5, 2],           # quad side 3
 ]
 # Pyramid (GMSH type 7): 5 faces — 1 quad + 4 triangles
 _PYRAMID_FACES = [
-    [0, 1, 2, 3],           # base quad
+    [0, 3, 2, 1],           # base quad
     [0, 1, 4],              # tri side 1
     [1, 2, 4],              # tri side 2
     [2, 3, 4],              # tri side 3
-    [0, 3, 4],              # tri side 4
+    [0, 4, 3],              # tri side 4
 ]
 
 # Map: GMSH element_type_number → list_of_faces (local vertex indices)
@@ -200,8 +196,19 @@ def msh_to_of_polymesh(
                 face_verts = [int(verts[v]) for v in fv_local]
                 key = tuple(sorted(face_verts))
                 if key in face_cell_map:
-                    other_owner, _ = face_cell_map.pop(key)
-                    all_faces.append(face_verts)
+                    other_owner, owner_face = face_cell_map.pop(key)
+                    # Store the OWNER's winding, not the current (second)
+                    # cell's: with outward templates the owner's winding
+                    # points out of the owner — i.e. FROM the owner TO the
+                    # neighbour, exactly what OpenFOAM's "incorrectly
+                    # oriented face" check requires for an internal face
+                    # (normal from owner to neighbour). Storing the second
+                    # cell's outward winding pointed the stored normal the
+                    # wrong way (neighbour -> owner) on every internal face,
+                    # which together with the inward face templates produced
+                    # the mass of negative-volume cells this module used to
+                    # emit on real GMSH tet meshes.
+                    all_faces.append(owner_face)
                     all_owners.append(other_owner)
                     all_neighbours.append(cell_counter)
                     face_owner_tags.append(0)  # internal
