@@ -154,6 +154,15 @@ pytest tests/ -v
 # 114 passed, 1 skipped
 ```
 
+## Documentazione
+
+- **Per l'amico**: `INSTALL_AMICO.md` + PDF
+  `installer/output/CFMesh-AutoGUI-2.1.0-Istruzioni.pdf`.
+- **Distribuzione/rebuild** (exe one-dir + installer Inno):
+  `DISTRIBUZIONE.md`.
+- **Stato tecnico del mesher poliedrico** (percorso CFD Poly GMSH → dual
+  stile STAR-CCM+, fix, verifiche, limiti): `docs/poly_mesher_STATO.md`.
+
 ## License
 
 MIT License — © 2026 CFMesh-AutoGUI Project
