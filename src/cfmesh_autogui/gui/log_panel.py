@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtWidgets import QTextEdit
+from PySide6.QtCore import Q_ARG, QMetaObject, Qt, Slot
 from PySide6.QtGui import QFont
-from PySide6.QtCore import Slot, Qt, QMetaObject, Q_ARG
+from PySide6.QtWidgets import QTextEdit
 
-from cfmesh_autogui.gui.design_tokens import ERROR_LIGHT, WARNING_LIGHT, SUCCESS_LIGHT, PRIMARY_500
+from cfmesh_autogui.gui.design_tokens import (
+    ERROR_LIGHT,
+    PRIMARY_500,
+    SUCCESS_LIGHT,
+    WARNING_LIGHT,
+)
 
 _MAX_LOG_LINES = 10000
 # Max cross-thread appends queued but not yet rendered before lines are

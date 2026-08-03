@@ -599,7 +599,6 @@ class MainWindow(QMainWindow):
             f"color: {COLOR_TEXT_DISABLED}; padding-right: 8px; font-weight: bold;"
         )
 
-        self._checkmesh_thread: QThread | None = None
         self._checkmesh_worker: CheckMeshWorker | None = None
 
         h_splitter.addWidget(right)
@@ -955,7 +954,6 @@ class MainWindow(QMainWindow):
         from cfmesh_autogui.core.openfoam_runner import WatertightWorker
         self._cleanup_thread("_watertight_thread", "_watertight_worker")
         w = WatertightWorker(stl_paths)
-        self._watertight_thread = None  # owned by TaskManager now
         self._watertight_worker = w
         self._log.append_log(f"{Tag.GEOM} Checking watertightness...")
 
@@ -1509,16 +1507,19 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # GMSH/feature-detect/checkMesh use separate workers and do not set
+        # GMSH/feature-detect/checkMesh run as separate tasks and do not set
         # RetryRunner.is_running.  Without this guard repeated clicks can
         # start overlapping native GMSH processes, making the UI appear stuck
         # and corrupting which run owns the callback.
-        for thread_attr in ("_gmsh_thread", "_feature_thread", "_checkmesh_thread"):
-            thread = getattr(self, thread_attr, None)
-            if thread is not None and thread.isRunning():
-                logger.warning("Meshing request ignored: %s is still running", thread_attr)
+        for task_name, label in (
+            ("gmsh_volume", "_gmsh_worker"),
+            ("feature_detect", "_feature_worker"),
+            ("checkmesh", "_checkmesh_worker"),
+        ):
+            if self._tasks.is_running(task_name):
+                logger.warning("Meshing request ignored: %s is still running", label)
                 self._log.append_log(
-                    f"{Tag.WARN} A meshing stage is still running ({thread_attr}); "
+                    f"{Tag.WARN} A meshing stage is still running ({label}); "
                     "cancel it before starting another run."
                 )
                 return
@@ -1729,10 +1730,6 @@ class MainWindow(QMainWindow):
         self._start_wsl_check(self._run_id)
 
     def _start_wsl_check(self, my_id: int) -> None:
-        if getattr(self, "_wsl_check_thread", None) and self._wsl_check_thread.isRunning():
-            self._wsl_check_thread.quit()
-            self._wsl_check_thread.wait(3000)
-
         # my_id is stashed on self rather than captured in a lambda: a plain
         # Python lambda has no QObject thread affinity for PySide6 to queue
         # against, so a Qt.QueuedConnection to one can run on the emitting
@@ -2284,10 +2281,6 @@ class MainWindow(QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             old_worker.deleteLater()
-
-        if getattr(self, "_parallel_thread", None) and self._parallel_thread.isRunning():
-            self._parallel_thread.quit()
-            self._parallel_thread.wait(5000)
 
         my_id = self._run_id
         self._parallel_worker = ParallelMeshWorker(
@@ -3517,9 +3510,6 @@ class MainWindow(QMainWindow):
         except Exception:
             self._cells_before_poly = 0
         self._polydual_run_id = self._run_id
-        if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
-            self._polydual_thread.quit()
-            self._polydual_thread.wait(3000)
         logger.info(
             "Launching barycentric dual poly conversion: case_dir=%s cells_before=%d",
             self._case_dir, self._cells_before_poly,
@@ -4236,7 +4226,7 @@ class MainWindow(QMainWindow):
                 "Solve Adaptive on it.",
             )
             return
-        if getattr(self, "_samr_thread", None) and self._samr_thread.isRunning():
+        if self._tasks.is_running("samr"):
             QMessageBox.information(
                 self, "Already Running",
                 "Solution-adaptive refinement is already running.",
@@ -4420,7 +4410,7 @@ class MainWindow(QMainWindow):
         if not self._case_dir:
             QMessageBox.warning(self, "No Case", "Generate a mesh first.")
             return
-        if getattr(self, '_quality_fix_thread', None) and self._quality_fix_thread and self._quality_fix_thread.isRunning():
+        if self._tasks.is_running("quality_fix"):
             QMessageBox.information(self, "Already Running", "A quality fix cycle is already in progress.")
             return
         my_id = self._run_id

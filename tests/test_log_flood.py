@@ -18,14 +18,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest  # noqa: E402
+import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
-from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtWidgets import QApplication
 
-from cfmesh_autogui.gui.log_panel import LogPanel, _MAX_LOG_LINES  # noqa: E402
+from cfmesh_autogui.gui.log_panel import LogPanel
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +96,7 @@ def test_stream_subprocess_throttles_live_lines_but_captures_all(qapp):
     live: list[str] = []
 
     with tempfile.TemporaryDirectory() as tmp:
-        rc, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+        rc, stdout_lines, _stderr_lines, timed_out = _stream_subprocess(
             cmd, run_cwd=tmp, timeout_s=60, on_line=live.append,
         )
 
