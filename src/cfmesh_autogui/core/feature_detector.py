@@ -189,22 +189,87 @@ class FeatureDetector:
         except Exception as e:
             logger.debug("Sharp edge detection skipped: %s", e)
 
-        # Gap detection: placeholder — real implementation requires
-        # proximity queries via GMSH's `mesh.getClosestPoint` on each
-        # surface pair. For now an empty list avoids corrupting cell
-        # sizes with dummy data (each dummy GapRegion with width 0.001
-        # would force minCell ≤ 0.0002 regardless of actual geometry).
+        # Bounding box BEFORE the mesh is cleared below: gap detection and
+        # cell-size suggestion both need it. getBoundingBox(dim, tag) needs
+        # both positional args (missing the second one crashed every call:
+        # "missing 1 required positional argument: 'tag'", confirmed live)
+        # and returns one flat 6-tuple (xmin, ymin, zmin, xmax, ymax, zmax),
+        # not two 3-tuples.
+        bbox = gmsh.model.getBoundingBox(-1, -1)
+        bbox_raw = max(bbox[i + 3] - bbox[i] for i in range(3))
+        bbox_dim = bbox_raw * scale
+
+        # Gap detection: real proximity query between NON-adjacent surface
+        # pairs via gmsh.model.getClosestPoint on the surface mesh (the 2D
+        # mesh generated above). A "gap" is a passage narrower than 5% of
+        # the bounding box between two surfaces that do NOT share a boundary
+        # edge — adjacent faces of the same solid are close to each other by
+        # definition and are not gaps. Deliberately bounded (at most
+        # GAP_MAX_PAIRS pairs, GAP_SAMPLES points per pair, GAP_MAX_GAPS
+        # kept) so a pathological model cannot stall the out-of-process
+        # worker; any failure falls back to the empty-gap-list placeholder
+        # behaviour instead of corrupting cell sizes.
+        GAP_MAX_PAIRS = 64
+        GAP_SAMPLES = 32
+        GAP_MAX_GAPS = 8
+        try:
+            surfaces = [e[1] for e in gmsh.model.getEntities(2)]
+            if 2 <= len(surfaces) <= 64:
+                gap_threshold = max(bbox_raw * 0.05, 1e-9)
+                edge_cache: dict[int, set[int]] = {}
+
+                def _edges_of(surf_tag: int) -> set[int]:
+                    es = edge_cache.get(surf_tag)
+                    if es is None:
+                        es = {
+                            int(e[1]) for e in gmsh.model.getBoundary(
+                                [(2, surf_tag)], combined=True,
+                                oriented=False, recursive=False,
+                            )
+                        }
+                        edge_cache[surf_tag] = es
+                    return es
+
+                gaps: list[GapRegion] = []
+                gap_pairs = 0
+                for i in range(len(surfaces)):
+                    for j in range(i + 1, len(surfaces)):
+                        if gap_pairs >= GAP_MAX_PAIRS:
+                            break
+                        a, b = surfaces[i], surfaces[j]
+                        if _edges_of(a) & _edges_of(b):
+                            continue  # adjacent surfaces, not a gap
+                        gap_pairs += 1
+                        try:
+                            _, coords, _ = gmsh.model.mesh.getNodes(2, a)
+                        except Exception:
+                            continue
+                        coords = np.array(coords).reshape(-1, 3)
+                        if len(coords) < 2:
+                            continue
+                        step = max(1, len(coords) // GAP_SAMPLES)
+                        for pt in coords[::step]:
+                            try:
+                                closest, _ = gmsh.model.getClosestPoint(2, b, pt.tolist())
+                            except Exception:
+                                continue
+                            dist = float(np.linalg.norm(np.array(closest) - pt))
+                            if not (0.0 < dist < gap_threshold):
+                                continue
+                            gaps.append(GapRegion(
+                                center=tuple((pt + np.array(closest)) / 2.0),
+                                gap_width=dist,
+                                normal=tuple((np.array(closest) - pt) / dist),
+                            ))
+                gaps.sort(key=lambda g: g.gap_width)
+                feature_map.gap_regions = gaps[:GAP_MAX_GAPS]
+        except Exception as e:
+            logger.debug("Gap detection skipped: %s", e)
+
         try:
             gmsh.model.mesh.clear()
         except Exception:
             pass
-
-        # getBoundingBox(dim, tag) needs both positional args (missing the
-        # second one crashed every call: "missing 1 required positional
-        # argument: 'tag'", confirmed live) and returns one flat 6-tuple
-        # (xmin, ymin, zmin, xmax, ymax, zmax), not two 3-tuples.
-        bbox = gmsh.model.getBoundingBox(-1, -1)
-        bbox_dim = max(bbox[i + 3] - bbox[i] for i in range(3)) * scale
 
         # Every length gathered above (edge lengths, gap widths, curvature
         # radius) is in the CAD file's own units, and suggest_cell_sizes()
@@ -231,8 +296,11 @@ class FeatureDetector:
             feature_map.suggested_max_cell,
         )
 
-        # Cache the result
-        cache_key = f"{filepath.resolve()}::{filepath.stat().st_mtime}::{detail}"
+        # Cache the result. The key MUST match the lookup key at the top
+        # of this method (path::mtime::detail::scale) — it used to omit
+        # scale, so the cache never hit and simply grew to its eviction
+        # limit on every run.
+        cache_key = f"{filepath.resolve()}::{filepath.stat().st_mtime}::{detail}::{scale}"
         self._cache[cache_key] = feature_map
         # Limit cache size
         if len(self._cache) > 20:
