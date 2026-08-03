@@ -1514,14 +1514,45 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
     stderr_lines: list[str] = []
     last_activity = [time.monotonic()]
 
+    # Flood protection: a pathological child (e.g. cartesianMesh grinding on
+    # an invalid mesh) can emit thousands of warning lines/sec; forwarding
+    # every one to the GUI saturates the GUI thread until the window goes
+    # white and Windows reports an AppHang. Lines are still ALL captured in
+    # stdout_lines/stderr_lines (report integrity); only the live on_line
+    # forwarding is rate-limited, with a suppression note.
+    _MAX_LINE_RATE_PER_S = 50.0
+    _rate = {"last_emit": time.monotonic(), "suppressed": 0}
+    _MAX_STREAM_LINES = 100_000
+    _stream_budget = {"appends": 0}
+
+    def _append_capped(sink, line):
+        sink.append(line)
+        _stream_budget["appends"] += 1
+        if (
+            _stream_budget["appends"] % 20_000 == 0
+            and len(sink) > _MAX_STREAM_LINES
+        ):
+            del sink[: len(sink) - _MAX_STREAM_LINES]
+
     def _pump(stream, sink, prefix):
         try:
             for line in iter(stream.readline, ""):
                 line = line.rstrip("\n")
-                sink.append(line)
+                _append_capped(sink, line)
                 last_activity[0] = time.monotonic()
                 if line.strip():
-                    on_line(prefix + line if prefix else line)
+                    now = time.monotonic()
+                    if now - _rate["last_emit"] >= 1.0 / _MAX_LINE_RATE_PER_S:
+                        if _rate["suppressed"]:
+                            on_line(
+                                prefix + f"... ({_rate['suppressed']} righe "
+                                "soppresse dal log live) ..."
+                            )
+                            _rate["suppressed"] = 0
+                        on_line(prefix + line if prefix else line)
+                        _rate["last_emit"] = now
+                    else:
+                        _rate["suppressed"] += 1
         finally:
             try:
                 stream.close()
@@ -1563,6 +1594,13 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
         pass
     t_out.join(timeout=2)
     t_err.join(timeout=2)
+
+    if _rate["suppressed"]:
+        on_line(
+            f"... ({_rate['suppressed']} righe soppresse dal log live — "
+            "output troppo verboso) ..."
+        )
+        _rate["suppressed"] = 0
 
     return proc.returncode, stdout_lines, stderr_lines, timed_out
 
