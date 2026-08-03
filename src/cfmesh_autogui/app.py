@@ -166,12 +166,15 @@ def main():
         "--gmsh-convert-to-foam": "convert_to_foam",
     }
     if len(_sys.argv) > 1 and _sys.argv[1] in _GMSH_FLAG_SUBCOMMAND:
-        import runpy
-        from pathlib import Path as _Path
+        # Frozen (PyInstaller) build: gmsh_wrapper.py lives inside the PYZ
+        # archive, so runpy.run_path on its source path cannot work (the
+        # file does not exist on disk).  Call the CLI function directly —
+        # this is the ONLY subprocess entry that reaches GMSH volume
+        # meshing in the frozen exe, so it must not depend on disk layout.
+        from cfmesh_autogui.core import gmsh_wrapper
         subcommand = _GMSH_FLAG_SUBCOMMAND[_sys.argv[1]]
         _sys.argv = [_sys.argv[0], subcommand] + _sys.argv[2:]
-        script = str(_Path(__file__).resolve().with_name("core") / "gmsh_wrapper.py")
-        runpy.run_path(script, run_name="__main__")
+        gmsh_wrapper._cli_main(_sys.argv)
         _sys.exit(0)
 
     if len(_sys.argv) > 1 and _sys.argv[1] in ("--help", "-h"):

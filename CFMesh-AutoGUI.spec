@@ -2,6 +2,19 @@
 
 from PyInstaller.utils.hooks import collect_all
 
+import os
+import sys
+
+# The gmsh wheel installs its native DLL directly under the Python Lib
+# folder (not inside the package), so PyInstaller's import scanning never
+# sees it.  Without it the frozen exe's GMSH path fails with
+# "ImportError: DLL load failed".  Copy it next to the frozen gmsh.py
+# (moduledir = the _internal bundle root in one-dir mode).
+_GMSH_DLL = os.path.join(sys.prefix, "Lib", "gmsh-4.15.dll")
+if not os.path.exists(_GMSH_DLL):
+    raise SystemExit(f"gmsh DLL not found at {_GMSH_DLL} — GMSH poly path "
+                     f"would be broken in the frozen exe.")
+
 # casadi ships ~100 sibling DLLs (optional solver plugins: bonmin, cbc,
 # clp, ipopt, ...) directly in its own package folder rather than a
 # `.libs` subfolder PyInstaller's automatic scanner handles well, and
@@ -24,7 +37,8 @@ a = Analysis(
     ['src\\cfmesh_autogui\\app.py'],
     pathex=[],
     binaries=casadi_binaries,
-    datas=[('templates', 'templates'), ('plugins', 'plugins')] + casadi_datas,  # ✅ F-028: rimosso src/cfmesh_autogui (gia come scripts)
+    datas=[('templates', 'templates'), ('plugins', 'plugins'),
+           (_GMSH_DLL, '.')] + casadi_datas,  # ✅ F-028: rimosso src/cfmesh_autogui (gia come scripts)
     hiddenimports=['PySide6.QtCore', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtNetwork', 'gmsh', 'meshio', 'reportlab', 'cadquery', 'pyvista', 'pyvistaqt', 'numpy', 'trimesh', 'pymeshfix'] + casadi_hidden,
     hookspath=[],
     hooksconfig={},
@@ -62,12 +76,15 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# one-dir build: the EXE is just the bootloader + embedded PYZ; the
+# libraries/data live next to it in dist/CFMesh-AutoGUI/ (fast startup,
+# no per-run temp extraction, and friendlier to SmartScreen than a
+# 500 MB one-file exe).
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='CFMesh-AutoGUI',
     debug=False,
     bootloader_ignore_signals=False,
@@ -81,4 +98,14 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=['*msvcp*', '*vcruntime*', '*concrt*'],
+    name='CFMesh-AutoGUI',
 )
