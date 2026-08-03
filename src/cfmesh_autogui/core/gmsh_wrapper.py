@@ -1816,13 +1816,18 @@ def generate_volume_mesh(
     return msh_path, names
 
 
-if __name__ == "__main__":
-    import sys, json
-    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+def _cli_main(argv):
+    """CLI entry point for the gmsh_wrapper subcommands (surface / volume /
+    convert_to_foam).  Kept as a plain function so the PyInstaller-frozen
+    exe can call it directly from app.py's subprocess dispatch (runpy on
+    the archive path does not work — the module lives inside the PYZ).
+    """
+    import json
+    cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "surface":
-        geom_path = sys.argv[2]
-        stl_out = Path(sys.argv[3])
-        detail = sys.argv[4] if len(sys.argv) > 4 else "medium"
+        geom_path = argv[2]
+        stl_out = Path(argv[3])
+        detail = argv[4] if len(argv) > 4 else "medium"
         stl_out.parent.mkdir(parents=True, exist_ok=True)
         try:
             names = generate_surface_stl(geom_path, stl_out, detail=detail)
@@ -1846,7 +1851,7 @@ if __name__ == "__main__":
         # have been the 11th.
         flags: dict[str, str] = {}
         rest: list[str] = []
-        for a in sys.argv[2:]:
+        for a in argv[2:]:
             if a.startswith("--") and "=" in a:
                 k, v = a[2:].split("=", 1)
                 flags[k] = v
@@ -1929,8 +1934,8 @@ if __name__ == "__main__":
         # calls) leaking into this specific subprocess creation; a
         # fresh process sidesteps that regardless of the precise cause.
         import subprocess
-        case_dir_arg = Path(sys.argv[2])
-        msh_filename = sys.argv[3]
+        case_dir_arg = Path(argv[2])
+        msh_filename = argv[3]
         try:
             from cfmesh_autogui.config import OFConfig
             cfg = OFConfig()
@@ -1947,3 +1952,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(json.dumps({"success": False, "error": str(e)}))
             sys.exit(1)
+
+if __name__ == "__main__":
+    import sys
+    _cli_main(sys.argv)
