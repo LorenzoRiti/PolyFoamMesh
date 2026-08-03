@@ -198,21 +198,37 @@ class QualityPanel(QFrame):
         )
         if not path:
             return
-        try:
+        # PDF generation parses the full raw log — run it off the UI thread.
+        from cfmesh_autogui.gui.task_runner import FunctionWorker, TaskManager
+
+        raw_log = self._raw_log or ""
+        metrics = self._metrics
+
+        def work(worker):
             from cfmesh_autogui.gui.pdf_report import MeshReportPDF
             case_hint = ""
-            if self._raw_log:
-                for line in self._raw_log.splitlines():
+            if raw_log:
+                for line in raw_log.splitlines():
                     if "Case:" in line:
                         case_hint = line.split("Case:")[-1].strip()
                         break
             report_gen = MeshReportPDF(case_hint or ".")
-            report_gen.generate(Path(path), self._metrics)
+            report_gen.generate(Path(path), metrics)
+            return path
+
+        def on_done(_name, out_path):
             self._status_label.setText("Mesh Quality: PDF exported")
-            logger.info("Quality PDF exported: %s", path)
-        except Exception as e:
-            logger.error("PDF export failed: %s", e)
-            QMessageBox.warning(self, "Export Failed", str(e))
+            logger.info("Quality PDF exported: %s", out_path)
+
+        def on_failed(_name, msg):
+            logger.error("PDF export failed: %s", msg)
+            QMessageBox.warning(self, "Export Failed", str(msg))
+
+        tasks = getattr(self, "_tasks", None)
+        if tasks is None:
+            tasks = TaskManager(self)
+            self._tasks = tasks
+        tasks.submit("pdf_export", FunctionWorker(work), on_finished=on_done, on_failed=on_failed)
 
     def _on_auto_fix(self):
         self.fix_requested.emit("auto_fix")

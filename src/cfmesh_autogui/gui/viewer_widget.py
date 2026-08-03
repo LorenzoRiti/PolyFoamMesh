@@ -11,7 +11,6 @@ import pyvista as pv
 import trimesh
 from PySide6.QtCore import QProcess, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from cfmesh_autogui.core.of_reader import _read_header_bytes
+from cfmesh_autogui.gui.task_runner import FunctionWorker, TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def _read_of_block_binary(path: Path, raw: bytes) -> str:
     cls = cls_match.group(1) if cls_match else ""
     if cls == "faceList":
         return _binary_faces_to_ascii(body_bytes)
-    # Default: points, vectorField etc. — flat doubles
+    # Default: points, vectorField etc. â€” flat doubles
     return _binary_doubles_to_ascii(body_bytes)
 
 
@@ -174,7 +174,7 @@ def _binary_faces_to_ascii(data: bytes) -> str:
 
 def _parse_of_points(path: Path) -> np.ndarray:
     text = _read_of_block(path)
-    # Each point is written "(x y z)" — np.fromstring can't tokenize the
+    # Each point is written "(x y z)" â€” np.fromstring can't tokenize the
     # parens (raises "unmatched data" on modern numpy), so strip them.
     # cfMesh meshes are normally too large for this manual-parser fallback
     # (they require foamToVTK instead), which is why this only surfaces on
@@ -195,7 +195,7 @@ def _parse_of_faces(path: Path) -> list[list[int]]:
     return faces
 
 
-# ✅ F-012: delegato a boundary_reader.parse_boundary (elimina duplicazione)
+# âœ… F-012: delegato a boundary_reader.parse_boundary (elimina duplicazione)
 def _parse_boundary(path: Path) -> list[dict]:
     from cfmesh_autogui.core.boundary_reader import parse_boundary
     patches = parse_boundary(path)
@@ -216,7 +216,7 @@ def _triangulate_face(indices: list[int]) -> list[tuple[int, int, int]]:
     return tris
 
 
-# ✅ F-013: LRU cache con max 5 entries per evitare memory leak
+# âœ… F-013: LRU cache con max 5 entries per evitare memory leak
 _MESH_CACHE: dict[tuple[str, float], dict[str, pv.PolyData]] = {}
 _MAX_CACHE_SIZE = 20
 
@@ -244,34 +244,26 @@ def _human_size(n_bytes: int) -> str:
 def _poly_dir_state(poly_dir: Path, max_retries: int = 3, delay_ms: int = 500) -> float | None:
     """Check that all required polyMesh files exist and return newest mtime.
 
-    Retries up to ``max_retries`` times with ``delay_ms`` sleep between
-    attempts — this handles WSL2's 9P filesystem sync delay, where files
-    written by cartesianMesh inside WSL may not be visible from Windows
-    for several hundred milliseconds.
-
-    Uses ``QApplication.processEvents()`` between retries so the UI stays
-    responsive during the poll interval.
+    Never sleeps on the calling thread: callers that need the WSL2 9P
+    sync-delay retry (files written by cartesianMesh inside WSL may not be
+    visible from Windows for a few hundred ms) schedule their own retries
+    via QTimer â€” this function is a single non-blocking check.
     """
     files = ("points", "faces", "boundary")
-    for attempt in range(max_retries):
-        mtimes: list[float] = []
-        all_exist = True
-        for name in files:
-            f = poly_dir / name
-            if not f.exists():
-                all_exist = False
-                break
-            try:
-                mtimes.append(f.stat().st_mtime)
-            except OSError:
-                all_exist = False
-                break
-        if all_exist:
-            return max(mtimes)
-        if attempt < max_retries - 1:
-            QApplication.processEvents()
-            _time.sleep(delay_ms / 1000.0)
-            QApplication.processEvents()
+    mtimes: list[float] = []
+    all_exist = True
+    for name in files:
+        f = poly_dir / name
+        if not f.exists():
+            all_exist = False
+            break
+        try:
+            mtimes.append(f.stat().st_mtime)
+        except OSError:
+            all_exist = False
+            break
+    if all_exist:
+        return max(mtimes)
     return None
 
 
@@ -307,7 +299,6 @@ def _run_foamtovtk_async(case_dir: Path, vtk_subdir: str, state: float) -> Path 
         if elapsed - last_progress > 5.0:
             logger.info("foamToVTK running for %.0fs...", elapsed)
             last_progress = elapsed
-        QApplication.processEvents()
         if _time.monotonic() > deadline:
             proc.kill()
             proc.wait(5)
@@ -333,15 +324,14 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
     """Run OpenFOAM's own `foamToVTK` to get the real internal volume cells.
 
     The "Volume Mesh" view used to only ever show the boundary *patches*
-    (constant/polyMesh/boundary) — the outer surface, never the actual
-    internal cells — because that's all `read_openfoam_mesh_patches` reads.
+    (constant/polyMesh/boundary) â€” the outer surface, never the actual
+    internal cells â€” because that's all `read_openfoam_mesh_patches` reads.
     cfMesh/cartesianMesh cells are polyhedral; meshio can't parse OpenFOAM
     or polyhedral VTU at all, but PyVista (built on VTK directly) reads
     them fine, so foamToVTK -> PyVista is the reliable path here.
 
     Cached under <case_dir>/VTK_view, regenerated only when polyMesh changed.
-    Uses Popen with a polling loop so QApplication.processEvents() keeps
-    the UI responsive during the 30-60s WSL2 call.
+    Runs in a background task (the WSL2 call takes 30-60s).
     """
     case_dir = Path(case_dir)
     poly_dir = case_dir / "constant" / "polyMesh"
@@ -403,7 +393,7 @@ def _load_vtk_patches(case_dir: Path, vtk_subdir: str) -> dict[str, pv.PolyData]
         return None
     result: dict[str, pv.PolyData] = {}
     # foamToVTK writes each boundary patch as 2D surface data (.vtp,
-    # PolyData) — searching for "*.vtu" (volumetric UnstructuredGrid) never
+    # PolyData) â€” searching for "*.vtu" (volumetric UnstructuredGrid) never
     # matched anything, so this fast path silently always returned None and
     # every mesh fell through to the manual ASCII parser, which bails with
     # "too large" on anything but tiny cases (root cause of the integrated
@@ -446,12 +436,12 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
         return vtk_patches
 
     # Slow path: manual parsing of OpenFOAM binary files (for small meshes
-    # where foamToVTK hasn't been run yet — cfMesh polyhedral meshes with
+    # where foamToVTK hasn't been run yet â€” cfMesh polyhedral meshes with
     # 3.5M+ cells are NOT reliably parsed here; foamToVTK is required).
     faces_path = poly_dir / "faces"
     if faces_path.exists() and faces_path.stat().st_size > _MANUAL_PARSE_MAX_SIZE_BYTES:
         logger.info(
-            "Faces file too large (%s), skipping manual parser — foamToVTK required",
+            "Faces file too large (%s), skipping manual parser â€” foamToVTK required",
             _human_size(faces_path.stat().st_size),
         )
         return None
@@ -464,7 +454,7 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
     except (ValueError, IndexError, OSError, MemoryError) as exc:
         logger.warning(
             "Manual mesh parsing failed for %s: %s. "
-            "This is normal for large binary cfMesh meshes — "
+            "This is normal for large binary cfMesh meshes â€” "
             "foamToVTK must be used instead.",
             poly_dir, exc,
         )
@@ -483,8 +473,6 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
         v_offset = 0
         t_offset = 0
         for fi, face_indices in enumerate(patch_faces):
-            if fi > 0 and fi % 500 == 0:
-                QApplication.processEvents()
             n = len(face_indices)
             try:
                 verts_arr[v_offset:v_offset + n] = points[face_indices]
@@ -509,7 +497,7 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
         color = PATCH_COLORS[i % len(PATCH_COLORS)]
         pd.cell_data["color"] = np.tile(color, (pd.n_cells, 1))
         result[p["name"]] = pd
-    _cache_set(cache_key, result)  # ✅ F-013
+    _cache_set(cache_key, result)  # âœ… F-013
     return result
 
 
@@ -538,6 +526,9 @@ class ViewerWidget(QWidget):
         self._mesh_retry_max: int = 3
         self._foam_to_vtk_attempted: bool = False
         self._display_timeout_timer: QTimer | None = None
+        # Background tasks for heavy loads (foamToVTK, VTU reads) so the
+        # UI never freezes while the mesh display pipeline runs.
+        self._vtk_tasks = TaskManager(self)
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -740,7 +731,7 @@ class ViewerWidget(QWidget):
         if self._plotter is None:
             return
         sphere = self._plotter.add_mesh(
-            pv.Sphere(radius=(getattr(self._cad_meshes[0], 'scale', 1.0) if self._cad_meshes else 1.0) * 0.01,  # ✅ F-010
+            pv.Sphere(radius=(getattr(self._cad_meshes[0], 'scale', 1.0) if self._cad_meshes else 1.0) * 0.01,  # âœ… F-010
                       center=pt),
             color="red",
         )
@@ -847,7 +838,7 @@ class ViewerWidget(QWidget):
         # picked vtkActor. Matching by the *mesh's* memory_address used to
         # be used here, but PyVista internally copies/repacks the polydata
         # when rendering with `scalars=..., rgb=True` (as _display_cad and
-        # highlight_patch always do) — the mapper's input dataset ends up
+        # highlight_patch always do) â€” the mapper's input dataset ends up
         # with a DIFFERENT address than the pv.PolyData we built, so that
         # lookup never matched and Select Patch silently did nothing.
         # The actor object itself is never copied, so match on that instead.
@@ -948,7 +939,7 @@ class ViewerWidget(QWidget):
             combined = self._build_combined_pvdata()
             if combined is not None:
                 # add_mesh_clip_box() in the installed PyVista version has no
-                # `bounds` kwarg — passing one (as this used to) raises a
+                # `bounds` kwarg â€” passing one (as this used to) raises a
                 # TypeError on every toggle, silently killing Section Cut.
                 # Omit it: this places a full, draggable box widget the user
                 # can resize/move to clip interactively, matching the
@@ -1043,7 +1034,7 @@ class ViewerWidget(QWidget):
         if self._vtk_timeout_timer:
             self._vtk_timeout_timer.stop()
         if getattr(self, '_vtk_timeout_fired', False):
-            # Timeout already handled cleanup — skip stale callback
+            # Timeout already handled cleanup â€” skip stale callback
             return
         if exit_code == 0:
             matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
@@ -1084,7 +1075,7 @@ class ViewerWidget(QWidget):
 
     def _on_display_timeout(self):
         """Called when the mesh display pipeline times out."""
-        logger.warning("Mesh display timed out after 90s — showing fallback message")
+        logger.warning("Mesh display timed out after 90s â€” showing fallback message")
         self._mesh_display_in_progress = False
         self._view_selector.setEnabled(False)
         self._cancel_vtk_process()
@@ -1097,7 +1088,7 @@ class ViewerWidget(QWidget):
         if self._plotter is None or not self._mesh_case_dir:
             return
         if getattr(self, "_mesh_display_in_progress", False):
-            logger.debug("_display_mesh already in progress — skipping duplicate call")
+            logger.debug("_display_mesh already in progress â€” skipping duplicate call")
             return
         self._mesh_display_in_progress = True
         if self._section_enabled:
@@ -1114,10 +1105,9 @@ class ViewerWidget(QWidget):
             self._plotter.render()
         except Exception as exc:
             logger.error("Plotter failed to show loading message: %s", exc)
-        QApplication.processEvents()
+
         self._start_display_timeout(90)
         QTimer.singleShot(0, self._step_vtu_for_mesh)
-        # _mesh_display_in_progress is cleared when _do_load_patches completes
 
     def _display_surface_edges(self):
         """Render the mesh with filled surfaces and visible edges (like
@@ -1126,7 +1116,7 @@ class ViewerWidget(QWidget):
         if self._plotter is None or not self._mesh_case_dir:
             return
         if getattr(self, "_mesh_display_in_progress", False):
-            logger.debug("_display_surface_edges already in progress — skipping")
+            logger.debug("_display_surface_edges already in progress â€” skipping")
             return
         self._mesh_display_in_progress = True
         # Show "Loading..." immediately
@@ -1139,7 +1129,7 @@ class ViewerWidget(QWidget):
             self._plotter.render()
         except Exception as exc:
             logger.error("Plotter failed to show loading message: %s", exc)
-        QApplication.processEvents()
+
         self._start_display_timeout(90)
         QTimer.singleShot(0, self._step_vtu_for_surface_edges)
 
@@ -1166,71 +1156,12 @@ class ViewerWidget(QWidget):
                 internal_vtu = candidates[0]
 
         if internal_vtu is not None:
-            try:
-                grid = pv.read(str(internal_vtu))
-                n_cells = grid.n_cells
-                logger.info("Loading surface+edges: %d cells from %s", n_cells, internal_vtu)
-                show_decimated = n_cells > self.DECIMATE_THRESHOLD
-                self._plotter.clear()
-                ec = self._edge_color()
-                if show_decimated:
-                    try:
-                        grid = grid.decimate_pro(self.DECIMATE_TARGET)
-                    except Exception:
-                        pass
-                # Surface with edges: filled surfaces + wireframe overlay.
-                # lightgray surface reads on both light and dark backgrounds.
-                self._plotter.add_mesh(
-                    grid, style="surface", show_edges=True,
-                    edge_color=ec, color="lightgray",
-                    line_width=0.5 if not show_decimated else 0.7,
-                    opacity=1.0,
-                )
-                if show_decimated:
-                    self._plotter.add_text(
-                        f"Visualizzazione semplificata ({n_cells:,} celle). "
-                        "Il file di mesh reale \u00e8 invariato.",
-                        color=self._text_color, font_size=10,
-                    )
-                self._plotter.view_isometric()
-                self._plotter.render()
-                return
-            except Exception as exc:
-                logger.warning("Failed to load internal VTU for surface+edges: %s — falling back to patches", exc)
-
-        # Fallback: boundary patches with edges
-        patches = read_openfoam_mesh_patches(self._mesh_case_dir)
-        if not patches:
-            self._show_mesh_too_large("VTU non disponibile (usa ParaView)")
+            # Heavy read + decimate in a background task; render on GUI thread.
+            self._load_internal_vtu_async(internal_vtu, "surface_edges")
             return
 
-        total_faces = sum(pd.n_cells for pd in patches.values())
-        show_decimated = total_faces > self.DECIMATE_THRESHOLD
-        try:
-            self._plotter.clear()
-            ec = self._edge_color()
-            for i, (name, pd) in enumerate(patches.items()):
-                if show_decimated:
-                    try:
-                        pd = pd.decimate_pro(self.DECIMATE_TARGET)
-                    except Exception:
-                        pass
-                color = PATCH_COLORS[i % len(PATCH_COLORS)]
-                self._plotter.add_mesh(
-                    pd, scalars="color", rgb=True,
-                    show_edges=True, edge_color=ec, label=name,
-                )
-            if show_decimated:
-                self._plotter.add_text(
-                    f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
-                    "Il file di mesh reale \u00e8 invariato.",
-                    color=self._text_color, font_size=10,
-                )
-            self._plotter.view_isometric()
-            self._plotter.render()
-        except Exception as exc:
-            logger.error("Plotter display failed (surface+edges): %s", exc)
-            self._show_mesh_too_large(f"Errore display: {exc}")
+        # Fallback: boundary patches with edges
+        self._load_patches_async()
 
     def _display_mesh_section(self):
         self._plotter.clear()
@@ -1239,7 +1170,7 @@ class ViewerWidget(QWidget):
             color=self._text_color, font_size=12,
         )
         self._plotter.render()
-        QApplication.processEvents()
+
         QTimer.singleShot(0, self._step_vtu_for_section)
 
     def _step_vtu_for_mesh(self):
@@ -1268,7 +1199,7 @@ class ViewerWidget(QWidget):
         state = _poly_dir_state(poly_dir, max_retries=3, delay_ms=2000)
         if state is None:
             # Poly files not found yet; try again later or show loading message
-            logger.info("polyMesh files not found yet in %s — will retry via _do_load_patches", poly_dir)
+            logger.info("polyMesh files not found yet in %s â€” will retry via _do_load_patches", poly_dir)
             on_vtu_ready(False)
             return
         vtk_subdir = "VTK_view"
@@ -1281,11 +1212,11 @@ class ViewerWidget(QWidget):
                     return
             except (ValueError, OSError):
                 pass
-        # If foamToVTK is already running, just attach the callback — don't
+        # If foamToVTK is already running, just attach the callback â€” don't
         # kill and restart (that would waste 30-60s of progress).
         vtk_proc = getattr(self, "_vtk_process", None)
         if vtk_proc and vtk_proc.state() != QProcess.NotRunning:
-            logger.debug("foamToVTK already running — attaching callback to existing process")
+            logger.debug("foamToVTK already running â€” attaching callback to existing process")
             # Disconnect old finished signal and reconnect with new callback
             try:
                 vtk_proc.finished.disconnect()
@@ -1315,26 +1246,175 @@ class ViewerWidget(QWidget):
     def _do_show_section(self):
         if self._plotter is None:
             return
-        ec = self._edge_color()
-        grid = self._get_internal_volume_grid()
-        self._plotter.clear()
-        if grid is not None:
-            self._plotter.add_mesh_clip_box(
-                grid, show_edges=True, edge_color=ec, crinkle=False,
+        # Heavy load (foamToVTK + VTU read) runs in a background task.
+        self._load_section_async()
+
+    def _load_internal_vtu_async(self, vtu_path: Path, mode: str) -> None:
+        """Read + optionally decimate a (possibly huge) internal.vtu in a
+        background task; render on the GUI thread when ready."""
+        def work(worker):
+            grid = pv.read(str(vtu_path))
+            n_cells = grid.n_cells
+            show_dec = n_cells > self.DECIMATE_THRESHOLD
+            if show_dec:
+                try:
+                    grid = grid.decimate_pro(self.DECIMATE_TARGET)
+                except Exception:
+                    pass
+            return {"grid": grid, "n": n_cells, "show_dec": show_dec}
+
+        def on_done(_name, payload):
+            self._mesh_display_in_progress = False
+            self._cancel_display_timeout()
+            grid = payload["grid"]
+            n_cells = payload["n"]
+            show_dec = payload["show_dec"]
+            ec = self._edge_color()
+            try:
+                self._plotter.clear()
+                if mode == "internal":
+                    self._plotter.add_mesh(
+                        grid, style="surface", color="lightgray",
+                        show_edges=True, edge_color=ec,
+                        line_width=0.5 if not show_dec else 0.7,
+                        opacity=1.0,
+                    )
+                else:  # surface_edges
+                    self._plotter.add_mesh(
+                        grid, style="surface", show_edges=True,
+                        edge_color=ec, color="lightgray",
+                        line_width=0.5 if not show_dec else 0.7,
+                        opacity=1.0,
+                    )
+                if show_dec:
+                    self._plotter.add_text(
+                        f"Visualizzazione semplificata ({n_cells:,} celle). "
+                        "Il file di mesh reale \u00e8 invariato.",
+                        color=self._text_color, font_size=10,
+                    )
+                self._plotter.view_isometric()
+                self._plotter.render()
+            except Exception as exc:
+                logger.error("Plotter display failed (internal VTU): %s", exc)
+                self._show_mesh_too_large(f"Errore display: {exc}")
+
+        def on_failed(_name, msg):
+            self._mesh_display_in_progress = False
+            self._cancel_display_timeout()
+            logger.warning("Failed to load internal VTU %s: %s", vtu_path, msg)
+            # Fall back to the boundary patches path.
+            QTimer.singleShot(0, self._do_load_patches)
+
+        self._vtk_tasks.submit(
+            "vtk_display", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
+
+    def _load_patches_async(self, mode: str = "patches") -> None:
+        """Read boundary patches (foamToVTK VTP files or manual parser) in
+        a background task; render on the GUI thread when ready."""
+        case_dir = self._mesh_case_dir
+
+        def work(worker):
+            return read_openfoam_mesh_patches(case_dir)
+
+        def on_done(_name, patches):
+            self._mesh_retry_count = 0
+            self._cancel_display_timeout()
+            self._mesh_display_in_progress = False
+            if not patches:
+                self._handle_no_patches()
+                return
+            total_faces = sum(pd.n_cells for pd in patches.values())
+            logger.info(
+                "Loaded %d mesh patches (%d total faces) for %s",
+                len(patches), total_faces, case_dir,
             )
-        else:
-            self._plotter.add_text(
-                "Internal mesh unavailable (foamToVTK failed — see log)",
-                color=self._text_color, font_size=10,
-            )
-        self._plotter.view_isometric()
-        self._plotter.render()
+            show_decimated = total_faces > self.DECIMATE_THRESHOLD
+            try:
+                self._plotter.clear()
+                ec = self._edge_color()
+                for i, (name, pd) in enumerate(patches.items()):
+                    if show_decimated:
+                        try:
+                            pd = pd.decimate_pro(self.DECIMATE_TARGET)
+                        except Exception:
+                            pass
+                    self._plotter.add_mesh(
+                        pd, scalars="color", rgb=True,
+                        show_edges=not show_decimated, edge_color=ec, label=name,
+                    )
+                if show_decimated:
+                    self._plotter.add_text(
+                        f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
+                        "Il file di mesh reale \u00e8 invariato.",
+                        color=self._text_color, font_size=10,
+                    )
+                self._plotter.view_isometric()
+                self._plotter.render()
+            except Exception as exc:
+                logger.error("Plotter display failed (mesh patches): %s", exc)
+                self._show_mesh_too_large(f"Errore display: {exc}")
+
+        def on_failed(_name, msg):
+            self._mesh_display_in_progress = False
+            self._cancel_display_timeout()
+            logger.warning("Mesh patches load failed: %s", msg)
+            self._show_mesh_too_large(f"Errore caricamento: {msg}")
+
+        self._vtk_tasks.submit(
+            "vtk_display", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
+
+    def _load_section_async(self) -> None:
+        """Build the internal volume VTU (foamToVTK) + read it in a
+        background task, then show the section cut on the GUI thread."""
+        case_dir = Path(self._mesh_case_dir) if self._mesh_case_dir else None
+        if case_dir is None:
+            return
+
+        def work(worker):
+            vtu_path = build_internal_volume_vtu(case_dir)
+            if vtu_path is None:
+                return None
+            return pv.read(str(vtu_path))
+
+        def on_done(_name, grid):
+            self._mesh_display_in_progress = False
+            self._cancel_display_timeout()
+            ec = self._edge_color()
+            self._plotter.clear()
+            if grid is not None:
+                self._plotter.add_mesh_clip_box(
+                    grid, show_edges=True, edge_color=ec, crinkle=False,
+                )
+            else:
+                self._plotter.add_text(
+                    "Internal mesh unavailable (foamToVTK failed â€” see log)",
+                    color=self._text_color, font_size=10,
+                )
+            self._plotter.view_isometric()
+            self._plotter.render()
+
+        def on_failed(_name, msg):
+            self._mesh_display_in_progress = False
+            self._cancel_display_timeout()
+            logger.warning("Section load failed: %s", msg)
+
+        self._vtk_tasks.submit(
+            "vtk_display", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
 
     def _do_load_patches(self, _unused: bool = False):
         """Load and display the mesh.
 
-        Preference: the internal volume cells (internal.vtu — the actual
-        3D polyhedral cells after tet→poly) rendered as a full wireframe,
+        Preference: the internal volume cells (internal.vtu â€” the actual
+        3D polyhedral cells after tetâ†’poly) rendered as a full wireframe,
         which makes the polyhedral structure visible with no tetrahedra.
         Falls back to the boundary surface patches (2D, look identical
         for tet and poly) only when the volume VTU isn't available.
@@ -1352,121 +1432,51 @@ class ViewerWidget(QWidget):
             if candidates:
                 internal_vtu = candidates[0]
         if internal_vtu is not None:
-            try:
-                grid = pv.read(str(internal_vtu))
-                n_cells = grid.n_cells
-                logger.info(
-                    "Loading internal volume mesh: %d cells from %s",
-                    n_cells, internal_vtu,
-                )
-                show_decimated = n_cells > self.DECIMATE_THRESHOLD
-                self._plotter.clear()
-                ec = self._edge_color()
-                if show_decimated:
-                    try:
-                        grid = grid.decimate_pro(self.DECIMATE_TARGET)
-                    except Exception:
-                        pass
-                # ParaView-style "Surface with Edges": a uniform, fully opaque
-                # surface with contrasting edges — the standard mesh view.
-                # No per-cell random colours, no alpha blending: the surface
-                # is readable and the polyhedral edges stay clearly visible.
-                self._plotter.add_mesh(
-                    grid, style="surface", color="lightgray",
-                    show_edges=True, edge_color=ec,
-                    line_width=0.5 if not show_decimated else 0.7,
-                    opacity=1.0,
-                )
-                if show_decimated:
-                    self._plotter.add_text(
-                        f"Visualizzazione semplificata ({n_cells:,} celle). "
-                        "Il file di mesh reale \u00e8 invariato.",
-                        color=self._text_color, font_size=10,
-                    )
-                self._plotter.view_isometric()
-                self._plotter.render()
-                return
-            except Exception as exc:
-                logger.warning(
-                    "Failed to load internal VTU %s: %s — falling back to "
-                    "boundary patches", internal_vtu, exc,
-                )
+            # Reading + decimating a big internal.vtu runs in a background
+            # task; the plotter (GUI thread only) renders when it's ready.
+            self._load_internal_vtu_async(internal_vtu, "internal")
+            return
 
         # --- Fallback: boundary surface patches ----------------------------
-        patches = read_openfoam_mesh_patches(self._mesh_case_dir)
-        if not patches:
-            # If foamToVTK was already attempted and failed, show "mesh too
-            # large" immediately — no point retrying the same failing path.
-            if self._foam_to_vtk_attempted:
-                self._foam_to_vtk_attempted = False
-                self._show_mesh_too_large("foamToVTK non disponibile (usa ParaView)")
-                return
+        self._load_patches_async()
 
-            if self._mesh_case_dir and self._mesh_retry_count < self._mesh_retry_max:
-                poly_dir = Path(self._mesh_case_dir) / "constant" / "polyMesh"
-                if poly_dir.is_dir():
-                    self._mesh_retry_count += 1
-                    logger.debug(
-                        "Mesh load retry %d/%d (polyDir=%s)",
-                        self._mesh_retry_count, self._mesh_retry_max, poly_dir,
-                    )
-                    # Trigger foamToVTK on first retry — but only once.
-                    case_dir = Path(self._mesh_case_dir)
-                    vtk_dir = case_dir / "VTK_view"
-                    has_vtu = bool(list(vtk_dir.glob("*_0/internal.vtu")) if vtk_dir.exists() else [])
-                    if self._mesh_retry_count == 1 and not has_vtu and not self._foam_to_vtk_attempted:
-                        logger.info("VTU not found — starting foamToVTK before next retry")
-                        self._foam_to_vtk_attempted = True
-                        self._do_step_vtu(
-                            on_vtu_ready=lambda ok: QTimer.singleShot(
-                                2000 if ok else 500,
-                                lambda: self._do_load_patches(False),
-                            ),
-                        )
-                        return
-                    QTimer.singleShot(
-                        2000, lambda: self._do_load_patches(False),
+    def _handle_no_patches(self) -> None:
+        """Called when the patch load came back empty: decide whether to
+        trigger foamToVTK or show the 'use ParaView' message."""
+        if self._foam_to_vtk_attempted:
+            self._foam_to_vtk_attempted = False
+            self._show_mesh_too_large("foamToVTK non disponibile (usa ParaView)")
+            return
+
+        if self._mesh_case_dir and self._mesh_retry_count < self._mesh_retry_max:
+            poly_dir = Path(self._mesh_case_dir) / "constant" / "polyMesh"
+            if poly_dir.is_dir():
+                self._mesh_retry_count += 1
+                logger.debug(
+                    "Mesh load retry %d/%d (polyDir=%s)",
+                    self._mesh_retry_count, self._mesh_retry_max, poly_dir,
+                )
+                # Trigger foamToVTK on first retry â€” but only once.
+                case_dir = Path(self._mesh_case_dir)
+                vtk_dir = case_dir / "VTK_view"
+                has_vtu = bool(list(vtk_dir.glob("*_0/internal.vtu")) if vtk_dir.exists() else [])
+                if self._mesh_retry_count == 1 and not has_vtu and not self._foam_to_vtk_attempted:
+                    logger.info("VTU not found â€” starting foamToVTK before next retry")
+                    self._foam_to_vtk_attempted = True
+                    self._do_step_vtu(
+                        on_vtu_ready=lambda ok: QTimer.singleShot(
+                            2000 if ok else 500,
+                            lambda: self._do_load_patches(False),
+                        ),
                     )
                     return
-            self._mesh_retry_count = 0
-            self._foam_to_vtk_attempted = False
-            self._show_mesh_too_large("VTU non disponibile (usa ParaView)")
-            return
+                QTimer.singleShot(
+                    2000, lambda: self._do_load_patches(False),
+                )
+                return
         self._mesh_retry_count = 0
-        self._cancel_display_timeout()
-        # --- Fallback: boundary surface patches only ---
-        total_faces = sum(pd.n_cells for pd in patches.values())
-        logger.info(
-            "Loaded %d mesh patches (%d total faces) for %s",
-            len(patches), total_faces, self._mesh_case_dir,
-        )
-        show_decimated = total_faces > self.DECIMATE_THRESHOLD
-        # Wrap plotter operations in try/except — a render hang must not
-        # freeze the entire app; show a fallback message instead.
-        try:
-            self._plotter.clear()
-            ec = self._edge_color()
-            for i, (name, pd) in enumerate(patches.items()):
-                if show_decimated:
-                    try:
-                        pd = pd.decimate_pro(self.DECIMATE_TARGET)
-                    except Exception:
-                        pass
-                self._plotter.add_mesh(
-                    pd, scalars="color", rgb=True,
-                    show_edges=not show_decimated, edge_color=ec, label=name,
-                )
-            if show_decimated:
-                self._plotter.add_text(
-                    f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
-                    "Il file di mesh reale \u00e8 invariato.",
-                    color=self._text_color, font_size=10,
-                )
-            self._plotter.view_isometric()
-            self._plotter.render()
-        except Exception as exc:
-            logger.error("Plotter display failed (mesh patches): %s", exc)
-            self._show_mesh_too_large(f"Errore display: {exc}")
+        self._foam_to_vtk_attempted = False
+        self._show_mesh_too_large("VTU non disponibile (usa ParaView)")
 
     def _show_mesh_too_large(self, reason: str = "") -> None:
         """Display 'mesh too large' message via label instead of plotter text.
@@ -1484,18 +1494,6 @@ class ViewerWidget(QWidget):
         self._stats_label.setText(msg)
         logger.info("Mesh display unavailable%s", f" ({reason})" if reason else "")
 
-    def _get_internal_volume_grid(self):
-        """Load the real internal volume cells (pv.UnstructuredGrid), building
-        them via foamToVTK on first use / whenever polyMesh changed."""
-        try:
-            vtu_path = build_internal_volume_vtu(Path(self._mesh_case_dir))
-            if vtu_path is None:
-                return None
-            return pv.read(str(vtu_path))
-        except Exception as exc:
-            logger.warning("Failed to load internal volume mesh: %s", exc)
-            return None
-
     def show_cad(self, meshes: list[trimesh.Trimesh]):
         self._cad_meshes = list(meshes)
         if not self._plotter_ready:
@@ -1508,7 +1506,7 @@ class ViewerWidget(QWidget):
         if self._plotter:
             self._plotter.reset_camera()
 
-    # Keep this high (10M) — meshes under 10M cells load fine via
+    # Keep this high (10M) â€” meshes under 10M cells load fine via
     # foamToVTK + cached VTU reading.  The manual parser fallback
     # is only used when foamToVTK hasn't run yet (first view).
     MAX_VIEWER_CELLS = 10_000_000
@@ -1541,13 +1539,13 @@ class ViewerWidget(QWidget):
             return
 
         self._view_selector.setEnabled(True)
-        # Do NOT set the view selector here — _display_mesh() is already
+        # Do NOT set the view selector here â€” _display_mesh() is already
         # scheduled via QTimer from show_mesh(). Setting it here triggers
-        # _on_view_changed → _display_mesh, duplicating the foamToVTK launch
+        # _on_view_changed â†’ _display_mesh, duplicating the foamToVTK launch
         # and causing the first process to be killed (race condition).
 
     def _delayed_display_mesh(self):
-        """Deferred mesh rendering — no-ops if view selector was disabled
+        """Deferred mesh rendering â€” no-ops if view selector was disabled
         (e.g. mesh too large).  Called via QTimer.singleShot from show_mesh()
         so the stats label paints before the heavy VTK pipeline starts."""
         if not self._view_selector.isEnabled():
@@ -1555,11 +1553,11 @@ class ViewerWidget(QWidget):
         self._display_mesh()
 
     def show_mesh(self, case_dir: Path | str):
-        """Show mesh — always regenerates VTU from current polyMesh.
+        """Show mesh â€” always regenerates VTU from current polyMesh.
 
         Invalidates the VTU cache marker so foamToVTK always runs after
         meshing/conversion, ensuring the viewer shows the CURRENT mesh
-        (poly after tet→poly conversion) and not a stale cached version.
+        (poly after tetâ†’poly conversion) and not a stale cached version.
         """
         try:
             self._mesh_case_dir = str(case_dir)
@@ -1574,7 +1572,7 @@ class ViewerWidget(QWidget):
 
             # Invalidate VTU cache: delete entire VTK_view directory so
             # foamToVTK regenerates from current polyMesh.  Just deleting
-            # the marker is not enough — the old tet boundary VTP files
+            # the marker is not enough â€” the old tet boundary VTP files
             # remain alongside new poly ones, causing the viewer to show
             # BOTH tet and poly patches simultaneously.
             try:
@@ -1597,10 +1595,10 @@ class ViewerWidget(QWidget):
                     f"P:{stats['points']:,}  F:{stats['faces']:,}  C:{stats['cells']:,}"
                 )
             else:
-                self._stats_label.setText("Mesh ready — usa Strumenti > Launch ParaView")
+                self._stats_label.setText("Mesh ready â€” usa Strumenti > Launch ParaView")
             self._view_selector.setEnabled(True)
             # A completed meshing run must switch away from the CAD surface
-            # view to the ParaView-style "Surface + Edges" mesh view — filled
+            # view to the ParaView-style "Surface + Edges" mesh view â€” filled
             # surfaces with visible edges, the standard readable mesh display.
             # Leaving index 0 selected made the finished mesh look like an
             # opaque/translucent CAD overlay even though the mesh existed.
@@ -1645,7 +1643,7 @@ class ViewerWidget(QWidget):
         self._plotter.show_axes()
         self._plotter.render()
 
-    # ✅ F-011: rimosso set_clip_plane() (mai chiamato, logica unificata in _on_section_toggled)
+    # âœ… F-011: rimosso set_clip_plane() (mai chiamato, logica unificata in _on_section_toggled)
 
     # ------------------------------------------------------------------
     # Manual refinement BOXES: translucent cuboids with a 3D box gizmo.
@@ -1729,7 +1727,7 @@ class ViewerWidget(QWidget):
         def cb(arg):
             try:
                 # pyvista's add_box_widget hands the callback the widget's
-                # vtkPlanes on interaction, not a bounds tuple — translate.
+                # vtkPlanes on interaction, not a bounds tuple â€” translate.
                 if hasattr(arg, "GetNormals"):
                     bounds = self._bounds_from_vtk_planes(arg)
                 else:

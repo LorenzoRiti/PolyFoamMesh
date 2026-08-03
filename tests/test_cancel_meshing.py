@@ -78,8 +78,15 @@ def test_cancel_calls_cancel_on_all_known_workers():
 
 
 def test_cancel_kills_viewer_vtk_and_wsl():
+    import time as _t
+
     stub = _build_stub()
     stub._on_cancel_meshing()
+    # WSL kill now runs on a daemon thread so Cancel never blocks the UI;
+    # allow the async call to land before asserting.
+    deadline = _t.monotonic() + 2.0
+    while stub._kill_wsl_processes.call_count == 0 and _t.monotonic() < deadline:
+        _t.sleep(0.01)
     stub._kill_wsl_processes.assert_called_once()
     stub._viewer.cancel_vtk_process.assert_called_once()
 
