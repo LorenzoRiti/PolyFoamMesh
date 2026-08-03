@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import queue
 import sys
 import time
 from datetime import datetime
@@ -12,9 +11,6 @@ from pathlib import Path
 import cadquery as cq
 import trimesh
 from PySide6.QtCore import (
-    Q_ARG,
-    QMetaObject,
-    QObject,
     QSize,
     Qt,
     QThread,
@@ -98,6 +94,7 @@ from cfmesh_autogui.gui.params_panel import ParamsPanel
 from cfmesh_autogui.gui.quality_panel import QualityPanel
 from cfmesh_autogui.gui.settings_migration import AppSettings
 from cfmesh_autogui.gui.style import COLOR_DANGER, COLOR_PASS, COLOR_TEXT_DISABLED
+from cfmesh_autogui.gui.task_runner import FunctionWorker, TaskManager
 from cfmesh_autogui.gui.viewer_widget import ViewerWidget
 from cfmesh_autogui.octopoda_local import octo
 
@@ -184,10 +181,17 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, self._start_deferred_wsl_check)
 
         from cfmesh_autogui.core.disk_cleanup import auto_cleanup
-        try:
-            auto_cleanup(keep_last=20, max_days=60)
-        except Exception as exc:
-            logger.debug("Startup disk cleanup skipped: %s", exc)
+
+        def _startup_cleanup():
+            def work(worker):
+                auto_cleanup(keep_last=20, max_days=60)
+                return None
+
+            # Disk scan + rmtree of old cases must not run on the UI thread
+            # at startup; defer and run in a background task.
+            self._submit_task("startup_cleanup", FunctionWorker(work))
+
+        QTimer.singleShot(3000, _startup_cleanup)
 
     def _show_shortcuts(self):
         QMessageBox.information(
@@ -606,6 +610,12 @@ class MainWindow(QMainWindow):
 
         self._log = LogPanel()
         self._log.setMinimumHeight(60)
+
+        # Unified background-task manager: every long job (GMSH, gmshToFoam,
+        # dual, checkMesh, export, feature detection, AMR, ...) runs through
+        # this one pattern — see gui/task_runner.py.
+        self._tasks = TaskManager(self)
+        self._tasks.stalled.connect(self._on_task_stalled)
         log_holder = QWidget()
         log_holder.setMinimumHeight(100)
         log_layout = QVBoxLayout(log_holder)
@@ -698,43 +708,94 @@ class MainWindow(QMainWindow):
         self._ribbon_btns["expert"].setChecked(self._params.is_expert_mode())
 
     def _load_geometry(self, shape: cq.Shape):
+        """Load a CAD shape: classify/tessellate/heal in a background task
+        so big CAD files never freeze the UI, then apply on the GUI thread."""
         self._original_shape = shape
         self._set_workflow_stage("geometry", "done")
         self._set_workflow_stage("mesh", "active")
         self._status.showMessage("Classifying faces...")
-        QApplication.processEvents()
-        n = len(list(shape.Faces()))
-        self._log.append_log(f"[geom] Loaded: {n} faces, type: {shape.geomType()}")
 
-        patches = classify_faces(shape)
-        self._log.append_log(f"{Tag.GEOM} Patches: {[(n, len(f)) for n, f in patches]}")
-        try:
-            self._status.showMessage("Tessellating geometry (this may take a moment)...")
-            QApplication.processEvents()
-            self._unscaled_meshes = tessellate_patches(patches)
-        except RuntimeError as e:
-            logger.error("Tessellation error: %s", e)
-            self._log.append_log(f"{Tag.ERROR} {e}")
-            QMessageBox.critical(self, "Tessellation Error", str(e))
-            return
+        def work(worker):
+            n = len(list(shape.Faces()))
+            patches = classify_faces(shape)
+            worker.report_progress("Tessellating geometry...", 55.0)
+            meshes = list(tessellate_patches(patches))
+            worker.report_progress("Healing geometry...", 75.0)
+            heal_lines: list[str] = []
+            try:
+                from cfmesh_autogui.commercial.cad_healer import CADHealer
+                reports = CADHealer().heal_meshes(meshes)
+                for mesh, report in zip(meshes, reports):
+                    if report.operations:
+                        name = mesh.metadata.get("name", "?")
+                        heal_lines.append(
+                            f"Healed '{name}': {', '.join(report.operations)}"
+                        )
+            except Exception as exc:
+                logger.debug("CAD healing skipped: %s", exc)
+            return {"n": n, "patches": patches, "meshes": meshes, "heal_lines": heal_lines}
 
-        self._heal_geometry(self._unscaled_meshes)
+        def on_done(_name: str, result: dict):
+            n = result["n"]
+            patches = result["patches"]
+            self._log.append_log(f"[geom] Loaded: {n} faces, type: {shape.geomType()}")
+            for line in result["heal_lines"]:
+                self._log.append_log(f"{Tag.GEOM} {line}")
+            self._log.append_log(f"{Tag.GEOM} Patches: {[(n_, len(f)) for n_, f in patches]}")
+            self._unscaled_meshes = result["meshes"]
+            self._apply_loaded_meshes("CAD")
 
+        def on_failed(_name: str, msg: str):
+            logger.error("Geometry loading failed: %s", msg)
+            self._log.append_log(f"{Tag.ERROR} {msg}")
+            QMessageBox.critical(self, "Tessellation Error", str(msg))
+
+        self._submit_task(
+            "geometry_load", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
+
+    def _load_stl_async(self, path: str):
+        """Load an STL file in a background task (big STLs are heavy)."""
+        self._set_workflow_stage("geometry", "done")
+        self._set_workflow_stage("mesh", "active")
+        self._status.showMessage("Loading STL...")
+
+        def work(worker):
+            worker.report_progress("Loading STL...", 30.0)
+            return list(load_geometry(path))
+
+        def on_done(_name: str, meshes):
+            self._unscaled_meshes = meshes
+            self._apply_loaded_meshes("STL")
+
+        def on_failed(_name: str, msg: str):
+            logger.error("Failed to load STL: %s", msg)
+            self._log.append_log(f"{Tag.ERROR} Failed to load STL: {msg}")
+            QMessageBox.critical(self, "Error", f"Failed to load STL:\n{msg}")
+
+        self._submit_task(
+            "geometry_load", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
+
+    def _apply_loaded_meshes(self, source: str) -> None:
+        """Apply newly loaded unscaled meshes to the UI (GUI thread only)."""
         self._rebuild_scaled_meshes()
-
         names = [m.metadata.get("name", "?") for m in self._meshes]
-        logger.info("Patches: %s", names)
-        self._log.append_log(f"{Tag.GEOM} Patches: {', '.join(names)}")
+        logger.info("%s solids: %s", source, names)
+        self._log.append_log(f"{Tag.GEOM} {source} solids: {', '.join(names)}")
         self._params.set_patches(names)
         self._params.set_suggest_meshes(self._meshes)
         self._viewer.show_cad(self._meshes)
-
         dx, dy, dz = compute_bbox_full(self._meshes)
         self._params.set_bbox(dx, dy, dz)
         logger.info("Domain bbox: %.4f x %.4f x %.4f", dx, dy, dz)
-        self._log.append_log(f"{Tag.GEOM} Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m")
-
-        # Geometry loaded and auto-sized; the watertight result is set inside.
+        self._log.append_log(
+            f"{Tag.GEOM} Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m"
+        )
         self._refresh_workflow(geometry_loaded=True, sizing_ready=True)
         self._start_watertight_check(self._unscaled_meshes)
 
@@ -893,10 +954,8 @@ class MainWindow(QMainWindow):
 
         from cfmesh_autogui.core.openfoam_runner import WatertightWorker
         self._cleanup_thread("_watertight_thread", "_watertight_worker")
-        t = QThread()
         w = WatertightWorker(stl_paths)
-        w.moveToThread(t)
-        self._watertight_thread = t
+        self._watertight_thread = None  # owned by TaskManager now
         self._watertight_worker = w
         self._log.append_log(f"{Tag.GEOM} Checking watertightness...")
 
@@ -933,86 +992,89 @@ class MainWindow(QMainWindow):
                     )
                 self._refresh_workflow(watertight=watertight)
 
-        def on_watertight_failed(msg: str):
+        def on_watertight_failed(_name: str, msg: str):
             self._log.append_log(f"{Tag.WARN} Watertight check failed (background): {msg}")
             self._log.append_log(f"{Tag.GEOM} Watertight check: running synchronously...")
             self._check_watertight_sync(meshes)
 
-        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.finished.connect(on_watertight_result, Qt.QueuedConnection)
-        w.failed.connect(on_watertight_failed, Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
-        w.failed.connect(t.quit, Qt.QueuedConnection)
-        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        t.start()
+        self._submit_task(
+            "watertight", w,
+            on_finished=lambda _n, result: on_watertight_result(result),
+            on_failed=on_watertight_failed,
+        )
 
     def _check_watertight_sync(self, meshes: list[trimesh.Trimesh]) -> None:
-        """Synchronous fallback for watertight check (if subprocess unavailable)."""
+        """Synchronous fallback for watertight check — now run in a
+        background task so the GUI never freezes on large meshes."""
         if not meshes:
             return
-        try:
-            combined = trimesh.util.concatenate(meshes)
-            combined.merge_vertices()
-            if combined.is_watertight:
-                self._log.append_log(f"{Tag.GEOM} Watertight check: OK (closed volume).")
-                self._refresh_workflow(watertight=True)
-                return
-        except Exception as exc:
-            logger.debug("Watertight check skipped: %s", exc)
-            return
 
-        try:
+        def work(worker):
+            try:
+                combined = trimesh.util.concatenate(meshes)
+                combined.merge_vertices()
+            except Exception as exc:
+                logger.debug("Watertight check skipped: %s", exc)
+                return {"watertight": None}
+            if combined.is_watertight:
+                return {"watertight": True}
             import trimesh.grouping as _grouping
             boundary_edges = combined.edges[
                 _grouping.group_rows(combined.edges_sorted, require_count=1)
             ]
             n_open = len(boundary_edges)
-        except Exception:
-            n_open = 0
-
-        self._log.append_log(
-            f"{Tag.WARN} Watertight check: geometry has {n_open} open boundary edges. "
-            "cfMesh needs a fully closed domain \u2014 attempting automatic repair..."
-        )
-
-        from cfmesh_autogui.core.geometry_repair import attempt_auto_repair
-        bbox_dim = compute_bbox_dim(meshes)
-        try:
+            from cfmesh_autogui.core.geometry_repair import attempt_auto_repair
+            bbox_dim = compute_bbox_dim(meshes)
             repaired, reports = attempt_auto_repair(meshes, bbox_dim)
-        except Exception as exc:
-            logger.exception("Auto-repair failed")
-            self._log.append_log(f"{Tag.ERROR} Auto-repair crashed: {exc}")
-            self._refresh_workflow(watertight=False)
-            return
+            return {"watertight": False, "n_open": n_open, "repaired": repaired, "reports": reports}
 
-        for report in reports:
-            for op in report.operations:
-                self._log.append_log(f"{Tag.GEOM} [auto-fix/{report.method}] {op}")
-            for warn in report.warnings:
-                self._log.append_log(f"{Tag.WARN} [auto-fix/{report.method}] {warn}")
-
-        final_report = reports[-1]
-        if final_report.watertight_after:
-            self._unscaled_meshes = repaired
-            self._rebuild_scaled_meshes()
-            self._params.set_patches([m.metadata.get("name", "?") for m in self._meshes])
-            self._viewer.show_cad(self._meshes)
+        def on_done(_name: str, result: dict):
+            if result.get("watertight") is None:
+                return  # concatenate/merge failed — old behavior: skip silently
+            if result.get("watertight"):
+                self._log.append_log(f"{Tag.GEOM} Watertight check: OK (closed volume).")
+                self._refresh_workflow(watertight=True)
+                return
             self._log.append_log(
-                f"{Tag.GEOM} Watertight check: fixed automatically, geometry is now closed."
+                f"{Tag.WARN} Watertight check: geometry has {result['n_open']} open "
+                "boundary edges. cfMesh needs a fully closed domain \u2014 attempting "
+                "automatic repair..."
             )
-            self._refresh_workflow(watertight=True)
-            return
+            reports = result.get("reports") or []
+            for report in reports:
+                for op in report.operations:
+                    self._log.append_log(f"{Tag.GEOM} [auto-fix/{report.method}] {op}")
+                for warn in report.warnings:
+                    self._log.append_log(f"{Tag.WARN} [auto-fix/{report.method}] {warn}")
+            if reports and reports[-1].watertight_after:
+                self._unscaled_meshes = result["repaired"]
+                self._rebuild_scaled_meshes()
+                self._params.set_patches([m.metadata.get("name", "?") for m in self._meshes])
+                self._viewer.show_cad(self._meshes)
+                self._log.append_log(
+                    f"{Tag.GEOM} Watertight check: fixed automatically, geometry is now closed."
+                )
+                self._refresh_workflow(watertight=True)
+                return
+            self._refresh_workflow(watertight=False)
+            n_rem = reports[-1].open_edges_after if reports else result.get("n_open", 0)
+            self._log.append_log(
+                f"{Tag.WARN} Automatic repair could not fully close the geometry "
+                f"({n_rem} open edges remain). This usually means a real missing "
+                "face rather than a tessellation gap \u2014 check for a patch that "
+                "doesn't share its full boundary with its neighbours in the 3D "
+                "view, or re-export the CAD model with the gaps closed. Meshing "
+                "may still fail or leak."
+            )
 
-        self._refresh_workflow(watertight=False)
-        self._log.append_log(
-            f"{Tag.WARN} Automatic repair could not fully close the geometry "
-            f"({final_report.open_edges_after} open edges remain). This usually "
-            "means a real missing face rather than a tessellation gap \u2014 check "
-            "for a patch that doesn't share its full boundary with its "
-            "neighbours in the 3D view, or re-export the CAD model with the "
-            "gaps closed. Meshing may still fail or leak."
+        def on_error(_name: str, msg: str):
+            logger.exception("Auto-repair failed: %s", msg)
+            self._log.append_log(f"{Tag.ERROR} Auto-repair crashed: {msg}")
+            self._refresh_workflow(watertight=False)
+
+        self._submit_task(
+            "watertight_sync", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_error,
         )
 
     def _rebuild_scaled_meshes(self) -> None:
@@ -1122,45 +1184,43 @@ class MainWindow(QMainWindow):
         ext = Path(path).suffix.lower()
         logger.info("Loading geometry (%s): %s", ext, path)
         self._log.append_log(f"{Tag.GEOM} Loading {path}...")
-        try:
-            with self._busy():
-                if ext in (".step", ".stp"):
-                    self._loaded_step_path = path
-                    self._status.showMessage("Importing STEP geometry...")
-                    QApplication.processEvents()
-                    shape = load_step(path)
-                    self._load_geometry(shape)
-                elif ext == ".stl":
-                    self._loaded_step_path = path
-                    self._unscaled_meshes = list(load_geometry(path))
-                    self._rebuild_scaled_meshes()
-                    names = [m.metadata.get("name", "?") for m in self._meshes]
-                    logger.info("STL solids: %s", names)
-                    self._log.append_log(
-                        f"{Tag.GEOM} STL solids: {', '.join(names)}"
-                    )
-                    self._params.set_patches(names)
-                    self._params.set_suggest_meshes(self._meshes)
-                    self._viewer.show_cad(self._meshes)
-                    dx, dy, dz = compute_bbox_full(self._meshes)
-                    self._params.set_bbox(dx, dy, dz)
-                    self._log.append_log(
-                        f"{Tag.GEOM} Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m"
-                    )
-                else:
-                    self._log.append_log(
-                        f"{Tag.ERROR} Unsupported format: '{ext}'. "
-                        "Use .step, .stp, or .stl."
-                    )
-                    return
-        except Exception as e:
-            logger.error("Failed to load %s: %s", ext, e)
-            self._log.append_log(f"{Tag.ERROR} Failed to load {ext}: {e}")
-            QMessageBox.critical(
-                self, "Error", f"Failed to load {ext.upper()}:\n{e}"
-            )
+        if ext in (".step", ".stp", ".stl"):
+            self._loaded_step_path = path
+            # Heavy loading (STEP import / STL parse / tessellation) runs in
+            # background tasks — loading used to block the UI thread here.
+            if ext in (".step", ".stp"):
+                self._load_step_async(path)
+            else:
+                self._load_stl_async(path)
+            self._push_recent_step(path)
             return
-        self._push_recent_step(path)
+        self._log.append_log(
+            f"{Tag.ERROR} Unsupported format: '{ext}'. "
+            "Use .step, .stp, or .stl."
+        )
+
+    def _load_step_async(self, path: str):
+        """Load a STEP file in a background task, then tessellate via
+        _load_geometry (itself async)."""
+        self._status.showMessage("Importing STEP geometry...")
+
+        def work(worker):
+            worker.report_progress("Importing STEP geometry...", 20.0)
+            return load_step(path)
+
+        def on_done(_name: str, shape):
+            self._load_geometry(shape)
+
+        def on_failed(_name: str, msg: str):
+            logger.error("Failed to load STEP: %s", msg)
+            self._log.append_log(f"{Tag.ERROR} Failed to load STEP: {msg}")
+            QMessageBox.critical(self, "Error", f"Failed to load STEP:\n{msg}")
+
+        self._submit_task(
+            "geometry_step", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
 
     def _push_recent_step(self, path: str):
         s = self._settings()
@@ -1415,8 +1475,18 @@ class MainWindow(QMainWindow):
         available — it produces higher-quality polyhedral cells than GMSH;
         GMSH direct (pure tetra+prism, no WSL needed) is the final fallback.
         """
+        # Uses the cached startup WSL availability instead of calling
+        # OFConfig.validate() here — that launches wsl.exe and can block
+        # for minutes on a cold WSL2 boot, which used to freeze the whole
+        # UI the moment "Automatic" was selected.
+        wsl_ok = getattr(self, "_wsl_available", None)
+        if wsl_ok is None:
+            # Startup check still in flight: assume available; the async
+            # WslCheckWorker path will surface the real state before any
+            # meshing command actually runs.
+            wsl_ok = True
         try:
-            if self._of_config.validate():
+            if wsl_ok:
                 return "cfmesh"
         except Exception as exc:
             logger.debug("Automatic mesher: WSL check failed: %s", exc)
@@ -1670,16 +1740,16 @@ class MainWindow(QMainWindow):
         # Connecting straight to a bound method of this QObject (as done
         # everywhere else in this file) queues correctly.
         self._wsl_check_run_id = my_id
-        self._wsl_check_thread = QThread()
-        self._wsl_check_worker = WslCheckWorker(self._of_config)
-        self._wsl_check_worker.moveToThread(self._wsl_check_thread)
-        self._wsl_check_thread.started.connect(self._wsl_check_worker.run)
-        self._wsl_check_worker.finished.connect(self._on_wsl_check_finished, Qt.QueuedConnection)
-        self._wsl_check_worker.finished.connect(self._wsl_check_thread.quit, Qt.QueuedConnection)
-        self._wsl_check_worker.finished.connect(self._wsl_check_worker.deleteLater, Qt.QueuedConnection)
-        self._wsl_check_thread.start()
+        w = WslCheckWorker(self._of_config)
+        self._wsl_check_worker = w
+        self._submit_task(
+            "wsl_check", w,
+            on_finished=lambda _n, available: self._on_wsl_check_finished(available),
+            heartbeat_timeout_s=60.0,
+        )
 
     def _on_wsl_check_finished(self, of_available: bool) -> None:
+        self._wsl_available = of_available
         my_id = getattr(self, "_wsl_check_run_id", -1)
         if my_id not in (0, self._run_id):
             logger.debug("Stale WSL-check callback ignored (got %d, current %d).", my_id, self._run_id)
@@ -1747,11 +1817,6 @@ class MainWindow(QMainWindow):
     def _start_feature_detect(
         self, my_id: int, step_path: str, surface_file: str, bbox_dim: float,
     ) -> None:
-        if getattr(self, "_feature_thread", None) and self._feature_thread.isRunning():
-            self._feature_thread.quit()
-            self._feature_thread.wait(3000)
-
-        self._feature_thread = QThread()
         # Pass the SAME CAD-unit scale factor already applied to the loaded
         # meshes: the detector reads the raw CAD file, so without this its
         # suggestions come back in the file's own units (mm) and get used
@@ -1760,15 +1825,14 @@ class MainWindow(QMainWindow):
         self._feature_worker = FeatureDetectWorker(
             step_path, self._params.get_detail_level(), self._current_scale,
         )
-        self._feature_worker.moveToThread(self._feature_thread)
-        self._feature_thread.started.connect(self._feature_worker.run)
-        self._feature_worker.finished.connect(
-            lambda fm, err: self._on_feature_detect_finished(my_id, surface_file, bbox_dim, fm, err),
-            Qt.QueuedConnection,
+        self._submit_task(
+            "feature_detect", self._feature_worker,
+            on_finished=lambda _n, payload: self._on_feature_detect_finished(
+                my_id, surface_file, bbox_dim, *payload,
+            ),
+            heartbeat_timeout_s=600.0,
+            signal_shapes={"finished": 2},
         )
-        self._feature_worker.finished.connect(self._feature_thread.quit, Qt.QueuedConnection)
-        self._feature_worker.finished.connect(self._feature_worker.deleteLater, Qt.QueuedConnection)
-        self._feature_thread.start()
 
     def _on_feature_detect_finished(
         self, my_id: int, surface_file: str, bbox_dim: float, feature_map, error: str | None,
@@ -2217,68 +2281,36 @@ class MainWindow(QMainWindow):
             self._parallel_thread.wait(5000)
 
         my_id = self._run_id
-        self._parallel_thread = QThread()
         self._parallel_worker = ParallelMeshWorker(
             self._case_dir, self._of_config,
             max_cell=max_cell, min_cell=min_cell, n_cores=n_cores,
             patch_names=[m.metadata.get("name", "wall") for m in self._meshes],
             bl_params=bl_params,
         )
-        self._parallel_worker.moveToThread(self._parallel_thread)
-        self._parallel_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
 
-        def on_finished(result):
+        def on_finished(_name, result):
             if my_id != self._run_id:
                 return
             if result.cell_count == 0:
-                QMetaObject.invokeMethod(
-                    self, "_parallel_fallback",
-                    Qt.QueuedConnection,
-                    Q_ARG(str, "Parallel mesh produced 0 cells"),
-                )
+                self._parallel_fallback("Parallel mesh produced 0 cells")
                 return
-            QMetaObject.invokeMethod(
-                self, "_on_parallel_mesh_success",
-                Qt.QueuedConnection,
-                Q_ARG(int, my_id),
-            )
+            self._on_parallel_mesh_success(my_id)
 
-        def on_failed(msg: str):
+        def on_failed(_name, msg):
             if my_id != self._run_id:
                 return
-            QMetaObject.invokeMethod(
-                self, "_parallel_fallback",
-                Qt.QueuedConnection,
-                Q_ARG(str, msg),
-            )
+            self._parallel_fallback(msg)
 
-        def _cleanup():
-            if self._parallel_thread:
-                self._parallel_thread.quit()
-                self._parallel_thread.wait(5000)
-            self._parallel_worker.deleteLater()
-            self._parallel_worker = None
-            if self._parallel_thread:
-                self._parallel_thread.deleteLater()
-                self._parallel_thread = None
-
-        def on_cancelled():
+        def on_cancelled(_name, msg):
             self._log.append_log(f"{Tag.CANCELLED} Parallel meshing stopped.")
-            _cleanup()
 
-        def _on_thread_finished():
-            """Called when the QThread has fully exited."""
-            _cleanup()
-
-        self._parallel_worker.finished.connect(on_finished, Qt.QueuedConnection)
-        self._parallel_worker.finished.connect(self._parallel_thread.quit, Qt.QueuedConnection)
-        self._parallel_thread.finished.connect(_on_thread_finished, Qt.QueuedConnection)
-        self._parallel_worker.failed.connect(on_failed, Qt.QueuedConnection)
-        self._parallel_worker.failed.connect(self._parallel_thread.quit, Qt.QueuedConnection)
-        self._parallel_worker.cancelled.connect(on_cancelled, Qt.QueuedConnection)
-        self._parallel_worker.cancelled.connect(self._parallel_thread.quit, Qt.QueuedConnection)
-        self._parallel_thread.started.connect(self._parallel_worker.run)
-        self._parallel_thread.start()
+        self._submit_task(
+            "parallel", self._parallel_worker,
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_cancelled=on_cancelled,
+            signal_shapes={"cancelled": 0},
+        )
 
     def _make_temp_geometry_for_gmsh(self) -> str | None:
         from datetime import datetime as _dt
@@ -2412,51 +2444,25 @@ class MainWindow(QMainWindow):
             os.environ.pop("GMSH_NUM_THREADS", None)
 
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
-        t = QThread()
         w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
                              refinement_zones=self._gmsh_refinement_zones(),
                              max_cell_size=max_cell, min_cell_size=min_cell,
                              max_cells_target=max_cells_target)
-        w.moveToThread(t)
-        self._gmsh_thread = t
         self._gmsh_worker = w
-
-        # ROOT CAUSE of today's "Converting to OpenFOAM polyMesh..." freeze,
-        # found by checking QThread.currentThread() live inside the old
-        # on_volume_result closure: it ran on the WORKER thread `t`, not
-        # the main thread — despite Qt.QueuedConnection. w.finished was
-        # connected to a plain nested closure, not a bound method of a
-        # QObject; PySide6 can't always resolve a definite receiver thread
-        # for that, and fell back to a same-thread (direct) call. Every
-        # downstream step run from inside that closure — including this
-        # module's whole gmshToFoam conversion, and any QTimer.singleShot
-        # it scheduled for polling — ran on thread `t`, which quits (via
-        # the `finished -> t.quit` connection below) essentially as soon
-        # as the closure returns. The polling timer was scheduled on an
-        # event loop that was already gone, so it silently never fired —
-        # not a hang in gmshToFoam or WSL at all (see the diagnostic
-        # session: direct WSL/subprocess probes from that exact context
-        # always completed in well under a second). Fixed by connecting
-        # to real bound methods of `self` instead of closures — self is a
-        # QWidget, its thread affinity (main thread) is unambiguous, so
-        # PySide6 queues correctly.
         self._gmsh_vol_ctx = {
             "step_path": step_path, "msh_path": msh_path, "detail": detail,
             "bl_params": bl_params, "n_layers": n_layers,
             "bl_thickness": bl_thickness, "bl_expansion": bl_expansion,
-            "thread": t, "bl_retried": False, "my_id": my_id,
+            "bl_retried": False, "my_id": my_id,
         }
 
-        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.finished.connect(self._on_gmsh_volume_result, Qt.QueuedConnection)
-        w.failed.connect(self._on_gmsh_volume_failed, Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
-        w.failed.connect(t.quit, Qt.QueuedConnection)
-        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        t.start()
-        logger.info("GMSH worker thread started: run_id=%d pid_pending=true", my_id)
+        self._submit_task(
+            "gmsh_volume", w,
+            on_finished=lambda _n, result: self._on_gmsh_volume_result(result),
+            on_failed=lambda _n, msg: self._on_gmsh_volume_failed(msg),
+            heartbeat_timeout_s=600.0,
+        )
+        logger.info("GMSH worker task started: run_id=%d pid_pending=true", my_id)
 
     def _on_gmsh_volume_result(self, result: dict):
         """Bound method (not a closure) so Qt.QueuedConnection reliably
@@ -2490,22 +2496,17 @@ class MainWindow(QMainWindow):
         if not ctx["bl_retried"] and ctx["bl_params"] and ctx["n_layers"] > 0:
             ctx["bl_retried"] = True
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
-            t = ctx["thread"]
             w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
                                   refinement_zones=self._gmsh_refinement_zones(),
                                   max_cell_size=self._params.get_max_cell(),
                                   min_cell_size=self._params.get_min_cell())
-            w2.moveToThread(t)
             self._gmsh_worker = w2
-            w2.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-            w2.finished.connect(self._on_gmsh_volume_result, Qt.QueuedConnection)
-            w2.failed.connect(self._on_gmsh_volume_failed, Qt.QueuedConnection)
-            w2.finished.connect(t.quit, Qt.QueuedConnection)
-            w2.finished.connect(w2.deleteLater, Qt.QueuedConnection)
-            w2.failed.connect(t.quit, Qt.QueuedConnection)
-            w2.failed.connect(w2.deleteLater, Qt.QueuedConnection)
-            t.started.connect(w2.run)
-            t.start()
+            self._submit_task(
+                "gmsh_volume", w2,
+                on_finished=lambda _n, result: self._on_gmsh_volume_result(result),
+                on_failed=lambda _n, m: self._on_gmsh_volume_failed(m),
+                heartbeat_timeout_s=600.0,
+            )
             return
         self._log.append_log(f"[ERROR] GMSH volume: {msg}")
         self._params.set_all_enabled(True)
@@ -2514,19 +2515,10 @@ class MainWindow(QMainWindow):
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
         """Convert MSH → OpenFOAM via gmshToFoam.
 
-        Runs the blocking subprocess.run() call on a plain Python
-        threading.Thread (not QThread, not QProcess) and hands the
-        result back via a thread-safe queue.Queue, polled by a QTimer —
-        the same pattern _start_autopoly_worker already uses successfully
-        elsewhere in this file. Two prior designs both hung in a real
-        session with a genuine app.exec() loop, reproduced live:
-        subprocess.run() inside a QThread (original), and QProcess
-        (first fix attempt, worked in isolation but not once wired into
-        the full MainWindow — the finished signal never arrived, cause
-        unidentified). This sidesteps Qt's process machinery for the
-        actual work entirely; only plain, well-understood pieces
-        (threading.Thread, queue.Queue, QTimer.singleShot) are load-
-        bearing here.
+        Runs in a TaskManager task (gui/task_runner.py) with a cancellable
+        Popen loop, so Cancel stops the conversion promptly. The result is
+        delivered back to the GUI thread via the task callbacks — no raw
+        threading.Thread/queue/QTimer polling here anymore.
         """
         self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
         self._status.showMessage("GMSH: conversion...")
@@ -2536,11 +2528,7 @@ class MainWindow(QMainWindow):
         case_dir = self._case_dir
         msh_name = msh_path.name
 
-        import queue
-        import threading
-        result_queue: queue.Queue = queue.Queue()
-
-        def worker_fn():
+        def worker_fn(worker):
             # Dispatch through a fresh gmsh_wrapper.py subprocess (same
             # pattern GmshVolumeWorker already uses reliably), rather than
             # calling wsl.exe directly from this long-lived GUI process —
@@ -2552,47 +2540,81 @@ class MainWindow(QMainWindow):
             try:
                 args = ["convert_to_foam", str(case_dir), msh_name]
                 cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-convert-to-foam")
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=300, cwd=run_cwd,
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, cwd=run_cwd,
                 )
+                deadline = time.monotonic() + 300
+                while proc.poll() is None:
+                    if worker.is_cancelled():
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        return None  # cancelled — caller restores the UI
+                    if time.monotonic() > deadline:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        proc.wait(10)
+                        raise TimeoutError("gmshToFoam timed out after 300s")
+                    time.sleep(0.2)
+                stdout, stderr = proc.communicate(timeout=10)
                 try:
-                    payload = json.loads(result.stdout.strip().splitlines()[-1])
+                    payload = json.loads(stdout.strip().splitlines()[-1])
                 except Exception:
                     payload = None
                 if payload is not None:
-                    result_queue.put((
-                        "done",
+                    return (
                         0 if payload.get("success") else 1,
                         payload.get("stdout", ""),
                         payload.get("stderr") or payload.get("error", ""),
-                    ))
-                else:
-                    result_queue.put((
-                        "done", result.returncode, result.stdout, result.stderr,
-                    ))
+                    )
+                return (proc.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
-                result_queue.put(("error", "gmshToFoam timed out after 300s"))
+                return ("error", "gmshToFoam timed out after 300s")
             except Exception as e:
                 # Full traceback, not just str(e) — a bare exception message
                 # here previously gave no way to diagnose what actually
                 # went wrong when this step failed in a real session.
                 tb = traceback.format_exc()
                 logger.error("MSH conversion worker thread crashed:\n%s", tb)
-                result_queue.put(("error", f"{e}\n\n{tb}"))
-
-        thread = threading.Thread(target=worker_fn, daemon=True)
-        # Not "_gmsh_conv_thread" on purpose — closeEvent()'s generic
-        # cleanup list below calls thread.isRunning()/.quit()/.terminate()
-        # (QThread API) on every entry there; this is a plain Python
-        # threading.Thread (daemon=True, so it won't block process exit
-        # on its own — no Qt-specific cleanup needed or safe to attempt).
-        self._gmsh_conv_py_thread = thread
+                return ("error", f"{e}\n\n{tb}")
 
         def fail(msg: str):
             self._log.append_log(f"[ERROR] MSH conversion: {msg}")
             self._progress.setVisible(False)
             self._params.set_all_enabled(True)
             QMessageBox.critical(self, "Conversion Failed", f"MSH to OpenFOAM failed:\n{msg}")
+
+        def on_conv_finished(_name: str, item):
+            if my_id != self._run_id:
+                return  # cancelled or superseded by a newer run
+            if item is None:
+                self._log.append_log(f"{Tag.CANCELLED} MSH conversion cancelled.")
+                self._progress.setVisible(False)
+                self._params.set_all_enabled(True)
+                return
+            if item[0] == "error":
+                fail(item[1])
+                return
+            _, exit_code, stdout, stderr = item
+            for line in (stdout or "").splitlines()[-20:]:
+                self._log.append_log(f"[gmshToFoam] {line}")
+            if exit_code != 0:
+                tail = (stderr or stdout or "")[-500:]
+                fail(f"gmshToFoam failed (exit {exit_code}): {tail}")
+                return
+            verify_polymesh()
+
+        def on_conv_failed(_name: str, msg: str):
+            fail(msg)
+
+        def on_conv_cancelled(_name: str, msg: str):
+            self._log.append_log(f"{Tag.CANCELLED} MSH conversion cancelled.")
+            self._progress.setVisible(False)
+            self._params.set_all_enabled(True)
 
         def verify_polymesh(retry: int = 0):
             # gmshToFoam writes through WSL2's 9P filesystem — Windows
@@ -2638,41 +2660,13 @@ class MainWindow(QMainWindow):
                 self._log.append_log(f"[ERROR] Setup: {e}")
                 self._params.set_all_enabled(True)
 
-        def poll_result():
-            if my_id != self._run_id:
-                return
-            try:
-                try:
-                    item = result_queue.get_nowait()
-                except queue.Empty:
-                    if thread.is_alive():
-                        QTimer.singleShot(300, poll_result)
-                        return
-                    fail("gmshToFoam worker thread ended without a result")
-                    return
-                if item[0] == "error":
-                    fail(item[1])
-                    return
-                _, exit_code, stdout, stderr = item
-                for line in (stdout or "").splitlines()[-20:]:
-                    self._log.append_log(f"[gmshToFoam] {line}")
-                if exit_code != 0:
-                    tail = (stderr or stdout or "")[-500:]
-                    fail(f"gmshToFoam failed (exit {exit_code}): {tail}")
-                    return
-                verify_polymesh()
-            except Exception:
-                # This runs as a Qt timer callback on the main thread — an
-                # uncaught exception here previously had no logging, and
-                # could present to the user as a hard crash rather than a
-                # clean "Conversion Failed" dialog.
-                import traceback as _tb
-                tb_text = _tb.format_exc()
-                logger.error("poll_result crashed:\n%s", tb_text)
-                fail(f"internal error in poll_result:\n{tb_text}")
-
-        thread.start()
-        QTimer.singleShot(300, poll_result)
+        self._submit_task(
+            "gmsh_conv", FunctionWorker(worker_fn),
+            on_finished=on_conv_finished,
+            on_failed=on_conv_failed,
+            on_cancelled=on_conv_cancelled,
+            heartbeat_timeout_s=360.0,
+        )
 
     # -----------------------------------------------------------------------
     # autopoly native polyhedral mesher
@@ -2706,71 +2700,39 @@ class MainWindow(QMainWindow):
 
         self._cleanup_thread("_autopoly_thread", "_autopoly_worker")
 
-        import queue
-        result_queue: queue.Queue = queue.Queue()
-        progress_queue: queue.Queue = queue.Queue()
-
-        def worker_fn():
+        def worker_fn(worker):
             try:
                 def progress_cb(pct: int, stage: str, msg: str):
-                    # Called from this raw Python worker thread, NOT the
-                    # Qt GUI thread — touching self._progress/self._log
-                    # directly here (as this used to) is the exact
-                    # cross-thread Qt-widget-access bug already found and
-                    # fixed elsewhere this session (LogPanel heap
-                    # corruption). queue.Queue is thread-safe on its own;
-                    # timerEvent() below drains it on the GUI thread.
-                    progress_queue.put((pct, stage, msg))
+                    # Worker thread — safe: only emits Qt signals through
+                    # the TaskManager relay (never touches widgets here).
+                    worker.report_progress(f"{stage}: {msg}", float(pct))
                 result = run_autopoly(geom_path, self._case_dir, params, progress=progress_cb)
-                result_queue.put(result)
+                return result
             except Exception as e:
-                result_queue.put(e)
+                raise RuntimeError(str(e)) from e
 
-        from threading import Thread
-        t = Thread(target=worker_fn, daemon=True)
-        self._autopoly_thread = t
         self._autopoly_worker = worker_fn
-
-        # Poll for completion
-        self._autopoly_poll_timer = self.startTimer(200)
-        self._autopoly_poll_my_id = my_id
-        self._autopoly_result_queue = result_queue
-        self._autopoly_progress_queue = progress_queue
         self._autopoly_start_time = time.time()
-        t.start()
 
-    def timerEvent(self, event):
-        if (hasattr(self, "_autopoly_poll_timer") and
-            event.timerId() == self._autopoly_poll_timer):
-            # Drain any pending progress updates first (GUI thread — safe
-            # to touch widgets here), then check for the final result.
-            got_update = False
-            if hasattr(self, "_autopoly_progress_queue"):
-                while True:
-                    try:
-                        pct, stage, msg = self._autopoly_progress_queue.get_nowait()
-                        got_update = True
-                    except queue.Empty:
-                        break
-                    self._progress.setValue(pct)
-                    self._log.append_log(f"[autopoly] {stage}: {msg}")
-            # Show heartbeat with elapsed time when no updates arrive
-            if not got_update and hasattr(self, "_autopoly_start_time"):
-                elapsed = time.time() - self._autopoly_start_time
-                self._status.showMessage(
-                    f"autopoly: working... ({elapsed:.0f}s)"
-                )
-            if hasattr(self, "_autopoly_result_queue"):
-                try:
-                    result = self._autopoly_result_queue.get_nowait()
-                    self.killTimer(self._autopoly_poll_timer)
-                    if isinstance(result, Exception):
-                        self._on_autopoly_failed(str(result), self._autopoly_poll_my_id)
-                    else:
-                        self._on_autopoly_finished(result, self._autopoly_poll_my_id)
-                except queue.Empty:
-                    pass
-        super().timerEvent(event)
+        def on_progress(_name, stage, pct):
+            self._progress.setRange(0, 100)
+            self._progress.setValue(int(pct))
+            self._log.append_log(f"[autopoly] {stage}")
+            self._status.showMessage(f"autopoly: {stage} ({pct:.0f}%)")
+
+        def on_finished(_name, result):
+            self._on_autopoly_finished(result, my_id)
+
+        def on_failed(_name, msg):
+            self._on_autopoly_failed(msg, my_id)
+
+        self._submit_task(
+            "autopoly", FunctionWorker(worker_fn),
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_progress=on_progress,
+            heartbeat_timeout_s=120.0,
+        )
 
     def _on_autopoly_finished(self, result, my_id: int):
         """Handle successful autopoly meshing completion."""
@@ -2958,34 +2920,27 @@ class MainWindow(QMainWindow):
 
     def _on_cancel_meshing(self):
         self._run_id += 1
-        # Kill WSL subprocesses FIRST, before terminating QThreads.
-        # QThread.terminate() does not execute Python finally blocks,
-        # which would orphan the subprocess.
-        self._kill_wsl_processes()
+        # Kill WSL subprocesses FIRST, before stopping workers — and do it
+        # on a daemon thread so the UI responds to Cancel in well under 2s
+        # (the wsl.exe probe itself can block for up to 10s).
+        import threading as _thr
+        _thr.Thread(target=self._kill_wsl_processes, daemon=True).start()
         if getattr(self._runner, "is_running", False):
-            self._runner.terminate()
+            # request_stop is non-blocking (MeshWorker checks
+            # isInterruptionRequested); the daemon WSL kill above unblocks
+            # its subprocess read loop. terminate() would block the UI up
+            # to 30s — forbidden.
+            self._runner.request_stop()
 
-        # Cancel every worker that exposes a .cancel() and tear down every
-        # known background QThread.  The list below is the full set of
-        # (thread_attr, worker_attr) pairs the app can run; each worker is
-        # asked to cancel its own subprocess first (so the QThread can quit
-        # promptly instead of sitting in a poll loop), then _cleanup_thread
-        # disconnects signals + quits + waits + deleteLater.
-        all_workers = [
-            ("_parallel_thread", "_parallel_worker"),
-            ("_gmsh_thread", "_gmsh_worker"),
-            ("_gmsh_conv_thread", "_gmsh_conv_worker"),
-            ("_wsl_check_thread", "_wsl_check_worker"),
-            ("_feature_thread", "_feature_worker"),
-            ("_polydual_thread", "_polydual_worker"),
-            ("_checkmesh_thread", "_checkmesh_worker"),
-            ("_quality_fix_thread", "_quality_fix_worker"),
-            ("_decompose_thread", "_decompose_worker"),
-            ("_watertight_thread", "_watertight_worker"),
-            ("_export_thread", "_export_worker"),
-            ("_samr_thread", "_samr_worker"),
-        ]
-        for _t_attr, w_attr in all_workers:
+        # Ask every known worker to cancel its own subprocess (idempotent
+        # if the task already finished). The TaskManager below is the
+        # authoritative teardown: tokens + kill hooks + bounded cleanup.
+        for w_attr in (
+            "_parallel_worker", "_gmsh_worker", "_gmsh_conv_worker",
+            "_wsl_check_worker", "_feature_worker", "_polydual_worker",
+            "_checkmesh_worker", "_quality_fix_worker", "_decompose_worker",
+            "_watertight_worker", "_export_worker", "_samr_worker",
+        ):
             worker = getattr(self, w_attr, None)
             cancel = getattr(worker, "cancel", None)
             if callable(cancel):
@@ -2993,15 +2948,9 @@ class MainWindow(QMainWindow):
                     cancel()
                 except Exception as exc:
                     logger.debug("cancel() failed for %s: %s", w_attr, exc)
-            self._cleanup_thread(_t_attr, w_attr)
 
-        # autopoly runs as a raw daemon thread + a poll timer, not a QThread.
-        # Stop polling; any late result is discarded by the my_id guard.
-        if hasattr(self, "_autopoly_poll_timer"):
-            try:
-                self.killTimer(self._autopoly_poll_timer)
-            except Exception:
-                pass
+        if hasattr(self, "_tasks"):
+            self._tasks.cancel_all()
 
         # foamToVTK viewer process (not a WSL meshing process, but it can
         # still be mid-run and must not be left running after cancel).
@@ -3207,30 +3156,23 @@ class MainWindow(QMainWindow):
             return
         logger.info("Launching checkMesh for case_dir=%s", self._case_dir)
         self._checkmesh_run_id = self._run_id
-        if self._checkmesh_thread and self._checkmesh_thread.isRunning():
-            self._checkmesh_thread.quit()
-            self._checkmesh_thread.wait(3000)
-        self._checkmesh_thread = QThread()
-        self._checkmesh_worker = CheckMeshWorker(self._case_dir, self._of_config)
-        self._checkmesh_worker.moveToThread(self._checkmesh_thread)
-        self._checkmesh_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        self._checkmesh_worker.finished.connect(self._on_checkmesh_finished, Qt.QueuedConnection)
-        self._checkmesh_worker.finished.connect(self._checkmesh_thread.quit, Qt.QueuedConnection)
-        self._checkmesh_worker.failed.connect(
-            lambda msg: (
-                self._log.append_log(f"{Tag.CHECKMESH} FAILED: {msg}"),
-                QMessageBox.warning(
-                    self, "Mesh Quality Check Failed",
-                    f"checkMesh reported errors:\n\n{msg}\n\n"
-                    "Check the Quality panel for details. "
-                    "Try reducing cell sizes or enabling auto-fix."
-                ),
-            ),
-            Qt.QueuedConnection,
+        w = CheckMeshWorker(self._case_dir, self._of_config)
+        self._checkmesh_worker = w
+
+        def on_failed(_name: str, msg: str):
+            self._log.append_log(f"{Tag.CHECKMESH} FAILED: {msg}")
+            QMessageBox.warning(
+                self, "Mesh Quality Check Failed",
+                f"checkMesh reported errors:\n\n{msg}\n\n"
+                "Check the Quality panel for details. "
+                "Try reducing cell sizes or enabling auto-fix."
+            )
+
+        self._submit_task(
+            "checkmesh", w,
+            on_finished=lambda _n, report: self._on_checkmesh_finished(report),
+            on_failed=on_failed,
         )
-        self._checkmesh_worker.failed.connect(self._checkmesh_thread.quit, Qt.QueuedConnection)
-        self._checkmesh_thread.started.connect(self._checkmesh_worker.run)
-        self._checkmesh_thread.start()
 
     def _on_checkmesh_finished(self, report):
         # Stale guard: checkMesh was launched during a specific meshing
@@ -3427,9 +3369,6 @@ class MainWindow(QMainWindow):
         except Exception:
             self._cells_before_poly = 0
         self._polydual_run_id = self._run_id
-        if hasattr(self, '_polydual_thread') and self._polydual_thread and self._polydual_thread.isRunning():
-            self._polydual_thread.quit()
-            self._polydual_thread.wait(3000)
         feature_angle = 90  # Higher = smoother polyhedral cells
         logger.info(
             "Launching polyDualMesh: case_dir=%s feature_angle=%g cells_before=%d",
@@ -3437,23 +3376,8 @@ class MainWindow(QMainWindow):
         )
         self._log.append_log("[poly] Converting hex \u2192 polyhedral mesh (polyDualMesh)...")
         self._status.showMessage("Polyhedral conversion...")
-        t = QThread()
         w = PolyDualWorker(self._case_dir, self._of_config,
                            feature_angle=feature_angle)
-        w.moveToThread(t)
-        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.finished.connect(self._on_polydual_finished, Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        # Bound method, not a lambda/closure \u2014 a plain closure connected
-        # via Qt.QueuedConnection can't always be resolved to the main
-        # thread by PySide6 and may run on the worker thread instead
-        # (confirmed root cause of today's gmsh_direct freeze/crash, same
-        # anti-pattern here). QMessageBox.warning() from the wrong thread
-        # would be a real crash risk, not just a cosmetic issue.
-        w.failed.connect(self._on_polydual_failed, Qt.QueuedConnection)
-        w.failed.connect(t.quit, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        self._polydual_thread = t
         self._polydual_worker = w
         self._polydual_start_time = time.monotonic()
         # polyDualMesh's own WSL command buffers all output until it
@@ -3468,7 +3392,12 @@ class MainWindow(QMainWindow):
         heartbeat.timeout.connect(self._on_polydual_heartbeat)
         heartbeat.start()
         self._polydual_heartbeat = heartbeat
-        t.start()
+        self._submit_task(
+            "polydual", w,
+            on_finished=lambda _n, meshes: self._on_polydual_finished(meshes),
+            on_failed=lambda _n, msg: self._on_polydual_failed(msg),
+            heartbeat_timeout_s=600.0,
+        )
 
     def _on_polydual_heartbeat(self) -> None:
         elapsed = time.monotonic() - getattr(self, "_polydual_start_time", time.monotonic())
@@ -3559,17 +3488,6 @@ class MainWindow(QMainWindow):
         )
         w = DualPolyWorker(self._case_dir)
         self._status.showMessage("Polyhedral conversion...")
-        t = QThread()
-        w.moveToThread(t)
-        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.finished.connect(self._on_terminal_face_finished, Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        # Bound method, not a lambda/closure — see _launch_polydual's
-        # comment on the same pattern for why.
-        w.failed.connect(self._on_terminal_face_failed, Qt.QueuedConnection)
-        w.failed.connect(t.quit, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        self._polydual_thread = t
         self._polydual_worker = w
         self._polydual_start_time = time.monotonic()
         heartbeat = QTimer(self)
@@ -3577,7 +3495,12 @@ class MainWindow(QMainWindow):
         heartbeat.timeout.connect(self._on_polydual_heartbeat)
         heartbeat.start()
         self._polydual_heartbeat = heartbeat
-        t.start()
+        self._submit_task(
+            "polydual", w,
+            on_finished=lambda _n, result: self._on_terminal_face_finished(result),
+            on_failed=lambda _n, msg: self._on_terminal_face_failed(msg),
+            heartbeat_timeout_s=600.0,
+        )
 
     def _on_terminal_face_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
@@ -3631,25 +3554,17 @@ class MainWindow(QMainWindow):
             "for parallel solving..."
         )
         self._status.showMessage("Decomposing mesh for parallel solving...")
-        self._cleanup_thread("_decompose_thread", "_decompose_worker")
-        t = QThread()
         w = DecomposeParWorker(self._case_dir, self._of_config, n_cores)
-        w.moveToThread(t)
-        self._decompose_thread = t
         self._decompose_worker = w
-        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.finished.connect(lambda _: self._log.append_log(
-            f"{Tag.MESHING} decomposePar OK — parallel solving ready."
-        ), Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
-        w.failed.connect(lambda msg: self._log.append_log(
-            f"{Tag.WARN} decomposePar FAILED: {msg} — mesh still usable for serial solving."
-        ), Qt.QueuedConnection)
-        w.failed.connect(t.quit, Qt.QueuedConnection)
-        w.failed.connect(w.deleteLater, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        t.start()
+        self._submit_task(
+            "decompose", w,
+            on_finished=lambda _n, _r: self._log.append_log(
+                f"{Tag.MESHING} decomposePar OK — parallel solving ready."
+            ),
+            on_failed=lambda _n, msg: self._log.append_log(
+                f"{Tag.WARN} decomposePar FAILED: {msg} — mesh still usable for serial solving."
+            ),
+        )
 
     def _make_fix_action(self):
         shape = self._original_shape
@@ -3659,23 +3574,42 @@ class MainWindow(QMainWindow):
             logger.info("Retry fix for %s (attempt %d).", error_info.error_type.value, attempt)
             self._log.append_log(f"{Tag.FIX} {error_info.error_type.value} (attempt {attempt})")
             if error_info.error_type in (ErrorType.NON_WATERTIGHT, ErrorType.SURFACE_READ):
+                # Heavy retessellation + STL export run in a background task
+                # under a nested event loop: the synchronous bool contract is
+                # preserved but the UI stays responsive during the retry.
                 try:
                     finer_tol = 0.01 / (2 ** attempt)
-                    if shape is not None:
-                        patches = classify_faces(shape)
-                        self._unscaled_meshes = list(tessellate_patches(patches, tolerance=finer_tol, angle_tolerance=0.05))
-                    else:
-                        # STL-only workflow: no CAD shape to re-tessellate,
-                        # re-export the existing meshes
-                        self._log.append_log(f"{Tag.FIX} STL workflow — using existing meshes")
+
+                    def _retessellate_work(worker):
+                        if shape is not None:
+                            patches = classify_faces(shape)
+                            unscaled = list(tessellate_patches(
+                                patches, tolerance=finer_tol, angle_tolerance=0.05,
+                            ))
+                        else:
+                            # STL-only workflow: no CAD shape to re-tessellate,
+                            # re-export the existing meshes
+                            unscaled = None
+                        if unscaled is None:
+                            meshes = list(self._meshes)
+                        elif abs(current_scale - 1.0) > 1e-9:
+                            scaled = [m.copy() for m in unscaled]
+                            scale_meshes(scaled, current_scale)
+                            meshes = scaled
+                        else:
+                            meshes = unscaled
+                        export_surface_file(meshes, self._case_dir)
+                        return {"unscaled": unscaled, "meshes": meshes}
+
+                    ok, result = self._run_ui_worker_blocking(
+                        "fix_retessellate", _retessellate_work, timeout_s=300.0,
+                    )
+                    if not ok:
+                        raise RuntimeError(str(result))
+                    if result["unscaled"] is not None:
+                        self._unscaled_meshes = result["unscaled"]
                     self._scaled_meshes = None
-                    if abs(current_scale - 1.0) > 1e-9:
-                        self._scaled_meshes = [m.copy() for m in self._unscaled_meshes]
-                        scale_meshes(self._scaled_meshes, current_scale)
-                        self._meshes = self._scaled_meshes
-                    else:
-                        self._meshes = self._unscaled_meshes
-                    export_surface_file(self._meshes, self._case_dir)
+                    self._meshes = result["meshes"]
                     self._log.append_log(f"{Tag.FIX} Re-exported STL (tol={finer_tol})")
                     return True
                 except Exception as e:
@@ -3701,9 +3635,18 @@ class MainWindow(QMainWindow):
                             bl_retry = dict(bl_retry)
                             bl_retry["wallPatches"] = wall_patches
                     detail = self._params.get_detail_level()
-                    ps_r, bc_r, bt_r = compute_patch_cell_sizes(
-                        self._meshes, detail=detail,
+                    # compute_patch_cell_sizes is numpy-heavy on big meshes —
+                    # run it off the UI thread (the meshDict write below is
+                    # a tiny file and stays here).
+                    meshes_for_sizing = list(self._meshes)
+                    ok, result = self._run_ui_worker_blocking(
+                        "fix_cell_sizes",
+                        lambda w: compute_patch_cell_sizes(meshes_for_sizing, detail=detail),
+                        timeout_s=300.0,
                     )
+                    if not ok:
+                        raise RuntimeError(str(result))
+                    ps_r, bc_r, bt_r = result
                     write_meshdict(
                         self._case_dir,
                         max_cell_size=p["max_cell_size"],
@@ -3728,8 +3671,15 @@ class MainWindow(QMainWindow):
                 try:
                     from cfmesh_autogui.core.meshdict_gen import write_meshdict
                     from cfmesh_autogui.core.stl_writer import export_surface_file
-                    export_surface_file(self._meshes, self._case_dir)
                     names = [m.metadata.get("name", "wall") for m in self._meshes]
+                    meshes_for_export = list(self._meshes)
+                    ok, result = self._run_ui_worker_blocking(
+                        "fix_stl_export",
+                        lambda w: export_surface_file(meshes_for_export, self._case_dir),
+                        timeout_s=300.0,
+                    )
+                    if not ok:
+                        raise RuntimeError(str(result))
                     p = self._params.get_mesh_params()
                     write_meshdict(
                         self._case_dir,
@@ -3805,15 +3755,12 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(True)
 
         from cfmesh_autogui.core.openfoam_runner import ExportWorker
-        self._export_thread = QThread()
         self._export_worker = ExportWorker(self._case_dir, fmt, path, self._of_config)
-        self._export_worker.moveToThread(self._export_thread)
-        self._export_thread.started.connect(self._export_worker.run)
-        self._export_worker.finished.connect(self._on_export_finished, Qt.QueuedConnection)
-        self._export_worker.finished.connect(self._export_thread.quit, Qt.QueuedConnection)
-        self._export_worker.finished.connect(self._export_worker.deleteLater, Qt.QueuedConnection)
-        self._export_worker.error_occurred.connect(self._on_export_error, Qt.QueuedConnection)
-        self._export_thread.start()
+        self._submit_task(
+            "export", self._export_worker,
+            on_finished=lambda _n, out_path: self._on_export_finished(out_path),
+            on_failed=lambda _n, msg: self._on_export_error(msg),
+        )
 
     def _on_export_finished(self, out_path: str):
         self._progress.setVisible(False)
@@ -3885,15 +3832,41 @@ class MainWindow(QMainWindow):
                 return
 
         try:
-            out = export_case(self._case_dir, dest_parent)
-            self._refresh_workflow(exported=True)
-            self._log.append_log(
-                f"{Tag.EXPORT} BaramFlow case exported: {out} "
-                f"({len(validation.patches)} patches)"
-            )
-            QMessageBox.information(
-                self, "Export Complete",
-                f"Case exported to:\n{out}\n\nOpen this folder directly in BaramFlow.",
+            # export_case copies the whole case (can be hundreds of MB) —
+            # run it in a background task with progress feedback.
+            self._status.showMessage("Exporting BaramFlow case...")
+            self._progress.setRange(0, 0)
+            self._progress.setVisible(True)
+            self._ribbon_btns["cancel"].setVisible(True)
+            case_dir = self._case_dir
+
+            def _work(worker):
+                return export_case(case_dir, dest_parent)
+
+            def _done(_name, out):
+                self._progress.setVisible(False)
+                self._ribbon_btns["cancel"].setVisible(False)
+                self._refresh_workflow(exported=True)
+                self._log.append_log(
+                    f"{Tag.EXPORT} BaramFlow case exported: {out} "
+                    f"({len(validation.patches)} patches)"
+                )
+                QMessageBox.information(
+                    self, "Export Complete",
+                    f"Case exported to:\n{out}\n\nOpen this folder directly in BaramFlow.",
+                )
+
+            def _bad(_name, msg):
+                self._progress.setVisible(False)
+                self._ribbon_btns["cancel"].setVisible(False)
+                logger.error("BaramFlow export failed: %s", msg)
+                self._log.append_log(f"{Tag.ERROR} BaramFlow export failed: {msg}")
+                QMessageBox.critical(self, "Export Failed", str(msg))
+
+            self._submit_task(
+                "baramflow_export", FunctionWorker(_work),
+                on_finished=_done, on_failed=_bad,
+                heartbeat_timeout_s=600.0,
             )
         except Exception as e:
             logger.error("BaramFlow export failed: %s", e)
@@ -4074,8 +4047,10 @@ class MainWindow(QMainWindow):
         from cfmesh_autogui.commercial.quick_mesh import QuickMesh
         from cfmesh_autogui.core.geometry import compute_bbox_dim
         detail = self._params.get_detail_level()
-        # Auto-select algorithm via MeshEngine
-        has_wsl = self._of_config.validate()
+        # Auto-select algorithm via MeshEngine. Uses the cached startup
+        # WSL availability (never OFConfig.validate() — a cold WSL2 boot
+        # used to freeze the UI here for minutes).
+        has_wsl = getattr(self, "_wsl_available", True)
         n_wt = sum(1 for m in self._meshes if m.is_watertight)
         all_wt = n_wt == len(self._meshes)
         engine = MeshEngine()
@@ -4130,7 +4105,7 @@ class MainWindow(QMainWindow):
         of_config = self._of_config
 
         # Build inline worker QObject
-        from PySide6.QtCore import QObject, QThread, Signal
+        from PySide6.QtCore import QObject, Signal
 
         class _OODAWorker(QObject):
             progress = Signal(str, float)
@@ -4165,38 +4140,22 @@ class MainWindow(QMainWindow):
                     )
                 self.finished.emit(result.success)
 
-        self._adaptive_thread = QThread()
         self._adaptive_worker = _OODAWorker(
             of_config, case_dir, self._meshes, self._geometry_path,
         )
-        self._adaptive_worker.moveToThread(self._adaptive_thread)
-        self._adaptive_worker.progress.connect(
-            self._ooda_panel.update_progress, Qt.QueuedConnection,
+
+        def on_adaptive_done(_name, success: bool):
+            self._ooda_panel.show_done(success)
+            self._set_workflow_stage("quality", "done" if success else "error")
+            if success:
+                self._launch_checkmesh()
+
+        self._submit_task(
+            "adaptive", self._adaptive_worker,
+            on_finished=on_adaptive_done,
+            on_progress=lambda _n, stage, pct: self._ooda_panel.update_progress(stage, pct),
+            heartbeat_timeout_s=900.0,
         )
-        self._adaptive_worker.log_line.connect(
-            self._log.append_log, Qt.QueuedConnection,
-        )
-        self._adaptive_worker.finished.connect(
-            lambda s: self._ooda_panel.show_done(s), Qt.QueuedConnection,
-        )
-        self._adaptive_worker.finished.connect(
-            lambda s: self._set_workflow_stage(
-                "quality", "done" if s else "error",
-            ), Qt.QueuedConnection,
-        )
-        self._adaptive_worker.finished.connect(
-            lambda s: self._launch_checkmesh() if s else None,
-            Qt.QueuedConnection,
-        )
-        self._adaptive_worker.finished.connect(
-            self._adaptive_thread.quit, Qt.QueuedConnection,
-        )
-        self._adaptive_worker.finished.connect(
-            self._adaptive_worker.deleteLater, Qt.QueuedConnection,
-        )
-        self._adaptive_thread.started.connect(self._adaptive_worker.run)
-        self._adaptive_thread.finished.connect(self._adaptive_thread.deleteLater)
-        self._adaptive_thread.start()
 
     # ------------------------------------------------------------------
     # Solution-adaptive refinement (SAMR)
@@ -4273,15 +4232,19 @@ class MainWindow(QMainWindow):
 
         # Make the existing mesh a runnable case (inlet velocity, wall
         # functions, roles) so the first cycle can actually solve it.
-        try:
-            assemble_runnable_case(
+        # Runs in a background task: this launches WSL subprocesses and
+        # would otherwise freeze the UI on a slow WSL cold boot.
+        ok, err = self._run_ui_worker_blocking(
+            "samr_setup",
+            lambda w: assemble_runnable_case(
                 self._case_dir, inlet_velocity=inlet, end_time=400,
-                on_line=self._log.append_log,
-            )
-        except Exception as exc:  # noqa: BLE001
+                on_line=w.log,
+            ),
+        )
+        if not ok:
             logger.exception("Could not make the initial case runnable")
             QMessageBox.critical(
-                self, "SAMR Error", f"Could not set up the solve case:\n{exc}"
+                self, "SAMR Error", f"Could not set up the solve case:\n{err}"
             )
             return
 
@@ -4333,26 +4296,24 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Solution-adaptive refinement...")
 
         self._cleanup_thread("_samr_thread", "_samr_worker")
-        t = QThread()
         w = SolutionAdaptiveWorker(
             case_dir=self._case_dir, bounds=bounds, remesh_fn=_remesh,
             params=params, of_config=self._of_config,
         )
-        w.moveToThread(t)
-        self._samr_thread = t
         self._samr_worker = w
         self._samr_my_id = my_id
 
-        w.log_line.connect(self._log.append_log, Qt.QueuedConnection)
-        w.cycle_done.connect(self._on_samr_cycle_done, Qt.QueuedConnection)
-        w.finished.connect(self._on_samr_finished, Qt.QueuedConnection)
-        w.failed.connect(self._on_samr_failed, Qt.QueuedConnection)
-        w.finished.connect(t.quit, Qt.QueuedConnection)
-        w.finished.connect(w.deleteLater, Qt.QueuedConnection)
-        t.started.connect(w.run)
-        t.finished.connect(self._on_samr_thread_done, Qt.QueuedConnection)
-        t.finished.connect(t.deleteLater)
-        t.start()
+        def on_samr_finished(_name, result):
+            self._on_samr_finished(result)
+            self._on_samr_thread_done()
+
+        self._submit_task(
+            "samr", w,
+            on_finished=on_samr_finished,
+            on_failed=lambda _n, msg: self._on_samr_failed(msg),
+            on_notify=lambda _n, payload: self._on_samr_cycle_done(*payload),
+            heartbeat_timeout_s=900.0,
+        )
 
     @staticmethod
     def _samr_default_inlet_velocity() -> float:
@@ -4417,43 +4378,38 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Already Running", "A quality fix cycle is already in progress.")
             return
         my_id = self._run_id
-        self._quality_fix_thread = QThread()
-        self._quality_fix_worker = QualityFixWorker(self._of_config)
-        self._quality_fix_worker.moveToThread(self._quality_fix_thread)
-        self._quality_fix_worker.log_line.connect(self._log.append_log, Qt.QueuedConnection)
+        w = QualityFixWorker(self._of_config)
+        self._quality_fix_worker = w
 
-        def _on_qf_finished(code: int):
+        def _on_qf_finished(_name, code: int):
             if my_id != self._run_id:
                 return
             self._log.append_log(f"[quality-fix] Completed (exit {code})")
             self._set_workflow_stage("quality", "done")
             self._launch_checkmesh()
 
-        def _on_qf_failed(msg: str):
+        def _on_qf_failed(_name, msg: str):
             if my_id != self._run_id:
                 return
             self._log.append_log(f"[quality-fix] FAILED: {msg}")
             self._set_workflow_stage("quality", "error")
 
-        self._quality_fix_worker.finished.connect(_on_qf_finished, Qt.QueuedConnection)
-        self._quality_fix_worker.finished.connect(self._quality_fix_thread.quit, Qt.QueuedConnection)
-        self._quality_fix_worker.finished.connect(self._quality_fix_worker.deleteLater, Qt.QueuedConnection)
-        self._quality_fix_worker.failed.connect(_on_qf_failed, Qt.QueuedConnection)
-        self._quality_fix_worker.failed.connect(self._quality_fix_thread.quit, Qt.QueuedConnection)
-        self._quality_fix_worker.failed.connect(self._quality_fix_worker.deleteLater, Qt.QueuedConnection)
         max_cell = self._params.get_max_cell()
         min_cell = self._params.get_min_cell()
         bl_params = self._params.get_bl_params()
         case_dir = self._case_dir
-        self._quality_fix_thread.started.connect(
-            lambda: self._quality_fix_worker.run(
-                case_dir,
-                max_cell=max_cell,
-                min_cell=min_cell,
-                bl_params=bl_params,
-            ),
+        self._submit_task(
+            "quality_fix", w,
+            on_finished=_on_qf_finished,
+            on_failed=_on_qf_failed,
+            run_kwargs={
+                "case_dir": case_dir,
+                "max_cell": max_cell,
+                "min_cell": min_cell,
+                "bl_params": bl_params,
+            },
+            heartbeat_timeout_s=900.0,
         )
-        self._quality_fix_thread.start()
         self._log.append_log("[quality-fix] Auto-fix cycle started...")
 
     @staticmethod
@@ -4520,6 +4476,86 @@ class MainWindow(QMainWindow):
             logger.error("ParaView launch failed: %s", e)
             QMessageBox.critical(self, "Error", f"Failed to launch ParaView:\n{e}")
 
+    def _submit_task(
+        self, name: str, worker, *,
+        on_finished=None, on_failed=None, on_cancelled=None,
+        on_progress=None, on_log=None,
+        heartbeat_timeout_s: float | None = None,
+        run_args: tuple = (), run_kwargs: dict | None = None,
+        signal_shapes: dict | None = None,
+    ) -> bool:
+        """Submit a long job through the unified TaskManager.
+
+        All callbacks run on the GUI thread (TaskManager lives there), so
+        they may touch widgets freely. ``on_log`` defaults to the app log
+        panel. Returns False if a task with the same name is running.
+        """
+        if on_log is None:
+            on_log = lambda _name, msg: self._log.append_log(msg)
+        return self._tasks.submit(
+            name, worker,
+            on_finished=on_finished, on_failed=on_failed,
+            on_cancelled=on_cancelled, on_progress=on_progress,
+            on_log=on_log,
+            heartbeat_timeout_s=heartbeat_timeout_s,
+            run_args=run_args, run_kwargs=run_kwargs,
+            signal_shapes=signal_shapes,
+        )
+
+    def _run_ui_worker_blocking(self, name: str, fn, timeout_s: float = 120.0):
+        """Run ``fn(worker)`` in a background task while keeping the GUI
+        responsive, then return its result.
+
+        Used where a synchronous bool/result contract must be preserved
+        (e.g. the RetryRunner fix_action path) without freezing the UI: a
+        nested event loop pumps the GUI until the task finishes, fails or
+        is cancelled. Returns (ok: bool, result_or_error).
+        """
+        from PySide6.QtCore import QEventLoop
+        box: dict = {}
+        loop = QEventLoop()
+
+        def _done(name_, result):
+            box["result"] = result
+            box["ok"] = True
+            loop.quit()
+
+        def _bad(name_, msg):
+            box["error"] = msg
+            box["ok"] = False
+            loop.quit()
+
+        safety = QTimer(self)
+        safety.setSingleShot(True)
+        safety.timeout.connect(lambda: (_bad("timeout", "timed out"), loop.quit()))
+        safety.start(int(timeout_s * 1000))
+        self._submit_task(name, FunctionWorker(fn), on_finished=_done, on_failed=_bad, on_cancelled=_bad)
+        loop.exec()
+        safety.stop()
+        return box.get("ok", False), box.get("result", box.get("error"))
+
+    def _on_task_stalled(self, name: str, silent_s: float) -> None:
+        """Watchdog fired: a task stopped reporting liveness. Cancel it and
+        restore the UI to a usable state instead of freezing."""
+        logger.error("Task '%s' stalled (no liveness for %.0fs) — cancelling", name, silent_s)
+        self._log.append_log(
+            f"{Tag.ERROR} Task '{name}' appears stuck (no progress for {silent_s:.0f}s) "
+            "— cancelling and restoring the UI."
+        )
+        self._tasks.cancel(name, reason="stalled")
+        self._restore_after_job("Recovered from stalled task")
+
+    def _restore_after_job(self, message: str = "Ready") -> None:
+        """Safely restore the UI after any job ends (success/fail/cancel)."""
+        try:
+            self._params.set_all_enabled(True)
+            self._params.set_meshing_state(False)
+        except Exception:
+            pass
+        self._progress.setVisible(False)
+        self._ribbon_btns["cancel"].setVisible(False)
+        self._status.showMessage(message)
+
     def _cleanup_thread(self, attr_thread: str, attr_worker: str, timeout_ms: int = 3000):
         thread = getattr(self, attr_thread, None)
         worker = getattr(self, attr_worker, None)
@@ -4559,23 +4595,29 @@ class MainWindow(QMainWindow):
         self._params.save_params(s.raw)
         self._viewer.save_background(s.raw)
         s.sync()
+
+        # Running jobs: confirm, then tear everything down within a hard
+        # budget (< 3 s). The TaskManager shutdown cancels every task,
+        # quits every QThread and terminates stragglers; the daemon WSL
+        # kill unblocks subprocess readers without blocking the UI.
+        running = self._tasks.running if hasattr(self, "_tasks") else []
+        if running:
+            proceed = QMessageBox.question(
+                self, "Jobs in Progress",
+                f"{len(running)} background job(s) still running:\n"
+                + "\n".join(f"  - {n}" for n in running)
+                + "\n\nClose anyway? Running jobs will be cancelled.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if proceed != QMessageBox.Yes:
+                event.ignore()
+                return
+        import threading as _thr
+        _thr.Thread(target=self._kill_wsl_processes, daemon=True).start()
         if self._runner and self._runner.is_running:
-            self._runner.terminate()
-        # Clean up ALL background threads
-        for attr_t, attr_w in [
-            ("_gmsh_thread", "_gmsh_worker"),
-            ("_gmsh_conv_thread", "_gmsh_conv_worker"),
-            ("_wsl_check_thread", "_wsl_check_worker"),
-            ("_feature_thread", "_feature_worker"),
-            ("_parallel_thread", "_parallel_worker"),
-            ("_polydual_thread", "_polydual_worker"),
-            ("_checkmesh_thread", "_checkmesh_worker"),
-            ("_quality_fix_thread", "_quality_fix_worker"),
-            ("_decompose_thread", "_decompose_worker"),
-            ("_watertight_thread", "_watertight_worker"),
-            ("_export_thread", "_export_worker"),
-        ]:
-            self._cleanup_thread(attr_t, attr_w)
+            self._runner.request_stop()
+        if hasattr(self, "_tasks"):
+            self._tasks.shutdown(timeout_ms=2500)
         gmsh_shutdown()
         octo.log_event("main_window", "close", "app closed")
         super().closeEvent(event)

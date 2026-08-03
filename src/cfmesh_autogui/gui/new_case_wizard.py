@@ -109,42 +109,66 @@ class Step1GeometryPage(QWizardPage):
             QMessageBox.warning(self, "No Geometry", "Select a geometry file first.")
             return
         from cfmesh_autogui.commercial.geometry_pipeline import GeometryPipeline
+        from cfmesh_autogui.gui.task_runner import FunctionWorker, TaskManager
         self._feature_info.setText("Analyzing geometry...")
-        QApplication.processEvents()
-        gp = GeometryPipeline()
-        result = gp.run(self._geometry_path, heal=True, extract_features=True, classify_patches=True)
-        self._pipeline_result = result
-        if result.success:
-            g = result.geometry
-            h = result.healing
-            f = result.features
-            lines = [
-                f"Format: {g.format.upper()} | Unit: {g.detected_unit}",
-                f"Patches: {g.n_patches} | Watertight: {g.watertight}",
-                f"Bounding box: {g.bbox[0]:.3f} x {g.bbox[1]:.3f} x {g.bbox[2]:.3f} m",
-                f"Volume: {g.volume:.6f} m³" if g.volume else "",
-                "",
-                "--- Healing ---",
-                f"Holes filled: {h.holes_filled}" if h else "N/A",
-                f"Gaps stitched: {h.gaps_stitched}" if h else "N/A",
-                f"Slivers removed: {h.slivers_removed}" if h else "N/A",
-                "",
-                "--- Features ---",
-                f"Sharp edges (>30°): {f.n_sharp_edges}" if f else "N/A",
-                f"Min curvature radius: {f.min_curvature_radius:.6f} m" if f and f.min_curvature_radius else "N/A",
-                f"Gap regions: {f.n_gap_regions}" if f else "N/A",
-                "",
-                "--- Patch Classification ---",
-            ]
-            if f and f.patch_classification:
-                for name, ptype in f.patch_classification.items():
-                    lines.append(f"  {name}: {ptype}")
-            elif result.meshes:
-                for m in result.meshes:
-                    lines.append(f"  {m.metadata.get('name', '?')}")
-            self._feature_info.setText("\n".join(line for line in lines if line))
-        else:
-            self._feature_info.setText(f"Analysis failed:\n" + "\n".join(result.errors))
+
+        def work(worker):
+            worker.report_progress("Analyzing geometry...", 20.0)
+            gp = GeometryPipeline()
+            return gp.run(
+                self._geometry_path, heal=True, extract_features=True,
+                classify_patches=True,
+            )
+
+        def on_done(_name, result):
+            self._pipeline_result = result
+            self._feature_info.setText("Analysis complete")
+            if result.success:
+                g = result.geometry
+                h = result.healing
+                f = result.features
+                lines = [
+                    f"Format: {g.format.upper()} | Unit: {g.detected_unit}",
+                    f"Patches: {g.n_patches} | Watertight: {g.watertight}",
+                    f"Bounding box: {g.bbox[0]:.3f} x {g.bbox[1]:.3f} x {g.bbox[2]:.3f} m",
+                    f"Volume: {g.volume:.6f} m³" if g.volume else "",
+                    "",
+                    "--- Healing ---",
+                    f"Holes filled: {h.holes_filled}" if h else "N/A",
+                    f"Gaps stitched: {h.gaps_stitched}" if h else "N/A",
+                    f"Slivers removed: {h.slivers_removed}" if h else "N/A",
+                    "",
+                    "--- Features ---",
+                    f"Sharp edges (>30°): {f.n_sharp_edges}" if f else "N/A",
+                    f"Min curvature radius: {f.min_curvature_radius:.6f} m" if f and f.min_curvature_radius else "N/A",
+                    f"Gap regions: {f.n_gap_regions}" if f else "N/A",
+                    "",
+                    "--- Patch Classification ---",
+                ]
+                if f and f.patch_classification:
+                    for name, ptype in f.patch_classification.items():
+                        lines.append(f"  {name}: {ptype}")
+                elif result.meshes:
+                    for m in result.meshes:
+                        lines.append(f"  {m.metadata.get('name', '?')}")
+                self._feature_info.setText("\n".join(line for line in lines if line))
+            else:
+                self._feature_info.setText(
+                    "Analysis failed:\n" + "\n".join(result.errors)
+                )
+
+        def on_failed(_name, msg):
+            self._feature_info.setText(f"Analysis failed:\n{msg}")
+
+        tasks = getattr(self, "_wizard_tasks", None)
+        if tasks is None:
+            tasks = TaskManager(self)
+            self._wizard_tasks = tasks
+        tasks.submit(
+            "geometry_analyze", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
 
     def get_geometry_path(self) -> str:
         return self._geometry_path

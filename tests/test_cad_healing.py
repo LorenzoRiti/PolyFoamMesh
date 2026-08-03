@@ -43,7 +43,23 @@ class _FakeLog:
 
 
 def _fake_window():
-    return types.SimpleNamespace(_log=_FakeLog(), _refresh_workflow=lambda **k: None)
+    win = types.SimpleNamespace(_log=_FakeLog(), _refresh_workflow=lambda **k: None)
+    from cfmesh_autogui.gui.task_runner import FunctionWorker
+
+    def _submit(name, worker, on_finished=None, on_failed=None, **kw):
+        # Minimal synchronous TaskManager stand-in: run the task body and
+        # invoke the same GUI-thread callbacks the real manager would.
+        try:
+            result = worker._fn(worker)
+        except Exception as exc:
+            if on_failed:
+                on_failed(name, str(exc))
+            return
+        if on_finished:
+            on_finished(name, result)
+
+    win._submit_task = _submit
+    return win
 
 
 def _box_with_one_hole():
