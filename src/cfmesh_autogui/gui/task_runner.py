@@ -40,9 +40,10 @@ import logging
 import threading
 import time
 import traceback
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,6 @@ class CancellationToken:
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
-
-    def reset(self) -> None:
-        self._event.clear()
 
 
 class WorkerBase(QObject):
@@ -85,9 +83,9 @@ class WorkerBase(QObject):
     cancelled = Signal(str)
     heartbeat = Signal()
 
-    def __init__(self, parent: Optional[QObject] = None) -> None:
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._token: Optional[CancellationToken] = None
+        self._token: CancellationToken | None = None
 
     def attach_token(self, token: CancellationToken) -> None:
         self._token = token
@@ -122,8 +120,8 @@ class FunctionWorker(WorkerBase):
 
     def __init__(
         self,
-        fn: Callable[["FunctionWorker"], Any],
-        cancel_hook: Optional[Callable[[], None]] = None,
+        fn: Callable[[FunctionWorker], Any],
+        cancel_hook: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._fn = fn
@@ -259,7 +257,7 @@ class TaskManager(QObject):
 
     def __init__(
         self,
-        parent: Optional[QObject] = None,
+        parent: QObject | None = None,
         heartbeat_timeout_s: float = 30.0,
         stall_poll_ms: int = 1000,
         cancel_grace_ms: int = 2500,
@@ -290,17 +288,17 @@ class TaskManager(QObject):
         name: str,
         worker: WorkerBase,
         *,
-        on_finished: Optional[Callable] = None,
-        on_failed: Optional[Callable] = None,
-        on_cancelled: Optional[Callable] = None,
-        on_progress: Optional[Callable] = None,
-        on_log: Optional[Callable] = None,
-        on_notify: Optional[Callable] = None,
-        cancel_hook: Optional[Callable[[], None]] = None,
-        heartbeat_timeout_s: Optional[float] = None,
+        on_finished: Callable | None = None,
+        on_failed: Callable | None = None,
+        on_cancelled: Callable | None = None,
+        on_progress: Callable | None = None,
+        on_log: Callable | None = None,
+        on_notify: Callable | None = None,
+        cancel_hook: Callable[[], None] | None = None,
+        heartbeat_timeout_s: float | None = None,
         run_args: tuple = (),
-        run_kwargs: Optional[dict] = None,
-        signal_shapes: Optional[dict] = None,
+        run_kwargs: dict | None = None,
+        signal_shapes: dict | None = None,
     ) -> bool:
         """Start ``worker`` in its own QThread under the name ``name``.
 

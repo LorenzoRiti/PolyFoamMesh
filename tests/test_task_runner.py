@@ -14,14 +14,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest  # noqa: E402
+import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
-from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Signal  # noqa: E402
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Signal
+from PySide6.QtWidgets import QApplication
 
-from cfmesh_autogui.gui.task_runner import (  # noqa: E402
+from cfmesh_autogui.gui.task_runner import (
     FunctionWorker,
     TaskManager,
 )
@@ -125,7 +125,6 @@ def test_reentry_guard_rejects_duplicate_name(qapp):
 
     def fn(worker):
         time.sleep(1.0)
-        return None
 
     first = mgr.submit("t_dup", FunctionWorker(fn))
     second = mgr.submit("t_dup", FunctionWorker(fn))
@@ -140,7 +139,6 @@ def test_watchdog_detects_stall(qapp):
 
     def fn(worker):
         time.sleep(0.8)  # no heartbeat at all
-        return None
 
     mgr.submit("t_stall", FunctionWorker(fn))
     mgr.stalled.connect(lambda name, secs: stalled.append((name, secs)))
@@ -159,7 +157,6 @@ def test_shutdown_terminates_running_tasks_within_budget(qapp):
         # GIL on Windows, so it is not exercised here.
         while not worker.is_cancelled():
             time.sleep(0.05)
-        return None
 
     mgr.submit("t_shut", FunctionWorker(fn))
     assert _wait_until(lambda: mgr.is_running("t_shut"))
@@ -179,9 +176,9 @@ def test_subprocess_kill_hook_invoked_on_cancel(qapp):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if worker.is_cancelled():
-                return None
+                return
             time.sleep(0.01)
-        return None
+        return
 
     def kill():
         killed.append(True)
