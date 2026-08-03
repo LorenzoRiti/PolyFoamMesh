@@ -105,15 +105,28 @@ def estimate_stl_size(meshes: list[trimesh.Trimesh]) -> int:
 
 
 def export_multisolid_stl(meshes: list[trimesh.Trimesh], output_path: Path | str) -> Path:
+    from cfmesh_autogui.core.native_mesher import _drop_contained_coplanar
+
     patches: dict[str, trimesh.Trimesh] = {}
+    n_cleaned = 0
     for mesh in meshes:
         mesh = heal_mesh(mesh)
+        # CAD exports often contain overlapping coplanar triangles (one
+        # coarse triangle covering finer ones) — they make GMSH's 3D
+        # Delaunay fail ("PLC Error: two segments intersect") and break
+        # the cut-cell caps.  Remove the contained ones before exporting.
+        cleaned, _keep = _drop_contained_coplanar(mesh, None)
+        n_cleaned += len(mesh.faces) - len(cleaned.faces)
+        mesh = cleaned
         name = mesh.metadata.get("name", "patch")
         if name in patches:
             existing = patches[name]
             patches[name] = existing + mesh
         else:
             patches[name] = mesh
+    if n_cleaned:
+        logger.info("export_multisolid_stl: removed %d contained coplanar "
+                    "triangles before export", n_cleaned)
     # Auto-select binary for large models (>10 MB estimated ASCII size)
     est_size = estimate_stl_size(meshes)
     if est_size > 10_000_000:
