@@ -1257,8 +1257,14 @@ class ViewerWidget(QWidget):
             n_cells = grid.n_cells
             show_dec = n_cells > self.DECIMATE_THRESHOLD
             if show_dec:
+                # Cap the rendered surface so the GPU/OpenGL render on the
+                # GUI thread can never hang the whole app: extremely large
+                # grids decimate to ~1M cells instead of the 20% target.
+                target = self.DECIMATE_TARGET
+                if n_cells > 10_000_000:
+                    target = min(target, 1_000_000 / n_cells)
                 try:
-                    grid = grid.decimate_pro(self.DECIMATE_TARGET)
+                    grid = grid.decimate_pro(target)
                 except Exception:
                     pass
             return {"grid": grid, "n": n_cells, "show_dec": show_dec}

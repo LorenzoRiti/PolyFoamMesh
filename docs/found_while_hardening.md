@@ -44,6 +44,33 @@ the app, the window goes white, then it "crashes". Investigation
   live `on_line` forwarding (~50 lines/s) while still capturing every line,
   and caps the captured line lists (~100k lines) against memory blowup.
 
+### Second wave (still freezing on the valve with parallel cores)
+
+Follow-up report: still freezing on the valve with CFD/poly + parallel cores.
+Case evidence: `gmsh_direct_20260803_104613` stuck right after the system/
+files were written, GMSH still running, AppHangB1 at 10:51 (same bucket).
+Remaining UI-thread heavy blockers found and fixed:
+
+- `export_surface_file` (surface STL, cfMesh path) ran on the UI thread →
+  now a background task under a nested event loop.
+- `_make_temp_geometry_for_gmsh` (cadquery STEP / big STL export) ran on the
+  UI thread → now a background task under a nested event loop.
+- `_parallel_fallback` deleted the `processor*` dirs (GBs) on the UI thread
+  → now on a daemon thread.
+- `_on_reset` called `RetryRunner.terminate()` (up to 30 s UI block) →
+  non-blocking `request_stop()` + async WSL kill.
+- Custom OpenMP threads were forwarded to GMSH uncapped
+  (`GMSH_NUM_THREADS`), which on hyperthreaded CPUs is exactly the
+  system saturation that white-screens the app while GMSH runs → now capped
+  at physical cores, with a log note when reduced.
+- Viewer: rendering a >10M-cell grid could hang the GPU/OpenGL context on
+  the GUI thread → grids >10M cells now decimate to ~1M cells before render.
+
+Known remaining limitation: the deep pathological case is the garbage valve
+mesh itself (business/geometry, root in the uncommitted `core/geometry.py`
+work). With the flood protection + the fixes above, a pathological run keeps
+the UI responsive, cancellable and bounded.
+
 ## Audit corrections
 
 - `main_window.py:3654` (audit): `_make_fix_action` was flagged as running

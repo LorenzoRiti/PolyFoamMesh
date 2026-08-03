@@ -18,7 +18,8 @@ import pytest  # noqa: E402
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QThread, QTimer, Signal  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Signal  # noqa: E402
 
 from cfmesh_autogui.gui.task_runner import (  # noqa: E402
     FunctionWorker,
@@ -28,8 +29,9 @@ from cfmesh_autogui.gui.task_runner import (  # noqa: E402
 
 @pytest.fixture(scope="module")
 def qapp():
-    app = QCoreApplication.instance() or QCoreApplication([])
-    return app
+    # QApplication (not QCoreApplication): other test modules construct
+    # widgets, and a QApplication instance satisfies every consumer.
+    return QApplication.instance() or QApplication([])
 
 
 def _pump(ms: int = 50) -> None:

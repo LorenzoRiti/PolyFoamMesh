@@ -1439,7 +1439,9 @@ class MainWindow(QMainWindow):
     def _on_reset(self):
         self._run_id += 1
         if self._runner.is_running:
-            self._runner.terminate()
+            # Non-blocking stop (terminate() can block the UI for 30 s).
+            self._runner.request_stop()
+            self._kill_wsl_processes()
         # Back to a blank workflow — the hint returns to "load a geometry".
         self._workflow = MeshingWorkflow()
         self._refresh_workflow()
@@ -1781,14 +1783,21 @@ class MainWindow(QMainWindow):
         self._quality.clear_report()
 
         self._log.append_log(f"{Tag.EXPORT} Writing surface STL...")
-        try:
-            export_surface_file(self._meshes, self._case_dir)
-        except Exception as e:
-            logger.error("STL export failed: %s", e)
-            self._log.append_log(f"{Tag.ERROR} STL export failed: {e}")
+        # STL export of a finely-tessellated part can be hundreds of MB —
+        # run it in a background task under a nested event loop so the UI
+        # stays responsive during the write.
+        meshes_for_export = list(self._meshes)
+        ok, err = self._run_ui_worker_blocking(
+            "surface_stl_export",
+            lambda w: export_surface_file(meshes_for_export, self._case_dir),
+            timeout_s=600.0,
+        )
+        if not ok:
+            logger.error("STL export failed: %s", err)
+            self._log.append_log(f"{Tag.ERROR} STL export failed: {err}")
             QMessageBox.critical(
                 self, "STL Export Failed",
-                f"Could not write the surface STL file for meshing:\n\n{e}\n\n"
+                f"Could not write the surface STL file for meshing:\n\n{err}\n\n"
                 "Check that the case directory is writable and the disk is not full."
             )
             self._params.set_all_enabled(True)
@@ -2321,25 +2330,39 @@ class MainWindow(QMainWindow):
         base.mkdir(parents=True, exist_ok=True)
         ts = _dt.now().strftime('%Y%m%d_%H%M%S')
 
-        if self._original_shape is not None:
-            tmp = str(base / f"gmsh_geometry_{ts}.step")
-            try:
-                import cadquery as cq
-                cq.exporters.export(self._original_shape, tmp, exportType="STEP")
-                logger.info("Exported original shape to STEP for GMSH: %s", tmp)
-                return tmp
-            except Exception as e:
-                logger.warning("Failed to export STEP for GMSH: %s", e)
-        if self._meshes:
-            tmp = str(base / f"gmsh_geometry_{ts}.stl")
-            try:
-                from cfmesh_autogui.core.stl_writer import export_multisolid_stl
-                export_multisolid_stl(self._meshes, tmp)
-                logger.info("Exported meshes to STL for GMSH: %s", tmp)
-                return tmp
-            except Exception as e:
-                logger.warning("Failed to export STL for GMSH: %s", e)
-        return None
+        # Exporting a complex CAD part to STEP (or a large tessellation to
+        # STL) can take minutes — run it in a background task under a
+        # nested event loop so the UI stays responsive.
+        shape = self._original_shape
+        meshes = list(self._meshes)
+
+        def _work(worker):
+            if shape is not None:
+                tmp = str(base / f"gmsh_geometry_{ts}.step")
+                try:
+                    import cadquery as cq
+                    cq.exporters.export(shape, tmp, exportType="STEP")
+                    logger.info("Exported original shape to STEP for GMSH: %s", tmp)
+                    return tmp
+                except Exception as e:
+                    logger.warning("Failed to export STEP for GMSH: %s", e)
+            if meshes:
+                tmp = str(base / f"gmsh_geometry_{ts}.stl")
+                try:
+                    from cfmesh_autogui.core.stl_writer import export_multisolid_stl
+                    export_multisolid_stl(meshes, tmp)
+                    logger.info("Exported meshes to STL for GMSH: %s", tmp)
+                    return tmp
+                except Exception as e:
+                    logger.warning("Failed to export STL for GMSH: %s", e)
+            return None
+
+        ok, result = self._run_ui_worker_blocking(
+            "gmsh_geometry_export", _work, timeout_s=900.0,
+        )
+        if not ok:
+            logger.error("GMSH geometry export failed: %s", result)
+        return result if ok else None
 
     def _resolve_case_root(self) -> Path:
         root = Path.home() / "cfmesh_cases"
@@ -2436,10 +2459,23 @@ class MainWindow(QMainWindow):
         # user leaves the auto/balanced modes, no override is set and
         # gmsh_wrapper's own capped default keeps the system responsive
         # instead of GMSH pinning every logical core (the "mesh di gmsh
-        # impalla il sistema" freeze).
+        # impalla il sistema" freeze). A custom count is honoured but capped
+        # at the physical core count: oversubscribing logical cores (2x on
+        # hyperthreaded CPUs) is exactly the saturation that makes the app
+        # white-screen while GMSH runs.
         _openmp_mode, _openmp_threads = self._params.get_openmp_params()
         if _openmp_mode == "custom" and _openmp_threads is not None:
-            os.environ["GMSH_NUM_THREADS"] = str(_openmp_threads)
+            try:
+                _physical = os.cpu_count() or _openmp_threads
+            except Exception:
+                _physical = _openmp_threads
+            capped = min(_openmp_threads, _physical)
+            if capped != _openmp_threads:
+                self._log.append_log(
+                    f"{Tag.WARN} GMSH threads capped: {_openmp_threads} -> "
+                    f"{capped} (physical cores) to keep the system responsive."
+                )
+            os.environ["GMSH_NUM_THREADS"] = str(capped)
         else:
             os.environ.pop("GMSH_NUM_THREADS", None)
 
@@ -2881,13 +2917,23 @@ class MainWindow(QMainWindow):
             "The mesh will still be generated, it will just take longer.",
         )
         if self._case_dir:
+            # Deleting decomposed processor dirs can be GBs of I/O — never
+            # on the UI thread. The serial fallback doesn't write processor
+            # dirs, so the deletion can run concurrently on a daemon thread.
             import glob as _glob
-            for d in _glob.glob(str(self._case_dir / "processor*")):
+            case_dir = self._case_dir
+            stale = [d for d in _glob.glob(str(case_dir / "processor*"))]
+
+            def _cleanup_processor_dirs():
                 import shutil as _su
-                try:
-                    _su.rmtree(d)
-                except Exception:
-                    pass
+                for d in stale:
+                    try:
+                        _su.rmtree(d)
+                    except Exception:
+                        pass
+
+            import threading as _thr
+            _thr.Thread(target=_cleanup_processor_dirs, daemon=True).start()
         self._log.append_log(f"{Tag.MESHING} Running cartesianMesh (serial fallback)...")
         p = getattr(self, "_fallback_mesh_params", None) or self._params.get_mesh_params()
         bl_params = getattr(self, "_fallback_bl_params", None)
