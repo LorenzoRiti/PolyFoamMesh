@@ -209,6 +209,26 @@ class _Relay(QObject):
         self.notify.emit((a, b))
 
 
+class _WorkerDispatcher(QObject):
+    """Runs ``worker.run(*args, **kwargs)`` inside the worker's QThread.
+
+    Lives in the same thread as the worker (moved there by submit()), so a
+    queued connection from ``QThread.started`` executes its slot in the
+    worker thread — unlike a plain lambda, which PySide6 delivers to the
+    connection's creator thread (the GUI thread).
+    """
+
+    def __init__(self, worker: QObject, args: tuple, kwargs: dict):
+        super().__init__()
+        self._w = worker
+        self._args = args
+        self._kwargs = kwargs
+
+    @Slot()
+    def go(self) -> None:
+        self._w.run(*self._args, **self._kwargs)
+
+
 # worker_signal_name -> (relay bridge slot, relay signal)
 # signal_shapes can override the default arity per worker (see submit()).
 _RELAY_MAP: dict[str, tuple[str, str]] = {
@@ -379,15 +399,20 @@ class TaskManager(QObject):
         relay.cancelled.connect(self._on_cancelled)
         relay.notify.connect(self._on_notify)
 
-        # started->run is queued: with a direct connection, an exception
-        # escaping a worker's run() propagates through the signal emission
-        # and can resurface on another thread (observed flaky crash in
-        # tests); queued dispatch contains it inside the worker thread.
+        # started->run must run IN THE WORKER'S QTHREAD. Connecting
+        # `started` to a plain lambda with QueuedConnection does NOT: a
+        # plain callable has no QObject receiver, so PySide6 delivers it
+        # to the thread that made the connection — the GUI thread. Every
+        # "background" task then executed on the main thread, freezing the
+        # UI for the whole run (confirmed live with py-spy: MainThread
+        # parked inside _stream_subprocess while GMSH meshed). A QObject
+        # moved to the QThread has the right affinity, so its slot is
+        # delivered to the worker thread's event loop.
         run_kwargs = run_kwargs or {}
-        thread.started.connect(
-            lambda: worker.run(*run_args, **run_kwargs),
-            Qt.QueuedConnection,
-        )
+        dispatcher = _WorkerDispatcher(worker, run_args, run_kwargs)
+        dispatcher.moveToThread(thread)
+        thread.started.connect(dispatcher.go, Qt.QueuedConnection)
+        task["dispatcher"] = dispatcher
         thread.start()
         logger.info("TaskManager: started task '%s'", name)
         return True

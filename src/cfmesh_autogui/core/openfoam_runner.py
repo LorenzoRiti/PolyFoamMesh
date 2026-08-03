@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import os
+import ctypes
 import shlex
 import signal
 import subprocess
@@ -722,6 +723,13 @@ class MeshQualityReport:
             return f"⚠️ {', '.join(warns)}"
         return "✅ PASS"
 
+    def summary(self) -> str:
+        """One-line summary for logs/status bars."""
+        return (
+            f"{self.cells} cells, {self.faces} faces, "
+            f"{self.points} points — {self.status}"
+        )
+
     def to_dict(self) -> dict:
         return {
             "metrics": {
@@ -1088,9 +1096,11 @@ class DualPolyWorker(QObject):
     finished = Signal(object)  # DualPolyResult
     failed = Signal(str)
 
-    def __init__(self, case_dir: Path | str, parent=None):
+    def __init__(self, case_dir: Path | str, bl_params: dict | None = None,
+                 parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
+        self._bl_params = bl_params or None
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -1145,6 +1155,51 @@ class DualPolyWorker(QObject):
             f"{result.n_cells_after:,} polyhedra, residual tetrahedra "
             f"{result.n_residual_tets} ({result.stage_times.get('total', 0)}s)"
         )
+
+        # boundary layers on the poly mesh (our own advancing-layer engine)
+        if self._bl_params:
+            from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine
+
+            bl = dict(self._bl_params)
+            self.log_line.emit(
+                f"[poly] Adding boundary layers: "
+                f"{bl.get('nLayers', 5)} layers, "
+                f"first height {bl.get('firstLayerThickness', 0.0):.6g} m, "
+                f"growth {bl.get('thicknessRatio', 1.2)}"
+            )
+            try:
+                bres = PolyBoundaryLayerEngine(
+                    self._case_dir,
+                    log=self.log_line.emit,
+                    cancel=lambda: self._cancelled,
+                ).run(
+                    n_layers=int(bl.get("nLayers", 5)),
+                    first_height=float(bl.get("firstLayerThickness", 0.0)),
+                    growth_rate=float(bl.get("thicknessRatio", 1.2)),
+                    apply_to_all=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the poly mesh
+                self.log_line.emit(f"[poly] WARN: boundary layers failed: {exc}")
+                bres = None
+            if bres is not None and bres.success:
+                self.log_line.emit(
+                    f"[poly] Boundary layers OK: {bres.n_prism_cells:,} prism "
+                    f"cells, total thickness {bres.total_thickness:.6g} m"
+                )
+                result.bl_prism_cells = bres.n_prism_cells
+                result.bl_thickness = bres.total_thickness
+            else:
+                msg = (
+                    "; ".join(bres.errors) if bres is not None
+                    else "engine raised"
+                )
+                self.log_line.emit(
+                    f"[poly] WARN: boundary layers skipped — "
+                    f"mesh kept without BL ({msg})"
+                )
+                result.bl_prism_cells = 0
+                result.bl_warning = msg
+
         self.finished.emit(result)
 
 
@@ -1460,6 +1515,123 @@ def _kill_pid_tree(pid: int) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Windows process hygiene for the GMSH-wrapper subprocesses: the GUI must
+# stay responsive while GMSH saturates the machine, and the subprocess must
+# NEVER outlive the GUI (an orphaned GMSH keeps meshing for 10-30 min after
+# the app is killed, re-saturating the machine and making every relaunch
+# crash — confirmed from a real session's WER BEX64 crash-loop and the
+# orphan-written mesh.msh files).
+# ---------------------------------------------------------------------------
+
+# Job handles that must stay open for KILL_ON_JOB_CLOSE to apply; cleaned
+# up when the child exits (see _stream_subprocess).
+_JOB_HANDLES: set = set()
+
+# JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — kills every process in the job when
+# the last handle to the job is closed (i.e. when our process dies).
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_ulonglong),
+        ("WriteOperationCount", ctypes.c_ulonglong),
+        ("OtherOperationCount", ctypes.c_ulonglong),
+        ("ReadTransferCount", ctypes.c_ulonglong),
+        ("WriteTransferCount", ctypes.c_ulonglong),
+        ("OtherTransferCount", ctypes.c_ulonglong),
+    ]
+
+
+class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_longlong),
+        ("PerJobUserTimeLimit", ctypes.c_longlong),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoInfo", _IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+# JobInformationClass index for ExtendedLimitInformation.
+_JobObjectExtendedLimitInformation = 9
+
+
+def _harden_windows_child(proc) -> None:
+    """Best-effort Windows hardening of a Popen child:
+    - BelowNormal priority, so GMSH's CPU grind never starves the GUI's
+      own thread (the "GMSH impalla il sistema" white-screen freeze).
+    - A Job Object with KILL_ON_JOB_CLOSE, so the child is force-killed
+      when THIS process dies — no orphaned meshing subprocess left
+      saturating RAM/CPU after a crash or user kill.
+
+    On non-Windows or on any API failure this is a silent no-op: the
+    child still runs, just unhardened (same behaviour as before).
+    """
+    if os.name != "nt":
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = int(proc._handle)  # Popen's process handle
+        if handle:
+            try:
+                kernel32.SetPriorityClass(handle, _BELOW_NORMAL_PRIORITY_CLASS)
+            except Exception:
+                pass
+            job = kernel32.CreateJobObjectW(None, None)
+            if job:
+                info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+                info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                if kernel32.SetInformationJobObject(
+                    job, _JobObjectExtendedLimitInformation,
+                    ctypes.byref(info), ctypes.sizeof(info),
+                ):
+                    if kernel32.AssignProcessToJobObject(job, handle):
+                        _JOB_HANDLES.add(job)
+    except Exception:
+        logger.debug("Windows child hardening failed (non-fatal)", exc_info=True)
+
+
+def _release_job(proc) -> None:
+    """Drop the module-level job handle for a finished child. Closing our
+    handle is safe once the child has exited (nothing left to kill)."""
+    if os.name != "nt" or proc is None:
+        return
+    try:
+        handle = int(proc._handle)
+    except Exception:
+        return
+    # The job object is not directly keyed by pid; scan-and-close is O(n)
+    # but n is tiny (one job per concurrently running subprocess).
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        for job in list(_JOB_HANDLES):
+            try:
+                if kernel32.CloseHandle(job):
+                    _JOB_HANDLES.discard(job)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10, proc_holder=None):
     """Run cmd via Popen, streaming stdout/stderr line-by-line as they
     arrive instead of buffering everything until the process exits.
@@ -1507,6 +1679,7 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
         text=True, encoding="utf-8", errors="backslashreplace",
         cwd=run_cwd, env=child_env, bufsize=1,
     )
+    _harden_windows_child(proc)
     if proc_holder is not None:
         proc_holder["proc"] = proc
 
@@ -1594,6 +1767,7 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
         pass
     t_out.join(timeout=2)
     t_err.join(timeout=2)
+    _release_job(proc)
 
     if _rate["suppressed"]:
         on_line(
@@ -1748,10 +1922,18 @@ class GmshVolumeWorker(QObject):
         import os
         # Pass refinement zones as JSON via env var (avoids shell-escaping issues)
         zones_json = json.dumps(self._refinement_zones) if self._refinement_zones else ""
+        # Fase 3 P3.4: named flags instead of 10 positional slots.
         args = [
-            "volume", self._step_path, str(self._msh_path), self._detail,
-            str(self._n_layers), str(self._bl_thickness or 0), str(self._bl_expansion),
-            str(self._max_cell_size), str(self._min_cell_size), str(self._max_cells_target),
+            "volume",
+            f"--step={self._step_path}",
+            f"--msh={self._msh_path}",
+            f"--detail={self._detail}",
+            f"--n-layers={self._n_layers}",
+            f"--bl-thickness={self._bl_thickness or 0}",
+            f"--bl-expansion={self._bl_expansion}",
+            f"--max-cell={self._max_cell_size}",
+            f"--min-cell={self._min_cell_size}",
+            f"--max-cells-target={self._max_cells_target}",
         ]
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")

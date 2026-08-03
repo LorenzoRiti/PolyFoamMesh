@@ -73,7 +73,13 @@ def _area_vector(points: np.ndarray, fv) -> np.ndarray:
 
 def _list_tokens(path: Path) -> list[str]:
     text = path.read_text()
-    body = text.split("*/", 1)[1]
+    # Start at the FoamFile dict opening brace. This is format-agnostic:
+    # mesh_converter's legacy header is a /* ... */ banner followed by
+    # "FoamFile { ... }", while foam_mesh_io writes a plain "FoamFile { ... }"
+    # with no banner — in both cases the first '{' opens the FoamFile dict,
+    # and _parse_list_file/_parse_faces locate its closing '}' from there.
+    first = text.find("{")
+    body = text[first:]
     return [
         ln.strip() for ln in body.splitlines()
         if ln.strip() and not ln.strip().startswith("//")

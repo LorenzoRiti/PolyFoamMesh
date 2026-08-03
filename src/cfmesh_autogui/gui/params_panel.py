@@ -413,6 +413,16 @@ class ParamsPanel(QWidget):
             "Mesh tetraedrica GMSH pura, nessun WSL richiesto.\n"
             "Per solver FEM nativi tet. Nessuna conversione poliedrica.",
         )
+        _add_mesher_btn(
+            "Native Poly  (sperimentale, no-WSL)",
+            "native_poly",
+            "EXPERIMENTAL: cut-cell nativo (algoritmo nostro, puro Python)\n"
+            "+ dual mediano -> 100% poly. Nessun GMSH/cfMesh/WSL per generare;\n"
+            "WSL solo per la validazione checkMesh.\n"
+            "Limite noto (misurato): su superfici parallele alla griglia\n"
+            "(es. condotti dritti) il dual pu\u00f2 fallire — serve lo snapping\n"
+            "(non ancora implementato). Funziona bene su superfici curve.",
+        )
         mesh_layout.addWidget(mesher_group)
         self._bl_group = bl_group
         self._mesher_group = mesher_group
@@ -1356,7 +1366,7 @@ class ParamsPanel(QWidget):
         # poly there is optional either way (its hex-dual is grid-like/
         # regular regardless). This mirrors the previous dropdown behaviour
         # exactly, keyed by the pipeline values get_mesher_type() returns.
-        if key == "gmsh_direct_poly":
+        if key in ("gmsh_direct_poly", "native_poly"):
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(True)
         elif key == "gmsh_direct":

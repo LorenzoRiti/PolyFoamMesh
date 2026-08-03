@@ -80,6 +80,38 @@ def test_mesh_optimizer_thresholds():
     assert "aspect_ratio_max" in opt.THRESHOLDS
 
 
+def test_optimizer_refuses_tet_mesh_remesh(tmp_path):
+    """Fase 3 P3.2: the optimiser must refuse to re-run cartesianMesh over a
+    GMSH tet mesh (pure-tet, no backup) — a silent swap would replace the
+    user's tet mesh with an unrelated cfMesh hex at different dimensions."""
+    import numpy as np
+    from cfmesh_autogui.core import foam_mesh_io
+
+    poly = tmp_path / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    faces = [[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 3, 2]]
+    foam_mesh_io.write_polymesh(
+        poly, pts, faces,
+        np.array([0, 0, 0, 0], dtype=np.int64),
+        np.array([-1, -1, -1, -1], dtype=np.int64),
+        [{"name": "walls", "type": "patch", "nFaces": 4, "startFace": 0}],
+    )
+    opt = MeshOptimizer()
+    # Guard short-circuits before any WSL call — no OpenFOAM needed.
+    assert opt._run_cartesian_mesh(tmp_path) is False
+
+
+def test_optimizer_refuses_tet_backup_remesh(tmp_path):
+    """Fase 3 P3.2: same guard via the polyMesh_tet_backup marker."""
+    poly = tmp_path / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    (poly / "owner").write_text("", encoding="ascii")  # a mesh is present
+    (tmp_path / "constant" / "polyMesh_tet_backup").mkdir()
+    opt = MeshOptimizer()
+    assert opt._run_cartesian_mesh(tmp_path) is False
+
+
 def test_quality_snapshot_from_report():
     """Test creating a snapshot from a dict (avoiding MeshQualityReport import)."""
     snap = QualitySnapshot(

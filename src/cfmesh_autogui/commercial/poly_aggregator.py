@@ -147,8 +147,8 @@ def _read_points(path: Path) -> np.ndarray:
     body = m.group(1)
     # Remove parentheses from each point: "(x y z)" -> "x y z"
     body = re.sub(r"[()]", " ", body)
-    # Parse as flat float array
-    arr = np.fromstring(body, sep=" ", dtype=np.float64)
+    # Parse as flat float array (np.fromstring is deprecated)
+    arr = np.array(body.split(), dtype=np.float64)
     if arr.size % 3 != 0:
         raise ValueError(
             f"Points data size {arr.size} not divisible by 3 in {path}"
@@ -189,7 +189,7 @@ def _read_owner_neighbour(path: Path) -> np.ndarray:
             return arr
     text = read_of_text(path)
     data = _extract_data_block(text)
-    result = np.fromstring(data, sep=" ", dtype=np.int32)
+    result = np.array(data.split(), dtype=np.int32)
     if len(result) == 0:
         # Binary file parsed as ASCII produced garbage — try label list
         from cfmesh_autogui.core.of_reader import of_label_list
@@ -212,33 +212,6 @@ def _read_boundary_patches(path: Path) -> list[dict]:
         }
         for p in patches
     ]
-
-
-def _openfoam_header(
-    cls: str = "polyMesh",
-    location: str = "constant/polyMesh",
-    obj: str = "mesh",
-) -> str:
-    """Generate OpenFOAM FoamFile header."""
-    return (
-        "FoamFile {\n"
-        "    version 2.0;\n"
-        "    format ascii;\n"
-        f"    class {cls};\n"
-        f"    location \"{location}\";\n"
-        f"    object {obj};\n"
-        "}\n"
-    )
-
-
-def _write_openfoam_list(
-    path: Path, data: list[str], header_cls: str = "labelList",
-) -> None:
-    """Write an OpenFOAM list file (points, faces, owner, neighbour)."""
-    lines = [_openfoam_header(cls=header_cls), "", str(len(data)), "("]
-    lines.extend(data)
-    lines.append(")")
-    path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
 
 # ---------------------------------------------------------------------------
@@ -956,57 +929,40 @@ class PolyAggregator:
         if len(new_owner) == 0:
             raise RuntimeError("Cannot write mesh: 0 cells produced by aggregation")
 
-        poly_dir.mkdir(parents=True, exist_ok=True)
-
-        # Points (once)
-        pts_lines = [
-            f"({' '.join(f'{v:.10g}' for v in row)})"
-            for row in points
-        ]
-        pts_text = (
-            _openfoam_header("pointField", "constant/polyMesh", "points")
-            + f"\n{len(points)}\n(\n"
-            + "\n".join(pts_lines)
-            + "\n)\n"
-        )
-        (poly_dir / "points").write_text(pts_text, encoding="ascii")
-
-        # Faces
-        face_lines = [
-            f"{len(fv)} ({' '.join(str(v) for v in fv)})"
-            for fv in new_faces
-        ]
-        _write_openfoam_list(poly_dir / "faces", face_lines, "faceList")
-
-        # Owner
-        owner_lines = [str(o) for o in new_owner]
-        _write_openfoam_list(poly_dir / "owner", owner_lines, "labelList")
-
-        # Neighbour
-        neigh_lines = [str(n) if n >= 0 else "-1" for n in new_neighbour]
-        _write_openfoam_list(poly_dir / "neighbour", neigh_lines, "labelList")
-
         # Boundary — compute real patch distribution from new faces
-        self._write_boundary(poly_dir, boundary_patches, new_faces, new_owner, new_neighbour)
+        patches = self._compute_boundary_patches(new_faces, new_neighbour)
+
+        # Single writer: foam_mesh_io.write_polymesh (atomic temp-dir + replace).
+        # NOTE: ``boundary_patches`` is intentionally unused — the real patch
+        # split comes from ``_face_patch_map`` built during aggregation (the
+        # argument predates that map and is kept for call-site compatibility).
+        from cfmesh_autogui.core import foam_mesh_io
+
+        foam_mesh_io.write_polymesh(
+            poly_dir,
+            points,
+            new_faces,
+            np.asarray(new_owner, dtype=np.int64),
+            np.asarray(new_neighbour, dtype=np.int64),
+            patches,
+        )
 
         logger.info(
             "Written polyhedral mesh: %d points, %d faces, %d cells",
             len(points), len(new_faces), len(new_owner),
         )
 
-    def _write_boundary(
+    def _compute_boundary_patches(
         self,
-        poly_dir: Path,
-        boundary_patches: list[dict],
         new_faces: list[list[int]],
-        new_owner: np.ndarray,
         new_neighbour: np.ndarray,
-    ) -> None:
-        """Write OpenFOAM boundary file computing real patch distribution.
+    ) -> list[dict]:
+        """Compute the real patch distribution for the aggregated mesh.
 
         Groups boundary faces (neighbour == -1) by patch name using the
         ``_face_patch_map`` built during aggregation. Falls back to a single
-        ``walls`` patch if no mapping exists.
+        ``walls`` patch if no mapping exists. Returns the sorted patch list
+        (name/type/nFaces/startFace) for foam_mesh_io.write_polymesh.
         """
         n_faces = len(new_faces)
         bface_ids = [i for i in range(n_faces) if new_neighbour[i] < 0]
@@ -1026,33 +982,28 @@ class PolyAggregator:
             key=lambda x: min(x[1]["faces"]) if x[1]["faces"] else 0,
         )
 
-        lines = [_openfoam_header("boundary", "constant/polyMesh", "boundary")]
-        lines.append(f"{max(len(sorted_patches), 1)}")
-        lines.append("(")
+        patches = [
+            {
+                "name": name,
+                "type": info["type"],
+                "nFaces": len(info["faces"]),
+                "startFace": min(info["faces"]) if info["faces"] else 0,
+            }
+            for name, info in sorted_patches
+        ]
+        if not patches:
+            patches.append({
+                "name": "walls",
+                "type": "patch",
+                "nFaces": 0,
+                "startFace": 0,
+            })
 
-        if sorted_patches:
-            for name, info in sorted_patches:
-                fids = info["faces"]
-                lines.append(f"    {name}")
-                lines.append("    {")
-                lines.append(f"        type {info['type']};")
-                lines.append(f"        nFaces {len(fids)};")
-                lines.append(f"        startFace {min(fids)};")
-                lines.append("    }")
-        else:
-            lines.append("    walls")
-            lines.append("    {")
-            lines.append("        type patch;")
-            lines.append("        nFaces 0;")
-            lines.append("        startFace 0;")
-            lines.append("    }")
-
-        lines.append(")")
-        (poly_dir / "boundary").write_text("\n".join(lines) + "\n", encoding="ascii")
         logger.info(
             "Boundary: %d patches (%d boundary faces)",
-            len(sorted_patches), len(bface_ids),
+            len(patches), len(bface_ids),
         )
+        return patches
 
     def _get_quality(self, case_dir: Path) -> dict[str, float]:
         """Run checkMesh and return key quality metrics."""

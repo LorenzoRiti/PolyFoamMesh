@@ -180,7 +180,7 @@ def _parse_of_points(path: Path) -> np.ndarray:
     # (they require foamToVTK instead), which is why this only surfaces on
     # small meshes such as autopoly's.
     text = text.replace("(", " ").replace(")", " ")
-    arr = np.fromstring(text, sep=" ", dtype=np.float64)
+    arr = np.array(text.split(), dtype=np.float64)  # np.fromstring is deprecated
     return arr.reshape(-1, 3)
 
 

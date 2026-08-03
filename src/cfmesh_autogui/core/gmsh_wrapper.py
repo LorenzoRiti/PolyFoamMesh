@@ -58,6 +58,19 @@ _GMSH_DETAIL = {
 }
 
 
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte count (e.g. "14.2 GB"), best-effort."""
+    try:
+        val = float(n)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if val < 1024 or unit == "TB":
+                return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
+            val /= 1024
+    except Exception:
+        pass
+    return str(n)
+
+
 def _available_ram_bytes() -> int:
     """Free physical RAM, best-effort. No third-party dependency (ctypes
     is stdlib) so this works the same in a frozen/PyInstaller build."""
@@ -1396,7 +1409,20 @@ def _gmsh_thread_count() -> int:
         except ValueError:
             pass
     cpus = os.cpu_count() or 4
-    return max(1, min(cpus // 2, 8))
+    base = max(1, min(cpus // 2, 8))
+    # RAM-aware backoff: GMSH's 3D mesher keeps a per-thread chunk of the
+    # working mesh in memory, so on a memory-tight machine (WSL2/OpenFOAM
+    # plus the GUI already competing for RAM) the default thread count can
+    # itself push the system into thrashing — the "mesh di gmsh impalla il
+    # sistema" symptom observed with 8 threads. Back off when free RAM is
+    # scarce; the wall-time cost is small (GMSH threading gains ~2% on the
+    # volume mesh) and a responsive OS is worth far more.
+    free_gb = _available_ram_bytes() / (1024 ** 3)
+    if free_gb < 6:
+        return max(1, min(base, 2))
+    if free_gb < 12:
+        return max(1, min(base, 4))
+    return base
 
 
 def _apply_gmsh_thread_env(gmsh_mod) -> None:
@@ -1567,12 +1593,28 @@ def generate_volume_mesh(
         # not a normal target; the GUI target can request anything up to 20M.
         MAX_GMSH_CELLS = 20_000_000
         est_cells = vol / (user_lc ** 3)
-        if est_cells > MAX_GMSH_CELLS:
-            new_lc = (vol / MAX_GMSH_CELLS) ** (1.0 / 3.0)
+        # The ceiling must also respect the machine's actual RAM, or a
+        # legitimately in-budget request (e.g. 15M cells on a box with 32 GB
+        # but WSL2/OpenFOAM already holding 16 GB) lets GMSH balloon past
+        # physical memory: the system starts thrashing, the GUI main thread
+        # stops being scheduled, Windows reports an App Hang and kills the
+        # whole app — reproduced repeatedly in a real session (CFD Poly runs
+        # all produced 0.7-1.1 GB .msh files, then the GUI froze and was
+        # killed by the OS). _hardware_budget's max_cells already encodes a
+        # "50% of free RAM / 25% of total RAM" floor that the adaptive path
+        # uses; the explicit path now uses the same one instead of assuming
+        # 20M is always safe.
+        ram_cap = _hardware_budget(None)["max_cells"]
+        cell_cap = min(MAX_GMSH_CELLS, ram_cap)
+        if est_cells > cell_cap:
+            new_lc = (vol / cell_cap) ** (1.0 / 3.0)
             logger.warning(
-                "Cell size %.5f would produce ~%.0f cells (cap=%d). "
-                "Auto-coarsening to %.5f.",
-                user_lc, est_cells, MAX_GMSH_CELLS, new_lc,
+                "Cell size %.5f would produce ~%.0f cells, exceeding the "
+                "hardware budget of %.0f cells (free RAM %s). Auto-coarsening "
+                "to %.5f (~%.0f cells).",
+                user_lc, est_cells, cell_cap,
+                _fmt_bytes(_available_ram_bytes()), new_lc,
+                vol / (new_lc ** 3),
             )
             user_lc = new_lc
             if min_cell_size and min_cell_size > 0:
@@ -1794,15 +1836,36 @@ if __name__ == "__main__":
             print(json.dumps({"success": False, "error": str(e)}))
             sys.exit(1)
     elif cmd == "volume":
-        step_path = sys.argv[2]
-        msh_path = Path(sys.argv[3])
-        detail = sys.argv[4] if len(sys.argv) > 4 else "medium"
-        n_layers = int(sys.argv[5]) if len(sys.argv) > 5 else 0
-        bl_thickness = float(sys.argv[6]) if len(sys.argv) > 6 else None
-        bl_expansion = float(sys.argv[7]) if len(sys.argv) > 7 else 1.2
-        max_cell_size = float(sys.argv[8]) if len(sys.argv) > 8 else 0
-        min_cell_size = float(sys.argv[9]) if len(sys.argv) > 9 else 0
-        max_cells_target = int(float(sys.argv[10])) if len(sys.argv) > 10 else 0
+        # Fase 3 P3.4: keyword-args contract. Positional slots are still
+        # accepted for external callers, but named --key=value flags override
+        # them and are the contract GmshVolumeWorker/run_gmsh_volume use —
+        # a 10-deep positional list was unreadable and one more option would
+        # have been the 11th.
+        flags: dict[str, str] = {}
+        rest: list[str] = []
+        for a in sys.argv[2:]:
+            if a.startswith("--") and "=" in a:
+                k, v = a[2:].split("=", 1)
+                flags[k] = v
+            else:
+                rest.append(a)
+
+        def _arg(idx: int, name: str, cast, default):
+            if name in flags:
+                return cast(flags[name])
+            if len(rest) > idx:
+                return cast(rest[idx])
+            return default
+
+        step_path = _arg(0, "step", str, "")
+        msh_path = Path(_arg(1, "msh", str, ""))
+        detail = _arg(2, "detail", str, "medium")
+        n_layers = _arg(3, "n-layers", int, 0)
+        bl_thickness = _arg(4, "bl-thickness", float, None)
+        bl_expansion = _arg(5, "bl-expansion", float, 1.2)
+        max_cell_size = _arg(6, "max-cell", float, 0)
+        min_cell_size = _arg(7, "min-cell", float, 0)
+        max_cells_target = _arg(8, "max-cells-target", int, 0)
         # Read refinement zones from environment variable (set by GmshVolumeWorker)
         refinement_zones = None
         zones_json = os.environ.get("GMSH_REFINEMENT_ZONES", "")

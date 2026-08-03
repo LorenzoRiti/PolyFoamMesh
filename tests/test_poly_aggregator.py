@@ -321,45 +321,67 @@ def test_build_vertex_adjacency_simple():
 
 
 def test_write_boundary_single_patch(tmp_path):
-    """Verify _write_boundary produces valid OpenFOAM boundary file."""
+    """Verify _compute_boundary_patches produces a valid single-patch split."""
     agg = PolyAggregator()
-    poly_dir = tmp_path / "constant" / "polyMesh"
-    poly_dir.mkdir(parents=True)
     new_faces = [[0, 1, 2], [2, 3, 4]]
     new_owner = np.array([0, 0])
     new_neighbour = np.array([-1, -1])
-    patches: list[dict] = []
 
     agg._face_patch_map = {0: ("walls", "patch"), 1: ("walls", "patch")}
-    agg._write_boundary(poly_dir, patches, new_faces, new_owner, new_neighbour)
-    bfile = poly_dir / "boundary"
-    assert bfile.exists()
-    text = bfile.read_text()
+    patches = agg._compute_boundary_patches(new_faces, new_neighbour)
+    assert len(patches) == 1
+    assert patches[0]["name"] == "walls"
+    assert patches[0]["nFaces"] == 2
+    assert patches[0]["startFace"] == 0
+
+    # Round-trip through the single writer (foam_mesh_io)
+    from cfmesh_autogui.core import foam_mesh_io
+    poly_dir = tmp_path / "constant" / "polyMesh"
+    foam_mesh_io.write_polymesh(
+        poly_dir,
+        np.zeros((8, 3), dtype=np.float64),
+        new_faces,
+        new_owner.astype(np.int64),
+        new_neighbour.astype(np.int64),
+        patches,
+    )
+    text = (poly_dir / "boundary").read_text()
     assert "walls" in text
-    assert "nFaces 1" in text or "nFaces 2" in text
+    import re
+    assert re.search(r"nFaces\s+2;", text)
 
 
 def test_write_boundary_multi_patch(tmp_path):
-    """Verify multi-patch boundary file."""
+    """Verify multi-patch boundary split."""
     agg = PolyAggregator()
-    poly_dir = tmp_path / "constant" / "polyMesh"
-    poly_dir.mkdir(parents=True)
     new_faces = [[0, 1, 2], [2, 3, 4], [5, 6, 7]]
     new_owner = np.array([0, 0, 1])
     new_neighbour = np.array([-1, -1, -1])
-    patches: list[dict] = []
 
     agg._face_patch_map = {
         0: ("inlet", "patch"),
         1: ("outlet", "patch"),
         2: ("walls", "wall"),
     }
-    agg._write_boundary(poly_dir, patches, new_faces, new_owner, new_neighbour)
-    bfile = poly_dir / "boundary"
-    text = bfile.read_text()
-    assert "inlet" in text
-    assert "outlet" in text
-    assert "walls" in text
+    patches = agg._compute_boundary_patches(new_faces, new_neighbour)
+    assert [p["name"] for p in patches] == ["inlet", "outlet", "walls"]
+    assert [p["nFaces"] for p in patches] == [1, 1, 1]
+    assert patches[0]["startFace"] == 0
+
+    # Round-trip through the single writer (foam_mesh_io)
+    from cfmesh_autogui.core import foam_mesh_io
+    poly_dir = tmp_path / "constant" / "polyMesh"
+    foam_mesh_io.write_polymesh(
+        poly_dir,
+        np.zeros((9, 3), dtype=np.float64),
+        new_faces,
+        new_owner.astype(np.int64),
+        new_neighbour.astype(np.int64),
+        patches,
+    )
+    text = (poly_dir / "boundary").read_text()
+    for name in ("inlet", "outlet", "walls"):
+        assert name in text
 
 
 def test_map_verts_to_indices():

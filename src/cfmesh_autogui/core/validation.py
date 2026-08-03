@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -322,3 +324,60 @@ def sanitise_filename(name: str) -> str:
     """Remove characters unsafe for Windows/NTFS filenames."""
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
     return cleaned.strip() or "unnamed"
+
+
+# ---------------------------------------------------------------------------
+# Re-meshing guard (Fase 3 P3.2)
+# ---------------------------------------------------------------------------
+def mesh_remeshable(case_dir: str | Path) -> tuple[bool, str]:
+    """Whether an existing mesh may be replaced by a fresh cfMesh cartesianMesh.
+
+    ``quality_engine.auto_fix`` / ``optimizer.MeshOptimizer`` re-run
+    cartesianMesh on whatever mesh already exists in the case — if that mesh
+    came from the GMSH tet / tet→poly pipeline, re-meshing would SILENTLY
+    replace the user's chosen mesh with an unrelated cfMesh hex at different
+    dimensions. That silent-swap class of bug is forbidden (docs §5/§6): this
+    guard refuses when the case carries a non-cfMesh signal.
+
+    Signals (all offline, no WSL needed):
+      - ``constant/polyMesh_tet_backup`` exists → the tet→poly pipeline built
+        this case (both the GUI barycentric-dual path and poly_aggregator
+        back the tet mesh up there before converting).
+      - the existing mesh is a pure tetrahedral mesh (every cell has exactly
+        4 faces) → direct GMSH tet output.
+
+    Returns ``(True, reason)`` when re-meshing is safe, ``(False, reason)``
+    when it would silently destroy a non-cfMesh mesh.
+    """
+    case = Path(case_dir)
+    poly = case / "constant" / "polyMesh"
+    if not (poly / "owner").exists():
+        return True, "no existing mesh to protect"
+
+    if (case / "constant" / "polyMesh_tet_backup").exists():
+        return False, (
+            "existing mesh is GMSH tet->poly pipeline output "
+            "(constant/polyMesh_tet_backup present) — refusing to replace it "
+            "with a cfMesh hex mesh"
+        )
+
+    try:
+        from cfmesh_autogui.core import foam_mesh_io
+
+        faces = foam_mesh_io.read_faces(poly / "faces")
+        owner = foam_mesh_io.read_label_list(poly / "owner").astype(np.int64)
+        neighbour = foam_mesh_io.read_label_list(poly / "neighbour").astype(np.int64)
+        n_cells = int(max(owner.max(), neighbour.max())) + 1 if len(owner) else 0
+        if n_cells == 0:
+            return True, "mesh has no cells — nothing to protect"
+        face_counts = np.zeros(n_cells, dtype=np.int64)
+        np.add.at(face_counts, owner, 1)
+        np.add.at(face_counts, neighbour[neighbour >= 0], 1)
+        if np.all(face_counts == 4):
+            return False, (
+                "existing mesh is a pure tetrahedral (GMSH direct) mesh — "
+                "refusing to replace it with a cfMesh hex mesh"
+            )
+    except Exception as exc:  # defensive: inspection must never block
+        logger.warning("mesh_remeshable: cannot inspect mesh (%s) — proceeding", exc)
+    return True, "existing mesh is cfMesh-compatible (hex-dominant)"

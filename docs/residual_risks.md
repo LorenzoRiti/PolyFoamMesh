@@ -36,6 +36,17 @@ source of truth.
   produces the prism+poly combo required for wall-resolved CFD. The hex
   mesh before polyDualMesh reports 0 prisms for this geometry/config — the
   prisms appear through the dualisation itself; see bench for details.
+- **BL on OUR OWN poly mesh (P3b validated)**: `tools/bench_bl_poly_dual.py`
+  runs GMSH tet -> gmshToFoam -> barycentric dual -> `core/bl_poly.py`
+  (our own advancing-layer engine) -> checkMesh on a cylinder. Result:
+  505,950 prism cells + 72,483 polyhedra, checkMesh `Mesh OK` — i.e. the
+  definitive all-ours CFD mesher (poly interior + prism boundary layers).
+  The GUI now keeps BL enabled on the "Polyhedral (CFD)" path: the
+  converter still only ever sees pure tetrahedra, the layers are added
+  after conversion. Known limitations: BL is applied to the whole boundary
+  (partial-patch BL would leave non-manifold seams — auto-closes instead),
+  and on severely concave-feature geometry (the valve fixture) the engine
+  fails cleanly with the mesh left unchanged.
 
 ## Viewer
 

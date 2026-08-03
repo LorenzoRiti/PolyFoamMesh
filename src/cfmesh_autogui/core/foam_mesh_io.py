@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+import time
 from pathlib import Path
 
 import numpy as np
@@ -84,6 +85,8 @@ def read_points(path: Path) -> np.ndarray:
     data_lines = [l.strip() for l in lines[start:end] if l.strip()]
     result = np.zeros((len(data_lines), 3), dtype=np.float64)
     for i, line in enumerate(data_lines):
+        if i % 65536 == 0:
+            time.sleep(0)  # release the GIL — 12M-point meshes take minutes
         parts = line.replace("(", "").replace(")", "").split()
         result[i] = [float(parts[0]), float(parts[1]), float(parts[2])]
     return result
@@ -130,7 +133,9 @@ def read_faces(path: Path) -> list[list[int]]:
             end = i
             break
     result = []
-    for line in lines[start:end]:
+    for i, line in enumerate(lines[start:end]):
+        if i % 262144 == 0:
+            time.sleep(0)  # release the GIL during multi-million-face reads
         stripped = line.strip()
         if not stripped or stripped.startswith("//"):
             continue
@@ -197,7 +202,9 @@ def _parse_ascii_int_list(text: str, pos: int) -> tuple[list[int], int]:
     data_start = pos + m.end()
     close = text.index(")", data_start)
     body = text[data_start:close]
-    values = [int(tok) for tok in body.split()]
+    # map(int, ...) iterates in C and releases the GIL between tokens —
+    # much friendlier than a comprehension for multi-million-entry lists
+    values = list(map(int, body.split()))
     if len(values) != count:
         raise ValueError(
             f"ASCII int list: expected {count} values, parsed {len(values)}"
@@ -228,7 +235,10 @@ def read_label_list(path: Path) -> np.ndarray:
             end = i
             break
     data = []
-    for line in lines[start:end]:
+    data = []
+    for i, line in enumerate(lines[start:end]):
+        if i % 262144 == 0:
+            time.sleep(0)  # release the GIL during multi-million-entry reads
         stripped = line.strip()
         if stripped and not stripped.startswith("//"):
             try:
@@ -320,6 +330,7 @@ def write_points(path: Path, points: np.ndarray) -> None:
         f.write(_header("vectorField", "points"))
         f.write(f"{len(points)}\n(\n")
         for i in range(0, len(points), 65536):
+            time.sleep(0)  # release the GIL between write chunks
             f.write("".join(
                 f"({x:.12e} {y:.12e} {z:.12e})\n" for x, y, z in points[i:i + 65536]
             ))
@@ -331,6 +342,7 @@ def write_faces(path: Path, faces: list[list[int]]) -> None:
         f.write(_header("faceList", "faces"))
         f.write(f"{len(faces)}\n(\n")
         for i in range(0, len(faces), 65536):
+            time.sleep(0)  # release the GIL between write chunks
             f.write("".join(
                 f"{len(v)}({' '.join(map(str, v))})\n" for v in faces[i:i + 65536]
             ))
@@ -342,6 +354,7 @@ def write_labels(path: Path, data: np.ndarray) -> None:
         f.write(_header("labelList", path.name))
         f.write(f"{len(data)}\n(\n")
         for i in range(0, len(data), 262144):
+            time.sleep(0)  # release the GIL between write chunks
             f.write("\n".join(map(str, data[i:i + 262144].tolist())))
             f.write("\n")
         f.write(")\n")

@@ -33,3 +33,12 @@ benchmarks/results/
 # Deepwork session state (git-local)
 .slim/deepwork/
 
+
+# agent-internal / scratch
+.reasonix/
+log.mesh
+.watch_run_monitor.py
+scratch_split_ab.py
+scratch_split_ab_results.json
+
+.opencode/loop-history/

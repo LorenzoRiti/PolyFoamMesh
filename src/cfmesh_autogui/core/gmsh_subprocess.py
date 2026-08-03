@@ -52,10 +52,18 @@ def run_gmsh_volume(
     """
     from cfmesh_autogui.core.openfoam_runner import _stream_subprocess
 
+    # Fase 3 P3.4: named flags instead of 10 positional slots.
     args = [
-        "volume", str(Path(step_path).resolve()), str(Path(msh_path).resolve()),
-        detail, "0", "0", "1.2",
-        repr(float(user_lc)), repr(float(min_lc)), str(int(max_cells_target)),
+        "volume",
+        f"--step={Path(step_path).resolve()}",
+        f"--msh={Path(msh_path).resolve()}",
+        f"--detail={detail}",
+        f"--n-layers=0",
+        f"--bl-thickness=0",
+        f"--bl-expansion=1.2",
+        f"--max-cell={user_lc!r}",
+        f"--min-cell={min_lc!r}",
+        f"--max-cells-target={int(max_cells_target)}",
     ]
     cmd, run_cwd = _gmsh_cmd(args, "--gmsh-volume")
     env = dict(os.environ)

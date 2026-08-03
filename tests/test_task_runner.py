@@ -133,6 +133,35 @@ def test_reentry_guard_rejects_duplicate_name(qapp):
     mgr.shutdown()
 
 
+def test_worker_runs_on_background_thread_not_main(qapp):
+    """Regression: the worker itself must execute on its QThread, NOT on the
+    GUI thread.  A `started`->plain-lambda QueuedConnection was delivered to
+    the thread that created the connection (the main thread), so every
+    "background" task ran on the main thread and froze the UI for the whole
+    run (confirmed live with py-spy: MainThread inside _stream_subprocess
+    while GMSH meshed).  The callbacks must still land on the GUI thread."""
+    mgr = TaskManager()
+    main_thread = qapp.thread()
+    worker_threads: list = []
+    callback_threads: list = []
+
+    def fn(worker):
+        worker_threads.append(QThread.currentThread())
+        return {"ok": 1}
+
+    mgr.submit(
+        "t_thread", FunctionWorker(fn),
+        on_finished=lambda name, result: callback_threads.append(
+            QThread.currentThread()
+        ),
+    )
+    assert _wait_until(lambda: len(callback_threads) == 1)
+    assert worker_threads, "worker never ran"
+    assert worker_threads[0] is not main_thread
+    assert callback_threads[0] is main_thread
+    mgr.shutdown()
+
+
 def test_watchdog_detects_stall(qapp):
     mgr = TaskManager(heartbeat_timeout_s=0.3, stall_poll_ms=50)
     stalled: list = []

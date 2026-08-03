@@ -20,6 +20,8 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from . import foam_mesh_io
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -242,12 +244,26 @@ def msh_to_of_polymesh(
 
     # Append boundary faces to the main arrays
     start_face_idx = len(all_faces)
+    # Deterministic owner lookup: every boundary face below comes from
+    # ``face_cell_map`` itself, so a missing key is a topology bug — never
+    # silently fall back to owner 0 (a wrong owner silently corrupts the
+    # mesh and only shows up later as weird checkMesh reports).
+    boundary_owner_by_key: dict[tuple[int, ...], int] = {
+        key: owner_cell for key, (owner_cell, _) in face_cell_map.items()
+    }
     boundary_start_faces: dict[int, int] = {}
     for tag in sorted(boundary_faces_by_tag.keys()):
         boundary_start_faces[tag] = start_face_idx
         for fv in boundary_faces_by_tag[tag]:
             all_faces.append(fv)
-            owner = face_cell_map.get(tuple(sorted(fv)), (0, 0))[0]
+            key = tuple(sorted(fv))
+            try:
+                owner = boundary_owner_by_key[key]
+            except KeyError:
+                raise RuntimeError(
+                    f"Boundary face {fv} has no recorded owner cell — "
+                    "mesh topology inconsistency (no silent owner=0 fallback)"
+                ) from None
             all_owners.append(owner)
             all_neighbours.append(-1)
             face_owner_tags.append(tag)
@@ -291,11 +307,15 @@ def msh_to_of_polymesh(
     # ------------------------------------------------------------------
     # Phase 4: Write polyMesh files
     # ------------------------------------------------------------------
-    _write_points(poly_dir, points)
-    _write_faces(poly_dir, all_faces)
-    _write_owner(poly_dir, all_owners)
-    _write_neighbour(poly_dir, all_neighbours)
-    _write_boundary(poly_dir, patches)
+    # Single writer: foam_mesh_io.write_polymesh (atomic temp-dir + replace).
+    foam_mesh_io.write_polymesh(
+        poly_dir,
+        points,
+        all_faces,
+        np.asarray(all_owners, dtype=np.int64),
+        np.asarray(all_neighbours, dtype=np.int64),
+        patches,
+    )
 
     # Count 3D cells
     n_3d = cell_counter
@@ -307,8 +327,11 @@ def msh_to_of_polymesh(
 
 
 # ---------------------------------------------------------------------------
-# File writers
+# OpenFOAM header builder
 # ---------------------------------------------------------------------------
+# polyMesh file writes now go through foam_mesh_io.write_polymesh (single
+# writer); _of_header is kept only because tests/test_gmsh.py pins its
+# exact banner format.
 
 def _of_header(class_type: str, object_name: str) -> str:
     """OpenFOAM ASCII file header.
@@ -339,62 +362,3 @@ def _of_header(class_type: str, object_name: str) -> str:
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n"
     )
     return hdr.format(cs=class_type, obj=object_name)
-
-
-def _write_points(poly_dir: Path, points: np.ndarray) -> None:
-    n = len(points)
-    lines = [str(n), "("]
-    for p in points:
-        lines.append(f"    ({p[0]:.10e} {p[1]:.10e} {p[2]:.10e})")
-    lines.append(")")
-    (poly_dir / "points").write_text(
-        _of_header("vectorField", "points") + "\n".join(lines) + "\n", encoding="ascii",
-    )
-
-
-def _write_faces(poly_dir: Path, faces: list[list[int]]) -> None:
-    n = len(faces)
-    lines = [str(n), "("]
-    for fv in faces:
-        lines.append(f"{len(fv)}({' '.join(str(v) for v in fv)})")
-    lines.append(")")
-    (poly_dir / "faces").write_text(
-        _of_header("faceList", "faces") + "\n".join(lines) + "\n", encoding="ascii",
-    )
-
-
-def _write_owner(poly_dir: Path, owners: list[int]) -> None:
-    n = len(owners)
-    lines = [str(n), "("]
-    for o in owners:
-        lines.append(str(o))
-    lines.append(")")
-    (poly_dir / "owner").write_text(
-        _of_header("labelList", "owner") + "\n".join(lines) + "\n", encoding="ascii",
-    )
-
-
-def _write_neighbour(poly_dir: Path, neighbours: list[int]) -> None:
-    n = len(neighbours)
-    lines = [str(n), "("]
-    for nb in neighbours:
-        lines.append(str(nb))
-    lines.append(")")
-    (poly_dir / "neighbour").write_text(
-        _of_header("labelList", "neighbour") + "\n".join(lines) + "\n", encoding="ascii",
-    )
-
-
-def _write_boundary(poly_dir: Path, patches: list[dict]) -> None:
-    lines = [str(len(patches)), "("]
-    for p in patches:
-        lines.append(f"    {p['name']}")
-        lines.append("    {")
-        lines.append(f"        type            {p['type']};")
-        lines.append(f"        nFaces          {p['nFaces']};")
-        lines.append(f"        startFace       {p['startFace']};")
-        lines.append("    }")
-    lines.append(")")
-    (poly_dir / "boundary").write_text(
-        _of_header("polyBoundaryMesh", "boundary") + "\n".join(lines) + "\n", encoding="ascii",
-    )
