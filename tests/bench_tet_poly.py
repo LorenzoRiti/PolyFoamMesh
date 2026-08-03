@@ -10,9 +10,11 @@ input (GMSH is non-deterministic — a re-mesh would invalidate the comparison).
 Usage::
 
     python tests/bench_tet_poly.py ref1                 # dual, reuse C:\\polybench
-    python tests/bench_tet_poly.py valve1 --conv both   # dual + terminal
     python tests/bench_tet_poly.py ref1 --conv dual --json out.json
     python tests/bench_tet_poly.py ref1 --conv dual --repeat 3   # stability
+
+Only the barycentric-dual converter is benchmarked here: the merge-based
+terminal-face converter is retired and has been removed from this harness.
 
 Supported cases (must exist in C:\\polybench with a tet backup, or be built
 with --geom): ref1..ref3, valve1, valve2, smoke.
@@ -175,26 +177,8 @@ def run_dual(case_dir: Path) -> dict:
     }
 
 
-def run_terminal(case_dir: Path) -> dict:
-    from cfmesh_autogui.core.terminal_face import TerminalFaceConverter
-
-    t0 = time.monotonic()
-    r = TerminalFaceConverter(case_dir).run()
-    return {
-        "success": r.success,
-        "tets_in": r.n_tets_before,
-        "cells_out": r.n_cells_after,
-        "coverage_pct": round(100.0 * r.n_polyhedra / max(r.n_cells_after, 1), 1),
-        "converter_s": round(time.monotonic() - t0, 2),
-        "converter_errors": r.errors,
-        "internal_faces": 0,
-        "boundary_faces": 0,
-    }
-
-
 CONVERTERS = {
     "dual": run_dual,
-    "terminal": run_terminal,
 }
 
 
@@ -238,7 +222,8 @@ def print_table(rows: list[dict]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("case", help="case name (ref1/ref2/ref3/valve1/valve2/smoke)")
-    ap.add_argument("--conv", default="dual", choices=["dual", "terminal", "both"])
+    ap.add_argument("--conv", default="dual", choices=["dual"],
+                    help="converter to run (the terminal-face converter is retired)")
     ap.add_argument("--json", type=Path, default=None, help="write results as JSON")
     ap.add_argument("--repeat", type=int, default=1, help="conversion repeats (stability)")
     ap.add_argument("--reuse", action="store_true", help="use existing C:\\polybench case")
@@ -257,7 +242,7 @@ def main() -> None:
 
     cfg = OFConfig()
     rows: list[dict] = []
-    convs = ["dual", "terminal"] if args.conv == "both" else [args.conv]
+    convs = [args.conv]
     for rpt in range(args.repeat):
         for conv in convs:
             case = prepare_case(args.case, tet_backup_of(args.case), f"{args.tag}{rpt}")

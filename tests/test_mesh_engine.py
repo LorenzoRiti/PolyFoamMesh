@@ -21,7 +21,9 @@ def test_meshing_algorithm_enum():
     assert MeshingAlgorithm.TETRAHEDRAL.value == "Tetrahedral"
     assert MeshingAlgorithm.SNAPPY_HEX_MESH.value == "SnappyHexMesh"
     assert MeshingAlgorithm.MMG_ADAPTATION.value == "MmgAdaptation"
-    assert len(MeshingAlgorithm) == 9
+    # +1: NATIVE_POLY (experimental native cut-cell -> dual, Fasi 1-3)
+    assert MeshingAlgorithm.NATIVE_POLY.value == "NativePoly"
+    assert len(MeshingAlgorithm) == 10
 
 
 def test_algorithm_info_all_present():
@@ -260,6 +262,21 @@ def test_adaptive_thresholds_defined():
         assert _mod.ADAPTIVE_THRESHOLDS[key] > 0
 
 
+def test_keep_hex_decision_is_visible():
+    """Fase 3 P3.1: a polyDualMesh failure after cartesianMesh must record a
+    visible keep-hex decision (result.warnings + event), never a silent keep."""
+    engine = MeshEngine()
+    result = MeshEngineResult(algorithm="Polyhedral", case_dir="/tmp/case")
+    engine._keep_hex_decision(
+        result, MeshingAlgorithm.POLYHEDRAL,
+        RuntimeError("polyDualMesh failed (exit 1)"),
+        reason="polyDualMesh failed after cartesianMesh — keeping the hex mesh",
+    )
+    assert result.warnings, "keep-hex decision must land in result.warnings"
+    assert "keep" in result.warnings[0].lower()
+    assert "Polyhedral" in result.warnings[0]
+
+
 # ---------------------------------------------------------------------------
 # SnappyHexMesh algorithm info
 # ---------------------------------------------------------------------------
@@ -373,6 +390,7 @@ if __name__ == "__main__":
     test_algorithm_robustness_map()
     test_escalation_ladder()
     test_adaptive_thresholds_defined()
+    test_keep_hex_decision_is_visible()
     test_verification_metrics_score()
     test_verification_metrics_score_with_neg_cells()
     print("ALL PASS")

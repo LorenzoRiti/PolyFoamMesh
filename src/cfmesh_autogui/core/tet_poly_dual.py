@@ -159,6 +159,9 @@ class TetPolyDualConverter:
         smooth: bool = True,
         smooth_iters: int = 3,
         smooth_relax: float = 0.5,
+        fix_nonplanar_faces: str = "none",
+        planarity_rel_tol: float = 1e-6,
+        planarize_iters: int = 20,
     ):
         """
         median_faces
@@ -210,6 +213,36 @@ class TetPolyDualConverter:
             non-positive.
         smooth_relax
             Laplacian relaxation factor in (0, 1]; 0.5 is a safe default.
+        fix_nonplanar_faces
+            "none" (default): output is byte-identical to the unfixed
+                  converter.  The dual's internal faces are rings of tet
+                  centroids around each primal edge and are generally NOT
+                  planar; OpenFOAM assumes planar faces, so centroids and
+                  normals are slightly off (worse non-orthogonality and
+                  skewness).  The boundary faces are planar quads by
+                  construction, so this only concerns the internal faces.
+            "triangulate": replace every non-planar face by a fan of
+                  triangles from its centroid (the cfMesh approach).
+                  Geometry-exact: the fan tiles the face's area vector
+                  exactly, so TOTAL volume, closure and orientation are
+                  preserved to machine precision (per-cell volumes shift
+                  only where a warped face is split) and cells stay
+                  polyhedral.
+            "planarize": project the vertices of non-planar faces onto
+                  their Newell planes (interior vertices only — boundary
+                  vertices are pinned because the dual boundary is an exact
+                  subdivision of the input surface).  Keep-best against the
+                  in-process checkMesh replica: a pass is kept only if the
+                  defect count does not increase and planarity improves, so
+                  the written mesh is never worse than the unfixed one.
+            A face counts as non-planar when its max vertex deviation from
+            the Newell plane exceeds `planarity_rel_tol` times the mesh
+            bounding-box diagonal (same criterion as `planarity_report`).
+        planarity_rel_tol
+            Relative planarity threshold shared by the fix and the
+            measurement tool (default 1e-6 of the bounding-box diagonal).
+        planarize_iters
+            Max projection passes for fix_nonplanar_faces="planarize".
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -222,6 +255,18 @@ class TetPolyDualConverter:
         self._smooth = bool(smooth)
         self._smooth_iters = int(smooth_iters)
         self._smooth_relax = float(smooth_relax)
+        if fix_nonplanar_faces not in ("none", "triangulate", "planarize"):
+            raise ValueError(
+                f"fix_nonplanar_faces must be 'none', 'triangulate' or 'planarize', "
+                f"got {fix_nonplanar_faces!r}"
+            )
+        if not 0.0 < planarity_rel_tol:
+            raise ValueError(
+                f"planarity_rel_tol must be > 0, got {planarity_rel_tol!r}"
+            )
+        self._fix_nonplanar_faces = fix_nonplanar_faces
+        self._planarity_rel_tol = float(planarity_rel_tol)
+        self._planarize_iters = int(planarize_iters)
 
     # ------------------------------------------------------------------
     # helpers
@@ -396,6 +441,32 @@ class TetPolyDualConverter:
                     f"{counts['pyramid']}/{counts['non_ortho']}/{counts['skew']} "
                     f"[{time.monotonic() - t:.1f}s]"
                 )
+
+        # Optional non-planar-face fix (default "none": output unchanged —
+        # the only effect when the flag is off is that `planarity_report`
+        # below would report the same numbers as before this converter ran).
+        if self._fix_nonplanar_faces != "none":
+            self._check_cancel()
+            self._apply_nonplanar_fix(M)
+            res.n_internal_faces = M.n_int
+            res.n_boundary_faces = len(M.faces) - M.n_int
+            # re-score with the in-process checkMesh replica so the logged
+            # and returned defect counts reflect the fixed mesh, and refresh
+            # M.sf/M.cf so _validate uses the geometry it validates.
+            sf, cf = _face_geometry(M.points, M.faces)
+            M.sf, M.cf = sf, cf
+            ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+            _, counts = _detect_defects(
+                M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int, M.n_cells,
+            )
+            total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+            res.residual_defects = int(total)
+            res.defect_breakdown = dict(counts)
+            self._log(
+                f"[poly 7/9] after non-planar fix: {counts['pyramid']} inverted "
+                f"face pyramids, {counts['non_ortho']} non-orthogonality errors, "
+                f"{counts['skew']} skewness errors"
+            )
 
         t = time.monotonic()
         self._validate(res, M, P)
@@ -656,6 +727,8 @@ class TetPolyDualConverter:
         # ---- internal dual faces, one run per primal edge ---------------
         heartbeat = max(1, P.n_edges // 8)
         for ei in range(P.n_edges):
+            if ei % 32768 == 0:
+                time.sleep(0)  # release the GIL — the Qt UI thread starves otherwise
             if ei and ei % heartbeat == 0:
                 self._check_cancel()
                 self._log(f"[poly 5/9] internal dual faces {ei:,}/{P.n_edges:,}")
@@ -834,6 +907,8 @@ class TetPolyDualConverter:
         pob_l = P.patch_of_bnd.tolist()
         fe_all = P.face_edge
         for bi in range(P.n_bnd):
+            if bi % 4096 == 0:
+                time.sleep(0)  # release the GIL during boundary face emission
             f = P.n_int_primal + bi
             t1 = owner_l[f]
             vs = bnd_tri_l[bi]
@@ -934,6 +1009,128 @@ class TetPolyDualConverter:
             if g:
                 new[v] = g
         return new
+
+    # ------------------------------------------------------------------
+    # optional non-planar-face fix (off by default — see fix_nonplanar_faces)
+    # ------------------------------------------------------------------
+
+    def _apply_nonplanar_fix(self, M) -> None:
+        """Fix internal faces whose vertices deviate from their Newell plane
+        beyond the tolerance, in place on the assembled dual `M`.
+
+        Only faces flagged by the same criterion `planarity_report` uses are
+        touched; everything else is copied through unchanged.  The default
+        "none" never reaches this method.
+        """
+        _, _, dev = _face_planarity(M.points, M.faces)
+        bbox_diag = float(np.linalg.norm(M.points.max(axis=0) - M.points.min(axis=0)))
+        tol = self._planarity_rel_tol * max(bbox_diag, 1e-300)
+        bad = np.flatnonzero(dev > tol)
+        n_bad = int(len(bad))
+        n_int_bad = int(np.count_nonzero(bad < M.n_int))
+        self._log(
+            f"[poly 7/9] non-planar faces: {n_bad:,} beyond tol={tol:.3e} "
+            f"({n_int_bad:,} internal, {n_bad - n_int_bad:,} boundary)"
+        )
+        if n_bad == 0:
+            return
+        if self._fix_nonplanar_faces == "triangulate":
+            self._triangulate_nonplanar(M, bad, tol)
+        else:  # "planarize"
+            self._planarize_nonplanar(M, bad, tol)
+
+    def _triangulate_nonplanar(self, M, bad, tol) -> None:
+        """Fan-triangulate every non-planar face from its centroid.
+
+        New centroid points are appended to the point list.  The fan of a
+        face tiles its area vector exactly (the centroid terms telescope), so
+        TOTAL volume, closure and owner->neighbour orientation are preserved
+        to machine precision (per-cell volumes shift only where a warped face
+        is split) and the cells stay polyhedral — this is the cfMesh
+        approach.  Boundary faces are handled too (they are planar by
+        construction, so in practice only internal faces get triangulated).
+        """
+        faces = M.faces
+        n_int = M.n_int
+        n_old = len(M.points)
+        _, cf_all = _face_geometry(M.points, faces)
+        new_points = np.vstack([M.points, cf_all[bad]])
+        pos_of = {int(i): int(np.searchsorted(bad, i)) for i in bad}
+        out_faces: list[list[int]] = []
+        out_own: list[int] = []
+        out_nb: list[int] = []
+        n_added = 0
+        for i in range(n_int):
+            if i % 8192 == 0:
+                time.sleep(0)  # release the GIL during face-split repair
+            f = faces[i]
+            c = pos_of.get(i)
+            if c is None:
+                out_faces.append(f)
+                out_own.append(int(M.owner[i]))
+                out_nb.append(int(M.neigh[i]))
+            else:
+                cpt = n_old + c
+                k = len(f)
+                for j in range(k):
+                    out_faces.append([f[j], f[(j + 1) % k], cpt])
+                    out_own.append(int(M.owner[i]))
+                    out_nb.append(int(M.neigh[i]))
+                n_added += k - 1
+        new_n_int = n_int + n_added
+        new_patches: list[dict] = []
+        start = new_n_int
+        for p in M.patches:
+            k_total = 0
+            for i in range(int(p["startFace"]), int(p["startFace"]) + int(p["nFaces"])):
+                f = faces[i]
+                c = pos_of.get(i)
+                if c is None:
+                    out_faces.append(f)
+                    out_own.append(int(M.owner[i]))
+                    k_total += 1
+                else:
+                    cpt = n_old + c
+                    k = len(f)
+                    for j in range(k):
+                        out_faces.append([f[j], f[(j + 1) % k], cpt])
+                        out_own.append(int(M.owner[i]))
+                    k_total += k
+            new_patches.append({
+                "name": p["name"], "type": p.get("type", "patch"),
+                "nFaces": k_total, "startFace": start,
+            })
+            start += k_total
+        M.points = new_points
+        M.faces = out_faces
+        M.owner = np.array(out_own, dtype=np.int64)
+        M.neigh = np.array(out_nb, dtype=np.int64)
+        M.n_int = new_n_int
+        M.patches = new_patches
+        self._log(
+            f"[poly 7/9] triangulated {len(pos_of):,} non-planar faces "
+            f"({len(out_faces) - len(faces):,} extra faces, "
+            f"{len(new_points) - n_old:,} new centroid points)"
+        )
+
+    def _planarize_nonplanar(self, M, bad, tol) -> None:
+        """Project the vertices of non-planar faces onto their Newell planes,
+        keep-best against the defect detector (never writes a worse mesh).
+
+        Only interior vertices move: a vertex that belongs to any boundary
+        face is pinned, because the dual boundary is an exact subdivision of
+        the input surface and must stay on it.
+        """
+        pts = _planarize(
+            M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
+            bad.tolist(), tol,
+            iterations=self._planarize_iters,
+            log=self._log,
+        )
+        if pts is not M.points:
+            moved = int(np.count_nonzero(np.linalg.norm(pts - M.points, axis=1) > 1e-300))
+            M.points = pts
+            self._log(f"[poly 7/9] planarize applied ({moved:,} vertices moved)")
 
     # ------------------------------------------------------------------
     # topology + geometry invariants, checked before anything is written
@@ -1564,4 +1761,341 @@ def _face_extent(points, faces, cf, sv, n_int):
         rel = points[v] - cf[idx][:, None, :]
         out[idx] = np.abs((rel * hat[idx][:, None, :]).sum(axis=2)).max(axis=1)
     return out
+
+
+# ---------------------------------------------------------------------------
+# non-planarity measurement and fix (see planarity_report / fix_nonplanar_faces)
+# ---------------------------------------------------------------------------
+
+def _face_planarity(points: np.ndarray, faces: list[list[int]], idx=None):
+    """Newell plane and worst vertex deviation for each face.
+
+    Returns ``(normal, centroid, dev)`` arrays, one entry per face in `idx`
+    (default: every face):
+
+      normal    the face's Newell area vector (unnormalised, 2*area for a
+                planar polygon — same direction as `_newell`).
+      centroid  the polygon's vertex mean (the plane anchor).
+      dev       max over the face's vertices of ``|normal . (v - centroid)| /
+                |normal|`` — the worst distance of a vertex from the Newell
+                plane, in absolute length units.
+
+    Degenerate (zero-area) faces get a NaN normal and +inf deviation, so
+    they are always flagged by any threshold and never divide by zero.
+    Vectorised by face-size bucket like `_face_geometry`.
+    """
+    n_sel = len(faces) if idx is None else len(idx)
+    if n_sel == 0:
+        return (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
+    if idx is None:
+        idx = np.arange(n_sel)
+    idx = np.asarray(idx, dtype=np.int64)
+    sizes = np.fromiter((len(faces[i]) for i in idx), dtype=np.int64, count=n_sel)
+    normal = np.full((n_sel, 3), np.nan, dtype=np.float64)
+    centroid = np.zeros((n_sel, 3), dtype=np.float64)
+    dev = np.full(n_sel, np.inf, dtype=np.float64)
+    for k in np.unique(sizes):
+        sel = np.flatnonzero(sizes == k)
+        fids = idx[sel]
+        v = np.array([faces[i] for i in fids], dtype=np.int64)
+        p = points[v]                                # (m, k, 3)
+        nv = np.cross(p, np.roll(p, -1, axis=1)).sum(axis=1)   # 2*Newell
+        c = p.mean(axis=1)                           # (m, 3)
+        mag = np.linalg.norm(nv, axis=1)
+        good = mag > 0.0
+        normal[sel[good]] = nv[good]
+        centroid[sel] = c
+        d = np.zeros(len(sel), dtype=np.float64)
+        if np.any(good):
+            dot = ((p[good] - c[good][:, None, :]) * nv[good][:, None, :]).sum(axis=2)
+            d[good] = np.abs(dot).max(axis=1) / mag[good]
+        dev[sel] = np.where(good, d, np.inf)
+    return normal, centroid, dev
+
+
+def _project_once(points, faces, n_int, bad, boundary):
+    """One planarize pass: move every interior vertex of a non-planar face
+    toward the average of its projections onto the incident faces' Newell
+    planes.  Boundary vertices are pinned (the dual boundary is an exact
+    subdivision of the input surface).  Returns new points."""
+    out = points.copy()
+    nrm, ctr = _face_planarity(points, faces, bad)[:2]
+    mag = np.linalg.norm(nrm, axis=1)
+    good = mag > 0.0
+    hat = np.zeros_like(nrm)
+    hat[good] = nrm[good] / mag[good][:, None]
+    acc = np.zeros_like(points)
+    cnt = np.zeros(len(points))
+    for fi, f in enumerate(bad):
+        if not good[fi]:
+            continue
+        h = hat[fi]
+        c = ctr[fi]
+        verts = np.asarray(faces[f], dtype=np.int64)
+        movable = ~boundary[verts]
+        if not movable.any():
+            continue
+        delta = -(((points[verts] - c) @ h)[:, None]) * h   # projection shift
+        np.add.at(acc, verts[movable], delta[movable])
+        cnt[verts[movable]] += 1
+    move = cnt > 0
+    out[move] = points[move] + acc[move] / cnt[move][:, None]
+    return out
+
+
+def _planarize(
+    points,
+    faces,
+    owner,
+    neigh,
+    n_int,
+    n_cells,
+    bad,
+    tol,
+    iterations: int = 20,
+    log=None,
+) -> np.ndarray:
+    """Keep-best planarization of non-planar faces (fix_nonplanar_faces
+    "planarize"), mirroring the P1 poly smoother's contract: a pass is
+    accepted only if the in-process checkMesh replica's defect count does not
+    increase AND the summed planarity deviation decreases, and no cell volume
+    turns non-positive.  Returns the best points seen — never worse than the
+    input, so the written mesh is never regressed.
+    """
+    if iterations <= 0 or not bad:
+        return points
+    boundary = np.zeros(len(points), dtype=bool)
+    for f in faces[n_int:]:
+        boundary[f] = True
+
+    def planarity_sum(pts: np.ndarray) -> float:
+        # Sum of the max-vertex deviation over the faces flagged as
+        # non-planar.  The keep-best safety net is the defect detector (see
+        # below): a pass may trade a little planarity on neighbouring faces
+        # for a lot on the bad ones, but it may never increase the in-process
+        # checkMesh defect count nor turn a cell volume non-positive.
+        d = _face_planarity(pts, faces, bad)[2]
+        m = np.isfinite(d)
+        return float(d[m].sum()) if np.any(m) else float("inf")
+
+    def score(pts):
+        sf, cf = _face_geometry(pts, faces)
+        ctr, vol = _cell_centres(sf, cf, owner, neigh, n_int, n_cells)
+        _, counts = _detect_defects(pts, faces, sf, cf, ctr, owner, neigh, n_int, n_cells)
+        return counts, vol
+
+    counts0, _ = score(points)
+    best_total = counts0["pyramid"] + counts0["non_ortho"] + counts0["skew"]
+    best_pdev = planarity_sum(points)
+    best = points
+    cur = points
+    for it in range(1, iterations + 1):
+        cand = _project_once(cur, faces, n_int, bad, boundary)
+        counts, vol = score(cand)
+        if np.any(vol <= 0.0):
+            if log:
+                log(f"[poly 7/9] planarize iter {it}: rejected (non-positive cell volume)")
+            break
+        total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+        pdev = planarity_sum(cand)
+        if log:
+            log(
+                f"[poly 7/9] planarize iter {it}: defects "
+                f"{counts['pyramid']}/{counts['non_ortho']}/{counts['skew']} "
+                f"(total {total}), planarity sum {pdev:.3e} "
+                f"(was {planarity_sum(cur):.3e})"
+            )
+        if (
+            (total < best_total and pdev <= best_pdev)
+            or (total == best_total and pdev < best_pdev)
+        ):
+            gain = best_pdev - pdev
+            best, best_total, best_pdev = cand, total, pdev
+            cur = cand
+            if total == 0 and pdev == 0.0:
+                break
+            # stop when the remaining gain per pass is negligible
+            if gain < 1e-3 * max(best_pdev + gain, 1e-300):
+                break
+        else:
+            # regressed (defects or planarity) or made no progress — stop,
+            # keep the previous best
+            break
+    return best
+
+
+def planarity_report(
+    points: np.ndarray,
+    faces: list[list[int]],
+    owner=None,
+    neigh=None,
+    n_int=None,
+    rel_tol: float = 1e-6,
+    top_k: int = 20,
+) -> dict:
+    """Measure face planarity of a polyhedral mesh (the dual, or any polyMesh).
+
+    For every face the max deviation of its vertices from the face's Newell
+    plane is computed (see `_face_planarity`); a face counts as non-planar
+    when that deviation exceeds ``rel_tol * bbox_diag``.  Returns a dict:
+
+        n_faces, bbox_diag, rel_tol, tolerance,
+        n_nonplanar, pct_nonplanar,
+        max_dev / mean_dev / p90_dev   (distribution of per-face max
+                                        deviation, absolute length units),
+        max_rel_dev                    (max_dev / bbox_diag),
+        n_degenerate                   (zero-area faces, flagged separately),
+        n_nonplanar_internal / n_nonplanar_boundary  (when n_int/owner given),
+        worst_faces                    [(face_index, deviation), ...] top_k.
+
+    `points` may be an (N,3) float array; `faces` a list of vertex-index
+    lists.  This is the metric the ``fix_nonplanar_faces`` option of
+    `TetPolyDualConverter` uses to decide which faces to fix.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    n_faces = len(faces)
+    if n_faces == 0:
+        raise ValueError("planarity_report: mesh has no faces")
+    bbox_diag = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+    tol = rel_tol * max(bbox_diag, 1e-300)
+    _, _, dev = _face_planarity(points, faces)
+    finite = np.isfinite(dev)
+    n_degenerate = int(np.count_nonzero(~finite))
+    n_nonplanar = int(np.count_nonzero(dev > tol))
+    out: dict = {
+        "n_faces": n_faces,
+        "bbox_diag": bbox_diag,
+        "rel_tol": float(rel_tol),
+        "tolerance": tol,
+        "n_nonplanar": n_nonplanar,
+        "pct_nonplanar": 100.0 * n_nonplanar / max(n_faces, 1),
+        "n_degenerate": n_degenerate,
+        "max_dev": float(dev[finite].max()) if np.any(finite) else float("inf"),
+        "mean_dev": float(dev[finite].mean()) if np.any(finite) else float("inf"),
+        "sum_dev": float(dev[finite].sum()) if np.any(finite) else float("inf"),
+        "p90_dev": float(np.percentile(dev[finite], 90)) if np.any(finite) else float("inf"),
+        "max_rel_dev": (
+            float(dev[finite].max() / max(bbox_diag, 1e-300))
+            if np.any(finite) else float("inf")
+        ),
+        "worst_faces": [],
+    }
+    if n_int is not None and owner is not None:
+        n_int = int(n_int)
+        out["n_nonplanar_internal"] = int(np.count_nonzero(dev[:n_int] > tol))
+        out["n_nonplanar_boundary"] = int(np.count_nonzero(dev[n_int:] > tol))
+    order = np.argsort(-dev)
+    for i in order[:top_k]:
+        if not np.isfinite(dev[i]):
+            break
+        out["worst_faces"].append((int(i), float(dev[i])))
+    return out
+
+
+def _print_planarity_report(rep: dict, label: str = "") -> None:
+    """Human-readable rendering of `planarity_report`'s dict."""
+    if label:
+        print(f"\n=== non-planarity report: {label} ===")
+    else:
+        print("\n=== non-planarity report ===")
+    print(f"faces          {rep['n_faces']:,}")
+    print(f"bbox diagonal  {rep['bbox_diag']:.6e}")
+    print(f"threshold      dev > {rep['tolerance']:.3e}  "
+          f"(rel_tol {rep['rel_tol']:.1e} x bbox_diag)")
+    print(
+        f"non-planar     {rep['n_nonplanar']:,} / {rep['n_faces']:,} "
+        f"({rep['pct_nonplanar']:.3f}%)"
+    )
+    if "n_nonplanar_internal" in rep:
+        print(
+            f"  internal     {rep['n_nonplanar_internal']:,}   "
+            f"boundary {rep['n_nonplanar_boundary']:,}"
+        )
+    print(
+        f"max dev        {rep['max_dev']:.6e}   "
+        f"mean {rep['mean_dev']:.6e}   p90 {rep['p90_dev']:.6e}"
+    )
+    print(f"sum dev        {rep.get('sum_dev', float('nan')):.6e}")
+    print(f"max dev / bbox {rep['max_rel_dev']:.6e}")
+    if rep["n_degenerate"]:
+        print(f"degenerate     {rep['n_degenerate']:,} (zero-area faces)")
+    print("worst faces (index: deviation):")
+    for i, d in rep["worst_faces"]:
+        print(f"  {i:>10,}: {d:.6e}")
+
+
+def main(argv=None) -> int:
+    """CLI entry point.
+
+        python -m cfmesh_autogui.core.tet_poly_dual --planarity <case_dir>
+
+    reads ``<case_dir>/constant/polyMesh`` and prints the non-planarity
+    report.  ``--convert`` instead runs the tet->poly conversion (optionally
+    with a non-planar face fix) and prints the report before and after.
+    """
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        prog="python -m cfmesh_autogui.core.tet_poly_dual",
+        description=__doc__.splitlines()[0],
+    )
+    ap.add_argument("--planarity", type=Path, default=None,
+                    help="OpenFOAM case dir with constant/polyMesh to measure")
+    ap.add_argument("--convert", type=Path, default=None,
+                    help="tet case dir to convert, then measure before/after")
+    ap.add_argument("--fix", choices=["none", "triangulate", "planarize"],
+                    default="none", help="non-planar face fix to apply (--convert only)")
+    ap.add_argument("--rel-tol", type=float, default=1e-6,
+                    help="planarity threshold as fraction of the bbox diagonal")
+    ap.add_argument("--top-k", type=int, default=20, help="worst faces to print")
+    a = ap.parse_args(argv)
+
+    if a.planarity is None and a.convert is None:
+        ap.print_help()
+        return 2
+
+    if a.planarity is not None:
+        poly = a.planarity / "constant" / "polyMesh"
+        if not (poly / "owner").exists():
+            print(f"error: {poly} does not look like an OpenFOAM polyMesh")
+            return 2
+        points, faces, owner, neigh, _ = foam_mesh_io.read_polymesh(poly)
+        rep = planarity_report(points, faces, owner, neigh, len(neigh),
+                               rel_tol=a.rel_tol, top_k=a.top_k)
+        _print_planarity_report(rep, str(a.planarity))
+        return 0
+
+    case = a.convert.resolve()
+    poly = case / "constant" / "polyMesh"
+    if not (poly / "owner").exists():
+        print(f"error: {poly} does not look like an OpenFOAM polyMesh")
+        return 2
+    points, faces, owner, neigh, _ = foam_mesh_io.read_polymesh(poly)
+    rep_before = planarity_report(points, faces, owner, neigh, len(neigh),
+                                  rel_tol=a.rel_tol, top_k=a.top_k)
+    _print_planarity_report(rep_before, f"{case} (input tet mesh)")
+
+    conv = TetPolyDualConverter(case, log=lambda m: print(m, flush=True),
+                                fix_nonplanar_faces=a.fix,
+                                planarity_rel_tol=a.rel_tol)
+    res = conv.run()
+    print("")
+    if not res.success:
+        print("CONVERSION FAILED — the original polyMesh was left untouched:")
+        for e in res.errors:
+            print(f"  {e}")
+        return 1
+    print(f"cells          {res.n_tets_before:,} tetrahedra -> "
+          f"{res.n_cells_after:,} polyhedra (fix={a.fix!r})")
+    print(f"predicted defects: {res.defect_breakdown}")
+
+    points, faces, owner, neigh, _ = foam_mesh_io.read_polymesh(poly)
+    rep_after = planarity_report(points, faces, owner, neigh, len(neigh),
+                                 rel_tol=a.rel_tol, top_k=a.top_k)
+    _print_planarity_report(rep_after, f"{case} (converted dual, fix={a.fix!r})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 

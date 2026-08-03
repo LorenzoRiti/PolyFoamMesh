@@ -32,6 +32,8 @@ from cfmesh_autogui.core.tet_poly_dual import (
     _cell_centres,
     _detect_defects,
     _face_geometry,
+    main as tet_poly_dual_main,
+    planarity_report,
 )
 
 FIXDIR = Path(__file__).resolve().parent / "fixtures"
@@ -246,11 +248,15 @@ def test_write_failure_rollback(tmp_path):
     def boom(*a, **k):
         raise RuntimeError("simulated write failure")
 
+    # Save the original reference BEFORE patching: restoring via `fio.write_faces`
+    # after replacing the module attribute would re-read the patched boom and leak
+    # it to every later test in the session.
+    original_write_faces = _fio.write_faces
     _fio.write_faces = boom
     try:
         res = _run_dual(case)
     finally:
-        _fio.write_faces = fio.write_faces
+        _fio.write_faces = original_write_faces
     assert not res.success
     # original polyMesh untouched (atomic temp-dir write)
     for name, data in original.items():
@@ -300,3 +306,190 @@ def test_detect_defects_matches_recorded_checkmesh(expected):
     txt = (FIXDIR / "valve_dual_checkmesh.txt").read_text(encoding="utf-8")
     pyr = re.search(r"Error in face pyramids:\s*(\d+)", txt)
     assert pyr and int(pyr.group(1)) == counts["pyramid"]
+
+# ---------------------------------------------------------------------------
+# non-planarity measurement and optional fix (planarity_report /
+# fix_nonplanar_faces).  The perturbed cube is the "known non-planar mesh":
+# its dual rings (one per primal edge) are genuinely non-planar, its boundary
+# quads are planar by construction, and its total volume is exactly 1.
+# ---------------------------------------------------------------------------
+
+def _perturbed_cube():
+    """Unit cube [0,1]^3 split into 12 tets with an off-centre apex o.
+
+    The apex sits outside the symmetric centre, so the dual rings around the
+    (corner, apex) primal edges are genuinely non-planar while every boundary
+    quad stays planar.  Total domain volume == 1.0.
+    """
+    c = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+    ], dtype=float)
+    pts = np.vstack([c, np.array([0.5, 0.55, 0.45])])
+    faces2d = [
+        [0, 1, 2, 3], [0, 4, 5, 1], [1, 5, 6, 2],
+        [2, 6, 7, 3], [3, 7, 4, 0], [4, 7, 6, 5],
+    ]
+    tets = []
+    for f in faces2d:
+        for tri in ((f[0], f[1], f[2]), (f[0], f[2], f[3])):
+            tets.append([tri[0], tri[1], tri[2], 8])
+    return pts, tets
+
+
+def _read_dual_planarity(case_dir: Path) -> dict:
+    pts, faces, owner, neigh, _ = fio.read_polymesh(case_dir / "constant" / "polyMesh")
+    return planarity_report(pts, faces, owner, neigh, len(neigh))
+
+
+def test_planarity_report_single_tet_all_planar(tmp_path):
+    # a single tet's dual faces are 4-point rings [mid, fc(T1), c, fc(T2)]
+    # which are coplanar by construction (the tet centroid is an affine
+    # combination of the three boundary points) — nothing to flag
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    case = build_tet_case(tmp_path, pts, [[0, 1, 2, 3]])
+    _run_dual(case)
+    rep = _read_dual_planarity(case)
+    assert rep["n_faces"] == 18
+    assert rep["n_nonplanar"] == 0
+    assert rep["max_dev"] < 1e-9
+    assert rep["n_degenerate"] == 0
+    assert rep["n_nonplanar_internal"] == 0
+    assert rep["n_nonplanar_boundary"] == 0
+    # worst_faces lists the top-k deviations regardless of the threshold —
+    # here they are all pure floating-point noise
+    assert rep["worst_faces"]
+    assert all(d < 1e-9 for _, d in rep["worst_faces"])
+
+
+def test_planarity_report_flags_nonplanar_rings(tmp_path):
+    # two tets sharing the face (0,1,2): the dual rings around the shared
+    # edges run through 6 points (two tet centroids + the internal-face
+    # centroid + three boundary points) and are NOT coplanar
+    pts = np.array([
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1],
+    ], dtype=float)
+    case = build_tet_case(tmp_path, pts, [[0, 1, 2, 3], [0, 1, 2, 4]])
+    _run_dual(case)
+    rep = _read_dual_planarity(case)
+    assert rep["n_nonplanar"] == 2
+    assert rep["n_nonplanar_internal"] == 2
+    assert rep["n_nonplanar_boundary"] == 0
+    assert rep["max_dev"] > 1e-3
+    # worst-faces list is sorted descending
+    devs = [d for _, d in rep["worst_faces"]]
+    assert devs == sorted(devs, reverse=True)
+    # tolerance math
+    assert rep["tolerance"] == pytest.approx(rep["rel_tol"] * rep["bbox_diag"])
+
+
+def test_planarity_report_perturbed_cube(tmp_path):
+    pts, tets = _perturbed_cube()
+    case = build_tet_case(tmp_path, pts, tets)
+    res = _run_dual(case)
+    assert res.success, res.errors
+    rep = _read_dual_planarity(case)
+    assert rep["n_nonplanar"] > 0, rep
+    assert rep["pct_nonplanar"] == pytest.approx(
+        100.0 * rep["n_nonplanar"] / rep["n_faces"]
+    )
+    # boundary quads are planar by construction — all flagged faces are internal
+    assert rep["n_nonplanar_boundary"] == 0
+    assert rep["n_nonplanar_internal"] == rep["n_nonplanar"]
+    assert rep["max_dev"] > 1e-2  # clearly non-planar
+    # a looser threshold flags fewer faces
+    pts2, faces, owner, neigh, _ = fio.read_polymesh(case / "constant" / "polyMesh")
+    rep2 = planarity_report(pts2, faces, owner, neigh, len(neigh), rel_tol=1e-2)
+    assert rep2["n_nonplanar"] <= rep["n_nonplanar"]
+
+
+def test_fix_triangulate_eliminates_nonplanar_faces(tmp_path):
+    # the cfMesh approach: fan-triangulate every non-planar face from its
+    # centroid.  Triangles are planar by construction, cell volumes/closure/
+    # orientation are preserved (the fan tiles the face's area vector exactly).
+    pts, tets = _perturbed_cube()
+    case = build_tet_case(tmp_path, pts, tets)
+    res = TetPolyDualConverter(
+        case, log=lambda m: None, fix_nonplanar_faces="triangulate",
+    ).run()
+    assert res.success, res.errors
+    rep = _read_dual_planarity(case)
+    assert rep["n_nonplanar"] == 0, rep
+    assert rep["max_dev"] < 1e-9
+    # every previously non-planar face is now a triangle (planar faces are
+    # copied through untouched, so the mesh still has quads etc.); the count
+    # grew by sum(k-1) over the 15 non-planar faces (62 -> 122)
+    pts2, faces, owner, neigh, _ = fio.read_polymesh(case / "constant" / "polyMesh")
+    assert len(faces) == 122
+    assert all(len(f) >= 3 for f in faces)
+    # no non-triangular face may be non-planar anymore
+    for f in faces:
+        if len(f) > 3:
+            dev = planarity_report(pts2, [f], rel_tol=0.0)["max_dev"]
+            assert dev < 1e-9, f
+    # cells stay polyhedral (9 cells), volume conserved, nothing regressed
+    # (baseline defects are 0/0/0)
+    assert res.n_cells_after == 9
+    assert abs(res.volume_after - 1.0) < 1e-9
+    assert res.min_cell_volume > 0.0
+    assert res.defect_breakdown["pyramid"] == 0
+    assert res.residual_defects == 0
+
+
+def test_fix_planarize_keep_best_never_regresses(tmp_path):
+    # keep-best contract (same criterion as the P1 poly smoother): the written
+    # mesh is never worse than the unfixed one — defect counts never increase,
+    # volumes stay positive, and the planarity deviation does not get worse.
+    baseline_pts, tets = _perturbed_cube()
+    base_case = build_tet_case(tmp_path / "base", baseline_pts, tets)
+    _run_dual(base_case)
+    base_rep = _read_dual_planarity(base_case)
+
+    fix_case = build_tet_case(tmp_path / "fix", baseline_pts, tets)
+    res = TetPolyDualConverter(
+        fix_case, log=lambda m: None,
+        fix_nonplanar_faces="planarize", planarize_iters=40,
+    ).run()
+    assert res.success, res.errors
+    assert res.n_cells_after == 9
+    assert abs(res.volume_after - 1.0) < 1e-9
+    assert res.min_cell_volume > 0.0
+    # keep-best on the in-process checkMesh replica (baseline is 0/0/0)
+    assert res.residual_defects == 0
+    assert res.defect_breakdown["pyramid"] == 0
+    # planarity never regresses (max vertex deviation not larger than baseline)
+    rep = _read_dual_planarity(fix_case)
+    assert rep["max_dev"] <= base_rep["max_dev"] + 1e-12
+
+
+def test_fix_none_changes_nothing(tmp_path):
+    # fix_nonplanar_faces="none" must leave the output byte-identical to the
+    # default converter, and the fix path must not even run.
+    pts, tets = _perturbed_cube()
+    a = build_tet_case(tmp_path / "a", pts, tets)
+    b = build_tet_case(tmp_path / "b", pts, tets)
+    r_default = _run_dual(a)
+    r_none = TetPolyDualConverter(
+        b, log=lambda m: None, fix_nonplanar_faces="none",
+    ).run()
+    assert r_default.success and r_none.success
+    for name in ("points", "faces", "owner", "neighbour", "boundary"):
+        assert (a / "constant" / "polyMesh" / name).read_bytes() == \
+               (b / "constant" / "polyMesh" / name).read_bytes(), name
+
+
+def test_fix_rejects_unknown_mode():
+    with pytest.raises(ValueError):
+        TetPolyDualConverter(Path("."), fix_nonplanar_faces="explode")
+
+
+def test_planarity_cli_reports(capsys, tmp_path):
+    pts, tets = _perturbed_cube()
+    case = build_tet_case(tmp_path, pts, tets)
+    _run_dual(case)
+    rc = tet_poly_dual_main(["--planarity", str(case), "--top-k", "3"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "non-planarity report" in out
+    assert "non-planar" in out
+    assert "worst faces" in out

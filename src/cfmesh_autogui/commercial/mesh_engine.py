@@ -35,6 +35,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from cfmesh_autogui.core.quality_thresholds import ADAPTIVE_THRESHOLDS
 from cfmesh_autogui.core.validation import validate_case_dir
 from cfmesh_autogui.octopoda_local import octo
 
@@ -51,14 +52,14 @@ class MeshingAlgorithm(Enum):
     SNAPPY_HEX_MESH = "SnappyHexMesh"
     MMG_ADAPTATION = "MmgAdaptation"
     POLY_AGGREGATED = "PolyAggregated"
+    # EXPERIMENTAL: our native cut-cell mesher -> our median dual (100% poly).
+    # Not in ESCALATION_LADDER / ALGORITHM_ROBUSTNESS: never auto-selected,
+    # never silently substituted — the user picks it explicitly.
+    NATIVE_POLY = "NativePoly"
 
 
 # Adaptive quality thresholds for auto-escalation
-ADAPTIVE_THRESHOLDS: dict[str, float] = {
-    "non_ortho_max": 70.0,      # max non-orthogonality in degrees
-    "skewness_max": 0.9,        # max skewness
-    "aspect_ratio_max": 1000.0,  # max aspect ratio
-}
+# (single source of truth: cfmesh_autogui.core.quality_thresholds)
 
 # Escalation ladder: each entry is (algorithm, reason_suffix)
 # AUTOPOLY (scipy-Voronoi CVT) is intentionally excluded — verified
@@ -106,6 +107,16 @@ ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
         "cell_types": "polyhedral",
         "best_for": "mesh poliedrica qualità Star-CCM+, nessun WSL necessario",
         "quality_rank": 2,
+    },
+    MeshingAlgorithm.NATIVE_POLY: {
+        "label": "Native Poly (sperimentale, nativo 100% poly)",
+        "description": "EXPERIMENTAL: cut-cell nativo (algoritmo nostro, puro Python) "
+                       "+ dual mediano -> 100% poly, senza GMSH/cfMesh. Nessun WSL per "
+                       "generare; WSL usato solo dalla validazione checkMesh.",
+        "requires_wsl": False,
+        "cell_types": "polyhedral",
+        "best_for": "prova sperimentale del mesher nativo (Fasi 1-3)",
+        "quality_rank": 5,
     },
     MeshingAlgorithm.POLYHEDRAL: {
         "label": "Polyhedral (cfMesh polyDualMesh)",
@@ -308,12 +319,17 @@ class MeshEngine:
             algo = self._params.algorithm
             escalation_count = 0
             max_steps = self._params.max_escalation_steps if self._params.adaptive_escalation else 0
+            # EXPERIMENTAL meshers are explicit user choices: never silently
+            # substitute them with another algorithm (no escalation on
+            # failure or on quality — a failure must be visible).
+            if algo == MeshingAlgorithm.NATIVE_POLY:
+                max_steps = 0
 
             while escalation_count <= max_steps:
                 # --- Run the current algorithm ---
                 self._escalation_step = escalation_count
                 try:
-                    self._execute_algorithm(algo, case_dir, meshes, geometry_path)
+                    self._execute_algorithm(algo, case_dir, meshes, geometry_path, result)
                 except Exception as exc:
                     logger.warning("Algorithm %s failed: %s", algo.value, exc)
                     if escalation_count < max_steps:
@@ -435,10 +451,13 @@ class MeshEngine:
         self, algo: MeshingAlgorithm,
         case_dir: Path, meshes: list | None,
         geometry_path: str,
+        result: MeshEngineResult | None = None,
     ) -> None:
         """Execute a single algorithm by dispatching to the right implementation."""
         if algo == MeshingAlgorithm.CARTESIAN_HEX:
             self._run_cartesian_hex(case_dir, meshes)
+        elif algo == MeshingAlgorithm.NATIVE_POLY:
+            self._run_native_poly(case_dir, geometry_path, meshes)
         elif algo == MeshingAlgorithm.AUTOPOLY:
             self._run_autopoly(case_dir, geometry_path)
         elif algo == MeshingAlgorithm.POLYHEDRAL:
@@ -446,7 +465,11 @@ class MeshEngine:
             try:
                 self._run_polyhedral(case_dir)
             except (RuntimeError, OSError, subprocess.TimeoutExpired) as poly_exc:
-                logger.warning("polyDualMesh failed, keeping hex mesh: %s", poly_exc)
+                self._keep_hex_decision(
+                    result, algo, poly_exc,
+                    reason="polyDualMesh failed after cartesianMesh — keeping the "
+                    "hex mesh, but the decision is explicit, never silent",
+                )
         elif algo == MeshingAlgorithm.TETRAHEDRAL:
             self._run_tetrahedral(case_dir, geometry_path)
         elif algo == MeshingAlgorithm.HEX_CORE_POLY:
@@ -454,7 +477,11 @@ class MeshEngine:
             try:
                 self._run_polyhedral(case_dir)
             except (RuntimeError, OSError, subprocess.TimeoutExpired) as poly_exc:
-                logger.warning("polyDualMesh failed, keeping hex core mesh: %s", poly_exc)
+                self._keep_hex_decision(
+                    result, algo, poly_exc,
+                    reason="polyDualMesh failed after cartesianMesh — keeping the "
+                    "hex core mesh, but the decision is explicit, never silent",
+                )
         elif algo == MeshingAlgorithm.CARTESIAN_CUT:
             self._run_cartesian_hex(case_dir, meshes)
         elif algo == MeshingAlgorithm.SNAPPY_HEX_MESH:
@@ -465,6 +492,34 @@ class MeshEngine:
             self._run_poly_aggregated(case_dir, geometry_path)
         else:
             raise ValueError(f"Unknown algorithm: {algo}")
+
+    def _keep_hex_decision(
+        self,
+        result: MeshEngineResult | None,
+        algo: MeshingAlgorithm,
+        exc: Exception,
+        reason: str,
+    ) -> None:
+        """Record a keep-hex-after-polyDualMesh-failure decision explicitly.
+
+        Fase 3 P3.1: the old code only wrote a ``logger.warning`` that nobody
+        surfaces — the caller (GUI / headless run) had no way to know the
+        polyhedral conversion silently did not happen. The decision now lands
+        in three visible places: the engine log (distinct prefix), the octo
+        event stream, and ``result.warnings`` so callers can show it.
+        """
+        logger.warning(
+            "[keep-hex] %s: %s (%s)", algo.value, reason, exc,
+        )
+        octo.log_event("mesh_engine", "polyhedral_keep_hex", {
+            "algorithm": algo.value,
+            "error": str(exc),
+            "decision": "keep-hex-with-warning",
+        })
+        if result is not None:
+            result.warnings.append(
+                f"{algo.value}: {reason} ({exc})"
+            )
 
     # ------------------------------------------------------------------
     # Algorithm implementations
@@ -599,6 +654,86 @@ class MeshEngine:
             )
             raise RuntimeError(f"polyDualMesh failed (exit {r.returncode})")
         logger.info("Polyhedral conversion OK (featureAngle=%g)", feature_angle)
+
+    def _run_native_poly(
+        self, case_dir: Path, geometry_path: str,
+        meshes: list | None = None,
+    ) -> None:
+        """EXPERIMENTAL: native cut-cell mesher -> our median dual (100% poly).
+
+        Pipeline (Fasi 1-3, algoritmo nostro, puro Python):
+            CAD tessellation (trimesh) -> NativeMesher (castellated,
+            clean_cells=True so the dual can consume it) -> HexPolyDualConverter
+            -> 100% polyhedral mesh.
+
+        No GMSH, no cfMesh for generation; WSL is used ONLY by the standard
+        checkMesh quality validation that follows in run().
+        """
+        if not meshes:
+            if not geometry_path or not Path(geometry_path).exists():
+                raise FileNotFoundError(f"Geometry not found: {geometry_path}")
+            from cfmesh_autogui.core.geometry import load_geometry
+
+            meshes = load_geometry(geometry_path)
+        if not meshes:
+            raise RuntimeError("NativePoly: no geometry meshes to mesh.")
+
+        from cfmesh_autogui.core.geometry import compute_bbox_dim
+        from cfmesh_autogui.core.hex_poly_dual import HexPolyDualConverter
+        from cfmesh_autogui.core.native_mesher import NativeMesher
+
+        # cell size from the mesh-fineness slider (relative to the bbox)
+        target = {
+            "very_fine": 90, "fine": 60, "medium": 40,
+            "coarse": 25, "very_coarse": 18,
+        }.get(self._params.detail_level, 40)
+        bbox_dim = compute_bbox_dim(meshes)
+        cell = bbox_dim / target
+        logger.info(
+            "NativePoly: cell_size=%.6g (detail=%s, bbox=%.6g), "
+            "clean_cells=True (dual-ready)",
+            cell, self._params.detail_level, bbox_dim,
+        )
+
+        native = NativeMesher(
+            meshes, cell_size=cell, clean_cells=True, log=logger.info,
+        )
+        res = native.run(case_dir)
+        if not res.success:
+            raise RuntimeError(
+                "NativePoly (castellation) failed: " + "; ".join(res.errors)
+            )
+        logger.info(
+            "NativePoly castellation: %d cells (hex %d + cut %d), "
+            "volume %.6g, closure %.1e, defects %s",
+            res.n_cells, res.n_hex_cells, res.n_cut_cells, res.volume,
+            res.max_closure_error, res.defects,
+        )
+
+        dual = HexPolyDualConverter(case_dir, log=logger.info)
+        dres = dual.run()
+        if not dres.success:
+            raise RuntimeError(
+                "NativePoly (dual) failed: " + "; ".join(dres.errors)
+            )
+        logger.info(
+            "NativePoly dual: %d cells (100%% poly), %d internal + %d "
+            "boundary faces, %d points, volume %.6g, defects %s",
+            dres.n_cells_after, dres.n_internal_faces, dres.n_boundary_faces,
+            dres.n_points_after, dres.volume_after, dres.defects,
+        )
+
+        # the 100% poly mesh becomes the case mesh (dual written to
+        # constant/polyMesh_dual; the castellation is kept aside, never lost)
+        import shutil
+
+        mesh_dir = case_dir / "constant" / "polyMesh"
+        dual_dir = case_dir / "constant" / "polyMesh_dual"
+        hex_dir = case_dir / "constant" / "polyMesh_hex_native"
+        shutil.rmtree(hex_dir, ignore_errors=True)
+        if mesh_dir.exists():
+            shutil.move(str(mesh_dir), str(hex_dir))
+        shutil.move(str(dual_dir), str(mesh_dir))
 
     def _run_autopoly(self, case_dir: Path, geometry_path: str) -> None:
         """Run autopoly CVT-based polyhedral meshing."""

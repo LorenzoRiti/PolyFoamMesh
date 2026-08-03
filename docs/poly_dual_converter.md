@@ -179,6 +179,43 @@ python tools/tet_poly_dual_cli.py <case_dir> --check
 It backs the tet mesh up to `constant/polyMesh_tet_backup` first, so the
 conversion is undoable.
 
+## Boundary layers on the poly mesh (`core/bl_poly.py`)
+
+Since the dual needs pure tetrahedra as input, boundary layers used to be
+force-disabled on the "Polyhedral (CFD)" path. That limitation is gone: the
+layers are added AFTER the conversion, by `PolyBoundaryLayerEngine`.
+
+Why this is conforming by construction (the median dual makes it easy): the
+wall faces are planar quads `[a, mid(ab), cent(abc), mid(ca)]`; extruding each
+quad into a prism stack pairs every side face with exactly one neighbouring
+stack (the wall quads share their mid/centroid vertices), and each wall vertex
+moves to ONE last-layer position, so the top surface tiles without gaps or
+overlaps. The interior cell that owned a wall face swaps it for the top face
+and gets its wall-adjacent internal faces' wall vertices moved to the last
+layer — owner/neighbour pairs never change, only positions. The topology
+pattern OpenFOAM accepts (3 faces on wall-adjacent edges) is preserved.
+
+Per-vertex layer heights are clamped (distance to the interior, feature-angle
+fade for concave slivers, smallest incident wall-face edge), windings are
+repaired with a greedy closure pass + a checkMesh-style "face pyramids" pass,
+and the whole result is validated in-process (volume conserved, cells closed,
+all positive volumes) before writing. On failure the mesh is left untouched.
+
+Measured (see `tools/bench_bl_poly_dual.py`): cylinder, GMSH tet (398,745
+tets) -> dual (72,483 poly cells) -> BL (5 layers, 505,950 prism cells) ->
+checkMesh `Mesh OK`, 0 misoriented faces. The cube (9 dual cells -> 108 prism
+cells) also passes `Mesh OK`.
+
+GUI wiring: `DualPolyWorker` accepts `bl_params` (`nLayers`,
+`firstLayerThickness` [m], `thicknessRatio`); the poly path no longer forces
+BL off — when enabled, the worker logs and inserts the layers right after the
+conversion, before checkMesh.
+
+Known limitation: BL is applied to the whole boundary (partial-patch BL would
+create non-manifold seams, so the face set is auto-closed across edges). On
+severely concave-feature geometry (the reference valve) the engine reports a
+clean failure and keeps the mesh without BL.
+
 ## Reproducing
 
 ```bash
@@ -190,3 +227,66 @@ tet backup restored before every conversion so comparisons share one input).
 `TetPolyDualConverter(case_dir, log=print).run()` on any pure-tet OpenFOAM case
 is all the module itself needs; it reads binary or ASCII polyMesh via
 `TerminalFaceConverter`'s readers.
+
+## Non-planarity of the internal dual faces, and the optional fix
+
+The dual's internal faces are rings of tet centroids around each primal edge,
+and those rings are **not planar** in general (only the boundary faces are
+planar quads by construction). OpenFOAM assumes planar faces, so the face
+centre/normal of a warped ring is slightly off — worse non-orthogonality and
+skewness, and artefacts in foamToVTK/ParaView. Measured on real cases
+(threshold `dev > 1e-6 * bbox_diag`, see below):
+
+| case (dual output) | faces | non-planar | max dev / bbox |
+|---|---|---|---|
+| ref1 (block+bore, 47.5k cells) | 398,340 | 55.9% | 4.5e-3 |
+| valve1 (1.0M cells) | 1,241,048 | 58.8% | 3.8e-3 |
+
+autopoly (CVT/Voronoi) does not have this problem — its faces are planar by
+construction — so this concerns only the tet->poly dual path.
+
+### Measuring: `planarity_report`
+
+```python
+from cfmesh_autogui.core.tet_poly_dual import planarity_report
+rep = planarity_report(points, faces, owner, neigh, n_int)  # or a case dir
+```
+
+For every face it computes the max vertex deviation from the face's Newell
+plane (same `_newell` used by the converter's orientation code) and reports
+total faces, non-planar count/percentage (threshold `rel_tol * bbox_diag`,
+default `rel_tol = 1e-6`), max/mean/p90/sum of the per-face deviation, the
+internal/boundary split, and the worst faces for debugging. CLI:
+
+```bash
+python -m cfmesh_autogui.core.tet_poly_dual --planarity <case_dir>
+python -m cfmesh_autogui.core.tet_poly_dual --convert <tet_case_dir> --fix triangulate
+```
+
+### Fixing: `fix_nonplanar_faces` (default `"none"`)
+
+`TetPolyDualConverter(case, fix_nonplanar_faces="triangulate"|"planarize")`.
+
+* **`"triangulate"`** (the cfMesh approach): fan-triangulate every non-planar
+  face from its centroid. The fan tiles the face's area vector *exactly*, so
+  total volume, closure and owner->neighbour orientation are preserved to
+  machine precision (per-cell volumes shift only where a warped face is
+  split) and cells stay polyhedral. After the fix no face is
+  beyond the threshold (verified on the reference case and the unit cube).
+* **`"planarize"`**: project interior vertices of non-planar faces onto their
+  Newell planes (boundary vertices pinned — the dual boundary is an exact
+  subdivision of the input surface), keep-best against the in-process
+  checkMesh replica: a pass is kept only if the defect count does not increase
+  and planarity improves, so the written mesh is never worse. MEASURED:
+  on ref1 it halves the planarity deviation (sum 4.50 -> 2.47, max
+  1.12e-4 -> 5.37e-5, 0 defects before and after) but the *count* of faces
+  over the absolute threshold rises (shared vertices move); on the valve it
+  is a no-op — every pass is rejected by keep-best, which is the safety net
+  doing its job. It cannot zero the deviation of boundary-edge rings, which
+  contain pinned surface vertices. Left in, off by default, measured: it is
+  the honest "smoothing-style" alternative to triangulation, and these are
+  the numbers to beat.
+
+`"none"` (the default) leaves the output **byte-identical** to the pre-fix
+converter (verified by hashing the written polyMesh with and without the
+flag; the fix hook is the only added code path).

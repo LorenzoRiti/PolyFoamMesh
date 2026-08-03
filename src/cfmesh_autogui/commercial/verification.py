@@ -221,6 +221,7 @@ class VerificationSuite:
                 "gmsh_hybrid": MeshingAlgorithm.TETRAHEDRAL,
                 "Polyhedral": MeshingAlgorithm.POLYHEDRAL,
                 "SnappyHexMesh": MeshingAlgorithm.SNAPPY_HEX_MESH,
+                "NativePoly": MeshingAlgorithm.NATIVE_POLY,
             }
             algo = algo_map.get(algo_name, MeshingAlgorithm.CARTESIAN_HEX)
 

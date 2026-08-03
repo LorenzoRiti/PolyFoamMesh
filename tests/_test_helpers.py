@@ -25,13 +25,29 @@ def load_commercial_module(module_name: str) -> types.ModuleType:
     for mod_name, rel_path in [
         ("cfmesh_autogui.octopoda_local", "cfmesh_autogui/octopoda_local.py"),
         ("cfmesh_autogui.config", "cfmesh_autogui/config.py"),
+        ("cfmesh_autogui.core.quality_thresholds", "cfmesh_autogui/core/quality_thresholds.py"),
         ("cfmesh_autogui.core.validation", "cfmesh_autogui/core/validation.py"),
         ("cfmesh_autogui.core.session", "cfmesh_autogui/core/session.py"),
         ("cfmesh_autogui.core.meshdict_gen", "cfmesh_autogui/core/meshdict_gen.py"),
         ("cfmesh_autogui.core.stl_writer", "cfmesh_autogui/core/stl_writer.py"),
         ("cfmesh_autogui.core.of_reader", "cfmesh_autogui/core/of_reader.py"),
         ("cfmesh_autogui.core.boundary_reader", "cfmesh_autogui/core/boundary_reader.py"),
+        # Single polyMesh writer — delegated to by mesh_converter /
+        # poly_aggregator._write_poly_mesh (stdlib-only imports).
+        ("cfmesh_autogui.core.foam_mesh_io", "cfmesh_autogui/core/foam_mesh_io.py"),
+        # Single checkMesh parser — delegated to by quality_engine._parse_metrics
+        # and mesh_engine/poly_aggregator (stdlib-only imports + PySide6).
+        ("cfmesh_autogui.core.openfoam_runner", "cfmesh_autogui/core/openfoam_runner.py"),
     ]:
+        # Never REPLACE a module that is already in sys.modules: re-executing
+        # it here creates a second instance, and any earlier importer (e.g.
+        # tet_poly_dual, loaded through the real package) keeps a reference
+        # to the first one. tests/test_tet_poly_dual.py::test_write_failure_
+        # rollback monkeypatches foam_mesh_io.write_faces and would patch the
+        # wrong instance, silently not failing (Fase 3 regression found when
+        # the harness gained the foam_mesh_io/openfoam_runner pre-loads).
+        if mod_name in sys.modules:
+            continue
         pkg = ".".join(mod_name.split(".")[:-1])
         _load_module_from_file(mod_name, src_dir / rel_path, pkg)
 

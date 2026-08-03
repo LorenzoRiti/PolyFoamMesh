@@ -61,6 +61,28 @@ src/cfmesh_autogui/
 
 ## Known Bug Patterns & Fixes
 
+### CFD Poly freezes + crash (session 2026-08-03)
+SYMPTOM: every CFD Poly (gmsh_direct_poly) run freezes the GUI ("Python non risponde",
+AppHangB1 in WER) and the process is killed by the OS; relaunches then crash-loop
+(BEX64 in Qt6Core.dll).
+ROOT CAUSE: NOT a bug in the GMSH pipeline — GMSH always completed (mesh.msh written,
+68 MB-1.1 GB). The explicit-size path had a FIXED 20M-cell cap that ignored RAM; with
+WSL2/OpenFOAM (up to 50% RAM) + GMSH (~1.5 KB/tet peak) the machine thrashed into swap,
+the main thread stopped being scheduled, Windows App-Hang-killed the app. The orphaned
+GMSH subprocess then kept meshing 10-30 min, saturating the box and breaking relaunches.
+FIXES (all in place):
+1. gmsh_wrapper: explicit-size path auto-coarsens user_lc with a RAM-derived cap
+   (same `_hardware_budget` as the adaptive path) instead of fixed 20M
+2. gmsh_wrapper `_gmsh_thread_count()`: RAM-aware backoff (<6 GB → 2 threads, <12 → 4)
+3. openfoam_runner `_stream_subprocess`: Windows child hardening — BelowNormal priority
+   (GUI stays responsive) + Job Object KILL_ON_JOB_CLOSE (subprocess dies with the GUI,
+   no orphans) via `_harden_windows_child` / `_release_job`
+4. main_window `_start_gmsh_volume_worker`: pre-flight guard — blocks if free RAM < 5 GB
+   or disk < 1 GB, warns below 10 GB/3 GB and forces GMSH_NUM_THREADS=4
+   (`_low_ram_gmsh_threads` flag keeps the override past the OpenMP block)
+Evidence for diagnosis: WER Application Hang events + orphan-written mesh.msh timestamps
+after each kill + successful earlier runs with 19 MB msh vs 1.1 GB in failing ones.
+
 ### MeshDict Overwrite (session 2026-07-26)
 SYMPTOM: meshDict values differ from UI spinbox after clicking Generate Mesh.
 ROOT CAUSES (ALL FIXED):

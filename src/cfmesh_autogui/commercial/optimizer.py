@@ -12,14 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from cfmesh_autogui.core.openfoam_runner import MeshQualityReport
 
+from cfmesh_autogui.core.quality_thresholds import OPTIMIZER_THRESHOLDS
 from cfmesh_autogui.octopoda_local import octo
 
 # Lazy imports (avoid cadquery DLL chain via core/__init__)
@@ -133,11 +135,8 @@ class MeshOptimizer:
     """
 
     # Default threshold overrides for the auto-fix loop
-    THRESHOLDS = {
-        "skewness_max": 4.0,
-        "non_ortho_max": 65.0,
-        "aspect_ratio_max": 1000.0,
-    }
+    # (single source of truth: cfmesh_autogui.core.quality_thresholds)
+    THRESHOLDS = OPTIMIZER_THRESHOLDS
 
     def __init__(self, of_config=None) -> None:
         from cfmesh_autogui.config import OFConfig
@@ -328,8 +327,17 @@ class MeshOptimizer:
 
         Mirrors _run_checkmesh's synchronous style rather than RetryRunner
         (async, QThread-based — a poor fit for this iterate-and-recheck loop).
+        Refuses (returns False) when the existing mesh is GMSH tet / tet→poly
+        output — re-meshing would silently replace it (Fase 3 P3.2 guard).
         """
         import subprocess
+
+        from cfmesh_autogui.core.validation import mesh_remeshable
+
+        ok, reason = mesh_remeshable(case_dir)
+        if not ok:
+            logger.warning("optimizer: refusing cartesianMesh — %s", reason)
+            return False
 
         try:
             cmd = self._of_config.build_command(case_dir)

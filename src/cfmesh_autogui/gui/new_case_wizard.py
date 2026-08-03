@@ -228,7 +228,10 @@ class Step2MeshSettingsPage(QWizardPage):
         cell_form.addRow("Min Cell:", self._min_cell)
 
         self._algorithm_combo = QComboBox()
-        self._algorithm_combo.addItems(["CartesianHex", "Tetrahedral", "Polyhedral", "HexCorePoly"])
+        self._algorithm_combo.addItems(
+            ["CartesianHex", "Tetrahedral", "Polyhedral", "HexCorePoly",
+             "NativePoly"],
+        )
         cell_form.addRow("Algorithm:", self._algorithm_combo)
         adv_layout.addLayout(cell_form)
 

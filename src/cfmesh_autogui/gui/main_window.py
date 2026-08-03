@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import logging
 import os
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -138,6 +140,44 @@ def _check_drive_writable(drive: str) -> bool:
         return False
 
 
+def _free_ram_gb() -> float:
+    """Free physical RAM in GB (best-effort, ctypes/GlobalMemoryStatusEx).
+
+    Used by the pre-flight guard before a GMSH volume run: the reported
+    freeze was the system thrashing into swap while GMSH + WSL2/OpenFOAM +
+    the GUI competed for memory, not a bug in the meshing pipeline itself
+    (GMSH always completed its .msh; the GUI main thread then starved and
+    Windows killed it with an App Hang).
+    """
+    try:
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        stat = _MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+        return stat.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        return 999.0  # unknown — never block on a probe failure
+
+
+def _free_disk_gb(path: str | Path) -> float:
+    """Free disk space in GB on the volume hosting ``path`` (best-effort)."""
+    try:
+        return shutil.disk_usage(str(path)).free / (1024 ** 3)
+    except Exception:
+        return 999.0
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -263,6 +303,17 @@ class MainWindow(QMainWindow):
         self._theme_light_action.triggered.connect(lambda: self._on_theme_change("light"))
         self._theme_dark_action.triggered.connect(lambda: self._on_theme_change("dark"))
         self._theme_system_action.triggered.connect(lambda: self._on_theme_change("system"))
+
+        # EXPERIMENTAL meshers — isolated, never touched by the standard flow
+        xm = self.menuBar().addMenu("&Tools")
+        xm.addAction(
+            "Experimental: Native Poly (100% poly, nativo)...",
+            self._on_experimental_native_poly,
+        )
+        xm.addAction(
+            "Experimental: Native Poly — help",
+            self._on_experimental_native_poly_help,
+        )
         self._sync_theme_menu()
 
         tm = self.menuBar().addMenu("&Tools")
@@ -1532,6 +1583,7 @@ class MainWindow(QMainWindow):
         self._run_id += 1
         self._poly_was_converted = False
         self._poly_fallback_active = False
+        self._low_ram_gmsh_threads = False
         my_id = self._run_id
         logger.info("Starting meshing run #%d.", my_id)
 
@@ -1621,6 +1673,22 @@ class MainWindow(QMainWindow):
             self._params.set_all_enabled(False)
             self._start_autopoly_worker(orig, my_id)
             return
+        if mesher_type == "native_poly":
+            # EXPERIMENTAL native cut-cell -> median dual (Fasi 1-3).  The
+            # loaded trimesh surfaces are used directly (read-only); no temp
+            # geometry file is needed.  Never escalates to another mesher.
+            if not self._meshes:
+                QMessageBox.warning(
+                    self, "Native Poly Needs Geometry",
+                    "No geometry loaded. Load a STEP, STL, or use the "
+                    "test cylinder first.",
+                )
+                return
+            self._params.set_meshing_enabled(False)
+            self._params.set_all_enabled(False)
+            logger.info("Dispatching native-poly worker: run_id=%d", my_id)
+            self._start_native_poly_worker(list(self._meshes), my_id)
+            return
         if mesher_type != "cfmesh":
             # No auto-enable needed here: for gmsh_direct/gmsh_direct_poly
             # the mesher combo's own _on_mesher_changed already forces the
@@ -1634,14 +1702,10 @@ class MainWindow(QMainWindow):
             # entry) meant picking "Tetrahedral (FEM)" — meant to be
             # poly-off — got its poly conversion silently re-enabled here
             # at Run time regardless.
-            if mesher_type == "gmsh_direct_poly" and self._params.get_bl_enabled():
-                # The current terminal-face converter accepts pure tetrahedral
-                # volumes only. Do not silently feed it prism/BL cells.
-                self._params.set_bl_enabled(False)
-                self._log.append_log(
-                    f"{Tag.WARN} Polyhedral GMSH mode: boundary layers disabled "
-                    "because the current converter requires pure tetrahedra."
-                )
+            # BL is now fully supported on the poly path: the boundary-layer
+            # engine (`core/bl_poly.py`) adds prism layers to the poly mesh
+            # AFTER the dual conversion, so the converter still only ever
+            # sees pure tetrahedra. Nothing to disable here.
             orig = getattr(self, "_loaded_step_path", None)
             if orig is None:
                 orig = self._make_temp_geometry_for_gmsh()
@@ -2394,6 +2458,75 @@ class MainWindow(QMainWindow):
             "GMSH stage entered: run_id=%d step=%s mesher=%s",
             my_id, step_path, getattr(self, "_current_mesher_type", ""),
         )
+
+        # Pre-flight guard: GMSH volume meshing is RAM- and disk-hungry, and
+        # on a machine where WSL2/OpenFOAM + the GUI already compete for
+        # memory a big mesh makes the system thrash into swap — the main
+        # thread stops being scheduled, Windows reports "non risponde" and
+        # kills the whole app (confirmed from a real session: every CFD Poly
+        # run produced a 0.7-1.1 GB .msh, then the GUI was App-Hang-killed).
+        # Block the clearly-hopeless cases and warn on the borderline ones
+        # instead of letting the user watch a freeze.
+        try:
+            free_ram = _free_ram_gb()
+            free_disk = _free_disk_gb(self._resolve_case_root())
+            if free_ram < 5.0:
+                self._log.append_log(
+                    f"{Tag.ERROR} RAM libera insufficiente ({free_ram:.1f} GB) — "
+                    "GMSH avrebbe saturato il sistema e bloccato l'app."
+                )
+                QMessageBox.critical(
+                    self, "Memoria insufficiente",
+                    f"RAM libera: {free_ram:.1f} GB (serve almeno 5 GB).\n\n"
+                    "GMSH volume meshing avrebbe fatto impallare il sistema.\n"
+                    "Chiudi altre applicazioni, oppure riduci la memoria "
+                    "riservata a WSL2 (file .wslconfig) e riprova.",
+                )
+                self._params.set_all_enabled(True)
+                return
+            if free_disk < 1.0:
+                self._log.append_log(
+                    f"{Tag.ERROR} Disco insufficiente ({free_disk:.1f} GB liberi) "
+                    "— il file .msh non ci starebbe."
+                )
+                QMessageBox.critical(
+                    self, "Disco pieno",
+                    f"Spazio libero su disco: {free_disk:.1f} GB (serve almeno 1 GB).\n\n"
+                    "Libera spazio e riprova.",
+                )
+                self._params.set_all_enabled(True)
+                return
+            if free_ram < 10.0 or free_disk < 3.0:
+                warnings = []
+                if free_ram < 10.0:
+                    warnings.append(f"RAM libera: {free_ram:.1f} GB")
+                if free_disk < 3.0:
+                    warnings.append(f"disco libero: {free_disk:.1f} GB")
+                ret = QMessageBox.warning(
+                    self, "Risorse limitate",
+                    "Risorse basse prima del meshing GMSH:\n\n"
+                    + "\n".join(f"• {w}" for w in warnings)
+                    + "\n\nIl meshing può saturare il sistema e rallentare "
+                    "o bloccare l'app. Continuare comunque?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if ret != QMessageBox.Yes:
+                    self._log.append_log(f"{Tag.CANCELLED} Meshing GMSH annullato dall'utente.")
+                    self._params.set_all_enabled(True)
+                    return
+                # Continue with a reduced thread budget to keep the OS alive.
+                if free_ram < 10.0:
+                    os.environ["GMSH_NUM_THREADS"] = "4"
+                    self._low_ram_gmsh_threads = True
+                    self._log.append_log(
+                        f"{Tag.WARN} RAM bassa: GMSH limitato a 4 thread per "
+                        "mantenere il sistema reattivo."
+                    )
+        except Exception as exc:
+            # A probe failure must never block meshing.
+            logger.debug("Pre-flight resource check skipped: %s", exc)
+
         self._log.append_log("[gmsh] Starting volume mesh generation in background...")
         self._status.showMessage("GMSH: volume mesh...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2477,6 +2610,10 @@ class MainWindow(QMainWindow):
                     f"{capped} (physical cores) to keep the system responsive."
                 )
             os.environ["GMSH_NUM_THREADS"] = str(capped)
+        elif getattr(self, "_low_ram_gmsh_threads", None):
+            # Pre-flight guard already capped threads for a RAM-tight
+            # machine — keep its override instead of clearing it.
+            pass
         else:
             os.environ.pop("GMSH_NUM_THREADS", None)
 
@@ -2490,6 +2627,12 @@ class MainWindow(QMainWindow):
             "step_path": step_path, "msh_path": msh_path, "detail": detail,
             "bl_params": bl_params, "n_layers": n_layers,
             "bl_thickness": bl_thickness, "bl_expansion": bl_expansion,
+            # Fase 3 P3.3: snapshot the ACTUAL values used in this attempt so
+            # the no-BL retry reuses them instead of re-reading the spinboxes
+            # (which the user may have changed in the meantime).
+            "refinement_zones": self._gmsh_refinement_zones(),
+            "max_cell": max_cell, "min_cell": min_cell,
+            "max_cells_target": max_cells_target,
             "bl_retried": False, "my_id": my_id,
         }
 
@@ -2533,10 +2676,13 @@ class MainWindow(QMainWindow):
         if not ctx["bl_retried"] and ctx["bl_params"] and ctx["n_layers"] > 0:
             ctx["bl_retried"] = True
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
+            # Fase 3 P3.3: reuse the exact parameters of the first attempt
+            # (snapshot in ctx) instead of re-reading the spinboxes.
             w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
-                                  refinement_zones=self._gmsh_refinement_zones(),
-                                  max_cell_size=self._params.get_max_cell(),
-                                  min_cell_size=self._params.get_min_cell())
+                                  refinement_zones=ctx["refinement_zones"],
+                                  max_cell_size=ctx["max_cell"],
+                                  min_cell_size=ctx["min_cell"],
+                                  max_cells_target=ctx["max_cells_target"])
             self._gmsh_worker = w2
             self._submit_task(
                 "gmsh_volume", w2,
@@ -2636,7 +2782,7 @@ class MainWindow(QMainWindow):
             if item[0] == "error":
                 fail(item[1])
                 return
-            _, exit_code, stdout, stderr = item
+            exit_code, stdout, stderr = item
             for line in (stdout or "").splitlines()[-20:]:
                 self._log.append_log(f"[gmshToFoam] {line}")
             if exit_code != 0:
@@ -2829,6 +2975,119 @@ class MainWindow(QMainWindow):
         self._params.set_all_enabled(True)
         QMessageBox.critical(self, "autopoly Failed",
                              f"Polyhedral meshing failed:\n\n{msg}")
+
+    # ------------------------------------------------------------------
+    # EXPERIMENTAL native poly mesher (Fasi 1-3): cut-cell nativo -> dual
+    # ------------------------------------------------------------------
+
+    def _start_native_poly_worker(self, meshes: list, my_id: int):
+        """Run the experimental native cut-cell → median-dual mesher."""
+        from cfmesh_autogui.commercial.native_poly_bridge import (
+            NativePolyParams,
+            run_native_poly,
+        )
+
+        self._log.append_log(
+            "[native-poly] cut-cell nativo -> dual 100% poly (sperimentale)...")
+        self._status.showMessage("native-poly: cut-cell + dual ...")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        root = self._resolve_case_root()
+        self._case_dir = root / f"native_poly_{ts}"
+        self._case_dir.mkdir(parents=True, exist_ok=True)
+        self._params.set_case_dir(str(self._case_dir))
+
+        detail = self._params.get_detail_level()
+        params = NativePolyParams(detail_level=detail)
+
+        self._cleanup_thread("_native_poly_thread", "_native_poly_worker")
+
+        def worker_fn(worker):
+            try:
+                def progress_cb(pct: int, stage: str, msg: str):
+                    worker.report_progress(f"{stage}: {msg}", float(pct))
+                return run_native_poly(meshes, self._case_dir, params,
+                                       progress=progress_cb)
+            except Exception as e:
+                raise RuntimeError(str(e)) from e
+
+        self._native_poly_worker = worker_fn
+        self._native_poly_start_time = time.time()
+
+        def on_progress(_name, stage, pct):
+            self._progress.setRange(0, 100)
+            self._progress.setValue(int(pct))
+            self._log.append_log(f"[native-poly] {stage}")
+            self._status.showMessage(f"native-poly: {stage} ({pct:.0f}%)")
+
+        def on_finished(_name, result):
+            self._on_native_poly_finished(result, my_id)
+
+        def on_failed(_name, msg):
+            self._on_native_poly_failed(msg, my_id)
+
+        self._submit_task(
+            "native_poly", FunctionWorker(worker_fn),
+            on_finished=on_finished,
+            on_failed=on_failed,
+            on_progress=on_progress,
+            heartbeat_timeout_s=600.0,
+        )
+
+    def _on_native_poly_finished(self, result, my_id: int):
+        """Handle successful native-poly meshing completion."""
+        if my_id != self._run_id:
+            return
+        self._progress.setVisible(False)
+        elapsed = time.time() - getattr(
+            self, "_native_poly_start_time", time.time())
+        if result.success:
+            self._log.append_log(
+                f"[native-poly] DONE: {result.n_cells:,} celle 100% poly "
+                f"({result.n_hex_cells:,} hex + {result.n_cut_cells:,} cut "
+                f"primali) in {elapsed:.1f}s — "
+                f"skew={result.max_skewness:.2f} "
+                f"nonOrtho={result.max_non_ortho:.1f}° "
+                f"defects={result.defects}"
+            )
+            self._status.showMessage(
+                f"native-poly: {result.n_cells:,} cells ready")
+            self._params.set_all_enabled(True)
+            self._params.set_real_cell_count(result.n_cells)
+            poly_dir = self._case_dir / "constant" / "polyMesh"
+            try:
+                from cfmesh_autogui.core.boundary_reader import parse_boundary
+                from cfmesh_autogui.core.case_setup import setup_case
+                boundary_path = poly_dir / "boundary"
+                if boundary_path.exists():
+                    patches = parse_boundary(boundary_path)
+                    setup_case(self._case_dir, patches,
+                               **self._case_setup_kwargs())
+                    self._log.append_log(
+                        "[setup] Case files generated (0/, system/).")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Case setup after native-poly: %s", e)
+            self._viewer.show_mesh(self._case_dir)
+            if poly_dir.exists():
+                self._launch_checkmesh()
+        else:
+            self._log.append_log(
+                f"[native-poly] FAILED: {result.message}")
+            self._params.set_all_enabled(True)
+            if result.errors:
+                QMessageBox.critical(
+                    self, "Native Poly Failed",
+                    f"Native Poly fallito:\n\n{result.message}\n\n"
+                    + "\n".join(result.errors))
+
+    def _on_native_poly_failed(self, msg: str, my_id: int):
+        """Handle native-poly failure."""
+        if my_id != self._run_id:
+            return
+        self._log.append_log(f"[native-poly] ERROR: {msg}")
+        self._progress.setVisible(False)
+        self._params.set_all_enabled(True)
+        QMessageBox.critical(self, "Native Poly Failed",
+                             f"Native Poly fallito:\n\n{msg}")
 
     def _on_cell_count_found(self, count: int):
         from cfmesh_autogui.gui.design_tokens import SUCCESS
@@ -3242,6 +3501,19 @@ class MainWindow(QMainWindow):
             self._quality.clear_report()
             return
         self._quality.show_report(payload)
+        # Fase 3 P3.5: explicit poly quality gate — converter name, cells
+        # before -> after, checkMesh verdict and key numbers in ONE line,
+        # for both PASS and FAIL of the polyhedral mesh.
+        if getattr(self, "_poly_was_converted", False):
+            converter = getattr(self, "_poly_converter_name", "polyDualMesh (cfMesh)")
+            cells_before = getattr(self, "_cells_before_poly", 0)
+            verdict = "PASS" if report.passed else "FAIL"
+            self._log.append_log(
+                f"[poly] Quality gate: converter={converter} cells "
+                f"{cells_before} -> {report.cells} checkMesh={verdict} "
+                f"(skew={report.max_skewness:.2f}, "
+                f"non-ortho={report.max_non_ortho:.1f}, neg={report.neg_cells})"
+            )
         self._refresh_workflow(quality_passed=bool(report.passed))
         if report.cells:
             self._on_cell_count_found(report.cells)
@@ -3416,6 +3688,8 @@ class MainWindow(QMainWindow):
         except Exception:
             self._cells_before_poly = 0
         self._polydual_run_id = self._run_id
+        # Fase 3 P3.5: converter name for the explicit poly quality gate log.
+        self._poly_converter_name = "polyDualMesh (cfMesh)"
         feature_angle = 90  # Higher = smoother polyhedral cells
         logger.info(
             "Launching polyDualMesh: case_dir=%s feature_angle=%g cells_before=%d",
@@ -3518,6 +3792,8 @@ class MainWindow(QMainWindow):
         except Exception:
             self._cells_before_poly = 0
         self._polydual_run_id = self._run_id
+        # Fase 3 P3.5: converter name for the explicit poly quality gate log.
+        self._poly_converter_name = "barycentric dual (tet_poly_dual)"
         logger.info(
             "Launching barycentric dual poly conversion: case_dir=%s cells_before=%d",
             self._case_dir, self._cells_before_poly,
@@ -3530,7 +3806,18 @@ class MainWindow(QMainWindow):
             "[poly] Converting tet → polyhedral mesh (barycentric dual, "
             "100% polyhedral)..."
         )
-        w = DualPolyWorker(self._case_dir)
+        bl_params = None
+        if self._params.get_bl_enabled():
+            bl_params = self._params.get_bl_params()
+            if bl_params is not None:
+                self._log.append_log(
+                    "[poly] Boundary layers enabled: "
+                    f"{bl_params['nLayers']} layers, first "
+                    f"{bl_params['firstLayerThickness']:.6g} m, "
+                    f"growth {bl_params['thicknessRatio']} — prism layers "
+                    "will be added to the poly mesh after conversion."
+                )
+        w = DualPolyWorker(self._case_dir, bl_params=bl_params)
         self._status.showMessage("Polyhedral conversion...")
         self._polydual_worker = w
         self._polydual_start_time = time.monotonic()
@@ -3541,12 +3828,12 @@ class MainWindow(QMainWindow):
         self._polydual_heartbeat = heartbeat
         self._submit_task(
             "polydual", w,
-            on_finished=lambda _n, result: self._on_terminal_face_finished(result),
-            on_failed=lambda _n, msg: self._on_terminal_face_failed(msg),
+            on_finished=lambda _n, result: self._on_gmsh_polydual_finished(result),
+            on_failed=lambda _n, msg: self._on_gmsh_polydual_failed(msg),
             heartbeat_timeout_s=600.0,
         )
 
-    def _on_terminal_face_failed(self, msg: str) -> None:
+    def _on_gmsh_polydual_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
         self._log.append_log(f"[poly] FAILED: {msg}")
         QMessageBox.warning(
@@ -3556,27 +3843,53 @@ class MainWindow(QMainWindow):
             "You can skip polyhedral conversion and use it directly."
         )
 
-    def _on_terminal_face_finished(self, result) -> None:
+    def _on_gmsh_polydual_finished(self, result) -> None:
         self._stop_polydual_heartbeat()
         poly_run_id = getattr(self, "_polydual_run_id", self._run_id)
         if poly_run_id != self._run_id:
-            logger.debug("Stale terminal-face callback ignored (%d != %d).", poly_run_id, self._run_id)
+            logger.debug(
+                "Stale gmsh-polydual callback ignored (%d != %d).",
+                poly_run_id, self._run_id,
+            )
             return
+        # DualPolyResult: read `success`/`errors` first, then the counts.
+        if not result.success:
+            err = "; ".join(result.errors) if result.errors else "unknown error"
+            self._log.append_log(f"[poly] FAILED: {err}")
+            QMessageBox.warning(
+                self, "Polyhedral Conversion Failed",
+                f"Polyhedral conversion failed (barycentric dual):\n\n{err}\n\n"
+                "The tetrahedral mesh is still available. "
+                "You can skip polyhedral conversion and use it directly."
+            )
+            return
+        cells_before = getattr(self, "_cells_before_poly", 0)
+        cells_after = result.n_cells_after
         logger.info(
-            "Terminal-face conversion finished: %d tets -> %d polyhedra",
-            result.n_tets_before, result.n_polyhedra,
+            "Barycentric dual conversion finished: %d tets -> %d poly cells",
+            cells_before, cells_after,
         )
         self._log.append_log("[poly] Polyhedral conversion complete.")
+        if getattr(result, "bl_prism_cells", 0) > 0:
+            self._log.append_log(
+                f"[poly] Boundary layers OK: {result.bl_prism_cells:,} prism "
+                f"cells added (total thickness "
+                f"{getattr(result, 'bl_thickness', 0.0):.6g} m)."
+            )
+        elif getattr(result, "bl_warning", None):
+            self._log.append_log(
+                f"{Tag.WARN} Boundary layers skipped for the poly mesh — "
+                f"{result.bl_warning}"
+            )
         self._status.showMessage("Polyhedral mesh ready — running quality check...")
         self._viewer.show_mesh(self._case_dir)
         self._poly_was_converted = True
-        cells_before = getattr(self, "_cells_before_poly", 0)
-        if cells_before > 0 and result.n_polyhedra > 0:
-            pct = round((result.n_polyhedra / cells_before - 1) * 100, 1)
+        if cells_before > 0 and cells_after > 0:
+            pct = round((cells_after / cells_before - 1) * 100, 1)
             self._log.append_log(
-                f"[poly] Cells: {cells_before} → {result.n_polyhedra} ({pct:+.1f}%). "
+                f"[poly] Cells: {cells_before} \u2192 {cells_after} ({pct:+.1f}%). "
                 "The barycentric dual rebuilds one polyhedral cell per primal "
-                "vertex, so the cell count drops ~5.5x — the normal, desirable "
+                "vertex, so the cell count drops ~5.5x \u2014 the normal, desirable "
                 "gain of a polyhedral mesh. For a target resolution, mesh finer "
                 "upstream (the tet mesh) to compensate."
             )
@@ -4013,6 +4326,7 @@ class MainWindow(QMainWindow):
             algo_map = {
                 "CartesianHex": 0, "Tetrahedral": 1,
                 "Polyhedral": 2, "HexCorePoly": 3,
+                "NativePoly": 4,
             }
             idx = algo_map.get(preset.metadata.solver, 0)
             self._params._algorithm_combo.setCurrentIndex(idx)
@@ -4082,6 +4396,79 @@ class MainWindow(QMainWindow):
                 self._on_quick_mesh()
             else:
                 self._set_workflow_stage("mesh", "active")
+
+    def _on_experimental_native_poly_help(self):
+        """Explain the experimental native mesher (Fasi 1-3)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.information(
+            self, "Native Poly (sperimentale)",
+            "Mesher sperimentale nativo (algoritmo nostro, puro Python, Fasi 1-3):\n\n"
+            "1. cut-cell castellated dalla tessellazione CAD (core/native_mesher.py)\n"
+            "2. dual mediano -> mesh 100% poliedrica (core/hex_poly_dual.py)\n\n"
+            "Nessun GMSH/cfMesh per generare; WSL usato solo dalla validazione "
+            "checkMesh.\n\n"
+            "Limiti noti (misurati):\n"
+            "- funziona bene su superfici curve (es. sfera);\n"
+            "- su pareti parallele alla griglia (es. venturi) il dual puo' fallire: "
+            "serve lo snapping (non ancora implementato);\n"
+            "- la qualita' (skewness/non-ortho) del dual nativo e' peggiore di "
+            "quella del dual da mesh cfMesh.\n\n"
+            "Il mesh nativo viene conservato in constant/polyMesh_hex_native; "
+            "il mesh 100% poly e' in constant/polyMesh.",
+        )
+
+    def _on_experimental_native_poly(self):
+        """Run the EXPERIMENTAL native cut-cell -> median-dual mesher.
+
+        Isolated: uses only the loaded geometry + case dir; the standard
+        cfMesh/quick-mesh flow is untouched.  The engine never escalates
+        away from NATIVE_POLY — a failure is reported, not substituted.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        if not self._meshes:
+            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
+            return
+        if not getattr(self, "_case_dir", None):
+            QMessageBox.warning(
+                self, "No Case Directory", "Set a case directory first.")
+            return
+        self._log.append_log(
+            "[experimental] Native Poly: cut-cell nativo -> dual 100% poly")
+        self._set_workflow_stage("generate", "active")
+        try:
+            from cfmesh_autogui.commercial.mesh_engine import (
+                MeshEngine, MeshingAlgorithm,
+            )
+
+            engine = MeshEngine()
+            engine._params.algorithm = MeshingAlgorithm.NATIVE_POLY
+            engine._params.detail_level = self._params.get_detail_level()
+            geometry_path = getattr(self, "_geometry_path", "") or ""
+            result = engine.run(
+                self._case_dir, meshes=self._meshes,
+                geometry_path=geometry_path,
+            )
+            self._log.append_log(
+                f"[experimental] Native Poly: {result.cell_count:,} celle "
+                f"100% poly, quality_passed={result.quality_passed}, "
+                f"escalation={result.escalation_steps}")
+            self._set_workflow_stage("mesh", "active")
+            self._log.append_log(
+                "[experimental] Mesh 100% poly in constant/polyMesh; "
+                "castellation in constant/polyMesh_hex_native.")
+            QMessageBox.information(
+                self, "Native Poly",
+                f"Mesh 100% poliedrico creato: {result.cell_count:,} celle.\n"
+                f"Quality (checkMesh): "
+                f"{'PASS' if result.quality_passed else 'FAIL — vedi log/quality panel'}.\n"
+                f"Hex nativo conservato in constant/polyMesh_hex_native.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log.append_log(f"[experimental] Native Poly FAILED: {exc}")
+            QMessageBox.critical(
+                self, "Native Poly", f"Native Poly fallito:\n{exc}")
 
     def _on_quick_mesh(self):
         if not self._meshes:

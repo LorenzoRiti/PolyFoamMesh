@@ -19,22 +19,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from cfmesh_autogui.core.quality_thresholds import QUALITY_THRESHOLDS as THRESHOLDS
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
-
-
-# Quality thresholds for auto-fix decisions
-THRESHOLDS = {
-    "skewness_max": 0.9,
-    "non_ortho_max": 70.0,
-    "aspect_ratio_max": 1000.0,
-    "neg_vol_max": 0,
-}
 
 
 @dataclass
@@ -198,9 +189,20 @@ class QualityEngine:
         return report
 
     def _run_cartesian_mesh(self, case_dir: Path) -> bool:
-        """Run cartesianMesh synchronously so the fix loop actually re-meshes."""
+        """Run cartesianMesh synchronously so the fix loop actually re-meshes.
+
+        Refuses (returns False) when the existing mesh is GMSH tet / tet→poly
+        output — re-meshing would silently replace it with a cfMesh hex at
+        different dimensions (Fase 3 P3.2 guard).
+        """
         import subprocess
         from cfmesh_autogui.config import OFConfig
+        from cfmesh_autogui.core.validation import mesh_remeshable
+
+        ok, reason = mesh_remeshable(case_dir)
+        if not ok:
+            logger.warning("auto_fix: refusing cartesianMesh — %s", reason)
+            return False
 
         try:
             cmd = OFConfig().build_command(Path(case_dir))
@@ -235,35 +237,26 @@ class QualityEngine:
             raise RuntimeError("WSL not found for checkMesh")
 
     def _parse_metrics(self, raw: str) -> QualityMetrics:
-        """Parse checkMesh output into QualityMetrics."""
-        m = QualityMetrics()
+        """Parse checkMesh output into QualityMetrics.
 
-        if re.search(r"FOAM FATAL|FATAL ERROR|--> FOAM FATAL", raw, re.IGNORECASE):
-            m.has_fatal = True
+        Delegates to :func:`openfoam_runner.parse_checkmesh_output` — the
+        single checkMesh parser (handles both the legacy ``=`` phrasing and
+        the real OpenFOAM v2512 colon phrasing, with optional averages).
+        """
+        from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output
 
-        match = re.search(r"cells:\s+(\d+)", raw, re.IGNORECASE)
-        if match: m.cells = int(match.group(1))
-
-        match = re.search(r"Max non-orthogonality = ([\d.]+).*?average = ([\d.]+)", raw, re.DOTALL)
-        if match:
-            m.max_non_orthogonality = float(match.group(1))
-            m.avg_non_orthogonality = float(match.group(2))
-
-        match = re.search(r"Max skewness = ([\d.]+).*?average = ([\d.]+)", raw, re.DOTALL)
-        if match:
-            m.max_skewness = float(match.group(1))
-            m.avg_skewness = float(match.group(2))
-
-        match = re.search(r"Max aspect ratio = ([\d.]+)", raw)
-        if match: m.max_aspect_ratio = float(match.group(1))
-
-        match = re.search(rf"Min volume = ({QualityEngine._OF_FLOAT})", raw)
-        if match: m.min_volume = float(match.group(1))
-
-        match = re.search(r"There are (\d+).*?negative volume", raw, re.IGNORECASE)
-        if match: m.neg_cells = int(match.group(1))
-
-        return m
+        r = parse_checkmesh_output(raw)
+        return QualityMetrics(
+            max_skewness=r.max_skewness,
+            avg_skewness=r.avg_skewness,
+            max_non_orthogonality=r.max_non_ortho,
+            avg_non_orthogonality=r.avg_non_ortho,
+            max_aspect_ratio=r.max_aspect_ratio,
+            min_volume=r.min_volume,
+            neg_cells=r.neg_cells,
+            cells=r.cells,
+            has_fatal=r.has_fatal,
+        )
 
     @staticmethod
     def _status_text(m: QualityMetrics) -> str:
