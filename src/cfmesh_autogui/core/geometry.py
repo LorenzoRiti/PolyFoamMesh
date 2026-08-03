@@ -305,7 +305,15 @@ def _sample_thickness_one_mesh(
     bbox_max: float,
     seed: int,
 ) -> list[float]:
-    """Sample *n_samples* points on *mesh* and measure local thickness."""
+    """Sample *n_samples* points on *mesh* and measure local thickness.
+
+    Rays are queried in batches against trimesh's C++-backed ray tracer
+    instead of one ``intersects_location`` call per sample (the old loop
+    took minutes on the 'very_fine' preset with 4096 samples). Semantics
+    are identical to the old per-sample loop: cast along -normal first,
+    fall back to +normal for samples that miss; keep distances in
+    (eps, bbox_max * 2); same seeded sample points.
+    """
     if n_samples <= 0 or mesh.area <= 0 or len(mesh.faces) == 0:
         return []
     try:
@@ -314,44 +322,46 @@ def _sample_thickness_one_mesh(
         return []
     if len(pts) == 0:
         return []
-    normals = mesh.face_normals[face_idx]
-    ray_origins = np.asarray(pts, dtype=np.float64)
-    ray_dirs = np.asarray(normals, dtype=np.float64)
+    normals = np.asarray(mesh.face_normals[face_idx], dtype=np.float64)
+    norms = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = normals / np.where(norms > 0, norms, 1.0)
 
     # Ignore hits essentially at the ray origin (the face we started from).
     eps = max(bbox_max * 1e-6, 1e-12)
+    _BATCH = 512
 
-    def _nearest_hit(origin: np.ndarray, direction: np.ndarray) -> float:
-        """Distance to the CLOSEST surface along *direction*, 0.0 if none.
+    def _nearest_hits(origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
+        """Closest hit distance > eps per ray; 0.0 for rays without one."""
+        # Starts at +inf so np.minimum.at can take the per-ray minimum
+        # (starting from 0.0 would pin every ray to 0).
+        out = np.full(len(origins), np.inf, dtype=np.float64)
+        if len(origins) == 0:
+            return np.zeros(0, dtype=np.float64)
+        for lo in range(0, len(origins), _BATCH):
+            o = origins[lo:lo + _BATCH]
+            d = directions[lo:lo + _BATCH]
+            try:
+                res = mesh.ray.intersects_location(ray_origins=o, ray_directions=d)
+            except Exception:
+                continue
+            if not res or len(res[0]) == 0:
+                continue
+            locs, ray_ids = res[0], res[1]
+            dist = np.linalg.norm(np.asarray(locs) - o[ray_ids], axis=1)
+            valid = dist > eps
+            if not valid.any():
+                continue
+            np.minimum.at(out, lo + ray_ids[valid], dist[valid])
+        return np.where(np.isinf(out), 0.0, out)
 
-        Local thickness is the distance to the nearest opposing wall. This used
-        to take `.max()` — the FARTHEST intersection along the ray — and then
-        the max of the two directions again, which measures the extent of the
-        whole model instead. Every sample then collapsed to roughly the same
-        number, so the thickness distribution was flat (p5 == p50) and features
-        like a constriction were invisible to the sizing algorithm.
-        """
-        try:
-            res = mesh.ray.intersects_location(
-                ray_origins=[origin], ray_directions=[direction]
-            )
-        except Exception:
-            return 0.0
-        if not res or len(res[0]) == 0:
-            return 0.0
-        d = np.linalg.norm(np.asarray(res[0]) - origin, axis=1)
-        d = d[d > eps]
-        return float(d.min()) if len(d) else 0.0
-
-    thicknesses: list[float] = []
-    for origin, direction in zip(ray_origins, ray_dirs):
-        d = direction / (np.linalg.norm(direction) + 1e-12)
-        # Inward (-normal) is the material/fluid side for outward-facing
-        # normals; fall back to +normal when the winding is reversed.
-        t = _nearest_hit(origin, -d) or _nearest_hit(origin, d)
-        if 0.0 < t < bbox_max * 2:
-            thicknesses.append(t)
-    return thicknesses
+    inward = _nearest_hits(pts, -normals)
+    missing = inward <= 0.0
+    outward = np.zeros(len(pts), dtype=np.float64)
+    if missing.any():
+        outward[missing] = _nearest_hits(pts[missing], normals[missing])
+    t = np.where(inward > 0.0, inward, outward)
+    t = t[(t > 0.0) & (t < bbox_max * 2)]
+    return t.tolist()
 
 
 def check_watertight(meshes: list[trimesh.Trimesh]) -> tuple[bool, int, str]:
