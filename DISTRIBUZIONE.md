@@ -1,99 +1,90 @@
-# Come distribuire CFMesh-AutoGUI a un amico
+# Come distribuire CFMesh-AutoGUI (v2.1.0)
 
-L'app è divisa in due pezzi che vanno distribuiti separatamente:
+Guida per lo sviluppatore. Per l'amico c'è il PDF
+`installer/output/CFMesh-AutoGUI-2.1.0-Istruzioni.pdf` (o `INSTALL_AMICO.md`).
 
-1. **L'eseguibile Windows** (`CFMesh-AutoGUI.exe`) — l'interfaccia grafica, il meshing GMSH,
-   tutto quello che gira su Windows. Questo si può impacchettare e mandare così com'è.
-2. **OpenFOAM v2512 + cfMesh dentro WSL2** — il motore di meshing vero e proprio
-   (`cartesianMesh`). Questo **non può essere incluso nell'exe**: è un pacchetto Linux di
-   diversi GB che deve essere installato nella distro WSL del tuo amico. Non c'è modo di
-   evitarlo, ma il setup è automatizzabile con lo script qui sotto.
+## Il pacchetto (scelta: demo no-WSL)
 
-## 1. Costruire l'exe (lato tuo, una volta sola)
+L'installer **non** include WSL2/OpenFOAM: l'amico prova subito i percorsi
+**no-WSL** (CFD Poly GMSH → 100% poly stile STAR-CCM+, FEM Tetra) e la
+visualizzazione. I percorsi WSL (cfMesh, checkMesh) mostrano un avviso
+chiaro e non procedono.
+
+```
+installer/output/
+├── CFMesh-AutoGUI-2.1.0-Setup.exe      ← DA DARE ALL'AMICO (279 MB, installer Inno)
+└── CFMesh-AutoGUI-2.1.0-Istruzioni.pdf ← istruzioni in PDF
+```
+
+## 1. Ricostruire il bundle one-dir (lato tuo, una volta sola)
 
 ```bash
-python -m PyInstaller CFMesh-AutoGUI.spec --noconfirm
+python -m PyInstaller --noconfirm --clean CFMesh-AutoGUI.spec
 ```
 
-Il risultato è `dist/CFMesh-AutoGUI.exe` — un eseguibile standalone che include già Python,
-PySide6, cadquery, trimesh, pyvista, gmsh, pymeshfix: il tuo amico non deve installare
-Python né pip install di niente per la parte GUI.
+Risultato: `dist/CFMesh-AutoGUI/` (1.3 GB) — app self-contained
+(Python + PySide6 + cadquery + trimesh + pyvista + gmsh + pymeshfix):
+**nessuna dipendenza esterna sul PC dell'amico**.
 
-> **Nota per il futuro**: la prima build fatta oggi (715 MB) crashava all'avvio con
-> `DLL load failed while importing _casadi` — PyInstaller aveva impacchettato `casadi`,
-> `torch`, `cv2`, `pyarrow` e altra roba completamente estranea all'app, presa dall'ambiente
-> Python globale di questo PC (usato anche per altri progetti). Confermato via grep che
-> nessuno di questi pacchetti è mai importato dal codice di cfmesh-autogui. Aggiunti alla
-> sezione `excludes` di `CFMesh-AutoGUI.spec` — se in futuro l'exe torna a gonfiarsi o
-> ricompare un crash "DLL load failed" simile, controlla lì prima di tutto.
+Punti critici dello spec (verificati oggi):
+- **one-dir** (EXE bootloader + `_internal/`): avvio veloce, niente
+  estrazione in temp a ogni lancio, più gentile con SmartScreen.
+- **`gmsh-4.15.dll` aggiunta ai datas**: il wheel gmsh la installa in
+  `Python311\Lib\` (fuori dai package) → PyInstaller non la vede da solo;
+  senza, il percorso GMSH nel frozen crasha con "DLL load failed".
+- **`gmsh_wrapper._cli_main(argv)`**: nel frozen exe il subprocess GMSH
+  parte con `--gmsh-volume` su `sys.executable`; `app.py` chiama
+  `_cli_main` direttamente (il vecchio `runpy.run_path` su un file che
+  non esiste nel bundle falliva).
+- `excludes` con torch/cv2/pyarrow/... (roba estranea dall'ambiente
+  globale) — se l'exe si gonfia, controlla lì.
 
-Zippalo e mandaglielo (email/drive/chiavetta — è troppo grande per la maggior parte delle
-chat).
+## 2. Compilare l'installer Inno
 
-## 2. Cosa deve fare il tuo amico
-
-### 2a. Scompattare e lanciare l'exe
-
-Basta estrarre lo zip e fare doppio click su `CFMesh-AutoGUI.exe`. Non serve installazione.
-Al primo avvio, se WSL2/OpenFOAM non sono ancora pronti, l'app lo segnala chiaramente
-invece di bloccarsi (fix di oggi) — ma senza OpenFOAM il meshing vero e proprio non parte.
-
-### 2b. Installare WSL2 + OpenFOAM v2512 (una tantum, ~10-15 minuti + download)
-
-Da PowerShell **come amministratore**:
-
-```powershell
-wsl --install -d Ubuntu
-```
-
-Riavvia se richiesto, poi apri Ubuntu dal menu Start e crea l'utente Linux che ti chiede
-al primo avvio (username/password a piacere, sono solo per la VM Linux).
-
-Poi, **dentro Ubuntu** (il terminale che si apre), installa OpenFOAM v2512:
+Inno Setup 6.7.3 portabile in `tools/innosetup/is6/ISCC.exe`
+(installato con `/PORTABLE=1`, niente admin).
 
 ```bash
-curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
-sudo apt-get update
-sudo apt-get install -y openfoam2512-default
+tools/innosetup/is6/ISCC.exe installer\inno_setup.iss
 ```
 
-Questo installa OpenFOAM **e cfMesh insieme** (`cartesianMesh` è incluso nel pacchetto
-`openfoam2512-default`, non serve installarlo a parte — verificato: `cartesianMesh` si trova
-in `/usr/lib/openfoam/openfoam2512/platforms/.../bin/` dopo questo comando).
+Risultato: `installer/output/CFMesh-AutoGUI-2.1.0-Setup.exe` (279 MB,
+lzma2/max). Proprietà: installazione **per-user senza admin**
+(`PrivilegesRequired=lowest`), shortcut Start Menu+Desktop, associazioni
+`.step/.stp/.stl` (HKCU), disinstaller pulito.
 
-Verifica che sia andato a buon fine:
+> **Attenzione Git-Bash**: gli switch `/VERYSILENT` vengono manglati in
+> percorsi MSYS (`C:/Program Files/Git/VERYSILENT`). Usare:
+> `MSYS2_ARG_CONV_EXCL='*'` (o lanciare da cmd/PowerShell).
+
+## 3. Test rapido dell'installer
 
 ```bash
-source /usr/lib/openfoam/openfoam2512/etc/bashrc
-cartesianMesh -help
+# installazione silenziosa (path senza spazi)
+MSYS2_ARG_CONV_EXCL='*' ./installer/output/CFMesh-AutoGUI-2.1.0-Setup.exe \
+    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=C:\polybench\install_test" /NOICONS
+# verifica percorso GMSH dall'exe installato
+"C:/polybench/install_test/CFMesh-AutoGUI.exe" --gmsh-volume \
+    --step=C:/cfmesh_poly_bench/venturi.stl --msh=C:/polybench/v.msh \
+    --detail=coarse --max-cell=0.05 --min-cell=0.02   # → {"success": true}
+# disinstallazione (nella cartella di test)
+"C:/polybench/install_test/unins/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
-Se stampa le opzioni del comando, è tutto pronto. A questo punto CFMesh-AutoGUI trova
-OpenFOAM automaticamente (usa la distro WSL di default, chiamata "Ubuntu").
+## 4. SmartScreen / firma
 
-### 2c. (Opzionale) Script automatico
+L'exe **non è firmato** (certificato a pagamento ~100 €/anno). L'amico
+dovrà cliccare "Ulteriori informazioni → Esegui comunque". Per eliminare
+l'avviso: firma Authenticode (signtool) oppure SmartScreen "più info" dopo
+qualche installazione.
 
-Se preferisci automatizzare il passo 2b, nella cartella `installer/` c'è
-`setup_wsl_openfoam.ps1` — un unico script PowerShell che fa `wsl --install`, aspetta il
-riavvio se serve, e poi lancia l'installazione di OpenFOAM dentro Ubuntu. Vedi sotto per
-come generarlo/usarlo.
+## 5. Log dell'app sull'altro PC
 
-## 3. Requisiti minimi sul PC dell'amico
+`%APPDATA%\cfmesh-autogui\logs\app.log` — chiedi all'amico di incollarlo
+se qualcosa non va.
 
-- Windows 10 (build 19041+) o Windows 11, 64 bit
-- Virtualizzazione abilitata nel BIOS (necessaria per WSL2 — di solito è già attiva)
-- ~10 GB liberi (OpenFOAM dentro WSL2 pesa parecchio)
-- Consigliati 8+ GB di RAM: ogni core usato nel meshing parallelo carica una copia della
-  geometria in memoria, quindi macchine con poca RAM dovrebbero usare il meshing seriale
-  (l'app ora clampa automaticamente i core se rileva poca memoria disponibile in WSL2)
+## 6. Se in futuro serve il pacchetto CON WSL/OpenFOAM
 
-## 4. Alternative all'exe standalone
-
-- **Installer .exe con wizard** (Inno Setup): c'è `installer/installer.iss`, ma **non è
-  pronto per essere compilato così com'è** — referenzia `LICENSE`, `build/icon.ico` e
-  `installer/vc_redist.x64.exe` che al momento non esistono nel repo. Per un singolo amico
-  che deve solo provarla, non ne vale la pena: usa lo zip dell'exe (punto 1). Se in futuro
-  vuoi un vero installer con icona e disinstallazione da Pannello di Controllo, vanno creati
-  quei tre file prima di lanciare `iscc installer/installer.iss`.
-- **pip install** (se il tuo amico ha già Python 3.11+): `pip install -e .` dal sorgente,
-  poi `cfmesh-autogui` da terminale. Più macchinoso ma niente file da 330 MB da mandare.
+- `installer/setup_wsl_openfoam.ps1` installa WSL2 + OpenFOAM v2512 +
+  cfMesh sull'altro PC (admin, ~1-2 GB di download).
+- Dopo il setup, tutti i percorsi (cfMesh, checkMesh) funzionano.
