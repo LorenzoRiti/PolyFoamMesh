@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 class NativePolyParams:
     detail_level: str = "medium"
     cell_size: float = 0.0  # 0 => auto from geometry bbox (suggest_cell_sizes)
+    # Fase 4b (docs/poly_mesher_STATO.md 6.1): graded margin band, NOT
+    # per-region refinement near the surface -- see the module note below.
+    # 1.0 = uniform grid (unchanged default).
+    margin_growth: float = 1.0
+    flow: object | None = None  # commercial.bl_engine.FlowConditions, optional
 
 
 @dataclass
@@ -58,6 +63,7 @@ class NativePolyResult:
     case_dir: str = ""
     hex_dir: str = ""  # preserved castellation (polyMesh_hex_native)
     stage_times: dict = field(default_factory=dict)
+    bl_recommendation: dict = field(default_factory=dict)  # Fase 5, sizing only
 
 
 def _quality(points, faces, owner, neighbour):
@@ -132,13 +138,21 @@ def run_native_poly(
         cell = float(params.cell_size) if params.cell_size > 0 else float(s_max)
         res.warnings.append(
             f"background cell size {cell:.6g} (s_max for '{detail}'; "
-            f"s_min would be {s_min:.6g} — refinement not yet supported)")
+            f"s_min would be {s_min:.6g} — LOCAL refinement near a small "
+            f"internal feature not supported, needs an octree; "
+            + (f"margin_growth={params.margin_growth:g} grades the far-field "
+               f"pad band"
+               if params.margin_growth > 1.0 else
+               "margin_growth=1.0, far-field pad band is uniform"))
 
         prog(10, "castellation", f"cut-cell nativo, cell={cell:.6g} ...")
         # clean_cells=True: drop cut cells whose boundary is non-manifold
         # (the concave/overlapping-CAD cases) — the median dual REQUIRES
         # clean polyhedra, and the validation below rejects open cells.
-        native = NativeMesher(meshes, cell_size=cell, clean_cells=True)
+        native = NativeMesher(
+            meshes, cell_size=cell, clean_cells=True,
+            margin_growth=params.margin_growth, flow=params.flow,
+        )
         nres = native.run(case_dir)
         if not nres.success:
             raise RuntimeError(
@@ -146,6 +160,7 @@ def run_native_poly(
         res.stage_times["native"] = nres.stage_times.get("total", 0.0)
         res.n_hex_cells = int(nres.n_hex_cells)
         res.n_cut_cells = int(nres.n_cut_cells)
+        res.bl_recommendation = dict(nres.bl_recommendation)
         res.warnings.extend(nres.warnings)
         prog(40, "castellation",
              f"{nres.n_cells:,} cells ({nres.n_hex_cells:,} hex + "
