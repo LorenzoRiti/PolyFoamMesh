@@ -92,38 +92,44 @@ STL/STEP → GMSH volume (tet) → checkMesh (WSL, gate) → TetPolyDualConverte
 
 Confronto con scFLOW (Cradle CFD) del 2026-08-07: stesso principio
 architetturale (griglia cartesiana → cut-cell → poly), stesso percorso
-del nostro `native_mesher.py` + `hex_poly_dual.py`. Gap concreti, con
-scoping tecnico onesto (perché NON sono stati implementati in questa
-sessione — richiedono riscritture invasive del core geometrico, rischiose
-senza una campagna di test dedicata):
+del nostro `native_mesher.py` + `hex_poly_dual.py`. Stato aggiornato
+dopo l'implementazione di 2026-08-07 (commit `67fa285`..`7273a8d`):
 
-- **Refinement locale (octree o griglia graduata)** — oggi
-  `native_mesher._make_grid`/`_build` usano `cell` come UNO scalare
-  globale: ogni coordinata di corner è `grid.lo + idx * cell`
-  (`_build`, righe ~434-436, ~515-516 e a cascata in tutta la
-  classificazione/clipping). Generalizzare a spaziatura non uniforme
-  per asse (griglia graduata, senza hanging node) tocca ~450 righe in
-  `_build` — fattibile e più sicuro di un octree vero (che introduce
-  T-junction/hanging node e richiede split delle facce lato grossolano),
-  ma richiede una riscrittura dedicata + regressione completa su
-  `tests/test_native_mesher.py` prima di essere accettata. **Non
-  tentata qui**: il rischio di corrompere silenziosamente la topologia
-  (mesh non watertight non rilevata da un test parziale) è la ragione
-  per cui il codice esistente segue sempre il pattern "keep-best,
-  verificato contro il detector in-process" — un rewrite del genere
-  merita lo stesso trattamento, non una patch rapida.
-- **Boundary layer sul percorso nativo** — `commercial/bl_engine.py`
-  esiste ma è un CALCOLATORE di parametri (y+, altezza primo layer),
-  non un inseritore di geometria: produce numeri che oggi alimentano
-  il `meshDict` di cfMesh o l'estrusione GMSH. Non esiste in repo alcun
-  algoritmo di estrusione prismatica che parta da un poly mesh nativo
-  già costruito. Questo è lavoro algoritmico nuovo (estrusione facce di
-  parete + blend con l'interno cut-cell), non un collegamento di pezzi
-  esistenti — stimato più grande del punto precedente.
-- **Refinement per parte/regione** — dipende dal punto 1 (serve prima
-  una griglia non uniforme prima di poterla far variare per patch).
+- **Fase 4a — smoothing quality-driven sul dual cut-cell**: FATTO
+  (§6 punto 1 sopra).
+- **Fase 4b — griglia graduata**: FATTO, ma con uno scopo più stretto
+  di un octree. `native_mesher.__init__` accetta `margin_growth` (>1.0
+  = opt-in): dentro il bounding box stretto della superficie la
+  spaziatura resta ESATTA `cell_size` uniforme (cattura della superficie
+  bit-per-bit identica); nella banda di margine/pad attorno cresce
+  geometricamente. Risolve il costo di un dominio esteso per flusso
+  esterno (verificato: margin=8·cell, sfera — griglia candidata
+  23³=12.167 → 17³=4.913 punti, stessa mesh finale: 260 celle, stesso
+  volume, stessa chiusura). **Non risolve** il refinement locale vicino
+  a un dettaglio piccolo INTERNO al bbox, lontano dal bordo dominio —
+  quello resta un vero octree con gestione hanging-node/T-junction
+  (split della faccia sul lato grossolano), non tentato: il rischio è
+  produrre celle non conformi silenziosamente, senza un algoritmo di
+  fusione facce dedicato e una campagna di validazione.
+- **Fase 5 — BL sizing wired**: FATTO, ma solo il CALCOLO. `NativeMesher(
+  ..., flow=FlowConditions(...))` chiama `commercial/bl_engine.py`
+  (già esistente, già usato dal percorso GMSH/cfMesh) e popola
+  `NativeMeshResult.bl_recommendation` (n layer, altezza primo layer,
+  growth rate, collision ratio per patch). **Non inserisce celle
+  prismatiche**: quell'estrusione (facce di parete + chirurgia
+  topologica sulla cella cut-cell adiacente) è un algoritmo nuovo da
+  scrivere da zero, stimato il pezzo più grande dei tre — non tentato.
+- **Fase 6 — esposizione nel bridge**: FATTO nella misura in cui esiste
+  un consumatore: `commercial/native_poly_bridge.py` (`NativePolyParams
+  .margin_growth`/`.flow`, `NativePolyResult.bl_recommendation`)
+  collega 4b e 5 end-to-end (verificato via `run_native_poly`). NON è
+  refinement "per parte/regione" (serve l'octree del punto 4b esteso) e
+  NON riattiva il bottone GUI — quella rimozione (`16e52e1`) resta una
+  scelta di prodotto deliberata, non riaperta qui.
 
-Ordine di attacco consigliato quando si riprende: 1) griglia graduata
-(non octree) — rischio più basso, riusa la struttura a box esistente;
-2) refinement per regione sopra la griglia graduata; 3) BL nativo per
-ultimo, è l'unico dei tre che richiede un algoritmo nuovo da zero.
+Quello che resta, in ordine di stima costo/rischio crescente: 1) octree
+vero con hanging-node per il refinement locale interno; 2) refinement
+per parte/regione sopra l'octree; 3) estrusione prismatica BL nativa.
+Nessuno dei tre è "collegare pezzi esistenti" come 4a/4b/5/6 — sono
+algoritmi geometrici nuovi che meritano una sessione dedicata con
+campagna di regressione, non una patch nello stesso giro di lavoro.
