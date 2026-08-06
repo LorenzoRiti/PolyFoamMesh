@@ -1,7 +1,7 @@
 # Stato del mesher poliedrico (CFMesh-AutoGUI 2.1.0)
 
 Documento tecnico — cosa c'è, come funziona, cosa è stato verificato,
-limiti e prossimi passi. Aggiornato al 2026-08-03.
+limiti e prossimi passi. Aggiornato al 2026-08-07.
 
 ## 1. Obiettivo (dal paper di riferimento)
 
@@ -75,9 +75,55 @@ STL/STEP → GMSH volume (tet) → checkMesh (WSL, gate) → TetPolyDualConverte
 
 ## 6. Prossimi passi suggeriti
 
-1. **Snapping/quality phase** per il percorso nativo (se si vorrà
-   riabilitarlo) — chiuderebbe skew e aprirebbe il dual sui condotti.
+1. ~~**Snapping/quality phase** per il percorso nativo~~ — **fatto**
+   (commit `67fa285`, 2026-08-07): `hex_poly_dual.py` ora chiama
+   `poly_smoother.smooth_dual_mesh` con lo stesso contratto keep-best già
+   usato da `tet_poly_dual.py` (accettato solo se i difetti totali non
+   peggiorano e nessun volume cella diventa non-positivo). Misurato su
+   sfera icosaedrica via `native_mesher` → `hex_poly_dual`: subdiv=2/
+   cell=0.15, difetti totali 33 → 6; subdiv=3/cell=0.12, 249 → 231.
+   Non chiude lo skew a zero da solo — resta valido il punto 6.1 sotto.
 2. **Test su macchina pulita** dell'installer (nessuna VM disponibile in
    ambiente; verificato per self-containment + funzionamento dal
    percorso installato).
 3. Firma Authenticode per eliminare l'avviso SmartScreen.
+
+### 6.1 Verso un mesher stile scFLOW (voxel/cut-cell → poly automatico)
+
+Confronto con scFLOW (Cradle CFD) del 2026-08-07: stesso principio
+architetturale (griglia cartesiana → cut-cell → poly), stesso percorso
+del nostro `native_mesher.py` + `hex_poly_dual.py`. Gap concreti, con
+scoping tecnico onesto (perché NON sono stati implementati in questa
+sessione — richiedono riscritture invasive del core geometrico, rischiose
+senza una campagna di test dedicata):
+
+- **Refinement locale (octree o griglia graduata)** — oggi
+  `native_mesher._make_grid`/`_build` usano `cell` come UNO scalare
+  globale: ogni coordinata di corner è `grid.lo + idx * cell`
+  (`_build`, righe ~434-436, ~515-516 e a cascata in tutta la
+  classificazione/clipping). Generalizzare a spaziatura non uniforme
+  per asse (griglia graduata, senza hanging node) tocca ~450 righe in
+  `_build` — fattibile e più sicuro di un octree vero (che introduce
+  T-junction/hanging node e richiede split delle facce lato grossolano),
+  ma richiede una riscrittura dedicata + regressione completa su
+  `tests/test_native_mesher.py` prima di essere accettata. **Non
+  tentata qui**: il rischio di corrompere silenziosamente la topologia
+  (mesh non watertight non rilevata da un test parziale) è la ragione
+  per cui il codice esistente segue sempre il pattern "keep-best,
+  verificato contro il detector in-process" — un rewrite del genere
+  merita lo stesso trattamento, non una patch rapida.
+- **Boundary layer sul percorso nativo** — `commercial/bl_engine.py`
+  esiste ma è un CALCOLATORE di parametri (y+, altezza primo layer),
+  non un inseritore di geometria: produce numeri che oggi alimentano
+  il `meshDict` di cfMesh o l'estrusione GMSH. Non esiste in repo alcun
+  algoritmo di estrusione prismatica che parta da un poly mesh nativo
+  già costruito. Questo è lavoro algoritmico nuovo (estrusione facce di
+  parete + blend con l'interno cut-cell), non un collegamento di pezzi
+  esistenti — stimato più grande del punto precedente.
+- **Refinement per parte/regione** — dipende dal punto 1 (serve prima
+  una griglia non uniforme prima di poterla far variare per patch).
+
+Ordine di attacco consigliato quando si riprende: 1) griglia graduata
+(non octree) — rischio più basso, riusa la struttura a box esistente;
+2) refinement per regione sopra la griglia graduata; 3) BL nativo per
+ultimo, è l'unico dei tre che richiede un algoritmo nuovo da zero.
