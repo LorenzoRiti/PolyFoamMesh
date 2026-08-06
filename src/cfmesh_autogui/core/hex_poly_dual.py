@@ -107,6 +107,9 @@ class HexPolyDualConverter:
         out_rel: str = "polyMesh_dual",
         feature_angle: float = 90.0,
         collapse_smooth_edges: bool = True,
+        smooth: bool = True,
+        smooth_iters: int = 3,
+        smooth_relax: float = 0.5,
     ):
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -117,6 +120,16 @@ class HexPolyDualConverter:
         # median-dual tiling (volume-conserving, but higher skew).
         self._feature_angle = float(feature_angle)
         self._collapse = bool(collapse_smooth_edges)
+        # Quality-driven Laplacian smoothing of interior dual vertices,
+        # same keep-best contract as tet_poly_dual (Fase 4a): a pass is
+        # accepted only if total defects do not increase and no cell volume
+        # turns non-positive, so this can never write a worse mesh.  Cut
+        # cells from the native mesher are the case this closes — their
+        # irregular shape carries more skew into the dual than clean hex
+        # primal cells do.
+        self._smooth = bool(smooth)
+        self._smooth_iters = int(smooth_iters)
+        self._smooth_relax = float(smooth_relax)
 
     # ------------------------------------------------------------------
     # helpers
@@ -792,6 +805,32 @@ class HexPolyDualConverter:
             points, faces, sf, cf, ctr, owner, neigh, n_internal, n_cells,
         )
         res.defects = counts
+
+        # Fase 4a: quality-driven smoothing of interior vertices, guided by
+        # the same in-process defect detector (keep-best — never regresses).
+        total_defects = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+        if self._smooth and total_defects > 0:
+            self._check_cancel()
+            t = time.monotonic()
+            from cfmesh_autogui.core.poly_smoother import smooth_dual_mesh
+
+            new_points, new_counts = smooth_dual_mesh(
+                points, faces, owner, neigh, n_internal, n_cells,
+                _detect_defects, _face_geometry, _cell_centres,
+                iterations=self._smooth_iters,
+                relaxation=self._smooth_relax,
+                log=self._log,
+            )
+            if new_points is not points:
+                points = new_points
+                M.points = points
+                counts = dict(new_counts)
+                res.defects = counts
+                self._log(
+                    f"[hexdual] smoothing applied: defects now "
+                    f"{counts['pyramid']}/{counts['non_ortho']}/{counts['skew']} "
+                    f"[{time.monotonic() - t:.1f}s]"
+                )
 
         res.n_cells_after = n_cells
         res.n_poly_cells = n_cells
