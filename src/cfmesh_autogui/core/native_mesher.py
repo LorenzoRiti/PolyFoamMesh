@@ -291,6 +291,7 @@ class NativeMesher:
         margin: float = 0.05,
         fallback_majority: bool = True,
         clean_cells: bool = False,
+        margin_growth: float = 1.0,
     ):
         self._surfaces = surface_meshes
         self._cell_size = float(cell_size)
@@ -298,6 +299,19 @@ class NativeMesher:
         self._cancel_cb = cancel
         self._margin = float(margin)
         self._fallback_majority = bool(fallback_majority)
+        # Fase 4b (scoping in docs/poly_mesher_STATO.md 6.1): graded
+        # background grid in the margin/pad band around the surface's tight
+        # bounding box. Cell size stays exactly `cell_size` (uniform) inside
+        # the tight bbox -- surface capture is byte-identical to the
+        # ungraded path -- and grows geometrically by this ratio per cell
+        # outward through the pad band. Default 1.0 reproduces the prior
+        # uniform grid exactly (same `_make_grid` code path, same floats).
+        # This solves the far-field-domain cost case (large `margin` for
+        # external flow); it does NOT solve local refinement near a small
+        # internal feature away from the domain boundary -- that needs a
+        # true octree with hanging-node face handling, not attempted here
+        # (see poly_mesher_STATO.md 6.1 for why).
+        self._margin_growth = float(margin_growth)
         # strict-clean mode drops cut cells whose boundary has a non-manifold
         # edge (an edge used once — e.g. the wedge cells of walls nearly
         # parallel to the grid): the median-dual engine requires clean
@@ -402,22 +416,66 @@ class NativeMesher:
         )
         return merged, np.array(patch_of_tri, dtype=np.int64)
 
+    def _uniform_axis(self, lo: float, hi: float) -> np.ndarray:
+        """Prior single-block uniform grid line coordinates (unchanged)."""
+        cell = self._cell_size
+        n = int(max(1, np.ceil((hi - lo) / cell)))
+        return lo + np.arange(n + 1) * cell
+
+    def _graded_axis(self, core_lo: float, core_hi: float, pad: float) -> np.ndarray:
+        """1D grid line coordinates for one axis, graded pad band.
+
+        Uniform ``cell_size`` spacing inside ``[core_lo, core_hi]`` (the
+        surface's tight bounding box on this axis), growing geometrically
+        by ``margin_growth`` per step through the pad band on each side.
+        Only used when ``margin_growth > 1.0`` -- the default path keeps
+        calling ``_uniform_axis`` on the pre-padded bounds unchanged, so it
+        is byte-identical to the pre-Fase-4b grid.
+        """
+        cell = self._cell_size
+        n_core = int(max(1, np.ceil((core_hi - core_lo) / cell)))
+        core = core_lo + np.arange(n_core + 1) * cell
+
+        def pad_steps(length: float) -> np.ndarray:
+            steps = []
+            total, step = 0.0, cell
+            while total < length:
+                total += step
+                steps.append(total)
+                step *= self._margin_growth
+            return np.array(steps)
+
+        lo_ext = core[0] - pad_steps(pad)[::-1]
+        hi_ext = core[-1] + pad_steps(pad)
+        return np.concatenate([lo_ext, core, hi_ext])
+
     def _make_grid(self, surface: trimesh.Trimesh, res: NativeMeshResult):
-        lo = surface.bounds[0].astype(np.float64)
-        hi = surface.bounds[1].astype(np.float64)
+        core_lo = surface.bounds[0].astype(np.float64)
+        core_hi = surface.bounds[1].astype(np.float64)
         pad = self._margin * self._cell_size
-        lo = lo - pad
-        hi = hi + pad
-        n = np.ceil((hi - lo) / self._cell_size).astype(np.int64)
-        n = np.maximum(n, 1)
+        if self._margin_growth > 1.0:
+            xs = self._graded_axis(core_lo[0], core_hi[0], pad)
+            ys = self._graded_axis(core_lo[1], core_hi[1], pad)
+            zs = self._graded_axis(core_lo[2], core_hi[2], pad)
+        else:
+            # exact prior behaviour: one uniform block over [bounds-pad, bounds+pad]
+            xs = self._uniform_axis(core_lo[0] - pad, core_hi[0] + pad)
+            ys = self._uniform_axis(core_lo[1] - pad, core_hi[1] + pad)
+            zs = self._uniform_axis(core_lo[2] - pad, core_hi[2] + pad)
+        lo = np.array([xs[0], ys[0], zs[0]])
+        hi = np.array([xs[-1], ys[-1], zs[-1]])
+        n = np.array([len(xs) - 1, len(ys) - 1, len(zs) - 1], dtype=np.int64)
         res.grid = tuple(int(x) for x in n)
         res.cell_size = self._cell_size
         self._log(
             f"[native] grid {n[0]}x{n[1]}x{n[2]} cells "
             f"(~{int(n[0] * n[1] * n[2]):,} candidates), "
             f"cell_size {self._cell_size:.6g}"
+            + (f", margin_growth {self._margin_growth:g}"
+               if self._margin_growth > 1.0 else "")
         )
-        return SimpleNamespace(lo=lo, hi=hi, n=n, cell=self._cell_size)
+        return SimpleNamespace(lo=lo, hi=hi, n=n, cell=self._cell_size,
+                                xs=xs, ys=ys, zs=zs)
 
     # ------------------------------------------------------------------
     # build
@@ -431,9 +489,7 @@ class NativeMesher:
         # i-fastest flattening (index = i + (nx+1)*(j + (ny+1)*k)) — MUST
         # match vid() below.  (meshgrid().reshape is k-fastest and would
         # silently transpose the lattice.)
-        xs = grid.lo[0] + np.arange(nx + 1) * cell
-        ys = grid.lo[1] + np.arange(ny + 1) * cell
-        zs = grid.lo[2] + np.arange(nz + 1) * cell
+        xs, ys, zs = grid.xs, grid.ys, grid.zs
         corners = np.array(
             [[x, y, z] for z in zs for y in ys for x in xs], dtype=np.float64,
         )
@@ -512,8 +568,8 @@ class NativeMesher:
             between corner indices ca and cb (0..7)."""
             a = _CORNERS[ca]
             b = _CORNERS[cb]
-            pa = grid.lo + (np.array([ci, cj, ck]) + a) * cell
-            pb = grid.lo + (np.array([ci, cj, ck]) + b) * cell
+            pa = corners[vid(ci + a[0], cj + a[1], ck + a[2])]
+            pb = corners[vid(ci + b[0], cj + b[1], ck + b[2])]
             sa = bool(inside[vid(ci + a[0], cj + a[1], ck + a[2])])
             sb = bool(inside[vid(ci + b[0], cj + b[1], ck + b[2])])
             if sa == sb:
@@ -574,8 +630,8 @@ class NativeMesher:
             n_in = int(inside_local.sum())
             if n_in == 0 or n_in == 8:
                 return None
-            lo = grid.lo + np.array([ci, cj, ck]) * cell
-            hi = lo + cell
+            lo = np.array([xs[ci], ys[cj], zs[ck]])
+            hi = np.array([xs[ci + 1], ys[cj + 1], zs[ck + 1]])
 
             tris_in = list(surface.triangles_tree.intersection(
                 (float(lo[0]), float(lo[1]), float(lo[2]),
@@ -723,8 +779,9 @@ class NativeMesher:
                 # volume (thin slivers), or a genuinely open cell (the 2D-hull
                 # box-face rule over-approximates concave kept regions — an
                 # obstacle crossing a box face — leaving the cell open).
+                box_vol = float((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]))
                 if (self._clean_cells and not ok_edges) or \
-                        vol < 5e-5 * cell * cell * cell or \
+                        vol < 5e-5 * box_vol or \
                         rel_closure > 1e-6:
                     res.n_skipped_thin += 1
                     return None
