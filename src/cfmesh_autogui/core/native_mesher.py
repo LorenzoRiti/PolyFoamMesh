@@ -163,6 +163,12 @@ class NativeMeshResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     out_dir: str = ""
+    # Fase 5 (scoping in docs/poly_mesher_STATO.md 6.1): BL SIZING only --
+    # bl_engine's y+ calculator wired onto the native path, same numbers it
+    # already feeds cfMesh's meshDict. NOT prism-layer insertion: no cells
+    # are added to the mesh above. Populated only when `flow` is passed to
+    # NativeMesher; empty dict otherwise (no behaviour change by default).
+    bl_recommendation: dict = field(default_factory=dict)
 
 
 def _ray_hits_triangles(o, d, tris):
@@ -292,6 +298,7 @@ class NativeMesher:
         fallback_majority: bool = True,
         clean_cells: bool = False,
         margin_growth: float = 1.0,
+        flow=None,
     ):
         self._surfaces = surface_meshes
         self._cell_size = float(cell_size)
@@ -312,6 +319,15 @@ class NativeMesher:
         # true octree with hanging-node face handling, not attempted here
         # (see poly_mesher_STATO.md 6.1 for why).
         self._margin_growth = float(margin_growth)
+        # Fase 5 (scoping in docs/poly_mesher_STATO.md 6.1): optional flow
+        # conditions to size a boundary layer recommendation for the wall
+        # patches via commercial.bl_engine.BLEngine -- the same y+/first-
+        # layer-height calculator already used for the GMSH/cfMesh path,
+        # not yet connected here. This computes NUMBERS only (sizing
+        # advice + a collision/overlap check against the local cell_size);
+        # it does not insert prism cells into the output mesh -- that is
+        # separate, unimplemented algorithmic work (see the doc).
+        self._flow = flow
         # strict-clean mode drops cut cells whose boundary has a non-manifold
         # edge (an edge used once — e.g. the wedge cells of walls nearly
         # parallel to the grid): the median-dual engine requires clean
@@ -356,12 +372,60 @@ class NativeMesher:
             t = time.monotonic()
             self._write(case_dir, M, res)
             res.stage_times["write"] = round(time.monotonic() - t, 2)
+            if self._flow is not None:
+                self._compute_bl_recommendation(M, res)
             res.success = True
         except Exception as exc:  # noqa: BLE001
             logger.exception("Native meshing failed")
             res.errors.append(str(exc))
         res.stage_times["total"] = round(time.monotonic() - t_start, 2)
         return res
+
+    def _compute_bl_recommendation(self, M, res: NativeMeshResult) -> None:
+        """Fase 5: BL sizing advice for the wall patches (numbers only).
+
+        Wraps ``commercial.bl_engine.BLEngine`` — never lets a sizing
+        failure fail the meshing run that already succeeded.
+        """
+        try:
+            from cfmesh_autogui.commercial.bl_engine import BLEngine
+
+            names = [p["name"] for p in M.patches]
+            if not names:
+                return
+            engine = BLEngine()
+            walls = engine.detect_wall_patches(names)
+            params = engine.calculate_from_flow(self._flow)
+            collisions = engine.detect_collisions(params, res.cell_size, walls)
+            res.bl_recommendation = {
+                "wall_patches": walls,
+                "first_layer_height": params.first_layer_height,
+                "n_layers": params.n_layers,
+                "growth_rate": params.growth_rate,
+                "total_thickness": params.total_thickness,
+                "target_yplus": params.target_yplus,
+                "collisions": [
+                    {"patch": c.patch_name, "ratio": c.overlap_ratio,
+                     "status": c.status}
+                    for c in collisions
+                ],
+            }
+            self._log(
+                f"[native] BL sizing: {params.n_layers} layers, first "
+                f"{params.first_layer_height:.3g} m, growth "
+                f"{params.growth_rate:g}, total {params.total_thickness:.3g} m "
+                f"on {len(walls)} wall patch(es) — SIZING ONLY, not yet "
+                f"inserted as mesh cells"
+            )
+            n_crit = sum(1 for c in collisions if c.status == "critical")
+            if n_crit:
+                self._log(
+                    f"[native] BL WARNING: {n_crit} patch(es) at critical "
+                    f"overlap ratio vs local cell size"
+                )
+        except Exception as exc:  # noqa: BLE001 - advisory only, must not fail the run
+            logger.exception("BL sizing recommendation failed")
+            res.warnings.append(f"BL sizing recommendation failed: {exc}")
 
     # ------------------------------------------------------------------
     # surface prep + grid
