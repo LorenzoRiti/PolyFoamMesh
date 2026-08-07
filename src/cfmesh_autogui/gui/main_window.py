@@ -1263,6 +1263,20 @@ class MainWindow(QMainWindow):
             run_native_poly,
         )
 
+        # _on_checkmesh_finished is SHARED with the standard cfMesh/GMSH
+        # flow and decides whether to auto-launch a poly conversion pass
+        # (_launch_polydual / _launch_gmsh_poly_dual) based on
+        # _current_mesher_type / _poly_was_converted, both otherwise left
+        # over from whatever mesher the combo was last set to (e.g.
+        # "cfmesh", the default) — that stale state made checkMesh, after
+        # a native-poly run, launch cfMesh's OWN polyDualMesh on TOP of a
+        # mesh that is already 100% poly, corrupting it. native-poly's
+        # dual conversion already happened inside run_native_poly, so mark
+        # it done up front and label the mesher explicitly.
+        self._current_mesher_type = "native_poly"
+        self._poly_was_converted = True
+        self._poly_converter_name = "hex_poly_dual (nativo)"
+        self._poly_fallback_active = False
         self._log.append_log(
             "[native-poly] cut-cell nativo -> dual 100% poly (sperimentale)...")
         self._status.showMessage("native-poly: cut-cell + dual ...")

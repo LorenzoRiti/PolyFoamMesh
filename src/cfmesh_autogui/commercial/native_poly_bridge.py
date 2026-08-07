@@ -180,6 +180,16 @@ def run_native_poly(
         conv = HexPolyDualConverter(case_dir, out_rel="polyMesh")
         dres = conv.run()
         if not dres.success:
+            # The dual converter reads FROM constant/polyMesh (the
+            # castellation copy) and only overwrites it on success, so a
+            # failure here leaves the RAW, un-dualized cartesian cut-cell
+            # mesh sitting in constant/polyMesh looking like a finished
+            # result -- any later viewer refresh or mesher run against this
+            # case_dir would pick it up as if it were valid output. The
+            # castellation is already safe in polyMesh_hex_native, so drop
+            # the leftover here rather than leave a broken mesh on disk.
+            if poly.exists():
+                shutil.rmtree(poly)
             raise RuntimeError(
                 "native dual failed (serve lo snapping per superfici "
                 "parallele alla griglia): " + "; ".join(dres.errors))
