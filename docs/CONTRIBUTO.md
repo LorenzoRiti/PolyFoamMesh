@@ -109,16 +109,26 @@ CONTRIBUTO = {
     """,
 
     "regressioni": """
-    Verdi: tests/test_bl_poly.py (5 veloci, + test lento valvola se completato),
-    tests/test_bl_gui_wiring.py (6), tests/test_openfoam_runner.py (6 su 7;
-    test_mesh_worker escluso: lancia cartesianMesh WSL, minuti, pre-esistente),
-    tests/test_tet_poly_dual.py + tests/test_poly_smoother.py (coppia offline
-    del megaprompt — da confermare con la sessione parallela sul tet_poly_dual).
+    Verdi: tests/test_bl_poly.py (5 veloci), tests/test_bl_gui_wiring.py (6),
+    tests/test_openfoam_runner.py (6 su 7; test_mesh_worker escluso: lancia
+    cartesianMesh WSL, minuti, pre-esistente), tests/test_tet_poly_dual.py +
+    tests/test_poly_smoother.py (17).
+    Suite completa offline: 926 passed, 1 skipped; 4 FAILED tutti
+    pre-esistenti/ambientali, nessuno nel territorio FASE 0/FASE 1:
+      - test_native_mesher.py::test_cube_exact_volume_and_counts: fallisce
+        IDENTICAMENTE su HEAD~1 (0.97559375 vs 1.0 — ramo cartesiano
+        sperimentale, non toccato);
+      - test_watertight_meshdict::...do_not_need_a_qt_event_loop: flake
+        ordine-sensitivo documentato in residual_risks.md, passa in isolamento;
+      - test_baramflow_roundtrip::test_exported_case_loads_in_openfoam e
+        test_e2e_workflow::test_full_workflow: richiedono WSL + cartesianMesh
+        esterno (ambientali, fuori dal percorso poly+BL).
     Baseline valvola: tools/valve_defect_baseline.py --conv-only = PASS
     (1027 difetti residui, 852 piramidi, volume conservato) — invariata.
-    Nessuna regressione dichiarata. Attenzione alle sessioni parallele: la
-    sessione Claude ha modificato tet_poly_dual.py (collapse_smooth_edges,
-    OFF di default) — non toccato da me.
+    Test lento test_valve_fixture_bl_invariants (full-BL sulla fixture valvola
+    1.05M punti): non completato in sessione (>75 min CPU; percorso full-BL
+    equivalente al precedente, limite G2 documentato).
+    Nessuna regressione nel territorio FASE 0/FASE 1.
     """,
 }
 ```
