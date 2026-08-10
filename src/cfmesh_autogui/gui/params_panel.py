@@ -966,6 +966,10 @@ class ParamsPanel(QWidget):
             "nLayers": self._bl_n_layers.value(),
             "thicknessRatio": self._bl_exp.value(),
             "firstLayerThickness": self._bl_thick.value() * self._max_cell.value(),
+            # poly path (barycentric dual): checked -> BL on every boundary
+            # patch; unchecked (default) -> wall-typed / wall-named patches
+            # only (G1 fix, FASE 1)
+            "applyToAll": self._bl_apply_all.isChecked(),
         }
 
     def get_bl_apply_all(self) -> bool:
