@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
         export_menu.addAction("VTU (.vtu)...", lambda: self._on_export_mesh("vtu"))
         export_menu.addAction("CGNS (.cgns)...", lambda: self._on_export_mesh("cgns"))
         export_menu.addAction("SU2 (.su2)...", lambda: self._on_export_mesh("su2"))
-        export_menu.addAction("GMSH (.msh)...", lambda: self._on_export_mesh("gmsh"))
+        export_menu.addAction("Mesh (.msh)...", lambda: self._on_export_mesh("gmsh"))
         export_menu.addAction("Abaqus (.inp)...", lambda: self._on_export_mesh("abaqus"))
         export_menu.addSeparator()
         export_menu.addAction("BaramFlow Case Folder...", self._on_export_baramflow)
@@ -1220,8 +1220,8 @@ class MainWindow(QMainWindow):
             "1. cut-cell castellated dalla tessellazione CAD (core/native_mesher.py)\n"
             "2. dual mediano -> mesh 100% poliedrica (core/hex_poly_dual.py), "
             "con smoothing quality-driven\n\n"
-            "Nessun GMSH/cfMesh per generare; WSL usato solo dalla validazione "
-            "checkMesh.\n\n"
+            "Nessun mesher esterno per generare (algoritmo nostro, puro "
+            "Python); WSL usato solo dalla validazione checkMesh.\n\n"
             "Limiti noti (misurati):\n"
             "- funziona bene su superfici curve (es. sfera);\n"
             "- su pareti parallele alla griglia (es. venturi) il dual puo' fallire: "
@@ -1233,7 +1233,7 @@ class MainWindow(QMainWindow):
             "raccomandazione (y+/spessore), non vengono ancora inserite "
             "celle prismatiche;\n"
             "- la qualita' (skewness/non-ortho) del dual nativo e' in "
-            "genere peggiore di quella del dual da mesh cfMesh/GMSH.\n\n"
+            "genere peggiore di quella del dual Polymesh (barycentric).\n\n"
             "Il mesh cut-cell viene conservato in "
             "constant/polyMesh_hex_native; il mesh 100% poly e' in "
             "constant/polyMesh.",
@@ -1706,14 +1706,13 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Ready")
 
     def _resolve_auto_mesher(self) -> str:
-        """"Automatic" mode: pick the best available mesher instead of
-        making the user understand cfMesh vs. autopoly vs. GMSH.
+        """"Automatic" mode: pick the best available mesher so the user
+        never has to think about mesher internals.
 
-        cfMesh (hex-dominant via WSL2/cartesianMesh) is the highest-quality
-        option when it's available;
-        autopoly (native polyhedral via CVT) is preferred when WSL2 is not
-        available — it produces higher-quality polyhedral cells than GMSH;
-        GMSH direct (pure tetra+prism, no WSL needed) is the final fallback.
+        Cartesian cfMesh (hex-dominant via WSL2/cartesianMesh) is the
+        highest-quality option when WSL2/OpenFOAM is available;
+        otherwise our Polymesh (native polyhedral barycentric dual, no WSL)
+        is the fallback — it always produces a 100% polyhedral mesh.
         """
         # Uses the cached startup WSL availability instead of calling
         # OFConfig.validate() here — that launches wsl.exe and can block
@@ -1736,7 +1735,7 @@ class MainWindow(QMainWindow):
                 return "autopoly"
         except Exception as exc:
             logger.debug("Automatic mesher: autopoly unavailable: %s", exc)
-        return "gmsh_direct"
+        return "gmsh_direct_poly"  # our Polymesh — always polyhedral
 
     def _on_run_meshing(self):
         if not self._meshes:
@@ -1781,7 +1780,15 @@ class MainWindow(QMainWindow):
         mesher_type = self._params.get_mesher_type()
         if mesher_type == "auto":
             mesher_type = self._resolve_auto_mesher()
-            self._log.append_log(f"{Tag.CASE} Automatic: using {mesher_type}.")
+            _friendly = {
+                "cfmesh": "Cartesian cfMesh (WSL2)",
+                "autopoly": "Autopoly",
+                "gmsh_direct_poly": "Polymesh (our poly mesher)",
+                "gmsh_direct": "FEM Tetra (GMSH)",
+            }
+            self._log.append_log(
+                f"{Tag.CASE} Automatic: using {_friendly.get(mesher_type, mesher_type)}."
+            )
             if mesher_type == "cfmesh" and not self._params.get_poly_conversion():
                 # "Automatic" should mean "give me a solid polyhedral mesh"
                 # without an extra manual step — cfMesh alone produces a
@@ -1797,23 +1804,12 @@ class MainWindow(QMainWindow):
                 self._log.append_log(
                     f"{Tag.CASE} Automatic: enabling polyhedral conversion (polyDualMesh)."
                 )
-            elif mesher_type == "gmsh_direct" and not self._params.get_poly_conversion():
-                # Same "Automatic means polyhedral" philosophy as the cfmesh
-                # branch above, for the case where cfMesh/autopoly are both
-                # unavailable and _resolve_auto_mesher() falls back to plain
-                # GMSH direct: without this, poly_conversion stays off (the
-                # mesher combo shows "Automatic", not "Polyhedral (CFD)", so
-                # _on_mesher_changed's own force-checked logic never runs),
-                # silently leaving Automatic mode on a pure tet mesh even
-                # though terminal-face conversion is available and validated.
-                self._params._poly_check.setChecked(True)
-                logger.info(
-                    "Automatic mesher resolved to gmsh_direct — auto-enabling "
-                    "polyhedral (terminal-face) conversion."
-                )
-                self._log.append_log(
-                    f"{Tag.CASE} Automatic: enabling polyhedral conversion (terminal-face)."
-                )
+            # NOTE: _resolve_auto_mesher() now returns "gmsh_direct_poly"
+            # (our Polymesh) as its final fallback, never plain
+            # "gmsh_direct" — so Automatic always produces a polyhedral
+            # mesh; the explicit "FEM Tetra (GMSH)" button is the only way
+            # to ask for pure tetrahedra, and that explicit choice is
+            # respected (no auto-enabling of the poly conversion).
         self._current_mesher_type = mesher_type
         adaptive_on = self._params.get_adaptive_sizing_enabled()
         poly_on = self._params.get_poly_conversion()
@@ -1879,7 +1875,7 @@ class MainWindow(QMainWindow):
                 orig = self._make_temp_geometry_for_gmsh()
             if orig is None:
                 QMessageBox.warning(
-                    self, "GMSH Needs Geometry",
+                    self, "Mesher Needs Geometry",
                     "No geometry loaded. Load a STEP, STL, or use the "
                     "test cylinder first.",
                 )

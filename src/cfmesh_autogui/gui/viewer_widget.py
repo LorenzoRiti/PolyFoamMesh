@@ -1278,16 +1278,21 @@ class ViewerWidget(QWidget):
             ec = self._edge_color()
             try:
                 self._plotter.clear()
+                # style="wireframe": VTK triangulates polyhedral faces for a
+                # surface fill, which makes a 100% polyhedral mesh LOOK like
+                # a tetra mesh.  The wireframe representation shows the TRUE
+                # cell edges, so the polyhedral structure is visible — the
+                # user asked for "only poly, visually too".
                 if mode == "internal":
                     self._plotter.add_mesh(
-                        grid, style="surface", color="lightgray",
+                        grid, style="wireframe", color="lightgray",
                         show_edges=True, edge_color=ec,
                         line_width=0.5 if not show_dec else 0.7,
                         opacity=1.0,
                     )
                 else:  # surface_edges
                     self._plotter.add_mesh(
-                        grid, style="surface", show_edges=True,
+                        grid, style="wireframe", show_edges=True,
                         edge_color=ec, color="lightgray",
                         line_width=0.5 if not show_dec else 0.7,
                         opacity=1.0,
