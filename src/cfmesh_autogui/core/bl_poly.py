@@ -728,7 +728,7 @@ class PolyBoundaryLayerEngine:
                 nf[bi] = min(1, m) if bi in drop_bnd else m
         hw = {
             w: (hw0[w] if nv[w] == nv0[w] else
-                (cum[nv[w] - 1] if nv[w] > 0 else 0.0))
+                (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0))
             for w in wall_verts
         }
         total = max((hw[w] for w in wall_verts), default=h_total)
