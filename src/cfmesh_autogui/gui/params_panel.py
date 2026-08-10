@@ -400,12 +400,13 @@ class ParamsPanel(QWidget):
             checked=True,
         )
         _add_mesher_btn(
-            "CFD Poly  (GMSH, no-WSL)",
+            "Polymesh  (poly, no-WSL)",
             "gmsh_direct_poly",
-            "Mesh tetraedrica GMSH (no WSL richiesto) convertita in POLIEDRICA\n"
-            "vera col barycentric-dual rebuild: 100% di copertura poliedrica,\n"
-            "conteggio celle ~5.5x inferiore (stile STAR-CCM+).\n"
-            "Ideal per CFD. Funziona meglio con input STEP/CAD reale.",
+            "Mesh poliedrica del nostro mesher Polymesh: barycentric-dual\n"
+            "rebuild — 100% di copertura poliedrica, conteggio celle ~5.5x\n"
+            "inferiore (stile STAR-CCM+). Ideale per CFD. Nessun WSL\n"
+            "richiesto. Funziona meglio con input STEP/CAD reale.",
+            checked=False,
         )
         _add_mesher_btn(
             "FEM Tetra  (GMSH, no-WSL)",
@@ -569,7 +570,7 @@ class ParamsPanel(QWidget):
         btn_suggest.setVisible(False)
         adv_layout.addWidget(btn_suggest)
 
-        self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (GMSH mesher, recommended)")
+        self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (polymesh mesher, recommended)")
         self._adaptive_sizing_check.setChecked(False)
         self._adaptive_sizing_check.setToolTip("Superseded by the Mesh Fineness slider.")
         self._adaptive_sizing_check.setVisible(False)
@@ -1114,7 +1115,7 @@ class ParamsPanel(QWidget):
         return getattr(self, "_adaptive_sizing_check", None) is not None and self._adaptive_sizing_check.isChecked()
 
     def get_max_cells_target(self) -> int:
-        """Target cell count (GMSH) — driven by the Mesh Fineness slider."""
+        """Target cell count (polymesh) — driven by the Mesh Fineness slider."""
         return self.get_target_cells()
 
     def get_auto_refine_enabled(self) -> bool:
@@ -1354,7 +1355,7 @@ class ParamsPanel(QWidget):
         self._on_mesher_changed(self.get_mesher_type())
 
     def _on_mesher_changed(self, key: str) -> None:
-        # "CFD Poly" (gmsh_direct_poly) forces the poly conversion ON and
+        # "Polymesh" (gmsh_direct_poly) forces the poly conversion ON and
         # hides the checkbox (nothing to forget); "FEM Tetra" (gmsh_direct)
         # forces it OFF; "Cartesian cfMesh" keeps the manual checkbox —
         # poly there is optional either way (its hex-dual is grid-like/

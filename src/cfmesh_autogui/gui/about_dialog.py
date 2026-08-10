@@ -143,7 +143,7 @@ class AboutDialog(QDialog):
         # Tech stack
         tech = QLabel(
             f"<b>Tech Stack:</b> PySide6 · pyVista · cadquery · "
-            f"trimesh · gmsh · meshio · reportlab · OpenFOAM v2512"
+            f"trimesh · meshio · reportlab · OpenFOAM v2512"
         )
         tech.setWordWrap(True)
         tech.setStyleSheet(f"color: {NEUTRAL_600}; font-size:11px;")
