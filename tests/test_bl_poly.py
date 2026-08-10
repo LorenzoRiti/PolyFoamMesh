@@ -109,7 +109,10 @@ def test_cube_bl_full_boundary_invariants():
     eng = PolyBoundaryLayerEngine(case)
     r = eng.run(n_layers=3, first_height=0.02, growth_rate=1.2, apply_to_all=True)
     assert r.success, r.errors
+    # healthy cube corners keep all 3 layers (FASE 1 scaling) — the count
+    # is n_layers x wall faces, derived from the input mesh
     assert r.n_prism_cells == 3 * n_wall_before  # 3 layers x 36 wall faces
+    assert r.stats["layers_per_face_max"] == 3
     assert r.total_thickness > 0.0
 
     after = fio.read_polymesh(poly)
@@ -276,3 +279,29 @@ def test_valve_fixture_bl_invariants():
     vol0 = float(_cell_metrics(points, faces, owner, neigh,
                                int(max(owner.max(), neigh.max())) + 1, n_int)[0].sum())
     assert abs(float(vols.sum()) - vol0) < 1e-6 * max(vol0, 1e-30)
+
+
+def test_bl_fase2_local_termination_drops_defective_faces():
+    """FASE 2: faces flagged as concave (input pyramid violations) are
+    reduced to ONE layer locally; the consistency fixpoint then flattens the
+    connected region to the minimum count, so the shell stays covered
+    (volume conserved), every cell stays closed, and the flagged spots no
+    longer get the crushed multi-layer stack."""
+    case = _build_dual_case(WORK_ROOT / "cube_drop")
+    poly = case / "constant" / "polyMesh"
+    points, faces, owner, neigh, patches = fio.read_polymesh(poly)
+    n_int = len(neigh)
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    sel, used = eng._select_faces(faces, owner, patches, n_int, None, True)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    vol0 = float(_cell_metrics(points, faces, owner, neigh, n_cells, n_int)[0].sum())
+    # flag two wall faces as concave -> the connected region flattens to 1
+    drop_bnd = {0, 1}
+    b = eng._build(points, faces, owner, neigh, patches, n_int, sel,
+                   3, 0.02, 1.2, 0.5, 0, drop_bnd)
+    assert b["n_prism_cells"] == len(sel), (
+        f"got {b['n_prism_cells']}, expected {len(sel)} (1 layer per face)"
+    )
+    assert b["layers_per_face_max"] == 1
+    ok, msg = eng._validate(b, vol0)
+    assert ok, msg

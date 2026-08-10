@@ -177,18 +177,25 @@ def _cell_centroids(points, faces, owner, neigh, n_int, n_cells):
     return C, V3 / 3.0
 
 
-def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells):
+def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
+                        return_idx=False):
     """Number of faces whose normal points INTO one of its cells (checkMesh's
     'face pyramids' criterion, exact cell centroids).  checkMesh tests BOTH
     the owner side (normal must point out of the owner's centroid) and the
-    neighbour side (normal must point toward the neighbour's centroid)."""
+    neighbour side (normal must point toward the neighbour's centroid).
+
+    With return_idx=True, returns (count, ndarray of violated face indices)."""
     C, _ = _cell_centroids(points, faces, owner, neigh, n_int, n_cells)
     sf, cf = _face_geometry(points, faces)
     bad_owner = (sf * (cf - C[owner])).sum(axis=1) <= 0.0
-    bad = int(np.sum(bad_owner))
+    bad_mask = bad_owner.copy()
     if n_int:
         bad_neigh = (sf[:n_int] * (cf[:n_int] - C[neigh[:n_int]])).sum(axis=1) >= 0.0
-        bad += int(np.sum(bad_neigh & ~bad_owner[:n_int]))
+        bad_mask[:n_int] |= bad_neigh
+    idx = np.flatnonzero(bad_mask)
+    bad = int(len(idx))
+    if return_idx:
+        return bad, idx
     return bad
 
 
@@ -375,6 +382,22 @@ class PolyBoundaryLayerEngine:
         total_vol0 = float(
             _cell_metrics(points, faces, owner, neighbour, n_cells, n_int)[0].sum()
         )
+        # FASE 2: the BL is valid if it does not ADD pyramid violations.
+        # A concave-feature input (valve) may already violate the
+        # convexity-based check; the layer count per wall face is reduced
+        # locally (to 1) so the BL survives where it fits instead of
+        # being cancelled globally by pre-existing defects.
+        _, pyr_idx = _pyramid_violations(
+            points, faces, owner, neighbour, n_int, n_cells, return_idx=True,
+        )
+        pyr_before = int(len(pyr_idx))
+        # the wall faces whose input cells already violate the pyramid
+        # criterion (concave feature spots) are flagged — the consistency
+        # fixpoint then flattens their connected region to ONE layer
+        drop_bnd = {
+            int(fi) - n_int for fi in pyr_idx
+            if n_int <= int(fi) < len(faces)
+        }
 
         sel, used_patches = self._select_faces(
             faces, owner, patches, n_int, patch_names, apply_to_all,
@@ -399,6 +422,7 @@ class PolyBoundaryLayerEngine:
                 built = self._build(
                     points, faces, owner, neighbour, patches, n_int,
                     sel, res.n_layers, res.first_height * scale, growth, clamp,
+                    pyr_before=pyr_before, drop_bnd=drop_bnd,
                 )
             except Exception as exc:  # noqa: BLE001 - keep-best fallback
                 self._log(f"[bl] attempt scale={scale} clamp={clamp}: {exc}")
@@ -413,7 +437,7 @@ class PolyBoundaryLayerEngine:
                     built["owner"], built["neigh"], built["patches"],
                 )
                 res.success = True
-                res.n_prism_cells = len(sel) * res.n_layers
+                res.n_prism_cells = int(built["n_prism_cells"])
                 res.total_thickness = built["heights"][-1]
                 res.stats.update(
                     scale=scale,
@@ -424,10 +448,14 @@ class PolyBoundaryLayerEngine:
                     n_terminator_faces=int(built["n_terminator_faces"]),
                     min_cell_volume=float(built["min_volume"]),
                     total_volume=float(built["total_volume"]),
+                    layers_per_face_min=int(built.get("layers_per_face_min", res.n_layers)),
+                    layers_per_face_max=int(built.get("layers_per_face_max", res.n_layers)),
                 )
                 self._log(
-                    f"[bl] {len(sel) * res.n_layers:,} prism cells "
-                    f"({res.n_layers} layers x {len(sel):,} wall faces), "
+                    f"[bl] {built['n_prism_cells']:,} prism cells "
+                    f"({res.n_layers} layers, local "
+                    f"{built.get('layers_per_face_min', res.n_layers)}.."
+                    f"{built.get('layers_per_face_max', res.n_layers)}), "
                     f"total thickness {res.total_thickness:.6g} m, "
                     f"min cell volume {built['min_volume']:.3g}"
                 )
@@ -493,11 +521,13 @@ class PolyBoundaryLayerEngine:
     # ------------------------------------------------------------------
 
     def _build(self, points, faces, owner, neighbour, patches, n_int,
-               sel, n_layers, first_height, growth, clamp_factor) -> dict:
+               sel, n_layers, first_height, growth, clamp_factor,
+               pyr_before: int = 0, drop_bnd=None) -> dict:
         """Build the new mesh arrays. Raises on degenerate input."""
         pts = np.asarray(points, dtype=np.float64)
         n_pts = len(pts)
         bnd = [n_int + bi for bi in sel]
+        drop_bnd = drop_bnd or frozenset()
 
         # --- wall vertices -------------------------------------------------
         wv: dict[int, None] = {}
@@ -562,6 +592,8 @@ class PolyBoundaryLayerEngine:
             for i in range(len(f_norms)):
                 for j in range(i + 1, len(f_norms)):
                     cos_max = max(cos_max, float(f_norms[i] @ f_norms[j]))
+            if len(f_norms) < 2:
+                cos_max = 1.0  # single incident face = flat corner, no fade
             theta = np.degrees(np.arccos(min(max(cos_max, -1.0), 1.0)))
             # theta = 0..180; fade linearly from full at <=60° to 5% at 150°+
             angle_fade[w] = max(0.05, min(1.0, (150.0 - theta) / 90.0))
@@ -597,6 +629,23 @@ class PolyBoundaryLayerEngine:
                 clamp_factor * d, 0.5 * min_edge[w],
             )
 
+        # --- selected-face edges (needed by the nv/nf border flattening) ----
+        # 2-manifold boundary: every edge has 1 (border) or 2 (interior)
+        # selected faces.
+        edge_sides: dict[tuple[int, int], list[int]] = {}
+        for bi, fi in enumerate(bnd):
+            f = faces[fi]
+            for k in range(len(f)):
+                a, b = f[k], f[(k + 1) % len(f)]
+                key = (a, b) if a < b else (b, a)
+                edge_sides.setdefault(key, []).append(bi)
+        bad = [k for k, lst in edge_sides.items() if len(lst) not in (1, 2)]
+        if bad:
+            raise ValueError(
+                f"{len(bad)} edge(s) with {len(edge_sides[bad[0]])} selected "
+                "faces — the boundary is not a valid 2-manifold"
+            )
+
         # --- layer heights --------------------------------------------------
         # cumulative: H_k = h1 * (r^k - 1)/(r - 1); H_total = H_n.
         # growth == 1.0 -> uniform layers.
@@ -613,28 +662,93 @@ class PolyBoundaryLayerEngine:
             for k in range(n_layers):
                 cum[k] = h1 * (k + 1)
         h_total = float(cum[-1])
-        # per-vertex total height (clamped), with proportional layer steps
-        hw = {w: min(h_total, max_h[w]) for w in wall_verts}
+        # FASE 2 — LOCAL TERMINATION: the layer COUNT varies per wall
+        # vertex.  Where the local geometry is healthy (angle_fade >= 50%),
+        # all n_layers are kept and scaled to the inversion budget (FASE 1
+        # behaviour — thin but valid).  At CONCAVE feature corners the
+        # layers would be crushed slivers that fail the face-pyramid
+        # criterion — there the count drops locally (n -> n-1 -> ... -> 1)
+        # at FULL layer size, instead of thinning everything everywhere.
+        nv0: dict[int, int] = {}
+        hw0: dict[int, float] = {}
         for w in wall_verts:
-            if hw[w] <= 0.0:
-                hw[w] = h_total * 1e-6
-        total = max(hw.values())
-        frac = cum / h_total  # 0..1 layer progression, shared by every vertex
+            mh = max_h[w]
+            if mh <= 0.0:
+                nv0[w], hw0[w] = 0, 0.0
+                continue
+            if angle_fade[w] >= 0.5:
+                nv0[w] = n_layers
+                hw0[w] = min(cum[n_layers - 1], mh)
+            else:
+                k = 0
+                while k < n_layers and cum[k] <= mh:
+                    k += 1
+                if k == 0:
+                    k = 1  # one clamped layer where even h1 does not fit
+                nv0[w] = k
+                hw0[w] = cum[k - 1] if cum[k - 1] <= mh else mh
+        # per selected face: min over its vertices — the stack top needs
+        # every vertex at layer n_f; n_f == 0 -> the face is NOT extruded
+        # (handled as an unselected face below)
+        n_wf = len(bnd)
+        nf0: dict[int, int] = {}
+        for bi, fi in enumerate(bnd):
+            m = min((nv0[v] for v in faces[fi]), default=0)
+            # flagged faces: ONE layer (never 0 — the shell must stay
+            # covered so the volume is conserved); degenerate vertices with
+            # no extrusion budget force 0 (handled as unselected below)
+            nf0[bi] = min(1, m) if bi in drop_bnd else m
+        # Consistency fixpoint: every wall vertex's layer count is clamped
+        # to the SHALLOWEST incident selected face's count.  This is what
+        # makes the variable-depth construction conforming: the stack top
+        # faces, the moved internal faces and the terminator strips all use
+        # the same layer points per vertex, so no transition band is left
+        # open at a vertex whose own budget exceeds the faces around it.
+        # The local termination still varies the count along the surface
+        # (healthy regions keep n_layers, concave regions drop layers), at
+        # the price of flattening each connected region to its minimum — a
+        # documented trade-off: the n->n-1 graduation would need per-step
+        # transition faces, which fail cell closure on the real valve.
+        nv = dict(nv0)
+        nf = nf0
+        changed = True
+        while changed:
+            changed = False
+            for bi, fi in enumerate(bnd):
+                nfb = nf[bi]
+                if nfb == 0:
+                    continue
+                for v in faces[fi]:
+                    if nv[v] > nfb:
+                        nv[v] = nfb
+                        changed = True
+            nf = {}
+            for bi, fi in enumerate(bnd):
+                m = min((nv[v] for v in faces[fi]), default=0)
+                nf[bi] = min(1, m) if bi in drop_bnd else m
+        hw = {
+            w: (hw0[w] if nv[w] == nv0[w] else
+                (cum[nv[w] - 1] if nv[w] > 0 else 0.0))
+            for w in wall_verts
+        }
+        total = max((hw[w] for w in wall_verts), default=h_total)
+        frac = cum / h_total  # 0..1 layer progression (reporting only)
 
         # --- new point allocation ------------------------------------------
-        # index (w, k): k=0 -> original point; k=1..n_layers -> extruded
+        # index (w, k): k=0 -> original point; k=1..nv[w] -> extruded
         new_pt = {}
         nxt = n_pts
         pts_list = [pts]
         for w in wall_verts:
-            hw_w = hw[w]
-            if hw_w <= 0.0:
+            n_w = normals[w]
+            nvw = nv[w]
+            if nvw == 0:
                 continue
-            n_w = normals[w]  # OUTWARD wall normal — extrude INWARD (-n_w)
-            for k in range(1, n_layers + 1):
+            frac_w = cum[:nvw] / cum[nvw - 1]  # 0..1 within the local stack
+            for k in range(1, nvw + 1):
                 new_pt[(w, k)] = nxt
                 nxt += 1
-                pts_list.append(pts[w] - n_w * (hw_w * frac[k - 1]))
+                pts_list.append(pts[w] - n_w * (hw[w] * frac_w[k - 1]))
         new_points = np.vstack(pts_list)
 
         def pt(w: int, k: int) -> int:
@@ -644,29 +758,26 @@ class PolyBoundaryLayerEngine:
 
         # --- cell numbering --------------------------------------------------
         n_cells_old = int(max(owner.max(), neighbour.max())) + 1
-        # prism cells get ids n_cells_old .. ; modified cells keep their ids
+        # prism cells get ids n_cells_old .. ; modified cells keep their ids.
+        # Each face f gets nf[bi] prisms at ids
+        # prism_start + off[bi] .. prism_start + off[bi] + nf[bi] - 1.
         prism_start = n_cells_old
-        n_wf = len(bnd)
+        off = {}
+        acc_off = 0
+        for bi in range(n_wf):
+            off[bi] = acc_off
+            acc_off += nf[bi]
+        n_prism_total = acc_off
+        if n_prism_total == 0:
+            raise ValueError("no prism cells after local layer termination")
 
         # --- edge -> (selected boundary faces) map for side-face pairing ----
         # Every edge of the selected set has either TWO selected faces (the
         # usual internal side-face pairing) or exactly ONE (the BL/non-BL
         # boundary: the prism side face becomes a boundary face assigned to
         # the adjacent unselected patch).  Zero/3+ means a non-manifold
-        # boundary — invalid input.
-        edge_sides: dict[tuple[int, int], list[int]] = {}
-        for bi, fi in enumerate(bnd):
-            f = faces[fi]
-            for k in range(len(f)):
-                a, b = f[k], f[(k + 1) % len(f)]
-                key = (a, b) if a < b else (b, a)
-                edge_sides.setdefault(key, []).append(bi)
-        bad = [k for k, lst in edge_sides.items() if len(lst) not in (1, 2)]
-        if bad:
-            raise ValueError(
-                f"{len(bad)} edge(s) with {len(edge_sides[bad[0]])} selected "
-                "faces — the boundary is not a valid 2-manifold"
-            )
+        # boundary — invalid input.  (edge_sides is built above, before the
+        # nv/nf border flattening.)
 
         # ALL boundary edges -> incident boundary faces (terminator lookup).
         # Closed 2-manifold boundary: exactly 2 incident faces per edge.
@@ -705,14 +816,18 @@ class PolyBoundaryLayerEngine:
             """Replace wall vertices with their layer-k points."""
             return [pt(v, k) if v in wall_v else v for v in f]
 
-        # 1. original internal faces: move wall vertices to the last layer.
-        #    Every output face is a COPY — the repair passes mutate the
-        #    output lists in place, and mutating an aliased input face would
-        #    corrupt the next fallback attempt's wall normals/windings.
+        def _move_face_var(f: list[int]) -> list[int]:
+            """FASE 2: move each wall vertex to its OWN last layer (nv[v])."""
+            return [pt(v, nv[v]) if v in wall_v else v for v in f]
+
+        # 1. original internal faces: move wall vertices to their last
+        #    (per-vertex) layer.  Every output face is a COPY — the repair
+        #    passes mutate the output lists in place, and mutating an
+        #    aliased input face would corrupt the next fallback attempt.
         for fi in range(n_int):
             f = faces[fi]
             if any(v in wall_v for v in f):
-                new_faces.append(_move_face(f, n_layers))
+                new_faces.append(_move_face_var(f))
             else:
                 new_faces.append(list(f))
             new_own.append(int(owner[fi]))
@@ -725,7 +840,7 @@ class PolyBoundaryLayerEngine:
         for bi, fi in enumerate(bnd):
             _gil_yield(bi, 256)
             f = faces[fi]
-            for k in range(n_layers):
+            for k in range(nf[bi]):
                 base = [pt(v, k) for v in f]
                 top = [pt(v, k + 1) for v in f]
                 verts = base + top
@@ -737,11 +852,13 @@ class PolyBoundaryLayerEngine:
         # interior cell toward the prism — the same direction as the wall
         # face normal, so the top face keeps the wall face's winding.
         for bi, fi in enumerate(bnd):
+            if nf[bi] == 0:
+                continue
             _gil_yield(bi, 256)
             f = faces[fi]
-            top = [pt(v, n_layers) for v in f]
+            top = [pt(v, nf[bi]) for v in f]
             own_c = int(owner[fi])
-            nb_c = prism_start + bi * n_layers + (n_layers - 1)
+            nb_c = prism_start + off[bi] + nf[bi] - 1
             poly = list(top)
             nrm = _newell(new_points, poly)
             wall_nrm = _newell(new_points, [pt(v, 0) for v in f])
@@ -756,10 +873,10 @@ class PolyBoundaryLayerEngine:
         for bi, fi in enumerate(bnd):
             _gil_yield(bi, 256)
             f = faces[fi]
-            for k in range(1, n_layers):
+            for k in range(1, nf[bi]):
                 poly = [pt(v, k) for v in f]
-                own_c = prism_start + bi * n_layers + (k - 1)
-                nb_c = prism_start + bi * n_layers + k
+                own_c = prism_start + off[bi] + (k - 1)
+                nb_c = prism_start + off[bi] + k
                 nrm = _newell(new_points, poly)
                 fc = new_points[poly].mean(axis=0)
                 if float(nrm @ (fc - prism_cent[bi, k - 1])) < 0.0:
@@ -768,19 +885,33 @@ class PolyBoundaryLayerEngine:
                 new_own.append(own_c)
                 new_nb.append(nb_c)
 
-        # side faces: prism(f, k) <-> prism(f', k) across each shared edge.
-        # Each wall-face edge is emitted ONCE (from the lower-index face side)
-        # — emitting it from both incident faces would create two coincident
-        # faces on the same edge.
-        # terminator side faces: at the BL/non-BL boundary the prism side
-        # quad lies IN THE PLANE of the adjacent (unselected) wall face —
-        # it is that wall band, so it becomes a BOUNDARY face owned by the
-        # prism and assigned to the patch of the adjacent face (FASE 1).
-        # The unselected wall face itself gets its wall vertices moved to
-        # the last layer (below), so its edges still match the moved
-        # internal faces and the top faces.
+        # side faces: prism(f, k) <-> prism(f', k) across each shared edge
+        # for k < min(nf_f, nf_g).  Where the two stacks differ in depth
+        # (FASE 2 local termination), the DEEPER stack's extra layers become
+        # internal transition faces between the deeper prism and the ORIGINAL
+        # owner cell of the shallower face — the step is closed against the
+        # neighbouring interior cell, never as a spurious boundary surface.
+        # Each wall-face edge is emitted ONCE (from the lower-index face side).
+        # terminator (adjacent face NOT extruded, nf == 0): at the BL/non-BL
+        # boundary the prism side quad lies IN THE PLANE of the adjacent wall
+        # face — it is that wall band, so it becomes a BOUNDARY face owned by
+        # the prism and assigned to the patch of the adjacent face (FASE 1);
+        # the band between the local strip depth and the moved depth of the
+        # unselected face is an INTERNAL transition face (FASE 2 band).
         term_by_patch: dict[int, list[tuple[list[int], int]]] = {}
         n_terminators = 0
+
+        def _emit_side(poly: list[int], own_c: int, nb_c: int,
+                       cent: np.ndarray) -> None:
+            """Append an internal face, orienting the normal geometrically
+            (away from the neighbour-side prism centroid)."""
+            nrm = _newell(new_points, poly)
+            fc = new_points[poly].mean(axis=0)
+            if float(nrm @ (fc - cent)) < 0.0:
+                poly.reverse()
+            new_faces.append(poly)
+            new_own.append(own_c)
+            new_nb.append(nb_c)
 
         prog_stride = max(1, n_wf // 20)
         for bi, fi in enumerate(bnd):
@@ -790,19 +921,20 @@ class PolyBoundaryLayerEngine:
                     f"[bl] building prism side faces "
                     f"{int(100 * bi / max(1, n_wf))}%..."
                 )
+            nf_bi = nf[bi]
+            if nf_bi == 0:
+                continue
             f = faces[fi]
             m = len(f)
             for e in range(m):
                 va, vb = f[e], f[(e + 1) % m]
                 key = (va, vb) if va < vb else (vb, va)
                 others = [x for x in edge_sides[key] if x != bi]
-                if not others:
-                    # terminator: the BL region ends at this edge.  The
-                    # adjacent unselected boundary face belongs to a patch
-                    # without BL — every layer's side quad is a BOUNDARY
-                    # face owned by the prism, appended to that patch.
-                    # (bnd_edge_faces holds ORIGINAL boundary indices, so
-                    # the current face is sel[bi], not bi.)
+                if not others or nf[others[0]] == 0:
+                    # terminator: the adjacent face is NOT extruded (it is
+                    # on a patch without BL, or FASE 2 dropped it locally
+                    # with nf==0).  (bnd_edge_faces holds ORIGINAL boundary
+                    # indices, so the current face is sel[bi], not bi.)
                     uf = [x for x in bnd_edge_faces.get(key, ()) if x != sel[bi]]
                     if len(uf) != 1:
                         raise ValueError(
@@ -810,7 +942,7 @@ class PolyBoundaryLayerEngine:
                             "unselected incident faces"
                         )
                     pi_target = int(patch_of[uf[0]])
-                    for k in range(n_layers):
+                    for k in range(nf_bi):
                         poly = [
                             pt(va, k), pt(vb, k),
                             pt(vb, k + 1), pt(va, k + 1),
@@ -822,27 +954,27 @@ class PolyBoundaryLayerEngine:
                         if float(nrm @ (fc - prism_cent[bi, k])) < 0.0:
                             poly.reverse()
                         term_by_patch.setdefault(pi_target, []).append(
-                            (poly, prism_start + bi * n_layers + k)
+                            (poly, prism_start + off[bi] + k)
                         )
                         n_terminators += 1
                     continue
                 obi = others[0]
                 if bi > obi:
                     continue  # the other incident face emits this side face
-                for k in range(n_layers):
+                # both faces are extruded.  The consistency fixpoint makes
+                # the layer counts of adjacent faces EQUAL (nf_bi == nf_obi:
+                # every vertex of a face has nv == nf[face]), so every layer
+                # pairs prism(f,k) <-> prism(g,k) — the per-face graduation
+                # would need transition faces that fail closure on real
+                # concave meshes (documented in CONTRIBUTO).
+                for k in range(nf_bi):
                     poly = [
                         pt(va, k), pt(vb, k),
                         pt(vb, k + 1), pt(va, k + 1),
                     ]
-                    own_c = prism_start + bi * n_layers + k
-                    nb_c = prism_start + obi * n_layers + k
-                    nrm = _newell(new_points, poly)
-                    fc = new_points[poly].mean(axis=0)
-                    if float(nrm @ (fc - prism_cent[bi, k])) < 0.0:
-                        poly.reverse()
-                    new_faces.append(poly)
-                    new_own.append(own_c)
-                    new_nb.append(nb_c)
+                    own_c = prism_start + off[bi] + k
+                    nb_c = prism_start + off[obi] + k
+                    _emit_side(poly, own_c, nb_c, prism_cent[bi, k])
 
         # sort internal faces by (owner, neighbour) — OpenFOAM convention
         io = np.array(new_own, dtype=np.int64)
@@ -876,11 +1008,19 @@ class PolyBoundaryLayerEngine:
                 b = p["startFace"] - n_int + bi
                 f = faces[n_int + b]
                 if b in sel_set:
-                    # prism bottom (at the wall, layer 0 = original)
-                    pf.append(list(f))
-                    po.append(prism_start + sel_pos[b] * n_layers)
+                    sbi = sel_pos[b]
+                    if nf[sbi] == 0:
+                        # FASE 2: face dropped locally (0 layers) — keep it
+                        # as an unselected wall face, vertices to their own
+                        # last layer
+                        pf.append(_move_face_var(f))
+                        po.append(int(owner[n_int + b]))
+                    else:
+                        # prism bottom (at the wall, layer 0 = original)
+                        pf.append(list(f))
+                        po.append(prism_start + off[sbi])
                 else:
-                    pf.append(_move_face(f, n_layers))
+                    pf.append(_move_face_var(f))
                     po.append(int(owner[n_int + b]))
             for poly, own_c in term_by_patch.get(pi, ()):
                 pf.append(poly)
@@ -929,6 +1069,10 @@ class PolyBoundaryLayerEngine:
             "total_volume": None,
             "min_volume": None,
             "n_terminator_faces": built_terminators,
+            "n_prism_cells": n_prism_total,
+            "layers_per_face_min": min(nf.values()) if nf else 0,
+            "layers_per_face_max": max(nf.values()) if nf else 0,
+            "pyr_before": pyr_before,
         }
 
     # ------------------------------------------------------------------
@@ -981,9 +1125,17 @@ class PolyBoundaryLayerEngine:
         # out of its owner's centroid.  This is what makes the output pass
         # checkMesh on sharp features (twisted rim cells fail here even when
         # closed) — the scale fallback then thins the layers until it holds.
+        # FASE 2: a concave-feature INPUT (valve) already violates the
+        # convexity-based check; the BL is valid if it does not ADD
+        # violations (the local layer termination drops the layers where
+        # they would make things worse).
         n_pyr = _pyramid_violations(pts, faces, owner, neigh, n_int, n_cells)
-        if n_pyr:
-            return False, f"{n_pyr} faces violate the face-pyramid criterion"
+        pyr_before = built.get("pyr_before", 0)
+        if n_pyr > pyr_before:
+            return False, (
+                f"{n_pyr} faces violate the face-pyramid criterion "
+                f"(input had {pyr_before})"
+            )
 
         used = set()
         for f in faces:

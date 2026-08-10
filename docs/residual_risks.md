@@ -61,10 +61,20 @@ source of truth.
   valvola (residuo finale 4.6e-6, continuity error 1.6% del flusso, volume
   0.00%), quindi il difetto concavo (852 facce "incorrectly oriented",
   checkMesh non-OK) è un **limite documentato**, non un bug: FASE 3 non
-  necessaria. Resta aperta la FASE 2 (terminazione locale dei layer): sulle
-  geometrie con difetti concavi pre-esistenti (valvola) il BL fallisce
-  pulito con mesh invariata — il fallback globale su 5 scale è ancora il
-  comportamento attuale, la terminazione locale è il passo successivo.
+  necessaria.
+- **FASE 2 (terminazione locale dei layer, 2026-08-10)**: macchina
+  implementata (conteggio per-vertice nv basato su angle_fade, conteggio per
+  faccia, fixpoint di consistenza che rende il conteggio uniforme per
+  componente connessa, gate piramidi rilassato `n_pyr_after <= n_pyr_before`,
+  facce violate dell'input ridotte a 1 layer) e verificata su mesh sane
+  (cubo 6/6: chiusura 0 celle, volume 1e-6; gate FASE 1 ri-verificato PASS).
+  Sulle geometrie con difetti concavi pre-esistenti (valvola) il BL fallisce
+  ancora pulito con mesh invariata: la chiusura non regge in nessuna delle
+  strategie misurate (199 celle non chiuse nella costruzione non vincolata;
+  63.252 nel fixpoint; il drop a 0 layer perde il volume). Causa radice:
+  angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
+  concavità delle celle duali non è rilevabile dalle normali di parete.
+  Il fallback globale su 5 scale resta il comportamento della valvola.
 
 ## Viewer
 

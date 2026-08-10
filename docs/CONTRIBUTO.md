@@ -23,8 +23,11 @@ CONTRIBUTO = {
     sono chiuse con numeri (§3 megaprompt). Il mesher nativo cartesiano
     (hex_poly_dual) è un ramo sperimentale separato (menu Tools), non il
     percorso di produzione qui trattato. Il mio lavoro copre FASE 0 (decisione
-    sul difetto) e FASE 1 (BL selettivo per patch); FASE 2/3 e il collasso
-    delle facce di bordo (collapse_smooth_edges) sono dell'agente parallelo.
+    sul difetto), FASE 1 (BL selettivo per patch) e la macchina FASE 2
+    (conteggio layer variabile); la graduazione n->n-1->...->0 completa resta
+    limitata dalla chiusura sulle mesh concave reali (numeri in
+    fase_2_esito). Il collasso delle facce di bordo (collapse_smooth_edges)
+    è dell'agente parallelo.
     """,
 
     "fase_0_esito": """
@@ -40,6 +43,47 @@ CONTRIBUTO = {
     della valvola risolve, converge e conserva la portata MEGLIO del tet da
     cui deriva. FASE 3 (taglio planare) NON va fatta; stop rule rispettata
     perché la premessa è falsa. Report completo: docs/poly_solver_validation.md.
+    """,
+
+    "fase_2_esito": """
+    Macchina FASE 2 (conteggio layer variabile / terminazione locale)
+    implementata e verificata su mesh sane; il gate valvola NON è chiuso,
+    con numeri:
+    - bl_poly.py: conteggio per-vertice nv (criterio angle_fade: n_layers se
+      fade>=0.5, conteggio che rientra nel budget se concavo), conteggio per
+      faccia nf = min sui vertici, fixpoint di consistenza (nv[v] = min delle
+      facce incidenti — rende il conteggio uniforme per componente connessa e
+      garantisce la chiusura), gate piramidi RILASSATO (il BL è valido se NON
+      AGGIUNGE violazioni: n_pyr_after <= n_pyr_before), facce segnalate come
+      concave (violazioni piramide dell'INPUT) ridotte a 1 layer.
+    - Verificato: cubo 6/6 test (chiusura 0 celle, volume 1e-6, conteggi
+      derivati, anche con facce forzate a 1 layer — n_prism_cells == n_facce);
+      gate FASE 1 ri-verificato PASS (cilindro e cubo: BL ok, conteggio
+      prismi ok, checkMesh Mesh OK — la regressione è preservata perché le
+      mesh sane hanno fade>=0.5 ovunque e nv=n_layers).
+    - Gate valvola NON raggiunto (tre strategie misurate, tutte falliscono la
+      CHIUSURA — non solo il criterio piramidi):
+        * costruzione non vincolata (gradi diversi per facce adiacenti +
+          facce di transizione): 199 celle non chiuse (rel 9.5e-1), 1722 s;
+        * fixpoint (conteggio uniforme per componente): 63.252 celle non
+          chiuse (rel 9.8e-1), 1397 s;
+        * facce violate droppate a 0 layer: volume non conservato (0.984 vs
+          1.0 — lo shell sotto le facce droppate resta vuoto).
+    - Causa radice misurata: angle_fade >= 0.8 su TUTTI i 226.538 vertici di
+      parete della valvola — la concavità delle celle duali NON è rilevabile
+      dal fade delle normali di parete (le quad di bordo stanno su superfici
+      lisce); i 1007 difetti piramide dell'input (937 facce di bordo, 64
+      patch) sono l'unico rilevatore, ma estrudere O saltare quelle facce
+      rompe chiusura o volume. La graduazione n->n-1->...->0 richiede le
+      facce di transizione che chiudono il gradino — implementate e rimosse
+      perché irraggiungibili (l'invariante del fixpoint le rende codice
+      morto) e non verificabili sulla valvola.
+    - Verdetto onesto: la terminazione locale funziona per la concavità
+      rilevabile dal fade (verificata a livello di meccanismo sul cubo), ma
+      NON chiude G2 sulla valvola. Il fallback globale su 5 scale resta il
+      comportamento della valvola (mesh invariata, BL assente) — con il gate
+      rilassato e la segnalazione delle facce violate ora il fallback ha un
+      percorso in più, ma la chiusura resta il collo di bottiglia.
     """,
 
     "cosa_ho_implementato": """
@@ -91,11 +135,13 @@ CONTRIBUTO = {
     """,
 
     "limiti_residui": """
-    - FASE 2 (terminazione locale dei layer n->n-1->...->0) NON fatta in
-      questa sessione (è dell'agente parallelo / lavoro futuro). Conseguenza
-      misurata: sulla valvola (difetti concavi pre-esistenti) il BL fallisce
-      pulito su tutte le scale e la mesh resta senza layer — il fallback
-      globale su 5 scale azzera il BL ovunque per colpa di una zona.
+    - G2 NON chiuso sulla valvola: la macchina FASE 2 (conteggio variabile,
+      gate piramidi rilassato, facce concave segnalate) è implementata e
+      verificata su mesh sane (cubo 6/6, gate FASE 1 PASS), ma la CHIUSURA
+      fallisce sulla valvola in tutte le strategie misurate (199 / 63.252
+      celle non chiuse; il drop a 0 layer perde il volume). La concavità
+      della valvola non è rilevabile dal fade (misurato: fade >= 0.8 su
+      tutti i 226.538 vertici) — dettagli e numeri in fase_2_esito.
     - FASE 3 non fatta: la FASE 0 ha mostrato che non serve (limite
       documentato).
     - Il test lento test_valve_fixture_bl_invariants (BL full sulla fixture
