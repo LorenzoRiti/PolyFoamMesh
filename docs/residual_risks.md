@@ -43,10 +43,28 @@ source of truth.
   definitive all-ours CFD mesher (poly interior + prism boundary layers).
   The GUI now keeps BL enabled on the "Polyhedral (CFD)" path: the
   converter still only ever sees pure tetrahedra, the layers are added
-  after conversion. Known limitations: BL is applied to the whole boundary
-  (partial-patch BL would leave non-manifold seams — auto-closes instead),
-  and on severely concave-feature geometry (the valve fixture) the engine
-  fails cleanly with the mesh left unchanged.
+  after conversion.
+- **BL selettivo per patch (FASE 1, 2026-08-10)**: `core/bl_poly.py` non
+  auto-chiude più la selezione su tutto il boundary. Con `patch_names`
+  (default del runner: solo patch `wall` / nome *wall* / ruoli geometrici
+  da `infer_patch_roles`), le facce laterali dei prismi al bordo della zona
+  BL giacciono nel piano della parete adiacente e diventano **facce di
+  boundary della patch senza BL** (possedute dai prismi); le facce di parete
+  non selezionate muovono i vertici condivisi all'ultimo layer. Verifica
+  reale (`tools/bench_bl_poly_partial.py`, checkMesh WSL): cilindro con
+  patch nominate inlet/outlet/wall → BL solo su wall, 72 prismi =
+  3 layer × 24 facce, `Mesh OK`; cubo duct idem (81 celle, skew 2.18,
+  NOmax 44.8, `Mesh OK`). `n_prism_cells == n_layers × facce_di_parete`
+  derivato dal mesh di ingresso, mai hardcoded.
+- **Solver sulla valvola (FASE 0, 2026-08-10)**: vedi
+  `docs/poly_solver_validation.md` — potentialFoam converge sulla poly della
+  valvola (residuo finale 4.6e-6, continuity error 1.6% del flusso, volume
+  0.00%), quindi il difetto concavo (852 facce "incorrectly oriented",
+  checkMesh non-OK) è un **limite documentato**, non un bug: FASE 3 non
+  necessaria. Resta aperta la FASE 2 (terminazione locale dei layer): sulle
+  geometrie con difetti concavi pre-esistenti (valvola) il BL fallisce
+  pulito con mesh invariata — il fallback globale su 5 scale è ancora il
+  comportamento attuale, la terminazione locale è il passo successivo.
 
 ## Viewer
 

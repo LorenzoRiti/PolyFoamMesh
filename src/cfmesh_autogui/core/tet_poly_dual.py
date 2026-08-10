@@ -162,6 +162,9 @@ class TetPolyDualConverter:
         fix_nonplanar_faces: str = "none",
         planarity_rel_tol: float = 1e-6,
         planarize_iters: int = 20,
+        collapse_smooth_edges: bool = False,
+        boundary_feature_angle: float = 90.0,
+        collapse_volume_tolerance: float = 0.05,
     ):
         """
         median_faces
@@ -243,6 +246,60 @@ class TetPolyDualConverter:
             measurement tool (default 1e-6 of the bounding-box diagonal).
         planarize_iters
             Max projection passes for fix_nonplanar_faces="planarize".
+        collapse_smooth_edges
+            False (default): the dual boundary is the EXACT subdivision of the
+                  primal surface — each boundary triangle (a,b,c) becomes three
+                  planar quads, so the surface is reproduced bit-for-bit and the
+                  volume is conserved to ~1e-16.  A dual cell therefore carries
+                  one boundary quad per incident boundary triangle.
+            True: polyDualMesh / STAR-CCM+ semantics — ONE dual boundary face
+                  per primal boundary vertex, walked through the incident
+                  boundary-face centroids, with a midpoint kept only on FEATURE
+                  edges and a fan/arc split at feature edges and points.  Smooth
+                  edges are collapsed: no midpoint, no seam vertex.
+
+            Why it matters beyond aesthetics: the boundary face count drops by
+            roughly 3x (one polygon per boundary vertex instead of three quads
+            per boundary triangle), and `core/bl_poly.py` extrudes ONE prism
+            stack per boundary face — so the collapsed dual is what makes the
+            boundary layer a set of polygonal prism columns (the commercial
+            topology) instead of ~3x as many quad-based prisms.
+
+            The price, stated plainly: the collapsed boundary runs through the
+            boundary-face centroids, so it no longer tiles the primal surface
+            exactly.  The dual volume differs from the primal by a small surface
+            offset (measured -0.19% / -0.46% on the two venturi cases by the
+            equivalent path in `hex_poly_dual.py`) — exactly the same behaviour
+            as OpenFOAM's polyDualMesh.  The invariants that still hold are
+            closure, positive volume and owner<neighbour; the exact-tiling
+            contract does NOT.  Volume conservation is therefore checked against
+            a relaxed tolerance in this mode (see `_validate`).
+
+            Mutually exclusive with `wedge_cells` and `split_rounds > 0`: both
+            of those subdivide the per-corner boundary quads that this mode
+            replaces.  When collapse is on they are disabled with a log line
+            rather than silently ignored.
+        boundary_feature_angle
+            Dihedral angle (degrees) at or above which a boundary edge counts as
+            a FEATURE edge for `collapse_smooth_edges` (default 90.0, the
+            polyDualMesh default).  Non-manifold edges and patch seams are
+            always feature edges regardless of angle.  Distinct from
+            `feature_angle`, which drives the (off-by-default) vertex-star split.
+        collapse_volume_tolerance
+            Maximum |dual - primal| / primal volume accepted in collapse mode
+            (default 0.05 = 5%).  The surface offset is a second-order effect:
+            MEASURED on a cube lattice mapped to a ball (the worst case — a
+            sphere resolved by only n cells across), the drift falls as O(h^2):
+            n=3 -> -12.2%, n=4 -> -7.3%, n=6 -> -3.5%, n=8 -> -2.0%,
+            n=10 -> -1.3% (drift * n^2 is constant to within 20%).  On a flat-
+            faced surface the drift is exactly 0 (the centroid dual tiles a
+            plane).  Production meshes resolve their curvature with far more
+            than 10 cells, which is why the equivalent path in
+            `hex_poly_dual.py` measured -0.19% / -0.46% on the two venturi
+            cases.  A drift above this tolerance means either an extremely
+            coarse mesh (raise the tolerance deliberately) or a broken walk
+            (do not raise it).  Ignored when `collapse_smooth_edges` is False,
+            where the tiling is exact and the tolerance stays 1e-6.
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -267,6 +324,32 @@ class TetPolyDualConverter:
         self._fix_nonplanar_faces = fix_nonplanar_faces
         self._planarity_rel_tol = float(planarity_rel_tol)
         self._planarize_iters = int(planarize_iters)
+        self._collapse = bool(collapse_smooth_edges)
+        self._boundary_feature_angle = float(boundary_feature_angle)
+        if not 0.0 < collapse_volume_tolerance < 1.0:
+            raise ValueError(
+                "collapse_volume_tolerance must be in (0, 1), got "
+                f"{collapse_volume_tolerance!r}"
+            )
+        self._collapse_vol_tol = float(collapse_volume_tolerance)
+        if self._collapse:
+            # Both subdivide the per-corner boundary quads that the collapsed
+            # walk replaces; keeping them would emit two different boundary
+            # tessellations for the same surface.  Disabled loudly, never
+            # silently.
+            if self._wedge_cells:
+                self._wedge_cells = False
+                logger.info(
+                    "tet_poly_dual: wedge_cells disabled — incompatible with "
+                    "collapse_smooth_edges (per-corner boundary quads are "
+                    "replaced by the collapsed per-vertex walk)"
+                )
+            if self._split_rounds:
+                self._split_rounds = 0
+                logger.info(
+                    "tet_poly_dual: split_rounds disabled — incompatible with "
+                    "collapse_smooth_edges"
+                )
 
     # ------------------------------------------------------------------
     # helpers
@@ -609,10 +692,66 @@ class TetPolyDualConverter:
                 f"{int((patch_of_bnd < 0).sum())} boundary faces belong to no patch "
                 "— refusing to invent a defaultFaces patch."
             )
-        self._log(
-            f"[poly 4/9] {len(patches)} boundary patch(es), "
-            f"{3 * n_bnd:,} exact surface sub-faces to emit"
-        )
+        # ---- boundary feature edges / points (collapse mode only) ----------
+        # polyDualMesh's calcFeatures rule: a boundary edge is a FEATURE edge
+        # when it is non-manifold, joins two different patches, or its two
+        # boundary faces meet at a dihedral angle >= boundary_feature_angle.
+        # A boundary vertex with MORE THAN TWO incident feature edges is a
+        # feature POINT (a corner, where the dual face fans out).
+        bnd_e_faces: dict[int, list[int]] = {}
+        feat_edge = np.zeros(n_edges, dtype=bool)
+        feat_vertex = np.zeros(n_pi, dtype=bool)
+        n_feat_edges = n_feat_verts = 0
+        if self._collapse:
+            fe_bnd = face_edge[bnd_face_ids]           # (n_bnd, 3) edge ids
+            for bi in range(n_bnd):
+                for c in range(3):
+                    bnd_e_faces.setdefault(int(fe_bnd[bi, c]), []).append(bi)
+            bnd_normals = 0.5 * np.cross(
+                points[tri[bnd_face_ids][:, 1]] - points[tri[bnd_face_ids][:, 0]],
+                points[tri[bnd_face_ids][:, 2]] - points[tri[bnd_face_ids][:, 0]],
+            )
+            bnd_nmag = np.linalg.norm(bnd_normals, axis=1)
+            cos_limit = float(np.cos(np.deg2rad(self._boundary_feature_angle)))
+            pob = patch_of_bnd
+            feat_count = np.zeros(n_pi, dtype=np.int64)
+            for ei, bis in bnd_e_faces.items():
+                is_feature = False
+                if len(bis) != 2:
+                    is_feature = True            # non-manifold surface edge
+                else:
+                    f1, f2 = bis
+                    if pob[f1] != pob[f2]:
+                        is_feature = True        # patch seam
+                    elif bnd_nmag[f1] < 1e-300 or bnd_nmag[f2] < 1e-300:
+                        is_feature = True        # degenerate triangle
+                    else:
+                        cosang = float(bnd_normals[f1] @ bnd_normals[f2]) / (
+                            bnd_nmag[f1] * bnd_nmag[f2]
+                        )
+                        if cosang < cos_limit:
+                            is_feature = True    # sharp (>= feature angle)
+                if is_feature:
+                    feat_edge[ei] = True
+                    key = uniq_key[ei]
+                    feat_count[key // n_pi] += 1
+                    feat_count[key % n_pi] += 1
+            feat_vertex[feat_count > 2] = True
+            n_feat_edges = int(feat_edge.sum())
+            n_feat_verts = int(feat_vertex.sum())
+
+        if self._collapse:
+            self._log(
+                f"[poly 4/9] {len(patches)} boundary patch(es); collapse mode: "
+                f"{n_feat_edges:,} feature edges, {n_feat_verts:,} feature points "
+                f"(featureAngle={self._boundary_feature_angle:.0f} deg) — one dual "
+                f"boundary face per boundary vertex"
+            )
+        else:
+            self._log(
+                f"[poly 4/9] {len(patches)} boundary patch(es), "
+                f"{3 * n_bnd:,} exact surface sub-faces to emit"
+            )
 
         return SimpleNamespace(
             points=points, tri=tri, owner=owner, neigh=neigh, patches=patches,
@@ -623,6 +762,8 @@ class TetPolyDualConverter:
             e_face_s=e_face_s, starts=starts, ends=ends, n_edges=n_edges,
             uniq_key=uniq_key, edge_mid=edge_mid, face_edge=face_edge,
             vf_ptr=vf_ptr, vf_idx=vf_idx, patch_of_bnd=patch_of_bnd,
+            bnd_e_faces=bnd_e_faces, feat_edge=feat_edge, feat_vertex=feat_vertex,
+            n_feat_edges=n_feat_edges, n_feat_verts=n_feat_verts,
         )
 
     # ------------------------------------------------------------------
@@ -722,6 +863,9 @@ class TetPolyDualConverter:
         starts_l = P.starts.tolist()
         ends_l = P.ends.tolist()
         uniq_l = P.uniq_key.tolist()
+
+        collapse = self._collapse
+        feat_edge_l = P.feat_edge.tolist() if collapse else []
 
         int_faces: list[list[int]] = []
         int_own: list[int] = []
@@ -845,13 +989,21 @@ class TetPolyDualConverter:
                 pa = [ba] * n
                 pb = [bb] * n
 
-            mid = pt_edge(ei)
+            # Collapse mode: a SMOOTH boundary edge loses its midpoint — the
+            # seam face survives but without the seam vertex, so the two
+            # endpoint dual cells meet directly through the boundary.  This is
+            # exactly polyDualMesh's collapse, and it is what makes the dual
+            # boundary face of a vertex a single polygon instead of a fan of
+            # per-triangle quads.  Feature edges keep their midpoint.
+            drop_mid = collapse and not closed and not feat_edge_l[ei]
+            mid = -1 if drop_mid else pt_edge(ei)
             i = 0
             while i < n:
                 j = i
                 while j + 1 < n and pa[j + 1] == pa[i] and pb[j + 1] == pb[i]:
                     j += 1
-                poly = [mid, pt_face(link[i]), ring[i]]
+                poly = ([pt_face(link[i]), ring[i]] if drop_mid
+                        else [mid, pt_face(link[i]), ring[i]])
                 for k in range(i + 1, j + 1):
                     if median:
                         poly.append(pt_face(link[k]))
@@ -903,13 +1055,25 @@ class TetPolyDualConverter:
             if n_cut:
                 self._log(f"[poly 5/9] {n_cut:,} extra faces along the feature cuts")
 
-        # ---- boundary dual faces: exact subdivision of the surface ------
+        # ---- boundary dual faces ----------------------------------------
         bnd_by_patch: list[list[list[int]]] = [[] for _ in P.patches]
         bown_by_patch: list[list[int]] = [[] for _ in P.patches]
         bnd_tri_l = P.bnd_tri.tolist()
         pob_l = P.patch_of_bnd.tolist()
         fe_all = P.face_edge
-        for bi in range(P.n_bnd):
+        if collapse:
+            # polyDualMesh semantics: ONE face per boundary vertex.
+            self._build_boundary_collapsed(
+                P, xyz, pt_face, pt_edge, pt_vert, base_l,
+                bnd_by_patch, bown_by_patch,
+            )
+            self._log(
+                f"[poly 5/9] collapsed boundary: "
+                f"{sum(len(b) for b in bnd_by_patch):,} dual boundary faces "
+                f"(was {3 * P.n_bnd:,} per-corner quads)"
+            )
+        # exact per-corner subdivision (default mode); empty when collapsed
+        for bi in (() if collapse else range(P.n_bnd)):
             if bi % 4096 == 0:
                 time.sleep(0)  # release the GIL during boundary face emission
             f = P.n_int_primal + bi
@@ -984,6 +1148,182 @@ class TetPolyDualConverter:
             n_int=n_int, patches=new_patches, n_cells=n_cells,
             cell_vertex=cell_vertex,
         )
+
+    # ------------------------------------------------------------------
+    # P5b: collapsed boundary dual faces (polyDualMesh semantics)
+    # ------------------------------------------------------------------
+
+    def _build_boundary_collapsed(
+        self, P, xyz, pt_face, pt_edge, pt_vert, base_l,
+        bnd_by_patch, bown_by_patch,
+    ) -> None:
+        """One dual boundary face per primal boundary vertex.
+
+        The face is the rotational walk around the vertex through the incident
+        boundary-triangle centroids, with a midpoint inserted only where the
+        walk crosses a FEATURE edge.  Smooth edges are collapsed (no midpoint,
+        no seam vertex), so a vertex of valence k yields ONE polygon of k
+        points instead of k quads.
+
+        Faithful to OpenFOAM's ``polyDualMesh`` (``dualPatch`` /
+        ``collectPatchInternalFace`` / ``splitFace``) and to the already
+        verified port in ``core/hex_poly_dual.py``, with one deliberate
+        difference: each split sub-face is assigned the patch of the boundary
+        faces it actually spans, rather than the patch of the walk's start
+        face.  Patch seams are feature edges, so an arc between two consecutive
+        feature midpoints lies wholly inside one patch — taking the start
+        face's patch for every sub-face would misfile the sub-faces on the far
+        side of a seam.
+        """
+        n_pi = P.n_pi
+        n_int_primal = P.n_int_primal
+        bnd_tri_l = P.bnd_tri.tolist()
+        fe_bnd = P.face_edge[P.bnd_face_ids].tolist()
+        pob_l = P.patch_of_bnd.tolist()
+        feat_edge = P.feat_edge
+        feat_vertex = P.feat_vertex
+        bnd_e_faces = P.bnd_e_faces
+        uniq = P.uniq_key
+        pts_in = P.points
+
+        # incident boundary edges per boundary vertex, and an outward
+        # reference normal (primal boundary winding is outward)
+        vert_edges: dict[int, list[int]] = {}
+        vert_out: dict[int, np.ndarray] = {}
+        for ei, bis in bnd_e_faces.items():
+            key = int(uniq[ei])
+            a, b = key // n_pi, key % n_pi
+            vert_edges.setdefault(a, []).append(ei)
+            vert_edges.setdefault(b, []).append(ei)
+        for bi in range(P.n_bnd):
+            vs = bnd_tri_l[bi]
+            nrm = 0.5 * np.cross(
+                pts_in[vs[1]] - pts_in[vs[0]], pts_in[vs[2]] - pts_in[vs[0]],
+            )
+            for v in vs:
+                if v in vert_out:
+                    vert_out[v] += nrm
+                else:
+                    vert_out[v] = nrm.copy()
+
+        guard = 4 * len(bnd_e_faces) + 4
+        for n_done, v in enumerate(sorted(vert_edges)):
+            if n_done % 4096 == 0:
+                time.sleep(0)  # release the GIL — the Qt UI thread starves otherwise
+            eis = vert_edges[v]
+            e0 = eis[0]
+            bis0 = bnd_e_faces.get(e0)
+            if bis0 is None or len(bis0) != 2:
+                raise RuntimeError(
+                    f"Non-manifold boundary edge at vertex {v} "
+                    f"({0 if bis0 is None else len(bis0)} incident boundary "
+                    "faces, expected 2) — the input surface is not a closed "
+                    "2-manifold."
+                )
+            cur_bi = bis0[0]
+            cur_edge = e0
+            dual_face: list[int] = []
+            face_patch: list[int] = []   # patch of each face-centroid entry
+            feat_idx: list[int] = []     # positions of feature midpoints
+            while True:
+                vs = bnd_tri_l[cur_bi]
+                dual_face.append(pt_face(n_int_primal + cur_bi))
+                face_patch.append(pob_l[cur_bi])
+                c = vs.index(v)
+                fe = fe_bnd[cur_bi]
+                e_next = int(fe[c])       # edge (v_c, v_c+1)
+                e_prev = int(fe[c - 1])   # edge (v_c-1, v_c)
+                if cur_edge not in (e_next, e_prev):
+                    raise RuntimeError(
+                        f"Boundary walk desync at vertex {v} (face {cur_bi})"
+                    )
+                new_edge = e_next if cur_edge == e_prev else e_prev
+                if feat_edge[new_edge]:
+                    dual_face.append(pt_edge(new_edge))
+                    face_patch.append(-1)
+                    feat_idx.append(len(dual_face) - 1)
+                if new_edge == e0:
+                    break
+                bis = bnd_e_faces.get(new_edge)
+                if bis is None or len(bis) != 2:
+                    raise RuntimeError(
+                        f"Non-manifold boundary edge at vertex {v} — the input "
+                        "surface is not a closed 2-manifold."
+                    )
+                cur_bi = bis[0] if bis[1] == cur_bi else bis[1]
+                cur_edge = new_edge
+                if len(dual_face) > guard:
+                    raise RuntimeError(
+                        f"Boundary walk around vertex {v} did not terminate."
+                    )
+
+            # orient outward (away from the dual cell of v)
+            ref = vert_out.get(v)
+            if ref is None or float(np.linalg.norm(ref)) < 1e-300:
+                raise RuntimeError(
+                    f"Boundary vertex {v} has no outward reference normal."
+                )
+            if _newell_dot(xyz, dual_face, ref) < 0.0:
+                dual_face.reverse()
+                face_patch.reverse()
+                m = len(dual_face) - 1
+                feat_idx = [m - i for i in reversed(feat_idx)]
+
+            cell = base_l[v]
+
+            def _patch_of(sub_positions: list[int]) -> int:
+                for k in sub_positions:
+                    if face_patch[k] >= 0:
+                        return face_patch[k]
+                raise RuntimeError(
+                    f"Dual boundary sub-face at vertex {v} contains no "
+                    "primal boundary face — cannot assign a patch."
+                )
+
+            nf = len(feat_idx)
+            if nf < 2:
+                # no split: the whole walk is one polygon
+                pi = _patch_of(list(range(len(dual_face))))
+                bnd_by_patch[pi].append(dual_face)
+                bown_by_patch[pi].append(cell)
+                continue
+
+            m = len(dual_face)
+            if feat_vertex[v]:
+                # feature POINT: fan from the primal vertex (polyDualMesh's
+                # "feature point becomes a face centre")
+                vp = pt_vert(v)
+                for i in range(nf):
+                    start, end = feat_idx[i], feat_idx[(i + 1) % nf]
+                    pos = []
+                    k = start
+                    while True:
+                        pos.append(k)
+                        if k == end:
+                            break
+                        k = (k + 1) % m
+                    sub = [vp] + [dual_face[k] for k in pos]
+                    if len(sub) < 3:
+                        continue
+                    pi = _patch_of(pos)
+                    bnd_by_patch[pi].append(sub)
+                    bown_by_patch[pi].append(cell)
+            else:
+                # feature EDGE run: arcs between consecutive feature midpoints
+                for i in range(nf):
+                    start, end = feat_idx[i], feat_idx[(i + 1) % nf]
+                    pos = []
+                    k = start
+                    while True:
+                        pos.append(k)
+                        if k == end:
+                            break
+                        k = (k + 1) % m
+                    if len(pos) < 3:
+                        continue
+                    pi = _patch_of(pos)
+                    bnd_by_patch[pi].append([dual_face[k] for k in pos])
+                    bown_by_patch[pi].append(cell)
 
     # ------------------------------------------------------------------
     # P6: decide which vertex stars to split
@@ -1214,14 +1554,33 @@ class TetPolyDualConverter:
         rel_vol = abs(res.volume_after - res.volume_before) / max(
             abs(res.volume_before), 1e-300
         )
-        if rel_vol > 1e-6:
+        # In collapse mode the dual boundary runs through the boundary-face
+        # centroids instead of tiling the primal triangles, so the dual is NOT
+        # a partition of the primal volume: it loses a thin surface-offset
+        # shell.  This is polyDualMesh's own behaviour (measured -0.19% and
+        # -0.46% on the two venturi cases in hex_poly_dual's A/B).  The exact
+        # tiling contract only applies to the default mode; here the invariants
+        # are closure + positive volume, and the drift is bounded and REPORTED,
+        # never silently accepted at an arbitrary size.
+        vol_tol = self._collapse_vol_tol if self._collapse else 1e-6
+        if rel_vol > vol_tol:
+            extra = ""
+            if self._collapse:
+                extra = (
+                    " — collapse mode: the surface offset falls as O(h^2), so "
+                    "this size of drift means either a very coarse mesh "
+                    "(raise collapse_volume_tolerance deliberately) or a "
+                    "broken boundary walk (do not raise it)"
+                )
             raise RuntimeError(
                 f"Volume not conserved: primal {res.volume_before:.6e} vs dual "
-                f"{res.volume_after:.6e} (relative {rel_vol:.3e})"
+                f"{res.volume_after:.6e} (relative {rel_vol:.3e}, tolerance "
+                f"{vol_tol:.0e}){extra}"
             )
         self._log(
             f"[poly 8/9] invariants OK — closure {res.max_closure_error:.2e}, "
             f"min cell volume {res.min_cell_volume:.3e}, volume drift {rel_vol:.2e}"
+            + (" (surface offset, collapse mode)" if self._collapse else "")
         )
 
     # ------------------------------------------------------------------

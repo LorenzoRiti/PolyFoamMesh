@@ -103,6 +103,18 @@ def test_computed_values_reach_the_meshdict(panel):
     assert "maxFirstLayerThickness" in content
 
 
+def test_apply_all_checkbox_reaches_poly_bl_params(panel):
+    """FASE 1: the 'Apply BL to all patches' checkbox is no longer dead on
+    the poly path — get_bl_params() carries it to DualPolyWorker, which uses
+    it instead of the hardcoded apply_to_all=True."""
+    panel._bl_checkbox.setChecked(True)
+    assert panel.get_bl_params()["applyToAll"] is panel._bl_apply_all.isChecked()
+    panel._bl_apply_all.setChecked(True)
+    assert panel.get_bl_params()["applyToAll"] is True
+    panel._bl_apply_all.setChecked(False)
+    assert panel.get_bl_params()["applyToAll"] is False
+
+
 def test_reports_the_reynolds_number_to_the_user(panel):
     panel._on_bl_auto_compute()
     text = panel._bl_info.text()

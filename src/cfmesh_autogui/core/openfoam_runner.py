@@ -32,6 +32,47 @@ if TYPE_CHECKING:
 # Monotonic clock for elapsed-time measurement (immune to wall-clock jumps).
 _now = time.monotonic
 
+
+def poly_wall_patch_names(case_dir: Path | str) -> list[str]:
+    """Wall-like patches of a polyMesh ``boundary`` file — the default target
+    set for the poly BL step (FASE 1): a patch qualifies if its boundary
+    type is ``wall`` (set by the BC editor / ``set_wall_patch_types``) or its
+    name explicitly says wall (``*wall*``).  GMSH ``surface_N`` patches and
+    role-named patches (inlet/outlet/opening) do NOT qualify — a raw GMSH
+    case returns an empty list and the worker falls back to the geometric
+    inference (``poly_geo_wall_patch_names``), so the default BL never
+    touches inlet/outlet even without explicit wall naming."""
+    from cfmesh_autogui.core.boundary_reader import parse_boundary
+
+    bpath = Path(case_dir) / "constant" / "polyMesh" / "boundary"
+    return [
+        p.name for p in parse_boundary(bpath)
+        if p.patch_type == "wall" or "wall" in p.name.lower()
+    ]
+
+
+def poly_geo_wall_patch_names(case_dir: Path | str) -> list[str]:
+    """Geometric wall fallback for raw GMSH cases (every patch type
+    'patch', ``surface_N`` names): infer inlet/outlet from the geometry
+    (``case_setup.infer_patch_roles``) and treat every other patch as a
+    wall — so the default BL never touches inlet/outlet even when no patch
+    is explicitly named/typed wall.  Returns [] when the roles cannot be
+    inferred (e.g. a fully closed domain) — the caller then falls back to
+    ALL with a warning."""
+    try:
+        from cfmesh_autogui.core.boundary_reader import parse_boundary
+        from cfmesh_autogui.core.case_setup import infer_patch_roles
+
+        bpath = Path(case_dir) / "constant" / "polyMesh" / "boundary"
+        patches = parse_boundary(bpath)
+        roles = infer_patch_roles(Path(case_dir), patches)
+        return [
+            p.name for p in patches
+            if roles.get(p.name, "wall") == "wall" or p.patch_type == "wall"
+        ]
+    except Exception:  # noqa: BLE001 - not inferable (e.g. closed domain)
+        return []
+
 __all__ = [
     "ErrorType", "ErrorInfo", "analyze_error",
     "MeshWorker", "RetryRunner",
@@ -1161,23 +1202,61 @@ class DualPolyWorker(QObject):
             from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine
 
             bl = dict(self._bl_params)
+            apply_all = bool(bl.get("applyToAll", False))
             self.log_line.emit(
                 f"[poly] Adding boundary layers: "
                 f"{bl.get('nLayers', 5)} layers, "
                 f"first height {bl.get('firstLayerThickness', 0.0):.6g} m, "
                 f"growth {bl.get('thicknessRatio', 1.2)}"
             )
+
+            def _wall_patch_names() -> list[str]:
+                """Patches the default (wall-only) BL should touch: boundary
+                type == 'wall' or an explicit *wall* name.  Raw GMSH cases
+                (surface_N) fall back to the geometric inference."""
+                try:
+                    return poly_wall_patch_names(self._case_dir)
+                except Exception:  # noqa: BLE001 - best effort
+                    return []
+
             try:
-                bres = PolyBoundaryLayerEngine(
-                    self._case_dir,
-                    log=self.log_line.emit,
-                    cancel=lambda: self._cancelled,
-                ).run(
+                bres = None
+                kw = dict(
                     n_layers=int(bl.get("nLayers", 5)),
                     first_height=float(bl.get("firstLayerThickness", 0.0)),
                     growth_rate=float(bl.get("thicknessRatio", 1.2)),
-                    apply_to_all=True,
                 )
+                engine = PolyBoundaryLayerEngine(
+                    self._case_dir,
+                    log=self.log_line.emit,
+                    cancel=lambda: self._cancelled,
+                )
+                if apply_all:
+                    self.log_line.emit(
+                        "[poly] BL on ALL boundary patches "
+                        "(override 'Apply BL to all patches' is on)"
+                    )
+                    bres = engine.run(apply_to_all=True, **kw)
+                else:
+                    walls = _wall_patch_names()
+                    if not walls:
+                        walls = poly_geo_wall_patch_names(self._case_dir)
+                    if walls:
+                        self.log_line.emit(
+                            "[poly] BL on wall patches only: "
+                            f"{', '.join(sorted(walls))}"
+                        )
+                        bres = engine.run(
+                            patch_names=walls, apply_to_all=False, **kw,
+                        )
+                    else:
+                        self.log_line.emit(
+                            "[poly] WARN: no wall patches identified (by "
+                            "type, name or geometry) — BL applied to ALL "
+                            "boundary patches (name/type the wall patches, "
+                            "or enable the override, to restrict the BL)"
+                        )
+                        bres = engine.run(apply_to_all=True, **kw)
             except Exception as exc:  # noqa: BLE001 - keep the poly mesh
                 self.log_line.emit(f"[poly] WARN: boundary layers failed: {exc}")
                 bres = None

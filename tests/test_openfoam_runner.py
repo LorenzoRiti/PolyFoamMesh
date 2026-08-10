@@ -28,7 +28,87 @@ from cfmesh_autogui.core.openfoam_runner import (
     analyze_error,
     ErrorType,
     parse_checkmesh_output,
+    poly_geo_wall_patch_names,
+    poly_wall_patch_names,
 )
+
+
+def test_poly_wall_patch_names_default_targets(tmp_path):
+    """FASE 1: the default BL target set is wall-typed / wall-named patches;
+    GMSH ``surface_N`` patches are excluded (they fall back to all with a
+    warning in the worker)."""
+    import cfmesh_autogui.core.foam_mesh_io as fio
+
+    poly = tmp_path / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    fio.write_boundary(poly / "boundary", [
+        {"name": "wall", "type": "wall", "nFaces": 10, "startFace": 0},
+        {"name": "inlet", "type": "patch", "nFaces": 5, "startFace": 10},
+        {"name": "outlet", "type": "patch", "nFaces": 5, "startFace": 15},
+        {"name": "wall_side", "type": "patch", "nFaces": 8, "startFace": 20},
+        {"name": "surface_1", "type": "patch", "nFaces": 3, "startFace": 28},
+    ])
+    names = poly_wall_patch_names(tmp_path)
+    assert "wall" in names            # type == wall
+    assert "wall_side" in names       # wall-like NAME (type patch)
+    assert "inlet" not in names
+    assert "outlet" not in names
+    assert "surface_1" not in names   # GMSH-style name -> excluded
+
+
+def test_poly_wall_patch_names_empty_on_raw_gmsh(tmp_path):
+    """Raw gmshToFoam output (every patch type 'patch', surface_N names)
+    yields an empty set — the worker then falls back to ALL patches."""
+    import cfmesh_autogui.core.foam_mesh_io as fio
+
+    poly = tmp_path / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    fio.write_boundary(poly / "boundary", [
+        {"name": f"surface_{i}", "type": "patch", "nFaces": 4, "startFace": 4 * i}
+        for i in range(3)
+    ])
+    assert poly_wall_patch_names(tmp_path) == []
+
+
+def test_poly_geo_wall_patch_names_recovers_raw_gmsh_walls(tmp_path):
+    """FASE 1 geometric fallback: a raw GMSH case (surface_N, type 'patch')
+    with identifiable inlet/outlet extremes yields the wall-role patches —
+    so the default BL never touches inlet/outlet even when no patch is
+    explicitly named/typed wall.  Box pipe: x in [0,1], y/z in [-0.1,0.1];
+    surface_1 = 4 side walls, surface_2 = inlet cap (x=0), surface_3 =
+    outlet cap (x=1)."""
+    import cfmesh_autogui.core.foam_mesh_io as fio
+
+    corners = [
+        (0.0, -0.1, -0.1), (0.0, -0.1, 0.1), (0.0, 0.1, -0.1), (0.0, 0.1, 0.1),
+        (1.0, -0.1, -0.1), (1.0, -0.1, 0.1), (1.0, 0.1, -0.1), (1.0, 0.1, 0.1),
+    ]
+    box_faces = [
+        (0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1),
+        (2, 3, 7, 6), (2, 0, 1, 3), (6, 7, 5, 4),
+    ]
+    poly = tmp_path / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+
+    def _header(obj: str, n: int, body: str) -> str:
+        return (
+            f"FoamFile {{ version 2.0; format ascii; class {obj}; "
+            f"object {obj}; }}\n{n}\n(\n{body})\n"
+        )
+
+    pts = "\n".join(f"({x} {y} {z})" for x, y, z in corners)
+    (poly / "points").write_text(_header("vectorField", 8, pts), encoding="ascii")
+    faces = "\n".join(f"4({a} {b} {c} {d})" for a, b, c, d in box_faces)
+    (poly / "faces").write_text(_header("faceList", 6, faces), encoding="ascii")
+    fio.write_boundary(poly / "boundary", [
+        {"name": "surface_1", "type": "patch", "nFaces": 4, "startFace": 0},
+        {"name": "surface_2", "type": "patch", "nFaces": 1, "startFace": 4},
+        {"name": "surface_3", "type": "patch", "nFaces": 1, "startFace": 5},
+    ])
+    names = poly_geo_wall_patch_names(tmp_path)
+    assert "surface_1" in names       # the 4 side walls
+    assert "surface_2" not in names   # inlet cap
+    assert "surface_3" not in names   # outlet cap
 
 
 def test_checkmesh_failed_checks_are_not_passed():

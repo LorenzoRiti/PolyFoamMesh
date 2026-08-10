@@ -9,9 +9,14 @@ mesh valid for checkMesh / solvers):
   exactly the region the modified cells give up),
 - every cell closed (signed area-vector sum ~ 0) with positive volume,
 - internal faces upper-triangular (owner < neighbour),
-- prism count = n_layers x wall faces, patches unchanged,
+- prism count = n_layers x wall faces (patches unchanged under
+  apply_to_all=True; adjacent patches gain terminator faces under a
+  partial selection),
 - no unused points, deterministic output,
-- partial-patch selection is auto-closed (no non-manifold seams),
+- partial-patch selection emits conforming terminator faces (FASE 1):
+  the prism side faces at the BL/non-BL boundary become boundary faces of
+  the adjacent patch, so the mesh stays valid without auto-closing to the
+  whole boundary,
 - invalid parameters / impossible layers fail cleanly and never write.
 """
 from __future__ import annotations
@@ -132,13 +137,17 @@ def test_cube_bl_deterministic():
 
 
 # ---------------------------------------------------------------------------
-# partial-patch selection auto-closes (no seams)
+# partial-patch selection: terminator faces keep the mesh conforming (FASE 1)
 # ---------------------------------------------------------------------------
 
-def test_bl_partial_patch_auto_closes():
-    """BL requested only on 'wall' — the engine must close the face set
-    across edges (partial-patch BL would leave non-manifold seams), so the
-    whole boundary gets extruded and the mesh stays valid."""
+def test_bl_partial_patch_terminators():
+    """BL requested only on 'wall' — the face set is used AS-IS (FASE 1):
+    at the BL/non-BL boundary every prism side face lies in the plane of
+    the adjacent (unselected) wall face and becomes a BOUNDARY face of
+    that patch owned by the prism; the unselected wall faces move their
+    shared wall vertices to the last layer, so every cell stays closed,
+    only the named patch gets prisms (no more auto-close), and the patch
+    that gained terminator faces grows in nFaces."""
     case = _build_dual_case(WORK_ROOT / "cube_seam")
     poly = case / "constant" / "polyMesh"
     # split the single 'wall' patch into wall (z=0 quads) + inlet (the rest):
@@ -160,15 +169,40 @@ def test_bl_partial_patch_auto_closes():
          "startFace": n_int + len(wall)},
     ]
     fio.write_polymesh(poly, points, faces2, owner2, neigh, patches2)
+    n_wall_before = len(wall)
 
     eng = PolyBoundaryLayerEngine(case)
     r = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
                 patch_names=["wall"], apply_to_all=False)
     assert r.success, r.errors
-    # the closure extended past 'wall' (inlet quads share edges with wall
-    # quads), so every boundary face got a prism
+    # ONLY the named patch got prisms — no auto-close anymore; the prism
+    # count derives from the INPUT mesh (wall faces x layers), never a
+    # hardcoded number (the dual boundary may collapse in the future)
+    assert r.wall_patches == ["wall"]
+    assert r.n_prism_cells == 2 * n_wall_before
+    n_term = r.stats["n_terminator_faces"]
+    assert n_term > 0
+
     after = fio.read_polymesh(poly)
-    assert "inlet" in r.wall_patches
+    n_int_after = len(after[3])
+    # terminators are BOUNDARY faces: the wall patch face count is
+    # unchanged (prism bottoms only) and the inlet patch (the one without
+    # BL) grew by exactly the terminator faces.  n_int grows only by the
+    # prism-to-prism side faces between ADJACENT selected quads (the same
+    # faces that exist in the full-BL case), never by the terminators.
+    assert np.all(after[2][:n_int_after] < after[3])
+    names_after = {p["name"]: p for p in after[4]}
+    names_before = {p["name"]: p for p in patches2}
+    assert names_after["wall"]["nFaces"] == names_before["wall"]["nFaces"]
+    assert names_after["inlet"]["nFaces"] == \
+        names_before["inlet"]["nFaces"] + n_term
+    # patches tile the boundary exactly (startFace sequential from n_int)
+    assert after[4][0]["startFace"] == n_int_after
+    s = n_int_after
+    for p in after[4]:
+        assert p["startFace"] == s
+        s += p["nFaces"]
+    assert s == len(after[1])
     _mesh_ok(poly)
 
 

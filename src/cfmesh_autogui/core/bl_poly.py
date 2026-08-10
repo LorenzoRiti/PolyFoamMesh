@@ -27,9 +27,13 @@ reports ``Mesh OK`` on the dual input and on the BL output.
 Algorithm (per run)
 -------------------
 
-1. select the extrusion faces (all boundary faces by default; a named
-   subset is auto-closed across edges so every selected edge has exactly
-   two selected faces — partial-patch BL would leave non-manifold seams);
+1. select the extrusion faces (all boundary faces by default; with
+   ``patch_names`` a named subset is used as-is — at the edge between the
+   BL region and an unselected patch, each prism side face lies in the
+   plane of the adjacent (unselected) wall face and becomes a BOUNDARY
+   face of that patch, owned by the prism; the unselected wall faces move
+   their shared wall vertices to the last layer so every cell stays
+   closed — partial-patch BL is conforming and physically correct);
 2. per wall vertex: smoothed normal = normalised sum of incident face
    area-vectors; max height = ``clamp_factor`` times the distance to the
    nearest non-wall vertex of the incident cells (inversion guard);
@@ -326,10 +330,14 @@ class PolyBoundaryLayerEngine:
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
-        - `patch_names`: restrict BL to these boundary patches. The face set
-          is auto-closed across edges (partial-patch BL would create
-          non-manifold seams), so neighbouring patches may be added and are
-          reported in `result.wall_patches`.
+        - `patch_names`: restrict BL to these boundary patches. At the edge
+          between the BL region and an unselected patch, each prism side
+          face lies in the plane of the adjacent (unselected) wall face and
+          becomes a boundary face of that patch owned by the prism; the
+          unselected wall faces move their shared wall vertices to the last
+          layer so every cell stays closed. `result.wall_patches` reports
+          exactly the selected patches; the patches that gained terminator
+          faces grow in `nFaces`.
         - `apply_to_all=True` (default): BL on every boundary patch.
         - `clamp_factor`: max layer-stack height per wall vertex as a
           fraction of the distance to the nearest non-wall vertex of the
@@ -413,6 +421,7 @@ class PolyBoundaryLayerEngine:
                     n_cells_after=int(built["owner"].max()) + 1,
                     n_faces=len(built["faces"]),
                     n_internal_faces=len(built["neigh"]),
+                    n_terminator_faces=int(built["n_terminator_faces"]),
                     min_cell_volume=float(built["min_volume"]),
                     total_volume=float(built["total_volume"]),
                 )
@@ -469,37 +478,12 @@ class PolyBoundaryLayerEngine:
                     }
                 }
 
-        # close across edges: every edge of a selected face must have two
-        # selected faces.  Boundary faces of a closed volume form a
-        # 2-manifold, so this terminates with the whole connected component.
-        edge_faces: dict[tuple[int, int], list[int]] = {}
-        for bi in range(n_bnd):
-            _gil_yield(bi, 4096)
-            f = faces[n_int + bi]
-            for k in range(len(f)):
-                a, b = f[k], f[(k + 1) % len(f)]
-                key = (a, b) if a < b else (b, a)
-                edge_faces.setdefault(key, []).append(bi)
-        changed = True
-        while changed:
-            changed = False
-            for bi in list(selected):
-                _gil_yield(bi, 4096)
-                f = faces[n_int + bi]
-                for k in range(len(f)):
-                    a, b = f[k], f[(k + 1) % len(f)]
-                    key = (a, b) if a < b else (b, a)
-                    others = [x for x in edge_faces.get(key, []) if x != bi]
-                    if len(others) != 1:
-                        # dangling/ambiguous edge — extend through every
-                        # incident face so the set becomes closed
-                        for x in edge_faces.get(key, []):
-                            if x not in selected:
-                                selected.add(x)
-                                changed = True
-                    elif others[0] not in selected:
-                        selected.add(others[0])
-                        changed = True
+        # NO auto-close: the selection is used as-is.  At an edge shared by
+        # a selected and an unselected boundary face (the BL/non-BL
+        # boundary), ``_build`` emits the prism side faces as BOUNDARY faces
+        # on the patch of the adjacent (unselected) wall face, and moves
+        # that face's shared wall vertices to the last layer — the layer
+        # terminates as a wall band, every cell stays closed.
         used_patches = sorted({patches[pi]["name"] for bi in selected
                                for pi in [int(patch_of[bi])]})
         return sorted(selected), used_patches
@@ -665,6 +649,11 @@ class PolyBoundaryLayerEngine:
         n_wf = len(bnd)
 
         # --- edge -> (selected boundary faces) map for side-face pairing ----
+        # Every edge of the selected set has either TWO selected faces (the
+        # usual internal side-face pairing) or exactly ONE (the BL/non-BL
+        # boundary: the prism side face becomes a boundary face assigned to
+        # the adjacent unselected patch).  Zero/3+ means a non-manifold
+        # boundary — invalid input.
         edge_sides: dict[tuple[int, int], list[int]] = {}
         for bi, fi in enumerate(bnd):
             f = faces[fi]
@@ -672,12 +661,36 @@ class PolyBoundaryLayerEngine:
                 a, b = f[k], f[(k + 1) % len(f)]
                 key = (a, b) if a < b else (b, a)
                 edge_sides.setdefault(key, []).append(bi)
-        for key, lst in edge_sides.items():
-            if len(lst) != 2:
+        bad = [k for k, lst in edge_sides.items() if len(lst) not in (1, 2)]
+        if bad:
+            raise ValueError(
+                f"{len(bad)} edge(s) with {len(edge_sides[bad[0]])} selected "
+                "faces — the boundary is not a valid 2-manifold"
+            )
+
+        # ALL boundary edges -> incident boundary faces (terminator lookup).
+        # Closed 2-manifold boundary: exactly 2 incident faces per edge.
+        bnd_edge_faces: dict[tuple[int, int], list[int]] = {}
+        for bi in range(len(faces) - n_int):
+            _gil_yield(bi, 4096)
+            f = faces[n_int + bi]
+            for k in range(len(f)):
+                a, b = f[k], f[(k + 1) % len(f)]
+                key = (a, b) if a < b else (b, a)
+                bnd_edge_faces.setdefault(key, []).append(bi)
+
+        # boundary face index -> patch index (terminator strips are assigned
+        # to the patch of the adjacent unselected face)
+        n_bnd = len(faces) - n_int
+        patch_of = np.empty(n_bnd, dtype=np.int64)
+        for pi, p in enumerate(patches):
+            s = p["startFace"] - n_int
+            if s < 0 or s + p["nFaces"] > n_bnd:
                 raise ValueError(
-                    f"edge {key} has {len(lst)} selected faces (need 2) — "
-                    "face selection is not closed"
+                    f"patch '{p['name']}' startFace/nFaces out of range "
+                    f"({s}..{s + p['nFaces']} vs {n_bnd} boundary faces)"
                 )
+            patch_of[s:s + p["nFaces"]] = pi
 
         # --- face assembly ----------------------------------------------------
         # internal faces first (modified originals + new prism faces),
@@ -759,6 +772,16 @@ class PolyBoundaryLayerEngine:
         # Each wall-face edge is emitted ONCE (from the lower-index face side)
         # — emitting it from both incident faces would create two coincident
         # faces on the same edge.
+        # terminator side faces: at the BL/non-BL boundary the prism side
+        # quad lies IN THE PLANE of the adjacent (unselected) wall face —
+        # it is that wall band, so it becomes a BOUNDARY face owned by the
+        # prism and assigned to the patch of the adjacent face (FASE 1).
+        # The unselected wall face itself gets its wall vertices moved to
+        # the last layer (below), so its edges still match the moved
+        # internal faces and the top faces.
+        term_by_patch: dict[int, list[tuple[list[int], int]]] = {}
+        n_terminators = 0
+
         prog_stride = max(1, n_wf // 20)
         for bi, fi in enumerate(bnd):
             _gil_yield(bi, 128)
@@ -774,6 +797,34 @@ class PolyBoundaryLayerEngine:
                 key = (va, vb) if va < vb else (vb, va)
                 others = [x for x in edge_sides[key] if x != bi]
                 if not others:
+                    # terminator: the BL region ends at this edge.  The
+                    # adjacent unselected boundary face belongs to a patch
+                    # without BL — every layer's side quad is a BOUNDARY
+                    # face owned by the prism, appended to that patch.
+                    # (bnd_edge_faces holds ORIGINAL boundary indices, so
+                    # the current face is sel[bi], not bi.)
+                    uf = [x for x in bnd_edge_faces.get(key, ()) if x != sel[bi]]
+                    if len(uf) != 1:
+                        raise ValueError(
+                            f"terminator edge {key} has {len(uf)} "
+                            "unselected incident faces"
+                        )
+                    pi_target = int(patch_of[uf[0]])
+                    for k in range(n_layers):
+                        poly = [
+                            pt(va, k), pt(vb, k),
+                            pt(vb, k + 1), pt(va, k + 1),
+                        ]
+                        nrm = _newell(new_points, poly)
+                        fc = new_points[poly].mean(axis=0)
+                        # outward for the boundary face: normal away from
+                        # the owner (the prism)
+                        if float(nrm @ (fc - prism_cent[bi, k])) < 0.0:
+                            poly.reverse()
+                        term_by_patch.setdefault(pi_target, []).append(
+                            (poly, prism_start + bi * n_layers + k)
+                        )
+                        n_terminators += 1
                     continue
                 obi = others[0]
                 if bi > obi:
@@ -804,15 +855,43 @@ class PolyBoundaryLayerEngine:
         out_nb = inb[sort_idx].tolist()
         new_n_int = len(new_faces_int)
 
-        # boundary faces: keep original order; selected ones are the prism
-        # bottoms and are re-owned by the first-layer prism (prism ids use
-        # the index INTO the selected set, `sel` holds the original boundary
-        # positions — they coincide only for apply_to_all); the rest keep
-        # their original owner.
-        bnd_owner = np.array(owner[n_int:], dtype=np.int64).tolist()
-        for bi_idx, bi in enumerate(sel):
-            bnd_owner[bi] = prism_start + bi_idx * n_layers  # prism(f, 1)
-        bnd_faces = [list(faces[n_int + bi]) for bi in range(len(faces) - n_int)]
+        # boundary faces: per patch, in ORIGINAL patch order — the original
+        # faces (selected -> prism bottoms, re-owned by the first-layer
+        # prism, ORIGINAL wall vertices; unselected -> wall vertices moved
+        # to the LAST layer so their edges still match the moved internal
+        # faces and the top faces — otherwise the owner cell would be left
+        # open at the BL border), then the NEW terminator strips assigned
+        # to this patch (prism side faces at the BL/non-BL border, owned by
+        # the prisms).  nFaces/startFace are rebuilt to cover the strips.
+        sel_set = set(sel)
+        sel_pos = {b: i for i, b in enumerate(sel)}
+        bnd_faces: list[list[int]] = []
+        bnd_owner: list[int] = []
+        new_patches = []
+        start = new_n_int
+        for pi, p in enumerate(patches):
+            pf: list[list[int]] = []
+            po: list[int] = []
+            for bi in range(p["nFaces"]):
+                b = p["startFace"] - n_int + bi
+                f = faces[n_int + b]
+                if b in sel_set:
+                    # prism bottom (at the wall, layer 0 = original)
+                    pf.append(list(f))
+                    po.append(prism_start + sel_pos[b] * n_layers)
+                else:
+                    pf.append(_move_face(f, n_layers))
+                    po.append(int(owner[n_int + b]))
+            for poly, own_c in term_by_patch.get(pi, ()):
+                pf.append(poly)
+                po.append(own_c)
+            bnd_faces.extend(pf)
+            bnd_owner.extend(po)
+            new_patches.append({
+                "name": p["name"], "type": p.get("type", "patch"),
+                "nFaces": len(pf), "startFace": start,
+            })
+            start += len(pf)
 
         out_faces = new_faces_int + bnd_faces
         out_own_all = out_own + bnd_owner
@@ -835,16 +914,7 @@ class PolyBoundaryLayerEngine:
             new_n_int, n_cells_new,
         )
 
-        # patches keep their faces in the ORIGINAL order, but the boundary
-        # now starts at the NEW internal-face count
-        new_patches = []
-        start = new_n_int
-        for p in patches:
-            new_patches.append({
-                "name": p["name"], "type": p.get("type", "patch"),
-                "nFaces": p["nFaces"], "startFace": start,
-            })
-            start += p["nFaces"]
+        built_terminators = n_terminators
 
         return {
             "points": new_points,
@@ -858,6 +928,7 @@ class PolyBoundaryLayerEngine:
             )]),
             "total_volume": None,
             "min_volume": None,
+            "n_terminator_faces": built_terminators,
         }
 
     # ------------------------------------------------------------------
@@ -880,6 +951,14 @@ class PolyBoundaryLayerEngine:
             return False, "neighbour index out of range"
         if owner.min() < 0 or owner.max() >= n_cells:
             return False, "owner index out of range"
+        # patch accounting invariants: the boundary block starts at n_int and
+        # the patches tile every boundary face exactly (SA-2 hardening — a
+        # silent write with a broken table would FATAL at OpenFOAM read).
+        patches = built["patches"]
+        if patches and patches[0]["startFace"] != n_int:
+            return False, "first patch does not start at n_int"
+        if sum(p["nFaces"] for p in patches) != len(faces) - n_int:
+            return False, "patch nFaces do not cover the boundary faces"
 
         vols, closure, scale_mag = _cell_metrics(pts, faces, owner, neigh, n_cells, n_int)
         rel_closure = np.linalg.norm(closure, axis=1) / np.maximum(scale_mag, 1e-300)
