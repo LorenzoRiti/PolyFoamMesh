@@ -242,7 +242,28 @@ Costruisce un `ViewerWidget` "nudo" con `ViewerWidget.__new__(...)` (non
 `QObject`) e verifica il dispatch corretto per ognuna delle 3 modalità
 più il caso selettore disabilitato.
 
-**Non ancora verificato**: il rendering vero in GUI con un run reale.
+**Verificato con un run reale** (non mock, non WSL — GMSH vero +
+rendering VTK vero offscreen):
+
+1. `generate_volume_mesh` su `sample_cad/cylinder_test.stl` (GMSH reale):
+   `Adaptive sizing: min=0.00010 max=0.00020 small_curves=0/2 gaps=0
+   surfaces=3` → **0 curve marcate "piccole" su un cilindro semplice**,
+   conferma diretta del tetto assoluto dell'8% su geometria vera, non solo
+   sulla fixture sintetica del test. Mesh generata senza errori (11.335
+   tet a "fine", 1140 a "medium").
+2. `ViewerWidget._prepare_internal_vtu_grid` + `add_mesh(style="surface",
+   show_edges=True)` su una mesh poliedrica vera (celle a 5 facce,
+   triangoli+quad, non hex/tet) → screenshot offscreen: superficie piena
+   ombreggiata, spigoli veri visibili, **nessuna diagonale spuria di
+   triangolazione**. Confermato che 18 facce di bordo (su 6 celle
+   poliedriche, 5 facce ciascuna = 30 totali − 12 condivise) restano
+   poligoni veri (`{3, 4}` vertici, non tutte triangolate a 3).
+
+**Ancora non verificato**: il click-through vero della GUI desktop (non ho
+strumenti di controllo interattivo del desktop in questa sessione) — la
+verifica sopra usa gli stessi identici componenti (stesso GMSH, stesso
+metodo statico del viewer, stessa chiamata `add_mesh`) ma non un run
+dell'app impacchettata dall'utente.
 
 ## NON fatto / verificare alla ripresa
 
