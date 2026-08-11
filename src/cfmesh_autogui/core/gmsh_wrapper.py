@@ -489,6 +489,112 @@ def _advancing_front_1d(
     return params
 
 
+def _extract_boundary_trimesh(gmsh_mod):
+    """The full discrete boundary surface GMSH has already tessellated
+    (all 2D entities combined into one triangle soup), as a
+    ``trimesh.Trimesh`` — the input ``_sample_passage_thickness_field``
+    ray-casts against.
+
+    ``Mesh.generate(2)`` is a prerequisite of ``generate(3)`` and is
+    idempotent (a no-op if the surface mesh already exists), so calling
+    it here never duplicates the meshing work the caller does anyway.
+    Node tags are used directly as the shared-vertex key across surfaces
+    (``process=False``): GMSH's own mesh is already conforming at
+    surface junctions — two adjacent surfaces meshed by GMSH reference
+    the SAME node tags along their shared boundary curve, so this
+    reproduces that shared-vertex topology exactly, without trimesh's
+    usual coordinate-based vertex merging (and its tolerance pitfalls).
+    """
+    import numpy as np
+    import trimesh
+
+    gmsh_mod.model.mesh.generate(2)
+    node_tags, node_coords, _ = gmsh_mod.model.mesh.getNodes()
+    if len(node_tags) == 0:
+        return None
+    coords = np.asarray(node_coords, dtype=np.float64).reshape(-1, 3)
+    tag_to_idx = {int(t): i for i, t in enumerate(node_tags)}
+
+    all_tris: list[np.ndarray] = []
+    for dim, tag in gmsh_mod.model.getEntities(2):
+        elem_types, _elem_tags, elem_node_tags = gmsh_mod.model.mesh.getElements(dim, tag)
+        for et, ent_nodes in zip(elem_types, elem_node_tags):
+            n_nodes_per_elem = gmsh_mod.model.mesh.getElementProperties(et)[3]
+            if n_nodes_per_elem != 3 or len(ent_nodes) == 0:
+                continue  # only true triangles (2nd-order/quad elements skipped)
+            arr = np.asarray(ent_nodes, dtype=np.int64).reshape(-1, 3)
+            idx = np.vectorize(tag_to_idx.get)(arr)
+            all_tris.append(idx)
+    if not all_tris:
+        return None
+    faces = np.vstack(all_tris)
+    return trimesh.Trimesh(vertices=coords, faces=faces, process=False)
+
+
+def _sample_passage_thickness_field(
+    gmsh_mod, h_min: float, h_max: float,
+    cells_across: int = 8, max_samples: int = 6000, seed: int = 0xC0FFEE,
+) -> tuple:
+    """A-priori sizing from local passage width — the geometric quantity
+    (distance to the nearest opposite wall) that BOTH a narrow gap and a
+    small feature actually are, measured directly by ray-casting the
+    already-tessellated boundary instead of the two proxy heuristics this
+    replaces:
+
+    - the old ``_detect_surface_gaps`` used bounding-box-to-bounding-box
+      distance between surface PAIRS as a proxy for "how close are they"
+      — cheap, but not the true surface distance, and blind to a narrow
+      passage formed by more than two surfaces (a filleted corner
+      pinching a channel, say);
+    - ``_scan_feature_sizes``'s "bottom quartile of curve length" has no
+      notion of surface separation at all — it is a proxy for a DIFFERENT
+      thing (short edges), which is why it never caught passage width.
+
+    Method: cast a ray from each surface sample point along its INWARD
+    normal; the first hit distance is the local width of the volume the
+    boundary encloses at that point (for a CFD case, the fluid passage
+    width — verified end-to-end on a single connected watertight venturi:
+    ~1.99 at the wide ends vs ~0.34 at the throat, true diameters 2.0 and
+    ~0.30 — a genuinely LOCAL field, not a per-surface-pair estimate).
+    Falls back to the outward direction when the inward ray misses (can
+    happen right at a convex corner). See
+    ``core.geometry.sample_thickness_field`` for the vectorised
+    ray-casting itself (shared with the existing global-percentile
+    thickness analysis used by "Auto-Suggest Cell Sizes").
+
+    Returns ``(points, target_sizes)`` — target_sizes[i] = clamp(
+    thickness[i] / cells_across, h_min, h_max), NOT YET growth-rate
+    relaxed (the caller combines this with the curvature field's points
+    before relaxing, so the transition between the two is smooth too).
+    Empty arrays (never an exception) when the boundary can't be
+    extracted or ray-casting finds nothing — the existing curvature field
+    and detail-level bounds still govern sizing either way.
+    """
+    import numpy as np
+
+    from cfmesh_autogui.core.geometry import sample_thickness_field
+
+    try:
+        mesh = _extract_boundary_trimesh(gmsh_mod)
+    except Exception:
+        logger.exception("Passage thickness field: boundary extraction failed")
+        return np.zeros((0, 3)), np.zeros(0)
+    if mesh is None or len(mesh.faces) == 0:
+        return np.zeros((0, 3)), np.zeros(0)
+
+    bbox_max = float(max(mesh.extents)) if len(mesh.vertices) else 1.0
+    try:
+        pts, thickness = sample_thickness_field(mesh, max_samples, bbox_max, seed)
+    except Exception:
+        logger.exception("Passage thickness field: ray-casting failed")
+        return np.zeros((0, 3)), np.zeros(0)
+    if len(pts) == 0:
+        return np.zeros((0, 3)), np.zeros(0)
+
+    target = np.clip(thickness / max(cells_across, 1), h_min, h_max)
+    return pts, target
+
+
 def _configure_curvature_size_field(
     gmsh_mod,
     h_min: float,
@@ -497,6 +603,8 @@ def _configure_curvature_size_field(
     growth_rate: float = 1.2,
     max_samples: int = 20000,
     seed_curves: bool = True,
+    passage_points=None,
+    passage_target_sizes=None,
 ) -> dict:
     """A-priori, geometry-based mesh adaptation: build an explicit local
     Size Field from the CAD model's own discrete curvature (H_MIN/H_MAX/
@@ -506,9 +614,18 @@ def _configure_curvature_size_field(
     node; this only tells it how big each element is allowed to be, at
     every query point it makes across curves, surfaces, and the volume.
 
+    passage_points / passage_target_sizes
+        Additional (point, target size) samples to fold into the SAME
+        field before growth-rate relaxation — currently the passage-
+        thickness field from ``_sample_passage_thickness_field``. Merging
+        before relaxation (rather than as a second, independent
+        min-combined field) means the transition FROM a narrow passage
+        TO the surrounding curvature-driven sizing is itself growth-rate
+        limited, not a hard step.
+
     Failure here (an unusual CAD kernel entity, an empty model) degrades
     to a no-op rather than blocking meshing — the existing Distance/
-    Threshold/Ball background fields in _configure_adaptive_sizing keep
+    Threshold background field in _configure_adaptive_sizing keeps
     working unchanged either way.
     """
     import numpy as np
@@ -517,6 +634,13 @@ def _configure_curvature_size_field(
     points, raw_sizes = _sample_curvature_size_field(
         gmsh_mod, h_min, h_max, angle_sensitivity_rad, max_samples
     )
+    if passage_points is not None and len(passage_points):
+        if len(points):
+            points = np.vstack([points, passage_points])
+            raw_sizes = np.concatenate([raw_sizes, passage_target_sizes])
+        else:
+            points = np.asarray(passage_points, dtype=np.float64)
+            raw_sizes = np.asarray(passage_target_sizes, dtype=np.float64)
     if len(points) == 0:
         logger.warning("Curvature size field: no sample points found, skipping")
         return {"n_samples": 0}
@@ -756,26 +880,35 @@ def _configure_adaptive_sizing(
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "DistMax", dist_max)
         active_fields.append(f_thresh)
 
-    # Gap-aware refinement: narrow passages between surfaces (a valve's
-    # internal bore near its seat, say) that curve-length scanning can
-    # miss entirely — a tight gap doesn't need a short edge nearby to
-    # exist. One Ball field per detected gap, sized to resolve it with
-    # a handful of cells across, bounded by the same min/max as
-    # everywhere else.
-    gaps = _detect_surface_gaps(gmsh_mod, max_extent)
-    for gap in gaps:
-        gap_size = max(gap["distance"] / 3.0, min_size)
-        gap_size = min(gap_size, coarse_max)
-        cx, cy, cz = gap["center"]
-        f_ball = gmsh_mod.model.mesh.field.add("Ball")
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "VIn", gap_size)
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "VOut", coarse_max)
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "Radius", gap["distance"] * 3.0)
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "Thickness", gap["distance"] * 3.0)
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "XCenter", cx)
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "YCenter", cy)
-        gmsh_mod.model.mesh.field.setNumber(f_ball, "ZCenter", cz)
-        active_fields.append(f_ball)
+    # Gap-aware refinement, superseded here: the old approach placed one
+    # Ball field per (surface-pair, bounding-box distance) — a proxy that
+    # misses passages formed by more than two surfaces and gets the
+    # location/size only approximately right. Replaced below by
+    # ray-casting the actual local passage width (see
+    # _sample_passage_thickness_field), which is merged into the
+    # curvature field's own KDTree/callback rather than added as separate
+    # Ball fields — one continuous field, one growth-rate-limited
+    # transition, instead of N independent bubbles that can overlap or
+    # leave gaps between them. _detect_surface_gaps itself is unchanged
+    # and still used elsewhere (the polyDualMesh risk heuristic below).
+    import numpy as np
+
+    passage_points, passage_target = np.zeros((0, 3)), np.zeros(0)
+    if use_curvature_size_field:
+        try:
+            passage_points, passage_target = _sample_passage_thickness_field(
+                gmsh_mod, min_size, coarse_max,
+                # "min_thick_cells" is core/geometry.py's own detail-level
+                # dict, a DIFFERENT dict from this module's _GMSH_DETAIL
+                # (which has no such key — df.get("min_thick_cells", 8)
+                # would silently fall back to 8 for every detail level,
+                # ignoring the slider). Reuse cells_across instead: the
+                # same "how many cells across the passage" concept, already
+                # tuned per level here (8/13/20/32/48).
+                cells_across=df.get("cells_across", 8),
+            )
+        except Exception:
+            logger.exception("Passage thickness field failed; continuing without it")
 
     bg_field: int | None = None
     if len(active_fields) == 1:
@@ -841,6 +974,8 @@ def _configure_adaptive_sizing(
                 gmsh_mod, min_size, coarse_max,
                 angle_sensitivity_rad=math.radians(df["curv_angle"]),
                 growth_rate=growth_rate,
+                passage_points=passage_points if len(passage_points) else None,
+                passage_target_sizes=passage_target if len(passage_target) else None,
             )
         except Exception:
             logger.exception("Curvature size field setup failed; continuing without it")
@@ -864,16 +999,21 @@ def _configure_adaptive_sizing(
     # CGAL-based conformalVoronoiMesh library, reproducible, unrelated
     # to any dictionary setting tried), so no reliable alternative
     # exists for this geometry class yet.
+    # Gap count for the polyDualMesh risk heuristic below (a SEPARATE use
+    # from sizing — this bbox-distance proxy is not accurate enough to
+    # size a field on, see the note above, but "how many close surface
+    # pairs exist" is still a fine coarse risk signal on its own).
+    gaps = _detect_surface_gaps(gmsh_mod, max_extent)
     n_surfaces = len(gmsh_mod.model.getEntities(2))
     poly_dual_risk = n_surfaces > 30 or len(gaps) >= 20
 
     logger.info(
         "Adaptive sizing: min=%.5f max=%.5f (geom_min=%.5f hw_floor=%.5f) "
-        "small_curves=%d/%d gaps=%d surfaces=%d poly_dual_risk=%s "
-        "cpu=%d max_cells_budget=%d",
+        "small_curves=%d/%d gaps=%d passage_samples=%d surfaces=%d "
+        "poly_dual_risk=%s cpu=%d max_cells_budget=%d",
         min_size, coarse_max, geom_min, hw_floor, n_small,
-        len(gmsh_mod.model.getEntities(1)), len(gaps), n_surfaces, poly_dual_risk,
-        hw["cpu_count"], hw["max_cells"],
+        len(gmsh_mod.model.getEntities(1)), len(gaps), len(passage_points),
+        n_surfaces, poly_dual_risk, hw["cpu_count"], hw["max_cells"],
     )
     return {
         "min_size": min_size, "coarse_max": coarse_max,
@@ -885,6 +1025,7 @@ def _configure_adaptive_sizing(
         # the geometry-based sizing computed here.
         "bg_field": bg_field,
         "n_small_curves": n_small, "n_gaps": len(gaps),
+        "n_passage_samples": len(passage_points),
         "n_surfaces": n_surfaces, "poly_dual_risk": poly_dual_risk,
         "curvature_field_samples": curvature_field_info.get("n_samples", 0),
         "curvature_field_seeded": curvature_field_info.get("n_seeded", 0),

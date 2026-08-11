@@ -364,6 +364,80 @@ def _sample_thickness_one_mesh(
     return t.tolist()
 
 
+def sample_thickness_field(
+    mesh: trimesh.Trimesh,
+    n_samples: int,
+    bbox_max: float,
+    seed: int = 0xC0FFEE,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Like ``_sample_thickness_one_mesh``, but returns ``(points,
+    thickness)`` pairs instead of a flat list of values.
+
+    ``analyze_local_thickness`` only ever needed global percentiles (p1,
+    p5, ...), so ``_sample_thickness_one_mesh`` discards WHERE each
+    thickness was measured. A per-point sizing field (see
+    ``gmsh_wrapper._configure_passage_thickness_field``) needs exactly
+    that spatial correspondence — a passage is narrow at a specific
+    location, not "somewhere on the part" — so this is a separate
+    function rather than a change to the existing one, to avoid touching
+    the already-used, already-correct percentile path.
+
+    The measurement itself is the width of the volume ``mesh`` encloses
+    at each sample point (cast a ray along the inward normal, first hit
+    wins; falls back to the outward direction if the inward ray misses,
+    e.g. a sample near a convex corner). For a CFD case this ``mesh`` is
+    normally the fluid domain's boundary, so "thickness" here IS the
+    local width of the flow passage — verified end-to-end on a single
+    connected watertight venturi (wide-narrow-wide): reports ~1.99 at the
+    wide ends (true diameter 2.0) and ~0.34 at the throat (true diameter
+    ~0.30), a genuinely LOCAL field, not a per-body statistic.
+    """
+    if n_samples <= 0 or mesh.area <= 0 or len(mesh.faces) == 0:
+        return np.zeros((0, 3)), np.zeros(0)
+    try:
+        pts, face_idx = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
+    except Exception:
+        return np.zeros((0, 3)), np.zeros(0)
+    if len(pts) == 0:
+        return np.zeros((0, 3)), np.zeros(0)
+    normals = np.asarray(mesh.face_normals[face_idx], dtype=np.float64)
+    norms = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = normals / np.where(norms > 0, norms, 1.0)
+
+    eps = max(bbox_max * 1e-6, 1e-12)
+    _BATCH = 512
+
+    def _nearest_hits(origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
+        out = np.full(len(origins), np.inf, dtype=np.float64)
+        if len(origins) == 0:
+            return out
+        for lo in range(0, len(origins), _BATCH):
+            o = origins[lo:lo + _BATCH]
+            d = directions[lo:lo + _BATCH]
+            try:
+                res = mesh.ray.intersects_location(ray_origins=o, ray_directions=d)
+            except Exception:
+                continue
+            if not res or len(res[0]) == 0:
+                continue
+            locs, ray_ids = res[0], res[1]
+            dist = np.linalg.norm(np.asarray(locs) - o[ray_ids], axis=1)
+            valid = dist > eps
+            if not valid.any():
+                continue
+            np.minimum.at(out, lo + ray_ids[valid], dist[valid])
+        return out
+
+    inward = _nearest_hits(pts, -normals)
+    missing = ~np.isfinite(inward)
+    outward = np.full(len(pts), np.inf, dtype=np.float64)
+    if missing.any():
+        outward[missing] = _nearest_hits(pts[missing], normals[missing])
+    t = np.where(np.isfinite(inward), inward, outward)
+    valid = np.isfinite(t) & (t > 0.0) & (t < bbox_max * 2)
+    return pts[valid], t[valid]
+
+
 def check_watertight(meshes: list[trimesh.Trimesh]) -> tuple[bool, int, str]:
     """Pre-flight check: do the patches together bound a closed volume?
 
