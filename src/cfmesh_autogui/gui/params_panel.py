@@ -447,12 +447,32 @@ class ParamsPanel(QWidget):
 
         self._refine_group = QGroupBox("Local Refinement")
         refine_layout = QVBoxLayout(self._refine_group)
+        # Superseded by "Rifinitura automatica" (Mesh tab, next to the Mesh
+        # Fineness slider): that toggle now drives a single, vectorized,
+        # tested passage-width sizing field wired directly into GMSH's own
+        # sizing callback (see gmsh_wrapper._sample_passage_thickness_field)
+        # — the SAME "detect narrow passages, refine there" job this
+        # checkbox did, via core/throat_detector.py's own SEPARATE,
+        # unbatched (one Python-level ray-cast per sample point, not the
+        # 512-per-call batched approach the other two thickness samplers in
+        # this codebase already used) reimplementation. Two controls both
+        # claiming to do automatic narrow-passage refinement, with no way
+        # for a user to tell which one actually ran, was the confusion
+        # reported directly ("ci sono 2 tasti... ne voglio uno che
+        # funziona"). Kept as a hidden, off-by-default attribute so
+        # get_auto_refine_enabled() and the (untouched) throat_detector
+        # code path keep working if re-enabled — not deleted outright,
+        # since throat_detector's explicit refinement ZONES (shown as
+        # spheres in the viewer) are a different, still possibly useful
+        # capability from a silent sizing field; it just should not be a
+        # second, competing "automatic" switch next to the real one.
         self._auto_refine_check = QCheckBox("Auto-refine narrow sections")
         self._auto_refine_check.setChecked(False)
         self._auto_refine_check.setToolTip(
-            "Automatically detect throats/constrictions in duct-like geometries "
-            "and create local refinement zones with finer cells."
+            "Superseded by 'Rifinitura automatica' nella tab Mesh (piu' "
+            "veloce, stesso obiettivo)."
         )
+        self._auto_refine_check.setVisible(False)
         refine_layout.addWidget(self._auto_refine_check)
         self._refine_list_label = QLabel("Manual refinement zones (box/sphere):")
         refine_layout.addWidget(self._refine_list_label)
