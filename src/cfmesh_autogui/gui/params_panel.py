@@ -271,6 +271,33 @@ class ParamsPanel(QWidget):
         self._detail_slider.valueChanged.connect(self._on_detail_changed)
         detail_layout.addWidget(self._detail_slider)
         detail_layout.addWidget(self._detail_label)
+
+        # Real, visible toggle (previously hidden and unwired — the code
+        # always ran the adaptive path regardless of this checkbox's state,
+        # so there was no way to actually turn it off; see
+        # _on_adaptive_sizing_toggled and MainWindow._start_gmsh_volume_worker
+        # for the wiring that now makes this genuinely switch behaviour).
+        # ON (default, recommended): mesh sized finer near small curves,
+        # narrow gaps, and curved surfaces (a bounded curvature-adaptive
+        # field, capped by the Mesh Fineness slider — never uses GMSH's own
+        # unbounded curvature engine, which is what used to refine tiny,
+        # CFD-irrelevant fillets everywhere; see gmsh_wrapper._configure_
+        # adaptive_sizing). OFF: literal, uniform cell size from the slider
+        # (predictable, no local refinement) — the Advanced tab's Cell
+        # Sizes become editable in this mode.
+        self._adaptive_sizing_check = QCheckBox(
+            "Rifinitura automatica (curvatura, spigoli, strettoie) — consigliato"
+        )
+        self._adaptive_sizing_check.setChecked(True)
+        self._adaptive_sizing_check.setToolTip(
+            "ON: infittisce automaticamente vicino a curve piccole, "
+            "strettoie e superfici curve, entro i limiti dello slider Mesh "
+            "Fineness.\nOFF: dimensione di cella uniforme e letterale "
+            "(nessuna rifinitura locale) — 'Cell Sizes' nella scheda "
+            "Advanced diventa modificabile."
+        )
+        self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
+        detail_layout.addWidget(self._adaptive_sizing_check)
         mesh_layout.addWidget(detail_group)
 
         self._bbox_dim = 1.0
@@ -560,23 +587,16 @@ class ParamsPanel(QWidget):
         self._min_cell.valueChanged.connect(self._on_min_cell_changed)
         adv_layout.addWidget(mesh_group)
 
-        # The old peer controls (Auto-Suggest, Adaptive checkbox, max cells
-        # target spinbox) are superseded by the single Mesh Fineness slider.
-        # Kept as hidden attributes so existing code that references them
-        # keeps working; they are no longer a user input surface.
+        # Auto-Suggest predates the Mesh Fineness slider and is superseded
+        # by it; kept as a hidden attribute so any remaining reference
+        # keeps working. The Adaptive toggle itself now lives on the Mesh
+        # tab, next to the slider it governs (see mesh_layout above) — it
+        # is a real, wired control, not superseded by anything.
         btn_suggest = QPushButton("Auto-Suggest Cell Sizes")
         btn_suggest.clicked.connect(self._on_suggest_sizes)
         self._btn_suggest = btn_suggest
         btn_suggest.setVisible(False)
         adv_layout.addWidget(btn_suggest)
-
-        self._adaptive_sizing_check = QCheckBox("Adaptive automatic sizing (polymesh mesher, recommended)")
-        self._adaptive_sizing_check.setChecked(False)
-        self._adaptive_sizing_check.setToolTip("Superseded by the Mesh Fineness slider.")
-        self._adaptive_sizing_check.setVisible(False)
-        adv_layout.addWidget(self._adaptive_sizing_check)
-        self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
-        self._on_adaptive_sizing_toggled(self._adaptive_sizing_check.isChecked())
 
         max_cells_row = QHBoxLayout()
         max_cells_row.addWidget(QLabel("Max cells target:"))
@@ -604,6 +624,9 @@ class ParamsPanel(QWidget):
         # Initialize the Mesh Fineness label + derived cell sizes from the
         # slider's default value (now that _max_cell/_min_cell exist).
         self._on_detail_changed(self._detail_slider.value())
+        # Initialize Cell Sizes read-only/editable state from the Adaptive
+        # toggle's default (now that _max_cell/_min_cell exist too).
+        self._on_adaptive_sizing_toggled(self._adaptive_sizing_check.isChecked())
 
         openmp_group = QGroupBox("OpenMP Acceleration")
         openmp_group_layout = QVBoxLayout(openmp_group)
@@ -749,12 +772,27 @@ class ParamsPanel(QWidget):
         self._bl_form_widget.setVisible(checked)
 
     def _on_adaptive_sizing_toggled(self, checked: bool):
-        """Grey out Max/Min Cell Size while Adaptive sizing is checked —
-        they're silently ignored in that state (see the comment where
-        this is connected), so leaving them enabled misrepresents what's
-        actually driving the mesh."""
-        self._max_cell.setEnabled(not checked)
-        self._min_cell.setEnabled(not checked)
+        """Adaptive ON: Max/Min Cell Size are read-only DISPLAY of what the
+        Mesh Fineness slider derived (they're not what actually drives
+        sizing in this mode — the adaptive fields are, see
+        gmsh_wrapper._configure_adaptive_sizing). Adaptive OFF: they become
+        the real, editable input — literal uniform sizing, no curvature-
+        driven local refinement, so what's typed here is exactly what gets
+        meshed."""
+        self._max_cell.setReadOnly(checked)
+        self._min_cell.setReadOnly(checked)
+        self._max_cell.setToolTip(
+            "Derivato automaticamente dallo slider Mesh Fineness."
+            if checked else
+            "Dimensione di cella massima (modalità manuale — rifinitura "
+            "automatica disattivata)."
+        )
+        self._min_cell.setToolTip(
+            "Derivato automaticamente dallo slider Mesh Fineness."
+            if checked else
+            "Dimensione di cella minima (modalità manuale — rifinitura "
+            "automatica disattivata)."
+        )
 
     # Kinematic viscosity at 20 °C, m²/s.
     _FLUID_NU = {"Air (20°C)": 1.5e-5, "Water (20°C)": 1.0e-6}

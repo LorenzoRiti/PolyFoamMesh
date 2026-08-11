@@ -242,6 +242,18 @@ def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
     min_feature = lens_sorted[0]
     idx = max(0, len(lens_sorted) // 4)
     small_cutoff = lens_sorted[idx]
+    # The quartile above is RELATIVE to the other curves on this same part —
+    # on a geometry with no genuine two-tier "big body / tiny fillet"
+    # structure (a plain pipe, a simple duct: every curve roughly the same
+    # size), the bottom quartile still gets flagged and locally refined for
+    # no reason, purely because *something* has to be the shortest quarter.
+    # A "small feature" only means something relative to the WHOLE part
+    # (max_extent) — clamp the cutoff so a curve must also be small on that
+    # absolute scale, not merely small among its neighbours. Never binds on
+    # the documented reference case (a 3m valve with ~0.25mm fillets: the
+    # quartile cutoff there is already far below 8% of max_extent), only
+    # suppresses spurious flagging when nothing on the part is actually small.
+    small_cutoff = min(small_cutoff, max_extent * 0.08)
     small_curve_tags = [tag for tag, length in curve_lengths if length <= small_cutoff]
     return {
         "min_feature": min_feature,
@@ -713,12 +725,35 @@ def _configure_adaptive_sizing(
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "InField", f_dist)
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "SizeMin", min_size)
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "SizeMax", coarse_max)
-        gmsh_mod.model.mesh.field.setNumber(
-            f_thresh, "DistMin", max(feat["small_cutoff"] * 2, min_size * 4)
-        )
-        gmsh_mod.model.mesh.field.setNumber(
-            f_thresh, "DistMax", max(feat["small_cutoff"] * 20, min_size * 40)
-        )
+        dist_min = max(feat["small_cutoff"] * 2, min_size * 4)
+        # DistMax is the radius over which the field ramps from SizeMin back
+        # up to SizeMax — i.e. how far the "fine near this small feature"
+        # zone reaches before the mesh is allowed to go coarse again. Left
+        # as a bare multiple of small_cutoff (small_cutoff * 20), it grows
+        # with small_cutoff itself, and small_cutoff is capped only at
+        # max_extent * 0.08 (see _scan_feature_sizes) — so DistMax could
+        # reach 1.6x the whole part's extent, meaning the "local" fine zone
+        # around one small edge (a fold line, say) never actually finishes
+        # ramping back to coarse ANYWHERE on the part. The result: a mesh
+        # that looks uniformly fine everywhere instead of graded (fine only
+        # near the feature, visibly coarser away from it) — even though the
+        # total cell count matches the budget, because coarse_max is never
+        # actually reached. Capped here at a genuinely LOCAL neighbourhood
+        # (15% of max_extent) so the transition always completes within the
+        # part; never binds on the reference case (a 3m valve with 0.25mm
+        # fillets: DistMax there is already far below 0.15*3m=0.45m).
+        dist_max = max(feat["small_cutoff"] * 20, min_size * 40)
+        dist_max = min(dist_max, max_extent * 0.15)
+        # dist_min must stay strictly below dist_max (a Threshold field with
+        # DistMin >= DistMax has no ramp — GMSH's own interpretation of that
+        # is undefined territory, not just "less graded"). dist_min can
+        # reach small_cutoff * 2 = up to max_extent * 0.16 at the small_cutoff
+        # ceiling above, which is BIGGER than the 0.15 * max_extent dist_max
+        # cap just applied — clamp it below dist_max explicitly rather than
+        # relying on the two independent formulas happening to stay ordered.
+        dist_min = min(dist_min, dist_max * 0.5)
+        gmsh_mod.model.mesh.field.setNumber(f_thresh, "DistMin", dist_min)
+        gmsh_mod.model.mesh.field.setNumber(f_thresh, "DistMax", dist_max)
         active_fields.append(f_thresh)
 
     # Gap-aware refinement: narrow passages between surfaces (a valve's
@@ -753,11 +788,33 @@ def _configure_adaptive_sizing(
 
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", min_size)
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", coarse_max)
-    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 1)
-    gmsh_mod.option.setNumber("Mesh.MeshSizeFromCurvature", 1)
-    gmsh_mod.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
-    gmsh_mod.option.setNumber("Mesh.MinimumCirclePoints", df["curv_angle"])
-    gmsh_mod.option.setNumber("Mesh.MinimumElementsPerTwoPi", int(360 / df["curv_angle"]))
+    # Sizing here is fully FIELD-driven: the Distance/Threshold (small
+    # curves) and Ball (gaps) fields set up above, min-combined into the
+    # background mesh, plus the bounded a-priori curvature field installed
+    # below (_configure_curvature_size_field, already clamped to
+    # [min_size, coarse_max] and growth-rate limited). GMSH's own manual
+    # says to turn its BLANKET curvature/point/boundary-extend options OFF
+    # in exactly this situation ("When mesh element sizes are fully
+    # specified by a mesh size field, it is often desirable to set
+    # MeshSizeFromPoints = 0; MeshSizeFromCurvature = 0;
+    # MeshSizeExtendFromBoundary = 0 to prevent over-refinement").
+    #
+    # Left ON (as this code did until now), it is what caused the reported
+    # "refines at random" behaviour: MeshSizeFromCurvature has NO notion of
+    # which curved features matter for CFD — it just asks for N elements
+    # around every circle/fillet on the part, bounded only by the GLOBAL
+    # CharacteristicLengthMin. One genuinely small feature ANYWHERE on the
+    # geometry (a 0.25mm manufacturing fillet on a 3m valve, say) pulls
+    # min_size down for the whole model, and this blanket option then
+    # chased that SAME fine size on every other curved surface too,
+    # completely uncorrelated with the small-feature/gap detection above.
+    # Disabling it leaves sizing entirely to the two purpose-built,
+    # bounded sources: features/gaps that were actually DETECTED, and the
+    # curvature field's own explicit floor/ceiling.
+    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthFromCurvature", 0)
+    gmsh_mod.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    gmsh_mod.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh_mod.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     for opt in (
         "General.NumThreads", "Mesh.MaxNumThreads1D",
         "Mesh.MaxNumThreads2D", "Mesh.MaxNumThreads3D",

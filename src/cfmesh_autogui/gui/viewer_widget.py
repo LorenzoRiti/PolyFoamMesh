@@ -1249,11 +1249,42 @@ class ViewerWidget(QWidget):
         # Heavy load (foamToVTK + VTU read) runs in a background task.
         self._load_section_async()
 
+    @staticmethod
+    def _prepare_internal_vtu_grid(grid, mode: str):
+        """Reduce the full-volume grid read from internal.vtu to what the
+        given view mode should actually render.
+
+        "surface_edges" ("Surface + Edges") must show ONLY the outer
+        boundary of the poly mesh — not every internal cell edge of the
+        whole volume. Before this, both "Volume Mesh" and "Surface + Edges"
+        loaded the SAME full internal.vtu and wireframed the entire volume,
+        so a poly mesh with any real cell count looked like solid static
+        from outside: every internal edge of every cell was superimposed in
+        screen space, regardless of how well-graded the mesh actually was.
+        extract_surface() on an UnstructuredGrid is VTK's vtkGeometryFilter
+        — it keeps the true outer polygon faces (a poly cell's pentagon
+        face stays a pentagon) without triangulating them, so the
+        "style=wireframe to avoid looking like tet" rendering trick still
+        applies, now on just the boundary.
+
+        "internal" ("Volume Mesh") is returned unchanged — it exists
+        specifically to inspect internal structure.
+
+        algorithm="dataset_surface" is pinned explicitly: PyVista warns
+        that the default will change in a future release, and a silent
+        behaviour change here would be exactly the kind of "why does the
+        mesh look different now" regression this fix exists to prevent.
+        """
+        if mode == "surface_edges":
+            return grid.extract_surface(algorithm="dataset_surface")
+        return grid
+
     def _load_internal_vtu_async(self, vtu_path: Path, mode: str) -> None:
         """Read + optionally decimate a (possibly huge) internal.vtu in a
         background task; render on the GUI thread when ready."""
         def work(worker):
             grid = pv.read(str(vtu_path))
+            grid = self._prepare_internal_vtu_grid(grid, mode)
             n_cells = grid.n_cells
             show_dec = n_cells > self.DECIMATE_THRESHOLD
             if show_dec:
@@ -1278,11 +1309,11 @@ class ViewerWidget(QWidget):
             ec = self._edge_color()
             try:
                 self._plotter.clear()
-                # style="wireframe": VTK triangulates polyhedral faces for a
-                # surface fill, which makes a 100% polyhedral mesh LOOK like
-                # a tetra mesh.  The wireframe representation shows the TRUE
-                # cell edges, so the polyhedral structure is visible — the
-                # user asked for "only poly, visually too".
+                # "internal" (Volume Mesh) renders every internal cell edge
+                # of the WHOLE volume on purpose — that view exists to see
+                # through the mesh. A filled/shaded surface there would hide
+                # the interior it's meant to show, so it stays a bare
+                # wireframe (lines only, no fill).
                 if mode == "internal":
                     self._plotter.add_mesh(
                         grid, style="wireframe", color="lightgray",
@@ -1290,12 +1321,29 @@ class ViewerWidget(QWidget):
                         line_width=0.5 if not show_dec else 0.7,
                         opacity=1.0,
                     )
-                else:  # surface_edges
+                else:  # surface_edges: ParaView's "Surface With Edges"
+                    # A bare wireframe (lines only, no shading) of a boundary
+                    # mesh with any real face count reads as unreadable
+                    # static — there is no fill to give depth/orientation
+                    # cues, just overlapping line segments. style="surface"
+                    # with show_edges=True is the actual ParaView "Surface
+                    # With Edges" representation: a shaded fill with the
+                    # TRUE polygon edges outlined on top. This does NOT
+                    # reintroduce the "looks like tet" problem the wireframe
+                    # was originally chosen to avoid: `grid` here is already
+                    # the boundary-only PolyData from _prepare_internal_vtu_
+                    # grid's extract_surface(), whose cells are the real
+                    # n-gon faces (a poly cell's pentagon face stays a
+                    # pentagon — verified in test_viewer_surface_only.py).
+                    # VTK's edge overlay is drawn from that real polygon
+                    # boundary; the GPU fanning it triangulates internally
+                    # to rasterize the fill does not add visible diagonal
+                    # edges — only the actual polygon outline is drawn.
                     self._plotter.add_mesh(
-                        grid, style="wireframe", show_edges=True,
+                        grid, style="surface", show_edges=True,
                         edge_color=ec, color="lightgray",
                         line_width=0.5 if not show_dec else 0.7,
-                        opacity=1.0,
+                        opacity=1.0, lighting=True,
                     )
                 if show_dec:
                     self._plotter.add_text(
@@ -1556,12 +1604,37 @@ class ViewerWidget(QWidget):
         # and causing the first process to be killed (race condition).
 
     def _delayed_display_mesh(self):
-        """Deferred mesh rendering â€” no-ops if view selector was disabled
+        """Deferred mesh rendering - no-ops if view selector was disabled
         (e.g. mesh too large).  Called via QTimer.singleShot from show_mesh()
-        so the stats label paints before the heavy VTK pipeline starts."""
+        so the stats label paints before the heavy VTK pipeline starts.
+
+        Dispatches on the selector's CURRENT index instead of always
+        calling _display_mesh(). This used to be hardcoded to
+        _display_mesh() (the full internal-volume wireframe, "Volume
+        Mesh"), even though show_mesh() sets the selector to "Surface +
+        Edges" right before scheduling this call. The dropdown showed
+        "Surface + Edges" while the mesh actually rendered was always
+        the full internal wireframe - every internal cell edge of the
+        whole volume, tets/poly cells all visible through the surface -
+        exactly the "internal tets still visible" symptom: fixing
+        _display_surface_edges()'s OWN rendering (extract_surface +
+        style=surface) had no effect because that method was never
+        being called on the initial post-meshing display, only on a
+        manual dropdown switch. Called directly (not via
+        _on_view_changed) to keep the existing "do not double-trigger"
+        guarantee from the comment above show_mesh()'s setCurrentIndex
+        call.
+        """
         if not self._view_selector.isEnabled():
             return
-        self._display_mesh()
+        idx = self._view_selector.currentIndex()
+        mode = VIEW_MODES[idx] if idx >= 0 else "Volume Mesh"
+        if mode == "Surface + Edges":
+            self._display_surface_edges()
+        elif mode == "CAD Surfaces":
+            self._display_cad()
+        else:
+            self._display_mesh()
 
     def show_mesh(self, case_dir: Path | str):
         """Show mesh â€” always regenerates VTU from current polyMesh.
