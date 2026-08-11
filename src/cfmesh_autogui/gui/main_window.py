@@ -2729,27 +2729,26 @@ class MainWindow(QMainWindow):
         n_layers = bl_params.get("nLayers", 0) if bl_params else 0
         bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
         bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
-        # Pass user's cell sizes to GMSH — these were previously ignored.
-        # Only when adaptive sizing is OFF: with it on (the default),
-        # forcing max_cell_size here always overrode GMSH's adaptive
-        # sizing with the old uniform behavior — Max/Min Cell Size are
-        # always populated by Auto-Suggest, so the adaptive algorithm
-        # added earlier today never actually ran in the live GUI.
-        #
-        # The Mesh Fineness slider now ALSO sets an explicit target cell
-        # count (10K..20M). When that target is nonzero we let GMSH derive
-        # the sizing from the REAL geometry + target count (adaptive path),
-        # instead of overriding it with max_cell_size derived from a 1m
-        # default bbox — which is what made "very fine" blow up on parts
-        # larger than the default.
+        # Adaptive sizing toggle (Mesh tab, next to the Mesh Fineness
+        # slider): this is now the ONLY thing deciding which sizing path
+        # GMSH takes. Previously `max_cells_target > 0` also forced the
+        # adaptive path regardless of the checkbox — but the slider's
+        # target is NEVER zero (it maps slider position 0..20 to
+        # 10K..20M cells, see _slider_to_cells), so that condition was
+        # always true and the checkbox was unreachable dead UI: there was
+        # no way to actually get literal/manual sizing from the GUI.
+        # max_cells_target itself is only meaningful to the adaptive path
+        # (generate_volume_mesh ignores it whenever an explicit max_cell
+        # is passed), so it is only forwarded when adaptive is on.
         adaptive = self._params.get_adaptive_sizing_enabled()
-        max_cells_target = self._params.get_max_cells_target()
-        if adaptive or max_cells_target > 0:
+        if adaptive:
             max_cell = 0
             min_cell = 0
+            max_cells_target = self._params.get_max_cells_target()
         else:
             max_cell = self._params.get_max_cell()
             min_cell = self._params.get_min_cell()
+            max_cells_target = 0
 
         # Propagate the user's OpenMP thread selection to the GMSH
         # subprocess so a "Custom" thread count also applies to GMSH

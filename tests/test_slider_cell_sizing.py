@@ -80,3 +80,27 @@ def test_pipeline_estimate_overrides_panel_fallback(panel):
     panel.set_geometry_cell_estimate(500_000, 677_384, 950_000)
     assert "677K" in panel._detail_label.text()
     assert "500,000-950,000" in panel._cell_est_label.text()
+
+
+def test_adaptive_sizing_toggle_is_real_and_on_by_default(panel):
+    """Regression: the toggle used to be hidden and unwired — the code
+    always ran the adaptive path regardless of its state (see
+    MainWindow._start_gmsh_volume_worker), so a user could never actually
+    get literal/manual sizing. It must now be a real, visible, ON-by-
+    default control."""
+    assert panel._adaptive_sizing_check.isVisibleTo(panel) or not panel.isVisible()
+    assert panel.get_adaptive_sizing_enabled() is True
+
+
+def test_adaptive_sizing_off_makes_cell_sizes_editable(panel):
+    """OFF must mean genuinely manual: Max/Min Cell Size become editable
+    (not just cosmetically greyed while still being silently ignored)."""
+    assert panel._max_cell.isReadOnly()
+    assert panel._min_cell.isReadOnly()
+    panel._adaptive_sizing_check.setChecked(False)
+    assert panel.get_adaptive_sizing_enabled() is False
+    assert not panel._max_cell.isReadOnly()
+    assert not panel._min_cell.isReadOnly()
+    panel._adaptive_sizing_check.setChecked(True)
+    assert panel._max_cell.isReadOnly()
+    assert panel._min_cell.isReadOnly()
