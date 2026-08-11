@@ -2796,7 +2796,7 @@ class MainWindow(QMainWindow):
             "refinement_zones": self._gmsh_refinement_zones(),
             "max_cell": max_cell, "min_cell": min_cell,
             "max_cells_target": max_cells_target,
-            "bl_retried": False, "my_id": my_id,
+            "bl_retried": False, "detail_retried": False, "my_id": my_id,
         }
 
         self._submit_task(
@@ -2846,6 +2846,45 @@ class MainWindow(QMainWindow):
                                   max_cell_size=ctx["max_cell"],
                                   min_cell_size=ctx["min_cell"],
                                   max_cells_target=ctx["max_cells_target"])
+            self._gmsh_worker = w2
+            self._submit_task(
+                "gmsh_volume", w2,
+                on_finished=lambda _n, result: self._on_gmsh_volume_result(result),
+                on_failed=lambda _n, m: self._on_gmsh_volume_failed(m),
+                heartbeat_timeout_s=600.0,
+            )
+            return
+        # Generic failure (not the BL-specific path above): retry ONCE at
+        # the next coarser detail level, instead of giving up immediately.
+        # Before this, a generic GMSH crash/exception (e.g. a real CAD
+        # part with a periodic-surface parametrization degeneracy — see
+        # gmsh_wrapper.py's Mesh.Algorithm comment) reported the EXACT
+        # same error twice: nothing about the retry actually changed, so
+        # it failed identically both times (confirmed directly from a
+        # user's log). A coarser mesh changes the local element size near
+        # the problematic surface, which measurably helps this class of
+        # GMSH robustness issue (see the same comment) — not guaranteed,
+        # but strictly better than repeating an attempt that cannot
+        # possibly succeed differently.
+        _DETAIL_COARSER = {
+            "very_fine": "fine", "fine": "medium",
+            "medium": "coarse", "coarse": "very_coarse",
+        }
+        next_detail = _DETAIL_COARSER.get(ctx["detail"])
+        if not ctx["detail_retried"] and next_detail:
+            ctx["detail_retried"] = True
+            ctx["detail"] = next_detail
+            self._log.append_log(
+                f"{Tag.WARN} GMSH volume failed — retrying at a coarser "
+                f"detail level ({next_detail})."
+            )
+            w2 = GmshVolumeWorker(
+                ctx["step_path"], ctx["msh_path"], next_detail,
+                ctx["n_layers"], ctx["bl_thickness"], ctx["bl_expansion"],
+                refinement_zones=ctx["refinement_zones"],
+                max_cell_size=ctx["max_cell"], min_cell_size=ctx["min_cell"],
+                max_cells_target=ctx["max_cells_target"],
+            )
             self._gmsh_worker = w2
             self._submit_task(
                 "gmsh_volume", w2,
