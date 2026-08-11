@@ -1887,9 +1887,27 @@ def generate_volume_mesh(
     # boundary mesh (overlapping facets)" on the discrete/reparametrized
     # surfaces produced by the STL-reconstruction step above (long curved
     # patches parametrize badly); HXT meshes directly off the discrete
-    # boundary triangulation and doesn't hit this.
+    # boundary triangulation and doesn't hit this. (This is Algorithm3D —
+    # the VOLUME algorithm — unaffected by the 2D algorithm change below.)
     gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
-    gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal
+    # Mesh.Algorithm (2D) — MeshAdapt (1), not Frontal-Delaunay (6).
+    # Reproduced directly on a real CAD part (Parte4.stp, a valve with
+    # periodic Cone/Cylinder/BSpline surfaces whose OCC seam curve is
+    # legitimately traversed twice in its own wire): Frontal-Delaunay's
+    # curve-intersection recovery loop on those surfaces never converges
+    # (escalating "N intersections in the 1D mesh" retries) and the
+    # process eventually SEGFAULTS — a crash, not a catchable Python
+    # exception, so the app has no way to detect or recover from it.
+    # MeshAdapt hits the exact same class of surface but recovers in 1
+    # iteration in most runs; where it still fails, it raises a normal,
+    # catchable exception ("Identical points in triangulation...") instead
+    # of crashing the process. Measured across several repeated runs on
+    # the same file: MeshAdapt never crashed where Frontal-Delaunay did,
+    # and often succeeded outright. Not a complete fix for this specific
+    # file's periodic-surface degeneracy (GMSH's own recovery is not
+    # deterministic run-to-run, so it does not reach 100% either way) —
+    # but strictly safer, never observed worse.
+    gmsh.option.setNumber("Mesh.Algorithm", 1)  # MeshAdapt
     gmsh.option.setNumber("Mesh.Optimize", 1)
     gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
 
