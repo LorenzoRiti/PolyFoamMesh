@@ -53,6 +53,30 @@ def test_dual_poly_worker_passes_best_options(tmp_path):
     ):
         worker.run()
 
-    assert captured.get("wedge_cells") is True
-    assert captured.get("median_faces") is True
+    # The poly path now asks for the COLLAPSED boundary (one polygonal face
+    # per boundary vertex, the polyDualMesh/STAR-CCM+ topology) instead of
+    # the exact per-corner subdivision. Measured A/B on two real tet meshes:
+    #
+    #   user's own mesh (102,080 cells):
+    #     exact    462,846 boundary faces (all quads),   0 defects, drift 0.00%
+    #     collapse  80,111 boundary faces (5.8x fewer),  0 defects, drift 0.00%
+    #   valve1 (152,086 cells, the hard concave-feature case):
+    #     exact    226,542 boundary faces, 1056 defects (766 pyramid)
+    #     collapse  42,130 boundary faces (5.4x fewer),
+    #                                       483 defects (321 pyramid), -1.08%
+    #
+    # i.e. the collapse is not only what makes the mesh READ as polyhedral
+    # (pentagons/hexagons instead of three quads tiling each primal
+    # triangle, whose edges otherwise survive and look like a triangulated
+    # surface) — on the hard case it also HALVES the residual defects and
+    # cuts the inverted face pyramids by 58%, which is the concave-feature
+    # defect that agglomeration, vertex-star split and wedge cells all
+    # failed to improve.
+    #
+    # wedge_cells/median_faces are deliberately NOT passed: median_faces
+    # measured slightly worse (1056 vs 1027 defects on valve1), wedge_cells
+    # made no difference (1056 either way), and both are incompatible with
+    # the collapse, which disables them explicitly anyway.
+    assert captured.get("collapse_smooth_edges") is True
+    assert captured.get("boundary_feature_angle") == 40.0
     assert captured.get("cancel") is not None
