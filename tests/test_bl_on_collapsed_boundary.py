@@ -17,12 +17,13 @@ Measured on a small GMSH cylinder (this fixture):
 i.e. BL succeeds either way and the prism count drops by the same ~5.4x
 factor as the boundary face count (bl_poly extrudes one stack per face).
 
-Also confirmed at production scale, on a real 102,080-cell mesh with the
-collapsed boundary: BL succeeded with 240,333 prism cells in ~325 s (one
-height-scale retry, 2 face-pyramid violations on the first attempt). Slow,
-but it completes — an earlier note in this file claimed it ran out of
-memory there, which was wrong: the run had simply not been waited out.
-The fixture here stays small so the test itself remains fast.
+Also confirmed at production scale on a real 102,080-cell mesh, BOTH ways:
+    exact:    462,846 boundary faces -> BL ok, 1,388,538 prisms, 340 s
+    collapse:  80,111 boundary faces -> BL ok,   240,333 prisms, 312 s
+so the collapse cuts boundary-layer cells 5.8x at essentially the same
+wall time. An earlier note here claimed BL ran out of memory at this
+scale; that was wrong — the runs had simply not been waited out. The
+fixture below stays small so the test itself remains fast.
 """
 from __future__ import annotations
 
