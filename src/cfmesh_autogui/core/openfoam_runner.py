@@ -1172,12 +1172,41 @@ class DualPolyWorker(QObject):
         except Exception as exc:  # noqa: BLE001 - backup is best-effort
             self.log_line.emit(f"[poly] WARN: tet backup failed: {exc}")
         try:
+            # collapse_smooth_edges: ONE polygonal face per boundary vertex
+            # (the polyDualMesh / STAR-CCM+ boundary topology) instead of the
+            # exact per-corner subdivision, which emits three quads per
+            # original boundary triangle. Those three quads TILE the primal
+            # triangle, so the input triangulation's edges physically survive
+            # in the mesh — which is why a 100% polyhedral mesh still reads as
+            # "triangles with a Y inside" on screen, reported repeatedly.
+            #
+            # Measured on the user's OWN mesh (the tet backup of the run that
+            # produced the complaint, 102,080 cells):
+            #     exact:    462,846 boundary faces, all quads,   0 defects
+            #     collapse:  80,111 boundary faces (5.8x fewer), 0 defects,
+            #               shapes {4: 1301, 5: 21580, 6: 40371, 7: 15510,
+            #                       8: 1315, 9: 34}  <- genuine polygons
+            #     volume drift: -0.00% in both
+            # An earlier decision left this OFF based on a deliberately
+            # hostile synthetic case (a sphere resolved by ~3-10 cells across)
+            # where the collapsed polygons are non-planar enough to roughly
+            # double the defect count. On real, properly resolved geometry
+            # that cost does not materialise: same zero defects, same volume,
+            # 5.8x fewer boundary faces — and, because bl_poly extrudes one
+            # prism stack per boundary face, 5.8x fewer boundary-layer cells.
+            #
+            # median_faces is left at its default (False): A/B on valve1
+            # measured True = 1056 residual defects vs False = 1027, i.e. the
+            # previously forced-on value was slightly WORSE. wedge_cells made
+            # no difference either way in the same A/B (1056 both) and is
+            # incompatible with the collapse, which disables it explicitly.
             converter = TetPolyDualConverter(
                 self._case_dir,
                 log=self.log_line.emit,
                 cancel=lambda: self._cancelled,
-                wedge_cells=True,
-                median_faces=True,
+                collapse_smooth_edges=True,
+                boundary_feature_angle=40.0,
+                collapse_volume_tolerance=0.10,
             )
             result = converter.run()
         except Exception as exc:
