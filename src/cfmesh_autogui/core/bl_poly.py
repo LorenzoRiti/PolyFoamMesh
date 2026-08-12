@@ -1116,9 +1116,35 @@ class PolyBoundaryLayerEngine:
             return False, "non-finite cell volume"
 
         v_total = float(vols.sum())
-        if abs(v_total - total_vol0) > 1e-6 * max(abs(total_vol0), 1e-30):
+        # Volume-conservation tolerance. This is a redundant SAFETY NET, not
+        # the primary correctness check: a genuine topological hole (a lost
+        # or duplicated face) breaks the cell-closure test above, which runs
+        # at 1e-8 and is exact regardless of face shape. What this test adds
+        # is a guard against a construction that closes but encloses the
+        # wrong region.
+        #
+        # It cannot be held at 1e-6 any more. The volume here is computed by
+        # the divergence theorem from face centroids (vertex average) and
+        # Newell area vectors, and that pair is only EXACT for PLANAR faces.
+        # Since the dual boundary may now be collapsed into n-gons (one
+        # polygon per boundary vertex — the topology that makes the mesh
+        # actually read as polyhedral), those faces are generally non-planar
+        # and the measure itself carries an approximation error larger than
+        # 1e-6, with no defect in the mesh.
+        #
+        # Measured on a cylinder with named inlet/outlet/wall patches and
+        # wall-only BL on a collapsed boundary: closure, positive volumes and
+        # the face-pyramid criterion ALL pass, while volume "drifts" by
+        # 1.6e-4 relative (0.276206 vs 0.276249) — so every height-scale
+        # attempt was rejected and BL failed outright, purely on this check.
+        # 1e-3 still catches a real hole (which is orders of magnitude
+        # bigger, and would fail closure first anyway) while tolerating the
+        # n-gon quadrature error.
+        rel_vol_err = abs(v_total - total_vol0) / max(abs(total_vol0), 1e-30)
+        if rel_vol_err > 1e-3:
             return False, (
-                f"volume not conserved: {v_total:.6g} vs {total_vol0:.6g}"
+                f"volume not conserved: {v_total:.6g} vs {total_vol0:.6g} "
+                f"(relative {rel_vol_err:.2e})"
             )
 
         # checkMesh's 'face pyramids' criterion: every face normal must point
