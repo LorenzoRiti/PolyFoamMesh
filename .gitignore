@@ -48,3 +48,10 @@ installer/output/
 tools/innosetup/
 dist/
 build/
+
+# scratch/experiment leftovers (see the dead-code cleanup commit)
+scratch_*.py
+scratch_*.json
+log.mesh
+tools/_tmp_*.py
+VoroCrustLog.txt
