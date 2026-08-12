@@ -489,26 +489,49 @@ def _advancing_front_1d(
     return params
 
 
-def _extract_boundary_trimesh(gmsh_mod):
-    """The full discrete boundary surface GMSH has already tessellated
-    (all 2D entities combined into one triangle soup), as a
-    ``trimesh.Trimesh`` — the input ``_sample_passage_thickness_field``
-    ray-casts against.
+def _extract_boundary_trimesh(gmsh_mod, probe_size: float | None = None):
+    """A COARSE discrete boundary surface (all 2D entities combined into
+    one triangle soup) as a ``trimesh.Trimesh`` — the thing
+    ``_sample_passage_thickness_field`` ray-casts against.
 
-    ``Mesh.generate(2)`` is a prerequisite of ``generate(3)`` and is
-    idempotent (a no-op if the surface mesh already exists), so calling
-    it here never duplicates the meshing work the caller does anyway.
+    ``probe_size`` (when given) caps the element size for this throwaway
+    probe mesh. This matters for two independent reasons, both measured:
+
+    - COST: the probe is a second full 2D meshing pass on top of the real
+      one (the caller clears it afterwards precisely so the real pass is
+      not skipped), so at full resolution it roughly doubles 2D meshing
+      time for information — "how wide is the passage here" — that needs
+      no resolution at all.
+    - ROBUSTNESS: 2D meshing is exactly where GMSH's curve-recovery loop
+      breaks down on degenerate periodic CAD surfaces. A coarse probe
+      spends far less time in that loop, and is far less likely to
+      trigger it, than a full-resolution one.
+
     Node tags are used directly as the shared-vertex key across surfaces
-    (``process=False``): GMSH's own mesh is already conforming at
-    surface junctions — two adjacent surfaces meshed by GMSH reference
-    the SAME node tags along their shared boundary curve, so this
-    reproduces that shared-vertex topology exactly, without trimesh's
-    usual coordinate-based vertex merging (and its tolerance pitfalls).
+    (``process=False``): GMSH's own mesh is already conforming at surface
+    junctions — two adjacent surfaces reference the SAME node tags along
+    their shared boundary curve — so this reproduces that shared-vertex
+    topology exactly, without trimesh's coordinate-based vertex merging
+    and its tolerance pitfalls.
     """
     import numpy as np
     import trimesh
 
-    gmsh_mod.model.mesh.generate(2)
+    saved_max = None
+    if probe_size and probe_size > 0:
+        try:
+            saved_max = gmsh_mod.option.getNumber("Mesh.CharacteristicLengthMax")
+            gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", probe_size)
+        except Exception:
+            saved_max = None
+    try:
+        gmsh_mod.model.mesh.generate(2)
+    finally:
+        if saved_max is not None:
+            try:
+                gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", saved_max)
+            except Exception:
+                logger.exception("Probe mesh: restoring CharacteristicLengthMax failed")
     node_tags, node_coords, _ = gmsh_mod.model.mesh.getNodes()
     if len(node_tags) == 0:
         return None
@@ -575,10 +598,29 @@ def _sample_passage_thickness_field(
     from cfmesh_autogui.core.geometry import sample_thickness_field
 
     try:
-        mesh = _extract_boundary_trimesh(gmsh_mod)
+        # Probe at the COARSE end of the requested range: passage width is
+        # a smooth, low-frequency quantity (how far to the opposite wall),
+        # so a coarse tessellation measures it just as well while costing
+        # a fraction of the time and touching GMSH's fragile curve-recovery
+        # path far less. See _extract_boundary_trimesh for the details.
+        mesh = _extract_boundary_trimesh(gmsh_mod, probe_size=h_max)
     except Exception:
         logger.exception("Passage thickness field: boundary extraction failed")
-        return np.zeros((0, 3)), np.zeros(0)
+        mesh = None
+    finally:
+        # The probe mesh built by _extract_boundary_trimesh MUST be thrown
+        # away: GMSH REUSES an existing 2D mesh when generate(3) runs later
+        # (verified directly — a unit box meshed at lc=0.5 and then
+        # generated at lc=0.08 kept all 540 of its original triangles), so
+        # leaving it in place would freeze the final surface mesh at
+        # whatever sizing existed BEFORE any size field was installed,
+        # silently discarding the passage/curvature/small-curve sizing this
+        # very function exists to compute. `mesh` already holds its own copy
+        # of the coordinates, so clearing costs nothing here.
+        try:
+            gmsh_mod.model.mesh.clear()
+        except Exception:
+            logger.exception("Passage thickness field: probe-mesh clear failed")
     if mesh is None or len(mesh.faces) == 0:
         return np.zeros((0, 3)), np.zeros(0)
 
@@ -1827,6 +1869,38 @@ def generate_volume_mesh(
     # apply_solution_size_field).
     bg_field_tag: int | None = None
 
+    # Meshing algorithms are chosen HERE, before any sizing configuration —
+    # NOT after it (where they used to be). The adaptive sizing path calls
+    # _sample_passage_thickness_field -> _extract_boundary_trimesh, which
+    # runs mesh.generate(2) to get the tessellated boundary to ray-cast
+    # against. That 2D pass is exactly where the Frontal-Delaunay
+    # curve-recovery crash happens on periodic-surface CAD, so setting the
+    # algorithm afterwards was too late to have any effect: measured on the
+    # real valve part, the log showed 314 Frontal-Delaunay surface meshings
+    # against 32 MeshAdapt (all of the latter being GMSH's own internal
+    # fallback), i.e. the requested algorithm never applied to the pass
+    # that matters.
+    #
+    # HXT (10) for 3D, not classic Delaunay (1) — Delaunay fails with
+    # "Invalid boundary mesh (overlapping facets)" on the discrete/
+    # reparametrized surfaces produced by STL reconstruction (long curved
+    # patches parametrize badly); HXT meshes directly off the discrete
+    # boundary triangulation and doesn't hit this.
+    gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
+    # MeshAdapt (1) for 2D, not Frontal-Delaunay (6). Measured over
+    # repeated runs on a real CAD part (a valve with periodic Cone/
+    # Cylinder/BSpline surfaces whose OCC seam curve is legitimately
+    # traversed twice in its own wire): Frontal-Delaunay's curve-
+    # intersection recovery loop never converges there and the process
+    # SEGFAULTS — a crash, not a catchable Python exception, so the app
+    # cannot detect or recover from it. MeshAdapt hits the same surfaces
+    # but recovers in one iteration in most runs, and where it still
+    # fails it raises a normal catchable exception. Never measured worse
+    # on any test case (cylinder, venturi, box).
+    gmsh.option.setNumber("Mesh.Algorithm", 1)  # MeshAdapt
+    gmsh.option.setNumber("Mesh.Optimize", 1)
+    gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+
     if user_lc:
         # Explicit user override: use user's cell sizes directly
         df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
@@ -1883,33 +1957,9 @@ def generate_volume_mesh(
             sizing_info, feat["min_feature"], sizing_info["n_small_curves"],
         )
 
-    # HXT (10), not classic Delaunay (1) — Delaunay fails with "Invalid
-    # boundary mesh (overlapping facets)" on the discrete/reparametrized
-    # surfaces produced by the STL-reconstruction step above (long curved
-    # patches parametrize badly); HXT meshes directly off the discrete
-    # boundary triangulation and doesn't hit this. (This is Algorithm3D —
-    # the VOLUME algorithm — unaffected by the 2D algorithm change below.)
-    gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
-    # Mesh.Algorithm (2D) — MeshAdapt (1), not Frontal-Delaunay (6).
-    # Reproduced directly on a real CAD part (Parte4.stp, a valve with
-    # periodic Cone/Cylinder/BSpline surfaces whose OCC seam curve is
-    # legitimately traversed twice in its own wire): Frontal-Delaunay's
-    # curve-intersection recovery loop on those surfaces never converges
-    # (escalating "N intersections in the 1D mesh" retries) and the
-    # process eventually SEGFAULTS — a crash, not a catchable Python
-    # exception, so the app has no way to detect or recover from it.
-    # MeshAdapt hits the exact same class of surface but recovers in 1
-    # iteration in most runs; where it still fails, it raises a normal,
-    # catchable exception ("Identical points in triangulation...") instead
-    # of crashing the process. Measured across several repeated runs on
-    # the same file: MeshAdapt never crashed where Frontal-Delaunay did,
-    # and often succeeded outright. Not a complete fix for this specific
-    # file's periodic-surface degeneracy (GMSH's own recovery is not
-    # deterministic run-to-run, so it does not reach 100% either way) —
-    # but strictly safer, never observed worse.
-    gmsh.option.setNumber("Mesh.Algorithm", 1)  # MeshAdapt
-    gmsh.option.setNumber("Mesh.Optimize", 1)
-    gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+    # (Meshing algorithms are set near the top of this function, BEFORE the
+    # sizing configuration — see the comment there for why the order
+    # matters.)
 
     # Boundary layers
     if n_layers > 0 and bl_thickness is not None:

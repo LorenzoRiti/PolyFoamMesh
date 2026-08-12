@@ -199,6 +199,35 @@ def test_gmsh_boundary_extraction_matches_known_volume(gmsh_box):
     assert mesh.volume == pytest.approx(1.0, rel=1e-6)  # 2 * 1 * 0.5
 
 
+def test_probe_mesh_is_discarded_so_size_fields_still_apply(gmsh_box):
+    """Regression: _extract_boundary_trimesh generates a 2D mesh to have
+    something to ray-cast against. GMSH REUSES an existing 2D mesh when
+    generate(3) runs later, so if that probe mesh is left in place the
+    final surface mesh is frozen at whatever sizing existed BEFORE any
+    size field was installed — silently discarding the passage/curvature/
+    small-curve sizing entirely (verified: a unit box meshed at lc=0.5
+    then generated at lc=0.08 kept all 540 original triangles).
+
+    _sample_passage_thickness_field must therefore clear the probe mesh.
+    """
+    from cfmesh_autogui.core.gmsh_wrapper import _sample_passage_thickness_field
+
+    _sample_passage_thickness_field(
+        gmsh_box, h_min=0.01, h_max=1.0, cells_across=8, max_samples=500,
+    )
+    # no 2D elements may survive the call
+    leftover = 0
+    for dim, tag in gmsh_box.model.getEntities(2):
+        el_types, el_tags, _ = gmsh_box.model.mesh.getElements(dim, tag)
+        for t, tags in zip(el_types, el_tags):
+            if t == 2:  # 3-node triangle
+                leftover += len(tags)
+    assert leftover == 0, (
+        f"{leftover} probe triangles left behind — generate(3) would reuse "
+        "them and ignore every size field"
+    )
+
+
 def test_gmsh_passage_thickness_field_end_to_end(gmsh_box):
     from cfmesh_autogui.core.gmsh_wrapper import _sample_passage_thickness_field
 
