@@ -62,6 +62,22 @@ def cylinder_msh(tmp_path_factory) -> Path:
         gmsh.model.add("cyl")
         gmsh.model.occ.addCylinder(0, 0, 0, 0, 0, 1, 0.3)
         gmsh.model.occ.synchronize()
+        # Name the patches so the per-patch (wall-only) BL test below has
+        # something real to select between — that is the production default,
+        # since layers must not be extruded on inlet/outlet.
+        for _dim, tag in gmsh.model.getEntities(2):
+            com = gmsh.model.occ.getCenterOfMass(2, tag)
+            if abs(com[2]) < 1e-6:
+                name = "inlet"
+            elif abs(com[2] - 1.0) < 1e-6:
+                name = "outlet"
+            else:
+                name = "wall"
+            grp = gmsh.model.addPhysicalGroup(2, [tag])
+            gmsh.model.setPhysicalName(2, grp, name)
+        vols = gmsh.model.getEntities(3)
+        gvol = gmsh.model.addPhysicalGroup(3, [vols[0][1]])
+        gmsh.model.setPhysicalName(3, gvol, "internal")
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", 0.09)
         gmsh.option.setNumber("Mesh.CharacteristicLengthMin", 0.05)
         gmsh.model.mesh.generate(3)
@@ -109,6 +125,40 @@ def test_boundary_layer_still_succeeds_on_collapsed_boundary(tmp_path, cylinder_
     assert bl.success, f"BL failed on collapsed boundary: {bl.errors}"
     assert bl.n_prism_cells == 3 * res.n_boundary_faces
     assert bl.total_thickness > 0
+
+
+def test_wall_only_bl_works_on_collapsed_boundary(tmp_path, cylinder_msh):
+    """COLLAPSE + per-patch (wall-only) BL — the production default, since
+    boundary layers must not be extruded on inlet/outlet.
+
+    This combination failed outright before the volume tolerance in
+    bl_poly._validate was relaxed: closure, positive volumes and the
+    face-pyramid criterion all passed, but the volume-conservation check
+    (then held at 1e-6) rejected every height-scale attempt over a 1.6e-4
+    relative difference. That difference is quadrature error, not a mesh
+    defect: cell volume is computed from face centroids and Newell area
+    vectors, which are exact only for PLANAR faces, and the collapsed
+    boundary is n-gons that generally are not planar.
+    """
+    case = tmp_path / "wallonly"
+    res, _shapes = _build(case, cylinder_msh, collapse=True)
+
+    _pts, _faces, _owner, _neigh, patches = fio.read_polymesh(
+        case / "constant" / "polyMesh")
+    by_name = {p["name"]: p["nFaces"] for p in patches}
+    assert "wall" in by_name and "inlet" in by_name, (
+        f"patches did not survive the collapse: {by_name}"
+    )
+    assert all(n > 0 for n in by_name.values()), f"empty patch after collapse: {by_name}"
+
+    bl = PolyBoundaryLayerEngine(case, log=lambda _m: None).run(
+        n_layers=3, first_height=0.004, growth_rate=1.2,
+        patch_names=["wall"], apply_to_all=False,
+    )
+    assert bl.success, f"wall-only BL failed on collapsed boundary: {bl.errors}"
+    # exactly n_layers stacks per wall face, and nothing from inlet/outlet
+    assert bl.n_prism_cells == 3 * by_name["wall"]
+    assert bl.wall_patches == ["wall"]
 
 
 def test_collapse_cuts_boundary_faces_and_therefore_bl_cells(tmp_path, cylinder_msh):
