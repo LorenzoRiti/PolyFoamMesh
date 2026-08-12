@@ -202,18 +202,9 @@ def _parse_boundary(path: Path) -> list[dict]:
     return [{"name": p.name, "nFaces": p.n_faces, "startFace": p.start_face} for p in patches]
 
 
-def _triangulate_face(indices: list[int]) -> list[tuple[int, int, int]]:
-    tris = []
-    n = len(indices)
-    if n == 3:
-        tris.append((indices[0], indices[1], indices[2]))
-    elif n == 4:
-        tris.append((indices[0], indices[1], indices[2]))
-        tris.append((indices[0], indices[2], indices[3]))
-    elif n > 4:
-        for j in range(1, n - 1):
-            tris.append((indices[0], indices[j], indices[j + 1]))
-    return tris
+# (_triangulate_face removed: its only caller was the manual boundary
+# parser, which now emits the real polygons instead of fanning them into
+# triangles — see read_openfoam_mesh_patches.)
 
 
 # âœ… F-013: LRU cache con max 5 entries per evitare memory leak
