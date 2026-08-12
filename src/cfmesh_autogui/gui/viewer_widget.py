@@ -465,13 +465,22 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
         end = start + p["nFaces"]
         patch_faces = all_faces[start:end]
         total_verts = sum(len(f) for f in patch_faces)
-        total_tris = sum(max(1, len(f) - 2) for f in patch_faces)
-        if total_tris == 0:
+        if total_verts == 0:
             continue
+        # Emit each boundary face as the REAL polygon it is, not as a fan of
+        # triangles. This used to triangulate everything (a quad -> 2 tris,
+        # an n-gon -> n-2 tris), which is exactly what made a 100%
+        # polyhedral mesh look like a tetrahedral one in the viewer: the
+        # barycentric dual's boundary is quads (three per original boundary
+        # triangle), and after the fan split the user saw only their
+        # diagonals. PyVista/VTK take a variable-size face stream —
+        # [n, v0..vn-1, m, w0..wm-1, ...] — so no triangulation is needed at
+        # all, and `show_edges` then outlines the true cell boundaries.
         verts_arr = np.empty((total_verts, 3), dtype=np.float64)
-        tris_arr = np.empty((total_tris, 3), dtype=np.int32)
+        # one size prefix per face + one index per vertex
+        faces_pv = np.empty(len(patch_faces) + total_verts, dtype=np.int32)
         v_offset = 0
-        t_offset = 0
+        f_offset = 0
         for fi, face_indices in enumerate(patch_faces):
             n = len(face_indices)
             try:
@@ -480,19 +489,12 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
                 logger.warning("Patch '%s' face %d: index out of bounds (points=%d, max_idx=%d). Mesh parsing incomplete.",
                                p["name"], fi, len(points), max(face_indices))
                 return None
-            if n == 3:
-                tris_arr[t_offset] = [v_offset, v_offset + 1, v_offset + 2]
-                t_offset += 1
-            elif n == 4:
-                tris_arr[t_offset] = [v_offset, v_offset + 1, v_offset + 2]
-                tris_arr[t_offset + 1] = [v_offset, v_offset + 2, v_offset + 3]
-                t_offset += 2
-            elif n > 4:
-                for j in range(1, n - 1):
-                    tris_arr[t_offset] = [v_offset, v_offset + j, v_offset + j + 1]
-                    t_offset += 1
+            faces_pv[f_offset] = n
+            faces_pv[f_offset + 1:f_offset + 1 + n] = np.arange(
+                v_offset, v_offset + n, dtype=np.int32,
+            )
+            f_offset += n + 1
             v_offset += n
-        faces_pv = np.hstack([np.full((total_tris, 1), 3), tris_arr]).astype(np.int32)
         pd = pv.PolyData(verts_arr, faces_pv)
         color = PATCH_COLORS[i % len(PATCH_COLORS)]
         pd.cell_data["color"] = np.tile(color, (pd.n_cells, 1))
