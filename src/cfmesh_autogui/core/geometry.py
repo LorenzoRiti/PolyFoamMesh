@@ -856,6 +856,74 @@ def estimate_cell_count(
     return max(100, n_est - margin), n_est, n_est + margin
 
 
+# near-wall shell depth, in local-cell-size units, used by
+# estimate_cell_count_geometric below (~ a few boundary-layer-ish cells).
+_SHELL_DEPTH_CELLS = 4.0
+
+
+def estimate_cell_count_geometric(
+    meshes: list[trimesh.Trimesh],
+    volume: float,
+    core_cell: float,
+    patch_sizes: dict[str, float] | None = None,
+) -> tuple[int, int, int]:
+    """Geometry-aware cell-count estimate: near-wall refinement + bulk core.
+
+    ``estimate_cell_count`` divides the WHOLE volume by one average cell
+    size, which is blind to local refinement: a small-area, finely-sized
+    patch (e.g. a 0.04 m wall on a 3 m bbox) occupies a tiny fraction of the
+    volume by geometry but a huge fraction of the CELLS, because cells there
+    are tiny. That mismatch was the source of >10x estimate errors
+    (documented at the call site in main_window.py: 19K estimated vs 2.3M
+    actual on exactly this pattern).
+
+    Two-zone model instead, using the real per-patch surface area (already
+    computed from the loaded trimesh patches, no extra meshing pass needed):
+      - near-wall shell per patch: a slab of thickness
+        ``_SHELL_DEPTH_CELLS * local_cell_size``, volume = area * thickness,
+        cells = shell_volume / local_cell_size**3
+      - core: whatever volume is left over (>= 0), cells = core_volume /
+        core_cell**3
+
+    Falls back to the plain volume/core_cell**3 estimate when there is no
+    per-patch sizing information (``patch_sizes`` empty/None) — same
+    behaviour as before for geometries without local refinement.
+
+    Returns (low, nominal, high) with a +/-20%% margin (tighter than the
+    +/-40%% blind estimate, since this one is grounded in real surface
+    area rather than a single global average).
+    """
+    if core_cell <= 0.0 or volume <= 0.0:
+        return estimate_cell_count(volume, core_cell, core_cell)
+    if not patch_sizes:
+        return estimate_cell_count(volume, core_cell, core_cell)
+
+    shell_volume = 0.0
+    shell_cells = 0.0
+    for mesh in meshes:
+        name = mesh.metadata.get("name", "patch")
+        local_size = patch_sizes.get(name)
+        if not local_size or local_size <= 0.0:
+            continue
+        try:
+            area = float(mesh.area)
+        except Exception as exc:
+            logger.debug("estimate_cell_count_geometric: area failed for a patch: %s", exc)
+            continue
+        if not np.isfinite(area) or area <= 0.0:
+            continue
+        v_shell = min(area * _SHELL_DEPTH_CELLS * local_size, volume - shell_volume)
+        v_shell = max(v_shell, 0.0)
+        shell_volume += v_shell
+        shell_cells += v_shell / (local_size ** 3)
+
+    core_volume = max(volume - shell_volume, 0.0)
+    core_cells = core_volume / (core_cell ** 3)
+    n_est = max(100, int(shell_cells + core_cells))
+    margin = int(n_est * 0.2)
+    return max(100, n_est - margin), n_est, n_est + margin
+
+
 # ------------------------------------------------------------------
 # Face classification
 # ------------------------------------------------------------------

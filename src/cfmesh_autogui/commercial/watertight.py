@@ -361,7 +361,9 @@ class WatertightWorkflow:
         )
 
         volume = geom.compute_volume(self._meshes)
-        _, est, _ = geom.estimate_cell_count(volume, safe_max, safe_min)
+        _, est, _ = geom.estimate_cell_count_geometric(
+            self._meshes, volume, safe_max, getattr(self, '_patch_sizes', None),
+        )
         logger.info("Estimated cell count: ~%d", est)
 
     def _step_boundary_layer(self) -> None:
