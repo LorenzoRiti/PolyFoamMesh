@@ -3,7 +3,8 @@
 Wraps all available meshing algorithms into a single API with:
   - Static auto-select based on geometry type and solver requirements
   - ADAPTIVE escalation: after each run, checkMesh metrics are read and if
-    quality is below threshold (non-ortho > 70, skewness > 0.9), the engine
+    quality is below threshold (non-ortho > 70, skewness > 4.0 — the
+    ADAPTIVE_THRESHOLDS dict from core.quality_thresholds), the engine
     automatically escalates to a more robust algorithm instead of failing.
   - Multiple fallback paths: cfMesh → relaxed cfMesh → gmsh_hybrid → snappyHexMesh
 
@@ -20,7 +21,7 @@ Algorithms:
 The adaptive loop (Punto 1):
   1. Run default algorithm (CartesianHex for watertight, Tetrahedral for complex)
   2. Parse checkMesh real metrics
-  3. If non-ortho > 70 OR skewness > 0.9: escalate to more robust algorithm
+  3. If non-ortho > 70 OR skewness > 4.0: escalate to more robust algorithm
   4. Log escalation reason (always)
   5. Max 3 escalation steps before declaring failure
 """

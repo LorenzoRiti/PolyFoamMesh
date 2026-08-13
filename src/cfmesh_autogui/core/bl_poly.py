@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -197,12 +198,18 @@ def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
     return bad
 
 
-def _fix_pyramid_faces(points, faces, owner, neigh, n_int, n_cells, rounds=4):
+def _fix_pyramid_faces(points, faces, owner, neigh, n_int, n_cells, rounds=4,
+                       cell_mask=None):
     """Flip faces whose normal points INTO their owner cell — checkMesh's
     'face pyramids' criterion (the authoritative validity test).
 
     Uses the same OpenFOAM-convention cell centres as checkMesh; each flipped
-    face is re-repaired for closure afterwards.  Returns the faces list.
+    face is re-repaired for closure afterwards.  ``cell_mask`` restricts the
+    closure repair to the cells that can have been disturbed (the BL prisms
+    and the core cells whose faces were re-wired) — the untouched rest of the
+    mesh is closed by construction, so checking it only wastes time (measured
+    on the valve: tens of thousands of untouched cells scanned per round).
+    Returns the faces list.
     """
     for _ in range(rounds):
         C, _ = _cell_centroids(points, faces, owner, neigh, n_int, n_cells)
@@ -211,14 +218,15 @@ def _fix_pyramid_faces(points, faces, owner, neigh, n_int, n_cells, rounds=4):
         if not bad.any():
             break
         for j, fi in enumerate(np.flatnonzero(bad)):
-            _gil_yield(j, 64)
+            _gil_yield(j, 1024)
             faces[fi].reverse()
-        faces = _repair_closures(points, faces, owner, neigh, n_int, n_cells)
+        faces = _repair_closures(points, faces, owner, neigh, n_int, n_cells,
+                                 cell_mask=cell_mask)
     return faces
 
 
 def _repair_closures(points, faces, owner, neigh, n_int, n_cells,
-                     max_rounds=8, tol=1e-8):
+                     max_rounds=8, tol=1e-8, cell_mask=None):
     """Greedy winding repair: flip individual faces until every cell's signed
     area-vector sum (closure) is ~ 0.
 
@@ -230,65 +238,79 @@ def _repair_closures(points, faces, owner, neigh, n_int, n_cells,
     reduces the residual of a bad cell.  Converges quickly: the number of
     mis-wound faces is small relative to the mesh.
 
-    Returns the (possibly re-wound) faces list.
+    Vectorised per-cell greedy: the (cell, face, sign) pairs are pre-sorted
+    into per-cell segments, so for each bad cell the best face is found with
+    one ``argmin`` over the segment instead of a per-face Python loop with a
+    ``time.sleep(0)`` GIL yield on EVERY face (the single largest cost on the
+    valve: tens of thousands of bad cells x ~15 faces x 8 rounds, each yield
+    being a ~1 ms Windows sleep).  ``cell_mask`` (when given) restricts the
+    search to the cells that can have been disturbed — see
+    ``_fix_pyramid_faces``.  Returns the (possibly re-wound) faces list.
     """
     n_faces = len(faces)
-    # _face_geometry computes exactly these Newell area vectors for ALL
-    # faces at once (its own comment states the equivalence with _newell);
-    # the per-face list comprehension this replaces was the single largest
-    # source of _newell calls — 101,937 of them on a 2,485-face test mesh,
-    # ~1.1 s of a 6.7 s run, almost all interpreter overhead rather than
-    # arithmetic.
     sf, _cf = _face_geometry(points, faces)
     closure = np.zeros((n_cells, 3))
     scale_m = np.zeros(n_cells)
-    cell_faces = [[] for _ in range(n_cells)]
-    # Accumulate closure/scale with vectorised scatter-adds instead of a
-    # Python loop over every face.
     mag = np.linalg.norm(sf, axis=1)
-    owner_arr = np.asarray(owner)
+    owner_arr = np.asarray(owner, dtype=np.int64)
     np.add.at(closure, owner_arr, sf)
     np.add.at(scale_m, owner_arr, mag)
+    neigh_arr = np.zeros(0, dtype=np.int64)
     if n_int:
-        neigh_arr = np.asarray(neigh[:n_int])
+        neigh_arr = np.asarray(neigh[:n_int], dtype=np.int64)
         np.add.at(closure, neigh_arr, -sf[:n_int])
         np.add.at(scale_m, neigh_arr, mag[:n_int])
-    # cell -> incident faces still needs a list-of-lists (ragged), but it is
-    # pure bookkeeping with no geometry in the loop.
-    for fi in range(n_faces):
-        cell_faces[owner[fi]].append(fi)
-        if fi < n_int:
-            cell_faces[neigh[fi]].append(fi)
+    scale_m = np.maximum(scale_m, 1e-300)
 
-    def rel(c: int) -> float:
-        return float(np.linalg.norm(closure[c])) / max(scale_m[c], 1e-300)
+    # (cell, face, sign) for every face side, stably sorted by cell so each
+    # cell's candidate faces are a contiguous segment.  sign = +1 for the
+    # owner side (flip: closure -= 2*sf), -1 for the neighbour side (+ 2*sf).
+    cells = np.concatenate([owner_arr, neigh_arr])
+    fids = np.concatenate([np.arange(n_faces, dtype=np.int64),
+                           np.arange(n_int, dtype=np.int64)])
+    signs = np.concatenate([np.ones(n_faces, dtype=np.float64),
+                            -np.ones(n_int, dtype=np.float64)])
+    order = np.argsort(cells, kind="stable")
+    cells_s = cells[order]
+    fids_s = fids[order]
+    signs_s = signs[order]
+    starts = np.searchsorted(cells_s, np.arange(n_cells + 1))
 
+    rel = np.linalg.norm(closure, axis=1) / scale_m
     for _ in range(max_rounds):
-        bad = [c for c in range(n_cells) if rel(c) > tol]
-        if not bad:
+        bad = rel > tol
+        if cell_mask is not None:
+            bad &= cell_mask
+        if not bad.any():
             break
         improved = False
-        for ci, c in enumerate(bad):
-            _gil_yield(ci, 64)
-            best_fi = -1
-            best = rel(c)
-            for fi in cell_faces[c]:
-                _gil_yield(fi, 256)
-                sign = 1.0 if owner[fi] == c else -1.0
-                trial = closure[c] - 2.0 * sign * sf[fi]
-                tr = float(np.linalg.norm(trial)) / max(scale_m[c], 1e-300)
-                if tr < best - 1e-12:
-                    best, best_fi = tr, fi
-            if best_fi >= 0:
-                fi = best_fi
-                closure[owner[fi]] -= 2.0 * sf[fi]
+
+        # Per-cell greedy: for each bad cell the best single face (argmin
+        # over the cell's segment), applied SEQUENTIALLY so every flip sees
+        # the updated closure — a batched vectorised flip produced more
+        # irrecoverably-open cells on the valve (843 vs 314) because the
+        # gains were computed on a stale closure.  GIL-yield every 512 cells
+        # (the old per-FACE yield was a ~1 ms Windows sleep per candidate
+        # face: tens of thousands of bad cells x ~15 faces x 8 rounds).
+        for ci, c in enumerate(np.flatnonzero(bad)):
+            _gil_yield(ci, 512)
+            s, e = int(starts[c]), int(starts[c + 1])
+            if e <= s:
+                continue
+            trial = closure[c] - 2.0 * signs_s[s:e, None] * sf[fids_s[s:e]]
+            tr = np.linalg.norm(trial, axis=1) / scale_m[c]
+            k = int(np.argmin(tr))
+            if tr[k] < rel[c] - 1e-12:
+                fi = int(fids_s[s:e][k])
+                closure[owner_arr[fi]] -= 2.0 * sf[fi]
                 if fi < n_int:
-                    closure[neigh[fi]] += 2.0 * sf[fi]
+                    closure[neigh_arr[fi]] += 2.0 * sf[fi]
                 sf[fi] = -sf[fi]
                 faces[fi].reverse()
                 improved = True
         if not improved:
             break
+        rel = np.linalg.norm(closure, axis=1) / scale_m
 
     # global orientation: all cells must have positive volume (outward
     # windings); a single global flip fixes the whole mesh
@@ -343,6 +365,7 @@ class PolyBoundaryLayerEngine:
         patch_names: list[str] | None = None,
         apply_to_all: bool = True,
         clamp_factor: float = 0.5,
+        max_core_volume_ratio: float = 0.0,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -358,6 +381,11 @@ class PolyBoundaryLayerEngine:
         - `clamp_factor`: max layer-stack height per wall vertex as a
           fraction of the distance to the nearest non-wall vertex of the
           incident cells (inversion guard).
+        - `max_core_volume_ratio`: when > 0, a BL attempt is accepted only
+          if every BL prism cell's volume is within this ratio of the
+          adjacent core cell's volume (STAR-CCM+ style smooth-transition
+          constraint; the fallback loop then thins the layers until it
+          holds).  0 (default) = constraint disabled, historical behaviour.
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -420,6 +448,13 @@ class PolyBoundaryLayerEngine:
         # fallback: progressively thinner layers AND tighter per-vertex
         # clamping (the pyramid criterion fails on thin twisted rim cells
         # when the extrusion exceeds a small fraction of the local sliver)
+        # The scale-independent part of _build (wall verts, normals, fade,
+        # support distances, edge/patch maps) is computed ONCE — on the valve
+        # it measured ~58 s per attempt, so reusing it across the 5 attempts
+        # is most of the speedup.
+        pre = self._build_precompute(
+            points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
+        )
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
@@ -431,7 +466,7 @@ class PolyBoundaryLayerEngine:
                 built = self._build(
                     points, faces, owner, neighbour, patches, n_int,
                     sel, res.n_layers, res.first_height * scale, growth, clamp,
-                    pyr_before=pyr_before, drop_bnd=drop_bnd,
+                    pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
                 )
             except Exception as exc:  # noqa: BLE001 - keep-best fallback
                 self._log(f"[bl] attempt scale={scale} clamp={clamp}: {exc}")
@@ -439,7 +474,7 @@ class PolyBoundaryLayerEngine:
                 continue
             self._log(f"[bl] validating attempt at scale={scale} "
                       f"clamp={clamp} (checkMesh criteria)...")
-            ok, msg = self._validate(built, total_vol0)
+            ok, msg = self._validate(built, total_vol0, max_core_volume_ratio)
             if ok:
                 fio.write_polymesh(
                     poly, built["points"], built["faces"],
@@ -473,6 +508,40 @@ class PolyBoundaryLayerEngine:
                 f"validation failed at scale={scale} clamp={clamp}: {msg}"
             )
             self._log(f"[bl] validation failed at scale={scale} clamp={clamp}: {msg}")
+
+            # Early stop: a fallback attempt only helps if it eventually
+            # reaches ZERO not-closed cells.  The greedy winding repair is at
+            # a local minimum on twisted slivers (measured on the valve: 314
+            # -> 241 -> 162 -> 156 -> 119 across the five scales, never 0),
+            # so once THREE attempts have left a substantial count that is
+            # NOT halving (stagnation, not slow-but-real convergence), the
+            # remaining thinner attempts cannot close it — cut the run short
+            # instead of burning minutes discovering the same failure.
+            # A genuinely converging case (count dropping steeply, e.g.
+            # 300 -> 150 -> 80 -> 30 -> 0) never trips this: at attempt 3 the
+            # count is already below half of the first attempt.
+            m = re.search(r"(\d+) cells not closed", msg)
+            if m:
+                n_open = int(m.group(1))
+                attempts_done = len([w for w in res.warnings
+                                     if w.startswith("validation failed at")])
+                if attempts_done == 1:
+                    self._first_open = n_open
+                if (attempts_done >= 3 and n_open > 40
+                        and n_open >= 0.5 * getattr(self, "_first_open", n_open)):
+                    res.warnings.append(
+                        "early stop: still "
+                        f"{n_open} cells not closed after {attempts_done} "
+                        "attempts (winding repair at a local minimum, count "
+                        "not halving); mesh left unchanged"
+                    )
+                    self._log(
+                        "[bl] early stop: still "
+                        f"{n_open} cells not closed after {attempts_done} "
+                        "attempts (winding repair at a local minimum, count "
+                        "not halving); mesh left unchanged"
+                    )
+                    break
 
         res.errors.append(
             "could not insert a valid boundary layer (all height scales "
@@ -529,10 +598,20 @@ class PolyBoundaryLayerEngine:
     # core construction
     # ------------------------------------------------------------------
 
-    def _build(self, points, faces, owner, neighbour, patches, n_int,
-               sel, n_layers, first_height, growth, clamp_factor,
-               pyr_before: int = 0, drop_bnd=None) -> dict:
-        """Build the new mesh arrays. Raises on degenerate input."""
+    def _build_precompute(self, points, faces, owner, neighbour, patches,
+                          n_int, sel, drop_bnd) -> dict:
+        """Part of ``_build`` that does NOT depend on the layer heights or the
+        inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
+        vertices, per-vertex normals, the feature-aware angular fade, the
+        smallest incident wall-face edge, the interior-support distance, and
+        the edge/patch maps.
+
+        The fallback loop calls ``_build`` up to 5 times (one per height
+        scale); on the valve this part alone measured ~58 s per attempt, so
+        computing it once and reusing it across attempts is the difference
+        between minutes and tens of minutes.  Returns a dict consumed by
+        ``_build(pre=...)``.
+        """
         pts = np.asarray(points, dtype=np.float64)
         n_pts = len(pts)
         bnd = [n_int + bi for bi in sel]
@@ -608,11 +687,12 @@ class PolyBoundaryLayerEngine:
             angle_fade[w] = max(0.05, min(1.0, (150.0 - theta) / 90.0))
             min_edge[w] = min(f_edges) if f_edges else float("inf")
 
-        # --- per-vertex inversion clamp ------------------------------------
+        # --- interior support distance (inversion clamp, scale-independent) --
         # distance from the wall vertex to the nearest NON-wall vertex of the
         # incident cells bounds how far the extruded surface may travel before
-        # the wall-adjacent cells invert.
-        max_h = {}
+        # the wall-adjacent cells invert.  (The actual clamp multiplies this
+        # by clamp_factor, which is what the fallback loop varies.)
+        support_d: dict[int, float] = {}
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
             # interior anchor vertices reachable from w: primal boundary
@@ -632,11 +712,7 @@ class PolyBoundaryLayerEngine:
             d = min(float(np.linalg.norm(pts[w] - pts[v])) for v in probe)
             if not np.isfinite(d) or d <= 1e-12:
                 raise ValueError(f"wall vertex {w} has no interior support")
-            # inversion guard (distance to interior) + feature fade (angular
-            # divergence) + hard cap on the smallest incident wall-face edge
-            max_h[w] = angle_fade[w] * min(
-                clamp_factor * d, 0.5 * min_edge[w],
-            )
+            support_d[w] = d
 
         # --- selected-face edges (needed by the nv/nf border flattening) ----
         # 2-manifold boundary: every edge has 1 (border) or 2 (interior)
@@ -653,6 +729,87 @@ class PolyBoundaryLayerEngine:
             raise ValueError(
                 f"{len(bad)} edge(s) with {len(edge_sides[bad[0]])} selected "
                 "faces — the boundary is not a valid 2-manifold"
+            )
+
+        # ALL boundary edges -> incident boundary faces (terminator lookup).
+        # Closed 2-manifold boundary: exactly 2 incident faces per edge.
+        bnd_edge_faces: dict[tuple[int, int], list[int]] = {}
+        for bi in range(len(faces) - n_int):
+            _gil_yield(bi, 4096)
+            f = faces[n_int + bi]
+            for k in range(len(f)):
+                a, b = f[k], f[(k + 1) % len(f)]
+                key = (a, b) if a < b else (b, a)
+                bnd_edge_faces.setdefault(key, []).append(bi)
+
+        # boundary face index -> patch index (terminator strips are assigned
+        # to the patch of the adjacent unselected face)
+        n_bnd = len(faces) - n_int
+        patch_of = np.empty(n_bnd, dtype=np.int64)
+        for pi, p in enumerate(patches):
+            s = p["startFace"] - n_int
+            if s < 0 or s + p["nFaces"] > n_bnd:
+                raise ValueError(
+                    f"patch '{p['name']}' startFace/nFaces out of range "
+                    f"({s}..{s + p['nFaces']} vs {n_bnd} boundary faces)"
+                )
+            patch_of[s:s + p["nFaces"]] = pi
+
+        return {
+            "pts": pts, "n_pts": n_pts, "bnd": bnd, "wv": wv,
+            "wall_verts": wall_verts, "vert_faces": vert_faces,
+            "wall_face_of": wall_face_of, "normals": normals,
+            "angle_fade": angle_fade, "min_edge": min_edge,
+            "support_d": support_d, "edge_sides": edge_sides,
+            "bnd_edge_faces": bnd_edge_faces, "patch_of": patch_of,
+            "n_wf": len(bnd), "n_bnd": n_bnd,
+            "n_cells_old": int(max(owner.max(), neighbour.max())) + 1,
+        }
+
+    def _build(self, points, faces, owner, neighbour, patches, n_int,
+               sel, n_layers, first_height, growth, clamp_factor,
+               pyr_before: int = 0, drop_bnd=None, pre=None) -> dict:
+        """Build the new mesh arrays. Raises on degenerate input.
+
+        ``pre`` is the scale-independent precompute from ``_build_precompute``
+        (computed once per run and reused by the fallback loop); when None it
+        is computed here, so direct callers keep working.
+        """
+        if pre is None:
+            pre = self._build_precompute(
+                points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
+            )
+        pts = pre["pts"]
+        n_pts = pre["n_pts"]
+        bnd = pre["bnd"]
+        wv = pre["wv"]
+        wall_verts = pre["wall_verts"]
+        vert_faces = pre["vert_faces"]
+        wall_face_of = pre["wall_face_of"]
+        normals = pre["normals"]
+        angle_fade = pre["angle_fade"]
+        min_edge = pre["min_edge"]
+        support_d = pre["support_d"]
+        edge_sides = pre["edge_sides"]
+        bnd_edge_faces = pre["bnd_edge_faces"]
+        patch_of = pre["patch_of"]
+        n_wf = pre["n_wf"]
+        n_bnd = pre["n_bnd"]
+        n_cells_old = pre["n_cells_old"]
+        drop_bnd = drop_bnd or frozenset()
+
+        # --- per-vertex inversion clamp ------------------------------------
+        # distance from the wall vertex to the nearest NON-wall vertex of the
+        # incident cells bounds how far the extruded surface may travel before
+        # the wall-adjacent cells invert.
+        max_h = {}
+        for wi, w in enumerate(wall_verts):
+            _gil_yield(wi, 64)
+            d = support_d[w]
+            # inversion guard (distance to interior) + feature fade (angular
+            # divergence) + hard cap on the smallest incident wall-face edge
+            max_h[w] = angle_fade[w] * min(
+                clamp_factor * d, 0.5 * min_edge[w],
             )
 
         # --- layer heights --------------------------------------------------
@@ -766,7 +923,6 @@ class PolyBoundaryLayerEngine:
             return new_pt[(w, k)]
 
         # --- cell numbering --------------------------------------------------
-        n_cells_old = int(max(owner.max(), neighbour.max())) + 1
         # prism cells get ids n_cells_old .. ; modified cells keep their ids.
         # Each face f gets nf[bi] prisms at ids
         # prism_start + off[bi] .. prism_start + off[bi] + nf[bi] - 1.
@@ -785,32 +941,8 @@ class PolyBoundaryLayerEngine:
         # usual internal side-face pairing) or exactly ONE (the BL/non-BL
         # boundary: the prism side face becomes a boundary face assigned to
         # the adjacent unselected patch).  Zero/3+ means a non-manifold
-        # boundary — invalid input.  (edge_sides is built above, before the
-        # nv/nf border flattening.)
-
-        # ALL boundary edges -> incident boundary faces (terminator lookup).
-        # Closed 2-manifold boundary: exactly 2 incident faces per edge.
-        bnd_edge_faces: dict[tuple[int, int], list[int]] = {}
-        for bi in range(len(faces) - n_int):
-            _gil_yield(bi, 4096)
-            f = faces[n_int + bi]
-            for k in range(len(f)):
-                a, b = f[k], f[(k + 1) % len(f)]
-                key = (a, b) if a < b else (b, a)
-                bnd_edge_faces.setdefault(key, []).append(bi)
-
-        # boundary face index -> patch index (terminator strips are assigned
-        # to the patch of the adjacent unselected face)
-        n_bnd = len(faces) - n_int
-        patch_of = np.empty(n_bnd, dtype=np.int64)
-        for pi, p in enumerate(patches):
-            s = p["startFace"] - n_int
-            if s < 0 or s + p["nFaces"] > n_bnd:
-                raise ValueError(
-                    f"patch '{p['name']}' startFace/nFaces out of range "
-                    f"({s}..{s + p['nFaces']} vs {n_bnd} boundary faces)"
-                )
-            patch_of[s:s + p["nFaces"]] = pi
+        # boundary — invalid input.  (edge_sides/bnd_edge_faces/patch_of are
+        # computed once in _build_precompute, before the nv/nf flattening.)
 
         # --- face assembly ----------------------------------------------------
         # internal faces first (modified originals + new prism faces),
@@ -1052,15 +1184,39 @@ class PolyBoundaryLayerEngine:
         # then enforce checkMesh's 'face pyramids' criterion (normal must
         # point out of the owner's centroid)
         n_cells_new = int(max(max(out_own_all), max(out_nb_all))) + 1
+        # Only cells that contain at least one EXTRUDED point (id >= len(pts))
+        # can have been disturbed: the untouched core cells keep exactly the
+        # same faces and vertices as the valid input mesh, so their closure
+        # is already ~0 and scanning them is pure waste (tens of thousands of
+        # cells per round on the valve).  Prism cells contain extruded points
+        # by construction, so they are included automatically.
+        face_has_new = np.fromiter(
+            (max(f) >= n_pts for f in out_faces), dtype=bool, count=len(out_faces),
+        )
+        own_all = np.asarray(out_own_all, dtype=np.int64)
+        cell_mask = np.zeros(n_cells_new, dtype=bool)
+        cell_mask[own_all[face_has_new]] = True
+        if new_n_int:
+            nb_all = np.asarray(out_nb_all, dtype=np.int64)
+            cell_mask[nb_all[face_has_new[:new_n_int]]] = True
+            # Expand the mask by ONE ring of neighbour cells: a flip on the
+            # BL frontier can perturb a directly-adjacent core cell whose own
+            # faces carry no extruded point, and that cell must stay in the
+            # repair scope or its residual becomes irrecoverable (the old
+            # code repaired every cell).  Covers the practical disturbance
+            # radius — interior flips are inside the mask by construction.
+            owner_int = own_all[:new_n_int]
+            cell_mask[owner_int[cell_mask[nb_all]]] = True
+            cell_mask[nb_all[cell_mask[owner_int]]] = True
         self._log("[bl] prism faces assembled — repairing windings "
                   "(can take a minute on large meshes)...")
         out_faces = _repair_closures(
             new_points, out_faces, out_own_all, out_nb_all,
-            new_n_int, n_cells_new,
+            new_n_int, n_cells_new, cell_mask=cell_mask,
         )
         out_faces = _fix_pyramid_faces(
             new_points, out_faces, out_own_all, out_nb_all,
-            new_n_int, n_cells_new,
+            new_n_int, n_cells_new, cell_mask=cell_mask,
         )
 
         built_terminators = n_terminators
@@ -1088,7 +1244,7 @@ class PolyBoundaryLayerEngine:
     # validation
     # ------------------------------------------------------------------
 
-    def _validate(self, built, total_vol0) -> tuple[bool, str]:
+    def _validate(self, built, total_vol0, max_core_volume_ratio: float = 0.0) -> tuple[bool, str]:
         pts = built["points"]
         faces = built["faces"]
         owner = built["owner"]
@@ -1171,6 +1327,33 @@ class PolyBoundaryLayerEngine:
                 f"{n_pyr} faces violate the face-pyramid criterion "
                 f"(input had {pyr_before})"
             )
+
+        # BL → core volume-ratio constraint (STAR-CCM+ smooth-transition):
+        # every BL prism cell must be within max_core_volume_ratio of the
+        # adjacent core cell's volume.  Prism cells are the ones appended
+        # after the original cells (id >= n_cells - n_prisms), so the check
+        # only looks at internal faces crossing the prism/core boundary —
+        # the outermost prism layer vs the core.
+        if max_core_volume_ratio > 0.0:
+            n_prisms = int(built.get("n_prism_cells", 0))
+            orig = n_cells - n_prisms
+            if n_int and orig > 0 and n_prisms > 0:
+                o = owner[:n_int]
+                nb = neigh[:n_int]
+                crossing = (o >= orig) ^ (nb >= orig)
+                if crossing.any():
+                    vo = vols[o[crossing]]
+                    vn = vols[nb[crossing]]
+                    mn = np.minimum(vo, vn)
+                    mx = np.maximum(vo, vn)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        ratios = mx / np.maximum(mn, 1e-300)
+                    worst = float(np.max(ratios))
+                    if worst > max_core_volume_ratio:
+                        return False, (
+                            f"BL/core volume ratio {worst:.1f} exceeds "
+                            f"{max_core_volume_ratio}"
+                        )
 
         used = set()
         for f in faces:

@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from cfmesh_autogui.core.quality_thresholds import ADAPTIVE_THRESHOLDS
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -299,7 +300,7 @@ class OODAWorkflowAdapter:
         fixes: list[dict[str, Any]] = []
         m = q_report.metrics
 
-        if m.max_skewness > 0.9:
+        if m.max_skewness > ADAPTIVE_THRESHOLDS["skewness_max"]:
             fixes.append({
                 "max_cell": sizing.get("max_cell", 0.05) * 1.2,
                 "min_cell": sizing.get("min_cell", 0.01) * 0.8,

@@ -20,7 +20,7 @@ CHECKMESH_FAIL = """cells: 5000; Max non-orthogonality = 85.0 average = 18.3; Ma
 
 
 def test_thresholds():
-    assert THRESHOLDS["skewness_max"] == 0.9
+    assert THRESHOLDS["skewness_max"] == 4.0
     assert THRESHOLDS["non_ortho_max"] == 70.0
     assert THRESHOLDS["aspect_ratio_max"] == 1000.0
 
@@ -38,7 +38,8 @@ def test_quality_metrics_passed():
 
 
 def test_quality_metrics_failed_skew():
-    m = QualityMetrics(max_skewness=2.0, max_non_orthogonality=40.0, max_aspect_ratio=500)
+    # skewness above the unified 4.0 bar → failed
+    m = QualityMetrics(max_skewness=5.0, max_non_orthogonality=40.0, max_aspect_ratio=500)
     assert not m.passed
 
 
@@ -120,7 +121,8 @@ def test_decide_fixes_none():
 
 def test_decide_fixes_skew():
     qe = QualityEngine()
-    m = QualityMetrics(max_skewness=2.0, max_non_orthogonality=40, max_aspect_ratio=500)
+    # above the unified 4.0 skewness bar → relax fix triggers
+    m = QualityMetrics(max_skewness=5.0, max_non_orthogonality=40, max_aspect_ratio=500)
     fixes = qe._decide_fixes(m)
     assert any(f.action == "relax" for f in fixes)
 

@@ -131,7 +131,7 @@ class QualityEngine:
         """Intelligent auto-fix loop.
 
         Applies corrective actions sequentially:
-        - Skewness > 0.9 → relax cell sizes (increase max, decrease min)
+        - Skewness > 4.0 → relax cell sizes (increase max, decrease min)
         - Non-ortho > 70 → disable boundary layers
         - Negative volume → regenerate mesh with larger min cell
         - Aspect ratio > 1000 → split by reducing max cell

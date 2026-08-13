@@ -49,6 +49,8 @@ __all__ = [
     "are_coplanar",
     "face_centroid",
     "face_normal",
+    "face_skewness",
+    "merge_acceptable",
     "main",
     "merge_two_faces",
 ]
@@ -65,6 +67,14 @@ class AggregationParams:
             Default 5 balances reduction and quality.
         merge_coplanar_faces: Merge faces sharing the same plane.
         coplanar_tolerance: Dot-product threshold for coplanarity.
+        quasi_coplanar_tolerance: Cosine slack (0 = off, the default) that
+            lets faces merge even when they are only *almost* coplanar.  Each
+            such merge is accepted only if the merged polygon's skewness
+            (warpage deviation / sqrt(area), see ``face_skewness``) stays
+            below ``max_merge_skewness`` — the point of merging is fewer,
+            bigger faces per cell; a warped merged face would trade that for
+            exactly the non-planarity OpenFOAM penalises.
+        max_merge_skewness: Skewness gate for quasi-coplanar merges.
         preserve_boundary_patches: Keep original patch names/types.
         bl_enabled: Generate boundary layers in the tet mesh.
         bl_n_layers: Number of prism layers at boundaries.
@@ -73,6 +83,8 @@ class AggregationParams:
     min_tets_per_cluster: int = 5
     merge_coplanar_faces: bool = True
     coplanar_tolerance: float = 1e-6
+    quasi_coplanar_tolerance: float = 0.0
+    max_merge_skewness: float = 0.9
     preserve_boundary_patches: bool = True
     bl_enabled: bool = True
     bl_n_layers: int = 5
@@ -294,52 +306,148 @@ def merge_two_faces(
 ) -> list[np.ndarray]:
     """Merge two coplanar faces sharing an edge into one polygon.
 
-    Uses the shared edge as pivot: walks the vertex rings of both faces
-    to produce the union polygon. Falls back to returning A if no shared
-    edge exists.
+    Uses the shared edge as pivot: removes it from both rings and splices the
+    two remaining open chains into a simple union polygon.  The B chain is
+    walked in the direction that moves *away* from the shared edge (following
+    the ring from the shared endpoint toward its non-shared neighbour), which
+    works for both same-winding and opposite-winding rings — the naive
+    "walk A then walk B" produces a self-intersecting bowtie or a duplicated
+    endpoint otherwise.  Falls back to returning A if no shared edge exists.
     """
-    # Find shared edge: two consecutive vertices present in both
-    def _edges(verts):
-        n = len(verts)
-        return [(tuple(sorted((verts[i], verts[(i+1)%n])))) for i in range(n)]
-
-    # Convert numpy arrays to hashable tuples for edge matching
     va_tuples = [tuple(v) for v in va]
     vb_tuples = [tuple(v) for v in vb]
 
+    def _edges(verts):
+        n = len(verts)
+        return [tuple(sorted((verts[i], verts[(i + 1) % n]))) for i in range(n)]
+
     edges_a = _edges(va_tuples)
-    shared_edge = None
-    for ea in edges_a:
-        if ea in _edges(vb_tuples):
-            shared_edge = ea
+    edges_b = _edges(vb_tuples)
+    shared = None
+    for i, ea in enumerate(edges_a):
+        if ea in edges_b:
+            shared = ea
+            j = edges_b.index(ea)
             break
-    if shared_edge is None:
+    if shared is None:
         return list(va)
 
-    # Walk around the union polygon
-    # Start from shared edge endpoint in face A, walk A's ring,
-    # then switch to B's ring, avoiding duplicates
-    used = set()
-    result = []
-    # Walk face A from the shared edge endpoint
-    idx_a = next(i for i, v in enumerate(va_tuples)
-                 if v == shared_edge[0] or v == shared_edge[1])
-    for k in range(len(va)):
-        v = va_tuples[(idx_a + k) % len(va)]
-        vt = tuple(v)
-        if vt not in used:
-            result.append(v)
-            used.add(vt)
-    # Walk face B
-    idx_b = next(i for i, v in enumerate(vb_tuples)
-                 if v == shared_edge[0] or v == shared_edge[1])
-    for k in range(len(vb)):
-        v = vb_tuples[(idx_b + k) % len(vb)]
-        vt = tuple(v)
-        if vt not in used:
-            result.append(v)
-            used.add(vt)
-    return result
+    n_a, n_b = len(va_tuples), len(vb_tuples)
+    s0, s1 = shared
+    # A's ring enters the shared edge at A[i] and leaves at A[i+1]
+    # (chain_a runs A[i+1] .. A[i], the polygon minus the shared edge).
+    chain_a = [va_tuples[(i + 1 + k) % n_a] for k in range(n_a)]
+    # Locate the shared endpoints in B's ring.
+    ia = next(k for k in range(n_b) if vb_tuples[k] == s0)
+    ib = next(k for k in range(n_b) if vb_tuples[k] == s1)
+    # Walk B away from the shared edge.  Which of the two possible
+    # directions yields the simple union depends on the rings' relative
+    # winding (same-winding vs opposite-winding neighbours both occur), so
+    # build both candidate rings and keep the one with the larger |area| —
+    # a simple union has area(A)+area(B), a self-crossing bowtie cancels to
+    # |area(A)-area(B)| ≈ 0.
+    def _ring(step):
+        chain_b = [vb_tuples[(ia + k * step) % n_b] for k in range(n_b)]
+        ring = chain_a + chain_b[1:-1]
+        if len(ring) > 1 and ring[-1] == ring[0]:
+            ring.pop()
+        return ring
+
+    def _newell_mag(ring):
+        # 3D Newell area-vector magnitude (2*area) — works for faces in any
+        # orientation, unlike a 2D shoelace projection
+        n = np.zeros(3)
+        m = len(ring)
+        for k in range(m):
+            x0, y0, z0 = ring[k]
+            x1, y1, z1 = ring[(k + 1) % m]
+            n[0] += (y0 - y1) * (z0 + z1)
+            n[1] += (z0 - z1) * (x0 + x1)
+            n[2] += (x0 - x1) * (y0 + y1)
+        return float(np.linalg.norm(n))
+
+    r_plus = _ring(+1)
+    r_minus = _ring(-1)
+    a_p = _newell_mag(r_plus)
+    a_m = _newell_mag(r_minus)
+
+    def _unique_count(ring):
+        return len({tuple(v) for v in ring})
+
+    if abs(a_p - a_m) > 1e-9 * max(a_p, a_m, 1.0):
+        result = r_plus if a_p > a_m else r_minus
+    else:
+        # equal area: prefer the ring without a duplicated vertex; if both
+        # are degenerate the merge is not well-defined — fall back to A
+        n_p, n_m = _unique_count(r_plus), _unique_count(r_minus)
+        if n_p > n_m:
+            result = r_plus
+        elif n_m > n_p:
+            result = r_minus
+        else:
+            return list(va)
+    return [np.asarray(v, dtype=np.float64) for v in result]
+
+
+def face_skewness(verts: list[np.ndarray]) -> float:
+    """Warpage skewness of a polygon face.
+
+    Max over the vertices of |(v − centroid)·unit_normal| / sqrt(area), the
+    classic warpage measure: 0 for a planar face, growing with the maximum
+    vertex deviation from the best-fit (Newell) plane relative to the face
+    size.  Used to gate quasi-coplanar merges — merging two almost-coplanar
+    faces creates one polygon whose skewness is this number; if it exceeds
+    ``max_merge_skewness`` the merge is refused.
+    """
+    arr = np.asarray(verts, dtype=np.float64)
+    n = len(arr)
+    if n < 3:
+        return float("inf")
+    nrm = np.zeros(3)
+    for i in range(n):
+        j = (i + 1) % n
+        nrm[0] += (arr[i][1] - arr[j][1]) * (arr[i][2] + arr[j][2])
+        nrm[1] += (arr[i][2] - arr[j][2]) * (arr[i][0] + arr[j][0])
+        nrm[2] += (arr[i][0] - arr[j][0]) * (arr[i][1] + arr[j][1])
+    mag = float(np.linalg.norm(nrm))
+    if mag < 1e-300:
+        return float("inf")
+    c = arr.mean(axis=0)
+    dev = float(np.abs((arr - c) @ nrm).max()) / mag
+    area = 0.5 * mag
+    return dev / max(np.sqrt(area), 1e-300)
+
+
+def merge_acceptable(
+    verts_a: list[np.ndarray],
+    verts_b: list[np.ndarray],
+    tol: float = 1e-6,
+    quasi_tol: float = 0.0,
+    max_skew: float = 0.9,
+) -> bool:
+    """Whether faces A and B may merge (strictly or quasi-) coplanarly.
+
+    Strictly coplanar pairs (the ``are_coplanar`` criterion) always merge —
+    the result is planar, so the skewness gate is trivially satisfied.  When
+    ``quasi_tol > 0``, pairs whose normals agree within ``1 - tol - quasi_tol``
+    are additionally considered, and the merged polygon is accepted only if
+    its warpage skewness stays at or below ``max_skew``.
+    """
+    na = face_normal(verts_a)
+    nb = face_normal(verts_b)
+    dot = float(abs(np.dot(na, nb)))
+    if dot < 1.0 - tol:
+        if quasi_tol <= 0.0 or dot < 1.0 - tol - quasi_tol:
+            return False
+        merged = merge_two_faces(verts_a, verts_b)
+        if len(merged) < 3:
+            return False
+        return face_skewness(merged) <= max_skew
+    # normals agree — strict coplanarity (centroid-in-plane is implicit in
+    # the merged polygon being planar within the same tolerance)
+    ca = face_centroid(verts_a)
+    cb = face_centroid(verts_b)
+    return abs(float(np.dot(cb - ca, na))) < tol
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +953,12 @@ class PolyAggregator:
                         continue
                     va = [points[v] for v in result[i].vertices]
                     vb = [points[v] for v in result[j].vertices]
-                    if are_coplanar(va, vb, self.params.coplanar_tolerance):
+                    if merge_acceptable(
+                        va, vb,
+                        tol=self.params.coplanar_tolerance,
+                        quasi_tol=self.params.quasi_coplanar_tolerance,
+                        max_skew=self.params.max_merge_skewness,
+                    ):
                         merged_v = merge_two_faces(va, vb)
                         # Map merged vertex coordinates back to original indices
                         merged_indices = self._map_verts_to_indices(
