@@ -1947,14 +1947,30 @@ def generate_volume_mesh(
     else:
         hw = _hardware_budget(max_cells_override)
         feat = _scan_feature_sizes(gmsh, max_extent)
+        # STL input: the adaptive path's curvature size field and passage-
+        # thickness sampling both run an extra throwaway 2D probe mesh that
+        # is exactly where GMSH's curve-recovery loop breaks down on the
+        # discrete surfaces an STL produces (measured: pipe.stl and a
+        # 12-facet duct both hang in "splitting those edges and trying
+        # again" / fail with "unable to find ... Try reducing max cell
+        # size" only when that probe runs; with it skipped the same STLs
+        # mesh 2D+3D in seconds).  A discrete STL has no analytic CAD
+        # kernel, so the curvature field and passage ray-casting add
+        # nothing that the surface triangles don't already encode — the
+        # Distance/Threshold small-feature field and the detail-level
+        # bounds still govern sizing.  See
+        # _sample_passage_thickness_field/_extract_boundary_trimesh.
+        is_stl_input = filepath_str.lower().endswith(".stl")
         sizing_info = _configure_adaptive_sizing(
             gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=vol,
+            use_curvature_size_field=not is_stl_input,
         )
         bg_field_tag = sizing_info.get("bg_field")
         logger.info(
             "generate_volume_mesh adaptive sizing: %s (feature scan: min=%.5f "
-            "small_curves=%d)",
+            "small_curves=%d, curvature_field=%s)",
             sizing_info, feat["min_feature"], sizing_info["n_small_curves"],
+            not is_stl_input,
         )
 
     # (Meshing algorithms are set near the top of this function, BEFORE the
