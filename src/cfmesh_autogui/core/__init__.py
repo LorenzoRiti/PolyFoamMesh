@@ -2,6 +2,7 @@ from cfmesh_autogui.core.geometry import (
     load_step, load_geometry, classify_faces, tessellate_patches,
     create_test_cylinder, compute_bbox_dim, compute_bbox_full,
     validate_cell_sizes, compute_volume, estimate_cell_count,
+    estimate_cell_count_geometric,
     suggest_cell_sizes, compute_patch_cell_sizes,
     scale_meshes, unit_to_scale, analyze_local_thickness,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "load_step", "load_geometry", "classify_faces", "tessellate_patches",
     "create_test_cylinder", "compute_bbox_dim", "compute_bbox_full",
     "validate_cell_sizes", "compute_volume", "estimate_cell_count",
+    "estimate_cell_count_geometric",
     "suggest_cell_sizes", "compute_patch_cell_sizes",
     "scale_meshes", "unit_to_scale", "analyze_local_thickness",
     "export_surface_file", "export_multisolid_stl",

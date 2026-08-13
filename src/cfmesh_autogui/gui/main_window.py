@@ -57,7 +57,7 @@ from cfmesh_autogui.core.geometry import (
     compute_patch_cell_sizes,
     compute_volume,
     create_test_cylinder,
-    estimate_cell_count,
+    estimate_cell_count_geometric,
     load_geometry,
     load_step,
     scale_meshes,
@@ -2244,7 +2244,9 @@ class MainWindow(QMainWindow):
         if patch_sizes:
             eff_min = min(eff_min, min(patch_sizes.values()))
         volume = compute_volume(self._meshes)
-        lo, est, hi = estimate_cell_count(volume, safe_max, eff_min)
+        lo, est, hi = estimate_cell_count_geometric(
+            self._meshes, volume, safe_max, patch_sizes,
+        )
         logger.info(
             "Cell estimate: volume=%.4e, nominal=%d (range %d-%d).", volume, est, lo, hi
         )
