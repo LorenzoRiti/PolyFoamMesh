@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from cfmesh_autogui.core.quality_thresholds import QUALITY_THRESHOLDS as THRESHOLDS
 from cfmesh_autogui.octopoda_local import octo
 
@@ -81,6 +83,130 @@ class QualityReport:
         if m.neg_cells:
             parts.append(f"NegVol: {m.neg_cells}")
         return " | ".join(parts) + f" | {'✅ PASS' if self.passed else '❌ FAIL'}"
+
+
+# checkMesh writes these sets to constant/polyMesh/sets/<name> whenever it
+# finds a problem, but nothing in this codebase ever reads them back --
+# auto_fix only ever reacts to the aggregate metrics (max skewness, etc.)
+# with a GLOBAL cell-size relax + a full cartesianMesh rerun, even when the
+# actual defect is confined to a handful of cells. "cell" sets list cell
+# indices directly; "face" sets list face indices, mapped to their owner
+# cell below (an approximation -- good enough for a refinement box, which
+# only needs the general neighbourhood, not the exact cell).
+_CHECKMESH_PROBLEM_SETS: dict[str, str] = {
+    "nonClosedCells": "cell",
+    "zeroVolumeCells": "cell",
+    "illegalCells": "cell",
+    "highAspectRatioCells": "cell",
+    "skewFaces": "face",
+    "nonOrthoFaces": "face",
+    "wrongOrientedFaces": "face",
+    "outOfRangeFaces": "face",
+}
+
+
+def local_refinement_boxes_from_checkmesh_sets(
+    case_dir: Path | str,
+    cell_size: float,
+    padding_factor: float = 0.2,
+    max_boxes: int = 8,
+) -> list[dict]:
+    """Turn checkMesh's own problem-cell/face sets into ``objectRefinements``
+    boxes (Fase 3: surgical repair instead of ``_relax_cell_sizes``'s global
+    coarsen-and-rerun-everything).
+
+    checkMesh already computes and writes EXACTLY where a mesh is bad
+    (``constant/polyMesh/sets/skewFaces``, ``nonOrthoFaces``, ...) — this
+    reads those back, maps each entry to a cell (face sets via their owner
+    cell), gathers that cell's vertices from the mesh's own points/faces,
+    and returns one padded axis-aligned bounding box per problem TYPE found
+    (not a full point-cluster/k-means split — a single box per defect kind
+    is a coarser but far simpler and more robust first cut; a defect
+    scattered across the whole domain still produces a box, just a big
+    one, which degrades gracefully towards the old global-relax behaviour
+    rather than silently doing nothing).
+
+    Returns an empty list (never raises) when the mesh/sets can't be read,
+    a set is empty, or ``cell_size`` is not positive — callers should treat
+    that as "no surgical fix available, fall back to the existing global
+    relax", not as an error.
+    """
+    boxes: list[dict] = []
+    if cell_size <= 0:
+        return boxes
+    case_dir = Path(case_dir)
+    poly_dir = case_dir / "constant" / "polyMesh"
+    sets_dir = poly_dir / "sets"
+    if not sets_dir.is_dir():
+        return boxes
+
+    try:
+        from cfmesh_autogui.core import foam_mesh_io
+
+        points, faces, owner, _neighbour, _patches = foam_mesh_io.read_polymesh(poly_dir)
+    except Exception:
+        logger.exception("Local refinement: failed to read polyMesh in %s", case_dir)
+        return boxes
+
+    n_faces = len(faces)
+    n_cells = int(owner.max()) + 1 if len(owner) else 0
+
+    for set_name, kind in _CHECKMESH_PROBLEM_SETS.items():
+        if len(boxes) >= max_boxes:
+            break
+        set_path = sets_dir / set_name
+        if not set_path.exists():
+            continue
+        try:
+            ids = foam_mesh_io.read_label_list(set_path)
+        except Exception:
+            logger.exception("Local refinement: failed to read set %s", set_path)
+            continue
+        if len(ids) == 0:
+            continue
+
+        if kind == "face":
+            valid = (ids >= 0) & (ids < n_faces)
+            cell_ids = np.unique(owner[ids[valid]])
+        else:
+            valid = (ids >= 0) & (ids < n_cells)
+            cell_ids = np.unique(ids[valid])
+        if len(cell_ids) == 0:
+            continue
+
+        # Gather every vertex of every face belonging to these cells --
+        # cheaper than computing true cell centroids and sufficient for a
+        # bounding box (which only needs the extent, not the centre of
+        # mass).
+        cell_id_set = set(cell_ids.tolist())
+        pt_indices: list[int] = []
+        for fid in range(n_faces):
+            if int(owner[fid]) in cell_id_set:
+                pt_indices.extend(faces[fid])
+        if not pt_indices:
+            continue
+        pts = points[np.asarray(pt_indices, dtype=np.int64)]
+        lo = pts.min(axis=0)
+        hi = pts.max(axis=0)
+        span = np.maximum(hi - lo, cell_size)  # floor: a single-cell defect
+        pad = span * padding_factor
+        lo = lo - pad
+        hi = hi + pad
+        boxes.append({
+            "type": "box",
+            "xmin": float(lo[0]), "xmax": float(hi[0]),
+            "ymin": float(lo[1]), "ymax": float(hi[1]),
+            "zmin": float(lo[2]), "zmax": float(hi[2]),
+            "cell_size": float(cell_size),
+            "source_set": set_name,
+            "n_cells": len(cell_ids),
+        })
+        logger.info(
+            "Local refinement: %s -> %d cells, box %s..%s (cellSize=%.5g)",
+            set_name, len(cell_ids), lo.round(4).tolist(), hi.round(4).tolist(),
+            cell_size,
+        )
+    return boxes
 
 
 class QualityEngine:

@@ -217,12 +217,54 @@ def read_label_list(path: Path) -> np.ndarray:
     raw = path.read_bytes()
     is_binary = bool(re.search(rb'format\s+binary\s*;', raw[:2000]))
     if is_binary:
-        data_start, count = binary_header_parse(raw)
-        data = raw[data_start:data_start + count * 4]
-        if len(data) < count * 4:
-            raise ValueError(f"Binary labels: need {count * 4} bytes, got {len(data)}")
-        return np.frombuffer(data, dtype=np.int32).copy()
+        try:
+            data_start, count = binary_header_parse(raw)
+        except ValueError:
+            # A SHORT list collapsed onto one line, e.g. "8(52927 ... 50056)"
+            # (seen on checkMesh's own faceSets) has no "N\n(" to match at
+            # all — the count and '(' are adjacent with no newline between
+            # them. Skip straight to the ASCII/compact-form parser below
+            # instead of failing outright; a genuinely truncated/corrupt
+            # file still fails there with a clear "no data found" result.
+            data_start = count = None
+        if data_start is not None:
+            # OpenFOAM writes SHORT lists in ASCII even inside a "format
+            # binary" IOstream — confirmed on checkMesh's own diagnostic
+            # sets (e.g. a 49-entry cellSet like "nonClosedCells"): the
+            # header says binary, but the body is one-int-per-line text.
+            # Trusting the header unconditionally decoded that ASCII text
+            # as raw int32 bytes and returned garbage (values in the
+            # hundreds of millions for a 22K-cell mesh). Probe the first
+            # bytes after '(': real binary int32 data for any realistic
+            # mesh index almost certainly contains a byte outside the
+            # printable digit/whitespace/minus range within a handful of
+            # int32s, so this reliably tells short-ASCII-despite-binary-
+            # header apart from genuinely binary payloads (owner/
+            # neighbour on a real mesh) without needing a size threshold.
+            probe_len = min(64, count * 4, len(raw) - data_start)
+            probe = raw[data_start:data_start + probe_len] if probe_len > 0 else b""
+            looks_ascii = bool(re.match(rb'^[\s\-\d]*$', probe))
+            if not (looks_ascii and probe):
+                data = raw[data_start:data_start + count * 4]
+                if len(data) < count * 4:
+                    raise ValueError(f"Binary labels: need {count * 4} bytes, got {len(data)}")
+                return np.frombuffer(data, dtype=np.int32).copy()
+            # Falls through to the ASCII body parser below, which finds the
+            # same '(' line and reads one int per line from there.
     text = raw.decode("ascii", errors="replace")
+
+    # OpenFOAM also collapses a SHORT list onto one line, e.g.
+    # "8(52927 52928 ... 50056)" (seen on checkMesh's own faceSets) instead
+    # of "8\n(\n52927\n...\n)" — the line-per-entry parser below finds no
+    # standalone "(" line for this form at all and would silently return
+    # an empty array. Try the compact form first; fall through to the
+    # per-line parser when it isn't present.
+    m = re.search(r"^\s*\d+\s*\(([^()]*)\)\s*$", text, re.MULTILINE)
+    if m:
+        nums = re.findall(r"-?\d+", m.group(1))
+        if nums:
+            return np.array([int(n) for n in nums], dtype=np.int32)
+
     lines = text.splitlines()
     start = 0
     for i, line in enumerate(lines):
