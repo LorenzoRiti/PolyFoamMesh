@@ -312,10 +312,42 @@ def write_meshdict(
     patch_names: list[str] | None = None,
     patch_types: dict[str, str] | None = None,
     object_refinements: list[dict] | None = None,
+    max_cells_override: int | None = None,
 ) -> Path:
     case_dir = Path(case_dir)
     system_dir = case_dir / "system"
     system_dir.mkdir(parents=True, exist_ok=True)
+
+    # RAM-aware coarsening safety net (the GMSH/tet path has had this via
+    # gmsh_wrapper._hardware_budget for a while; cfMesh had nothing, so a
+    # fine maxCellSize on a large domain could ask for more cells than fit
+    # in memory with no warning at all until the process thrashed or was
+    # killed). Best-effort: read the surface STL's own bounding box to
+    # estimate domain volume — cheap (bounds only, no processing) and
+    # needs no caller changes, so it protects every write_meshdict caller
+    # (GUI, benchmarks, mesh_engine) uniformly, not just the GUI's own
+    # validate_cell_sizes() call which most callers don't go through.
+    try:
+        stl_path = Path(surface_file)
+        if not stl_path.is_absolute():
+            stl_path = case_dir / stl_path
+        if stl_path.exists():
+            import trimesh as _trimesh
+
+            from cfmesh_autogui.core.geometry import coarsen_for_ram_budget
+
+            surf = _trimesh.load(str(stl_path), force="mesh", process=False)
+            dx, dy, dz = (surf.bounds[1] - surf.bounds[0])
+            domain_volume = float(max(dx * dy * dz, 1e-12))
+            max_cell_size, ram_warnings = coarsen_for_ram_budget(
+                max_cell_size, domain_volume, max_cells_override,
+            )
+            for w in ram_warnings:
+                logger.warning("meshDict RAM safeguard: %s", w)
+            if ram_warnings and min_cell_size > max_cell_size / 2.0:
+                min_cell_size = max_cell_size / 2.0
+    except Exception:
+        logger.exception("meshDict RAM safeguard skipped (best-effort)")
 
     # Audit log: every write_meshdict call records caller, values, and timestamp
     _audit_log = Path.home() / ".cfmesh_meshdict_audit.log"

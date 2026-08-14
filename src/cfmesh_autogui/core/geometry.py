@@ -723,13 +723,95 @@ def scale_meshes(meshes: list[trimesh.Trimesh], factor: float) -> list[trimesh.T
     return meshes
 
 
+def cfmesh_cell_budget(max_cells_override: int | None = None) -> dict:
+    """RAM-aware cell-count ceiling for cfMesh/cartesianMesh — the
+    equivalent of ``gmsh_wrapper._hardware_budget`` for the tet/GMSH
+    path, which had NO counterpart on the cfMesh side (``validate_cell_sizes``
+    only ever clamped against the bounding box, never against the machine's
+    actual RAM). Without this, a user requesting a fine ``maxCellSize`` on a
+    large domain can ask cfMesh for a mesh that doesn't fit in memory with no
+    warning until the process is killed or thrashes the machine.
+
+    Bytes-per-cell: cartesianMesh's own reference numbers put a real
+    14.5M-cell mesh at ~11 GB peak, i.e. ~760 bytes/cell — used here
+    directly rather than guessed, the same way GMSH's own bytes/cell was
+    re-derived from first principles instead of an old, much too
+    pessimistic constant (see ``_hardware_budget``'s comment).
+
+    Same floor logic as the GMSH budget: the ceiling is
+    max(50% of currently-free RAM, 25% of total RAM), so a machine that's
+    merely busy right now (browser open, previous mesh still in the
+    viewer) doesn't silently get a much coarser budget than the same
+    idle machine would.
+    """
+    from cfmesh_autogui.core.hardware_budget import (
+        available_ram_bytes, total_ram_bytes,
+    )
+
+    is_explicit_target = bool(max_cells_override and max_cells_override > 0)
+    if is_explicit_target:
+        return {"max_cells": int(max_cells_override), "explicit": True}
+
+    bytes_per_cell = 760.0
+    by_available = (available_ram_bytes() * 0.5) / bytes_per_cell
+    by_total = (total_ram_bytes() * 0.25) / bytes_per_cell
+    max_cells = max(200_000, int(max(by_available, by_total)))
+    return {"max_cells": max_cells, "explicit": False}
+
+
+def coarsen_for_ram_budget(
+    max_cell: float,
+    domain_volume: float,
+    max_cells_override: int | None = None,
+) -> tuple[float, list[str]]:
+    """Coarsen ``max_cell`` so ``domain_volume / max_cell**3`` stays within
+    ``cfmesh_cell_budget()`` — the RAM safety net, standalone so callers
+    that already have their own bbox clamp (or none at all, like
+    ``meshdict_gen.write_meshdict`` reading a surface STL directly) can
+    apply just this check without ``validate_cell_sizes``'s bbox/2 clamp
+    running a second time on top of whatever the caller already did.
+
+    Returns (safe_max, warnings) — ``safe_max`` is unchanged when the
+    estimate is already within budget.
+    """
+    warnings: list[str] = []
+    if domain_volume <= 0 or max_cell <= 0:
+        return max_cell, warnings
+    budget = cfmesh_cell_budget(max_cells_override)
+    est_cells = domain_volume / (max_cell ** 3)
+    if est_cells <= budget["max_cells"]:
+        return max_cell, warnings
+    from cfmesh_autogui.core.hardware_budget import available_ram_bytes, fmt_bytes
+
+    new_max = (domain_volume / budget["max_cells"]) ** (1.0 / 3.0)
+    warnings.append(
+        f"maxCellSize {max_cell:.5f} would produce ~{est_cells:,.0f} "
+        f"cells, exceeding the RAM-based budget of "
+        f"{budget['max_cells']:,} cells (free RAM "
+        f"{fmt_bytes(available_ram_bytes())}). Auto-coarsening to "
+        f"{new_max:.5f} (~{domain_volume / (new_max ** 3):,.0f} cells)."
+    )
+    logger.warning(warnings[-1])
+    return new_max, warnings
+
+
 # FIX: safeguard — prevent cartesianMesh smoothing-loop by clamping cell sizes
 def validate_cell_sizes(
     bbox_max_dim: float,
     max_cell: float,
     min_cell: float,
+    domain_volume: float | None = None,
+    max_cells_override: int | None = None,
 ) -> tuple[float, float, list[str]]:
     """Clamp cell sizes relative to the bounding box to avoid degenerate meshes.
+
+    ``domain_volume`` (bbox dx*dy*dz, or the true enclosed volume if known):
+    when given, additionally estimates the cell count cfMesh would produce
+    (``domain_volume / max_cell**3``) and coarsens ``max_cell`` further if
+    it would exceed ``cfmesh_cell_budget(max_cells_override)`` — the RAM
+    safety net the bbox-only clamp below never provided. Skipped (no-op)
+    when ``domain_volume`` is not supplied, so existing callers that don't
+    pass it keep their exact previous behaviour.
 
     Returns (safe_max, safe_min, warnings).
     Raises ValueError if clamping produces non-positive values.
@@ -744,6 +826,12 @@ def validate_cell_sizes(
             f"(bbox max dim = {bbox_max_dim:.4f})"
         )
         logger.warning(warnings[-1])
+
+    if domain_volume is not None and domain_volume > 0 and safe_max > 0:
+        safe_max, ram_warnings = coarsen_for_ram_budget(
+            safe_max, domain_volume, max_cells_override,
+        )
+        warnings.extend(ram_warnings)
 
     safe_min = min_cell
     if safe_min > safe_max / 2.0:
