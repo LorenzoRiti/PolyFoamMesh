@@ -2174,25 +2174,17 @@ class MainWindow(QMainWindow):
         # display — RefinementZone objects, a different shape than these
         # plain box dicts) and merged into object_refinements alongside it
         # further down.
+        # DISABLED (2026-08-14): a real user reported this hangs/crashes
+        # cartesianMesh on a real (non-synthetic) geometry — up to 200
+        # extra objectRefinements boxes plus a second full-surface
+        # ray-cast pass on top of throat_detector's own was only ever
+        # stress-tested on a small synthetic venturi, not a real CAD part
+        # with many patches/faces. Left in place (function still exists
+        # in geometry.py, tests still pass) but not wired to run
+        # automatically until it's been fixed and re-verified against a
+        # real, complex geometry — do not re-enable this block without
+        # that.
         self._graded_refinement_boxes = None
-        if _cfmesh_needs_explicit_refinement and self._meshes:
-            try:
-                from cfmesh_autogui.core.geometry import build_graded_refinement_boxes
-                detail = self._params.get_detail_level()
-                raw_max = self._params.get_mesh_params().get("max_cell_size", 0.05)
-                boxes = build_graded_refinement_boxes(
-                    self._meshes, detail=detail, global_max_cell=raw_max,
-                )
-                if boxes:
-                    self._graded_refinement_boxes = boxes
-                    self._log.append_log(
-                        f"{Tag.DICT} {len(boxes)} graded refinement box(es) "
-                        f"built (local thickness field, cell sizes "
-                        f"{min(b['cell_size'] for b in boxes):.5f}-"
-                        f"{max(b['cell_size'] for b in boxes):.5f}m)."
-                    )
-            except Exception as exc:
-                logger.warning("Graded refinement field skipped: %s", exc)
 
         try:
             self._do_meshing_pipeline(my_id, surface_file, bbox_dim)
