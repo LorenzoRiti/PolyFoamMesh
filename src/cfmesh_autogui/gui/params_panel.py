@@ -1182,7 +1182,28 @@ class ParamsPanel(QWidget):
         return volume
 
     def _geometry_cell_estimate(self) -> tuple[int, int, int] | None:
-        """Estimate cells from actual solid volume and derived cell sizes."""
+        """Estimate cells from actual solid volume and derived cell sizes.
+
+        NOTE: this is the blind volume/avg-cell-size formula
+        (``estimate_cell_count``), known to be inaccurate when local
+        refinement covers a small fraction of the volume — the codebase's
+        own history documents >10x errors from exactly this. Tried
+        switching this to the geometry-aware two-zone model
+        (``estimate_cell_count_geometric``, already used in
+        main_window.py's pre-flight estimate right before meshing starts)
+        and reverted it: on a venturi test case, that model COLLAPSED to
+        the 100-cell floor instead of improving on the blind estimate —
+        ``compute_patch_cell_sizes``'s per-patch size (from ITS OWN
+        internal detail-level defaults, not the actual max_cell in use)
+        can end up coarser than the domain scale, and the shell-volume
+        computation then clamps to the ENTIRE domain for a single patch,
+        leaving zero core volume. That bug likely also affects the
+        pre-flight estimate in some geometries (it happened not to
+        trigger on the one screenshot compared against). Left as the
+        blind formula here rather than ship a worse number; fixing
+        estimate_cell_count_geometric's degenerate case is separate,
+        untouched work.
+        """
         volume = float(getattr(self, "_geometry_volume", 0.0))
         if volume <= 0.0 or not hasattr(self, "_max_cell"):
             return None
