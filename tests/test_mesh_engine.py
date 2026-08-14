@@ -180,10 +180,14 @@ def test_quality_acceptable_all_good():
 
 
 def test_quality_acceptable_bad_skewness():
+    # skewness_max is 4.0 (checkMesh-native bar, see quality_thresholds.py's
+    # 2026-08-12 product decision — this was previously 0.9 in this
+    # consumer specifically, hence the value here being well above 4.0
+    # rather than the pre-decision 0.95).
     me = MeshEngine()
     quality = {
         "neg_cells": 0,
-        "max_skewness": 0.95,
+        "max_skewness": 4.5,
         "max_non_orthogonality": 50.0,
         "max_aspect_ratio": 500.0,
     }

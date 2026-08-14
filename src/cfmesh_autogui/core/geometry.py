@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from typing import TypedDict
 import numpy as np
 import cadquery as cq
@@ -369,6 +370,7 @@ def sample_thickness_field(
     n_samples: int,
     bbox_max: float,
     seed: int = 0xC0FFEE,
+    timeout_s: float = 20.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Like ``_sample_thickness_one_mesh``, but returns ``(points,
     thickness)`` pairs instead of a flat list of values.
@@ -387,22 +389,41 @@ def sample_thickness_field(
     wins; falls back to the outward direction if the inward ray misses,
     e.g. a sample near a convex corner). For a CFD case this ``mesh`` is
     normally the fluid domain's boundary, so "thickness" here IS the
-    local width of the flow passage — verified end-to-end on a single
-    connected watertight venturi (wide-narrow-wide): reports ~1.99 at the
-    wide ends (true diameter 2.0) and ~0.34 at the throat (true diameter
-    ~0.30), a genuinely LOCAL field, not a per-body statistic.
+    local width of the flow passage — verified end-to-end on a properly
+    multi-ring venturi (wide-narrow-wide, throat at the midpoint) in
+    ``tests/test_passage_thickness_field.py``: reports ~1.99 at the wide
+    ends against a true 2.0 diameter, decreasing smoothly toward the
+    throat — a genuinely LOCAL field, not a per-body statistic.
+
+    ``timeout_s``: this function is called from multiple places (GMSH's
+    passage-thickness field, the feature-aware minCellSize slider,
+    throat_detector) on whatever geometry the user loaded, some of which
+    can be large/complex CAD parts far more expensive to ray-cast than
+    any of this function's own test fixtures. Ray-casting stops taking
+    on new batches once the deadline passes and returns whatever was
+    measured so far (never raises, never blocks past the deadline) —
+    a real user reported cartesianMesh becoming unusably slow / hanging
+    on a real geometry after a caller of this function started running
+    it more than once per meshing pass with no time bound at all.
     """
     if n_samples <= 0 or mesh.area <= 0 or len(mesh.faces) == 0:
         return np.zeros((0, 3)), np.zeros(0)
 
     eps = max(bbox_max * 1e-6, 1e-12)
     _BATCH = 512
+    deadline = time.monotonic() + max(timeout_s, 0.0)
 
     def _nearest_hits(origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
         out = np.full(len(origins), np.inf, dtype=np.float64)
         if len(origins) == 0:
             return out
         for lo in range(0, len(origins), _BATCH):
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "sample_thickness_field: timed out after %.0fs, "
+                    "%d/%d points measured so far", timeout_s, lo, len(origins),
+                )
+                break
             o = origins[lo:lo + _BATCH]
             d = directions[lo:lo + _BATCH]
             try:

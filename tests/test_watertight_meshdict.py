@@ -116,10 +116,24 @@ def test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop(workflow, mon
 
     # Mock physical-core detection to avoid extra subprocess.run call
     # from OpenMPAccel._detect_physical_cores inside build_command.
-    monkeypatch.setattr(
-        "cfmesh_autogui.commercial.openmp_accel.OpenMPAccel._detect_physical_cores",
-        lambda self: 4,
-    )
+    #
+    # Patch the CLASS OBJECT directly (obtained via a normal import)
+    # instead of monkeypatch.setattr's string-path form. This codebase's
+    # test suite has two competing ways of loading commercial/* modules:
+    # a normal package import (what this file uses) and
+    # _test_helpers.load_commercial_module (used by other test files to
+    # bypass cadquery's native DLL chain — see that helper's docstring),
+    # which injects its own module instances into sys.modules by hand.
+    # When a test using the latter runs earlier in the same pytest
+    # session, monkeypatch's dotted-string resolver — which walks
+    # "cfmesh_autogui.commercial.openmp_accel.OpenMPAccel...` as package
+    # ATTRIBUTES, not just sys.modules lookups — gets confused by the
+    # resulting package/attribute mismatch and raises AttributeError
+    # (order-dependent: passes in isolation, fails as part of the full
+    # suite). Importing the class directly and patching it sidesteps that
+    # resolver entirely.
+    from cfmesh_autogui.commercial.openmp_accel import OpenMPAccel
+    monkeypatch.setattr(OpenMPAccel, "_detect_physical_cores", lambda self: 4)
 
     def fake_run(cmd, **kwargs):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
