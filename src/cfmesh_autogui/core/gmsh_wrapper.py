@@ -557,6 +557,7 @@ def _extract_boundary_trimesh(gmsh_mod, probe_size: float | None = None):
 def _sample_passage_thickness_field(
     gmsh_mod, h_min: float, h_max: float,
     cells_across: int = 8, max_samples: int = 6000, seed: int = 0xC0FFEE,
+    boundary_mesh=None,
 ) -> tuple:
     """A-priori sizing from local passage width — the geometric quantity
     (distance to the nearest opposite wall) that BOTH a narrow gap and a
@@ -592,35 +593,49 @@ def _sample_passage_thickness_field(
     Empty arrays (never an exception) when the boundary can't be
     extracted or ray-casting finds nothing — the existing curvature field
     and detail-level bounds still govern sizing either way.
+
+    ``boundary_mesh``: when the caller already HAS a boundary surface as
+    a ``trimesh.Trimesh`` (an STL input, notably — see the ``is_stl_input``
+    branch in ``generate_volume_mesh``), pass it here to ray-cast against
+    it directly instead of extracting one from GMSH via
+    ``_extract_boundary_trimesh``. That extraction runs a throwaway GMSH
+    2D meshing pass, which is exactly where GMSH's curve-recovery loop
+    hangs on the reparametrized discrete surfaces an STL produces (see
+    ``generate_volume_mesh``'s ``is_stl_input`` comment) — an STL's
+    triangulation already IS the boundary mesh, so there is nothing to
+    extract and no GMSH call is needed at all for this field.
     """
     import numpy as np
 
     from cfmesh_autogui.core.geometry import sample_thickness_field
 
-    try:
-        # Probe at the COARSE end of the requested range: passage width is
-        # a smooth, low-frequency quantity (how far to the opposite wall),
-        # so a coarse tessellation measures it just as well while costing
-        # a fraction of the time and touching GMSH's fragile curve-recovery
-        # path far less. See _extract_boundary_trimesh for the details.
-        mesh = _extract_boundary_trimesh(gmsh_mod, probe_size=h_max)
-    except Exception:
-        logger.exception("Passage thickness field: boundary extraction failed")
-        mesh = None
-    finally:
-        # The probe mesh built by _extract_boundary_trimesh MUST be thrown
-        # away: GMSH REUSES an existing 2D mesh when generate(3) runs later
-        # (verified directly — a unit box meshed at lc=0.5 and then
-        # generated at lc=0.08 kept all 540 of its original triangles), so
-        # leaving it in place would freeze the final surface mesh at
-        # whatever sizing existed BEFORE any size field was installed,
-        # silently discarding the passage/curvature/small-curve sizing this
-        # very function exists to compute. `mesh` already holds its own copy
-        # of the coordinates, so clearing costs nothing here.
+    if boundary_mesh is not None:
+        mesh = boundary_mesh
+    else:
         try:
-            gmsh_mod.model.mesh.clear()
+            # Probe at the COARSE end of the requested range: passage width is
+            # a smooth, low-frequency quantity (how far to the opposite wall),
+            # so a coarse tessellation measures it just as well while costing
+            # a fraction of the time and touching GMSH's fragile curve-recovery
+            # path far less. See _extract_boundary_trimesh for the details.
+            mesh = _extract_boundary_trimesh(gmsh_mod, probe_size=h_max)
         except Exception:
-            logger.exception("Passage thickness field: probe-mesh clear failed")
+            logger.exception("Passage thickness field: boundary extraction failed")
+            mesh = None
+        finally:
+            # The probe mesh built by _extract_boundary_trimesh MUST be thrown
+            # away: GMSH REUSES an existing 2D mesh when generate(3) runs later
+            # (verified directly — a unit box meshed at lc=0.5 and then
+            # generated at lc=0.08 kept all 540 of its original triangles), so
+            # leaving it in place would freeze the final surface mesh at
+            # whatever sizing existed BEFORE any size field was installed,
+            # silently discarding the passage/curvature/small-curve sizing this
+            # very function exists to compute. `mesh` already holds its own copy
+            # of the coordinates, so clearing costs nothing here.
+            try:
+                gmsh_mod.model.mesh.clear()
+            except Exception:
+                logger.exception("Passage thickness field: probe-mesh clear failed")
     if mesh is None or len(mesh.faces) == 0:
         return np.zeros((0, 3)), np.zeros(0)
 
@@ -647,6 +662,7 @@ def _configure_curvature_size_field(
     seed_curves: bool = True,
     passage_points=None,
     passage_target_sizes=None,
+    skip_curvature: bool = False,
 ) -> dict:
     """A-priori, geometry-based mesh adaptation: build an explicit local
     Size Field from the CAD model's own discrete curvature (H_MIN/H_MAX/
@@ -665,6 +681,14 @@ def _configure_curvature_size_field(
         TO the surrounding curvature-driven sizing is itself growth-rate
         limited, not a hard step.
 
+    skip_curvature
+        Skip ``_sample_curvature_size_field`` (which needs the CAD
+        kernel's analytic curvature and is unstable on the reparametrized
+        discrete surfaces an STL produces) and build the field from
+        ``passage_points``/``passage_target_sizes`` alone — still gets
+        the growth-rate relaxation and curve seeding below, just without
+        a curvature contribution.
+
     Failure here (an unusual CAD kernel entity, an empty model) degrades
     to a no-op rather than blocking meshing — the existing Distance/
     Threshold background field in _configure_adaptive_sizing keeps
@@ -673,9 +697,12 @@ def _configure_curvature_size_field(
     import numpy as np
     from scipy.spatial import cKDTree
 
-    points, raw_sizes = _sample_curvature_size_field(
-        gmsh_mod, h_min, h_max, angle_sensitivity_rad, max_samples
-    )
+    if skip_curvature:
+        points, raw_sizes = np.zeros((0, 3)), np.zeros(0)
+    else:
+        points, raw_sizes = _sample_curvature_size_field(
+            gmsh_mod, h_min, h_max, angle_sensitivity_rad, max_samples
+        )
     if passage_points is not None and len(passage_points):
         if len(points):
             points = np.vstack([points, passage_points])
@@ -745,6 +772,7 @@ def _configure_adaptive_sizing(
     gmsh_mod, detail: str, max_extent: float, feat: dict, hw: dict,
     cross_scale: float | None = None, domain_volume: float | None = None,
     growth_rate: float = 1.2, use_curvature_size_field: bool = True,
+    passage_boundary_mesh=None,
 ) -> dict:
     """Local/adaptive sizing: fine near small curves (a Distance +
     Threshold background field) and near curved surfaces (GMSH's
@@ -752,6 +780,15 @@ def _configure_adaptive_sizing(
     GMSH's own min-of-all-active-sources rule, no extra field needed
     for that part), with the bulk/coarse size driven by the cell budget
     rather than a single fixed detail-level multiplier.
+
+    passage_boundary_mesh: a pre-built ``trimesh.Trimesh`` boundary
+    surface (an STL input's own triangulation) to ray-cast the
+    passage-thickness field against directly, instead of extracting one
+    via a throwaway GMSH 2D probe mesh — see
+    ``_sample_passage_thickness_field``'s ``boundary_mesh`` param. Lets
+    STL input get passage-thickness sizing even with
+    ``use_curvature_size_field=False`` (curvature itself still needs the
+    CAD kernel and stays off for STL).
 
     Earlier version used a fixed coarse_max from detail level alone —
     on a geometry with few/no small features (a plain pipe), that meant
@@ -935,8 +972,18 @@ def _configure_adaptive_sizing(
     # and still used elsewhere (the polyDualMesh risk heuristic below).
     import numpy as np
 
+    # Passage-thickness sizing runs whenever EITHER the CAD curvature path
+    # is on (the original condition) OR the caller handed us a boundary
+    # mesh directly (the STL path — see generate_volume_mesh's
+    # is_stl_input branch). The two used to share one gate
+    # (use_curvature_size_field) because both relied on
+    # _extract_boundary_trimesh's GMSH probe, which is exactly what hangs
+    # on STL's reparametrized discrete surfaces; passage_boundary_mesh
+    # sidesteps that entirely (the STL's own triangulation IS the
+    # boundary mesh, ray-cast directly, zero extra GMSH calls), so it no
+    # longer needs curvature sizing to be safe to run.
     passage_points, passage_target = np.zeros((0, 3)), np.zeros(0)
-    if use_curvature_size_field:
+    if use_curvature_size_field or passage_boundary_mesh is not None:
         try:
             passage_points, passage_target = _sample_passage_thickness_field(
                 gmsh_mod, min_size, coarse_max,
@@ -948,6 +995,7 @@ def _configure_adaptive_sizing(
                 # same "how many cells across the passage" concept, already
                 # tuned per level here (8/13/20/32/48).
                 cells_across=df.get("cells_across", 8),
+                boundary_mesh=passage_boundary_mesh,
             )
         except Exception:
             logger.exception("Passage thickness field failed; continuing without it")
@@ -1009,8 +1057,13 @@ def _configure_adaptive_sizing(
     # it stays consistent with "Detail Level" instead of introducing an
     # unrelated knob; best-effort — a failure here just means the
     # existing background fields alone govern sizing, as before.
+    # Register the (growth-rate-relaxed, KDTree-backed) size callback
+    # whenever there is EITHER curvature sampling OR a passage-thickness
+    # field to install — an STL input has no curvature contribution
+    # (skip_curvature=True) but its passage points still need this same
+    # callback/relaxation/curve-seeding machinery to actually reach GMSH.
     curvature_field_info: dict = {"n_samples": 0}
-    if use_curvature_size_field:
+    if use_curvature_size_field or len(passage_points):
         try:
             curvature_field_info = _configure_curvature_size_field(
                 gmsh_mod, min_size, coarse_max,
@@ -1018,6 +1071,7 @@ def _configure_adaptive_sizing(
                 growth_rate=growth_rate,
                 passage_points=passage_points if len(passage_points) else None,
                 passage_target_sizes=passage_target if len(passage_target) else None,
+                skip_curvature=not use_curvature_size_field,
             )
         except Exception:
             logger.exception("Curvature size field setup failed; continuing without it")
@@ -1947,23 +2001,43 @@ def generate_volume_mesh(
     else:
         hw = _hardware_budget(max_cells_override)
         feat = _scan_feature_sizes(gmsh, max_extent)
-        # STL input: the adaptive path's curvature size field and passage-
-        # thickness sampling both run an extra throwaway 2D probe mesh that
-        # is exactly where GMSH's curve-recovery loop breaks down on the
-        # discrete surfaces an STL produces (measured: pipe.stl and a
-        # 12-facet duct both hang in "splitting those edges and trying
-        # again" / fail with "unable to find ... Try reducing max cell
-        # size" only when that probe runs; with it skipped the same STLs
-        # mesh 2D+3D in seconds).  A discrete STL has no analytic CAD
-        # kernel, so the curvature field and passage ray-casting add
-        # nothing that the surface triangles don't already encode — the
-        # Distance/Threshold small-feature field and the detail-level
-        # bounds still govern sizing.  See
+        # STL input: the adaptive path's curvature size field runs an extra
+        # throwaway 2D probe mesh that is exactly where GMSH's curve-
+        # recovery loop breaks down on the discrete surfaces an STL
+        # produces (measured: pipe.stl and a 12-facet duct both hang in
+        # "splitting those edges and trying again" / fail with "unable to
+        # find ... Try reducing max cell size" only when that probe runs;
+        # with it skipped the same STLs mesh 2D+3D in seconds). A discrete
+        # STL has no analytic CAD kernel, so curvature sizing genuinely
+        # adds nothing the surface triangles don't already encode — it
+        # stays off. Passage-thickness sizing is a DIFFERENT story: it
+        # only needs a boundary surface to ray-cast against, and for an
+        # STL that surface is the file itself — load it directly with
+        # trimesh (no GMSH call at all, so the probe-hang above can't
+        # happen) and pass it through so narrow passages/thin features
+        # still get local refinement instead of falling back to the
+        # coarser Distance/Threshold-only sizing. See
         # _sample_passage_thickness_field/_extract_boundary_trimesh.
         is_stl_input = filepath_str.lower().endswith(".stl")
+        passage_boundary_mesh = None
+        if is_stl_input:
+            try:
+                import trimesh as _trimesh
+                passage_boundary_mesh = _trimesh.load(
+                    filepath_str, force="mesh", process=False,
+                )
+                if len(passage_boundary_mesh.faces) == 0:
+                    passage_boundary_mesh = None
+            except Exception:
+                logger.exception(
+                    "STL passage-thickness field: loading %s for ray-casting "
+                    "failed; continuing without it", filepath_str,
+                )
+                passage_boundary_mesh = None
         sizing_info = _configure_adaptive_sizing(
             gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=vol,
             use_curvature_size_field=not is_stl_input,
+            passage_boundary_mesh=passage_boundary_mesh,
         )
         bg_field_tag = sizing_info.get("bg_field")
         logger.info(
