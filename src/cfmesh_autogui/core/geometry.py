@@ -790,9 +790,24 @@ def cfmesh_cell_budget(max_cells_override: int | None = None) -> dict:
     merely busy right now (browser open, previous mesh still in the
     viewer) doesn't silently get a much coarser budget than the same
     idle machine would.
+
+    cartesianMesh actually RUNS inside the WSL2 VM, not on the Windows
+    host — and WSL2 defaults to a memory cap of its own (50% of host RAM,
+    or whatever ``.wslconfig`` sets), independent of the host's real
+    total. Capping only against the HOST'S RAM can let a request through
+    that the host has room for but the WSL2 VM does not — measured live:
+    a 32 GB host with WSL2 capped at ~15 GB total / ~9 GB available let
+    an 8-11M cell request past a host-only budget, which then failed
+    inside WSL2 during parallel decomposition/reconstruction. The
+    smaller of the host-based and WSL-based budgets wins. WSL's own
+    per-rank decomposition/reconstruction overhead on TOP of the base
+    mesh size (each of N ranks holds a partition, then
+    reconstructParMesh briefly needs the full mesh again) is NOT
+    separately modeled here — this budget bounds the base mesh, not the
+    transient peak a highly-parallel run adds on top of it.
     """
     from cfmesh_autogui.core.hardware_budget import (
-        available_ram_bytes, total_ram_bytes,
+        available_ram_bytes, total_ram_bytes, wsl_ram_bytes,
     )
 
     is_explicit_target = bool(max_cells_override and max_cells_override > 0)
@@ -803,7 +818,21 @@ def cfmesh_cell_budget(max_cells_override: int | None = None) -> dict:
     by_available = (available_ram_bytes() * 0.5) / bytes_per_cell
     by_total = (total_ram_bytes() * 0.25) / bytes_per_cell
     max_cells = max(200_000, int(max(by_available, by_total)))
-    return {"max_cells": max_cells, "explicit": False}
+
+    wsl_stats = wsl_ram_bytes()
+    wsl_max_cells = None
+    if wsl_stats is not None:
+        wsl_total, wsl_available = wsl_stats
+        wsl_by_available = (wsl_available * 0.5) / bytes_per_cell
+        wsl_by_total = (wsl_total * 0.25) / bytes_per_cell
+        wsl_max_cells = max(200_000, int(max(wsl_by_available, wsl_by_total)))
+        max_cells = min(max_cells, wsl_max_cells)
+
+    return {
+        "max_cells": max_cells, "explicit": False,
+        "host_max_cells": int(max(by_available, by_total)),
+        "wsl_max_cells": wsl_max_cells,
+    }
 
 
 def coarsen_for_ram_budget(
