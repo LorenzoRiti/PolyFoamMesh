@@ -1069,6 +1069,24 @@ def estimate_cell_count_geometric(
         local_size = patch_sizes.get(name)
         if not local_size or local_size <= 0.0:
             continue
+        # A patch whose own suggested size is NOT finer than the core
+        # cell isn't actually being locally refined -- it's coarser than
+        # (or equal to) the bulk, so it contributes no "shell" at all.
+        # This module's own docstring for compute_patch_cell_sizes
+        # documents this filter ("only for patches whose suggested size
+        # is SMALLER than the global max") but compute_patch_cell_sizes
+        # never actually implements it, and its per-patch size is derived
+        # from the DETAIL PRESET's own defaults, independent of whatever
+        # core_cell is actually in use here -- so the two can disagree.
+        # Skipping it here is what the two-zone model requires to stay
+        # sane: without this check, a single such patch's shell volume
+        # (area * _SHELL_DEPTH_CELLS * local_size) can exceed the ENTIRE
+        # domain volume and get clamped to all of it, leaving zero core
+        # volume and collapsing the whole estimate to the 100-cell floor
+        # (measured live: a venturi test case with a patch size of 0.25 m
+        # against a 0.042 m core_cell on a ~1 m^3 domain).
+        if local_size >= core_cell:
+            continue
         try:
             area = float(mesh.area)
         except Exception as exc:
