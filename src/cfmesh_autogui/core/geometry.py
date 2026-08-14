@@ -432,6 +432,25 @@ def sample_thickness_field(
             outward[missing] = _nearest_hits(pts[missing], normals[missing])
         t = np.where(np.isfinite(inward), inward, outward)
         valid = np.isfinite(t) & (t > 0.0) & (t < bbox_max * 2)
+        # Discard grazing-edge artifacts: a sample point near a sharp
+        # corner (e.g. a flat end cap meeting a curved wall at 90 deg)
+        # can cast its inward-normal ray almost tangent to the ADJACENT
+        # surface, registering a spuriously tiny "thickness" — measured
+        # live on a capped cylinder: the 20 smallest thickness readings
+        # out of 2000 samples were ALL within 0.6% of the cap edge, down
+        # to 0.004 m (~1/25 of the local face's own size) against a true
+        # ~0.3 m feature elsewhere. A genuine reading can legitimately be
+        # smaller than its source face (a fine tessellation can still
+        # land samples right at a real narrow throat), so this only
+        # drops the extreme tail — an order of magnitude below the local
+        # face scale, not merely "smaller than" it. Verified against
+        # test_passage_thickness_field.py's real (multi-ring) venturi:
+        # a 0.5x cutoff wrongly discarded genuine near-throat samples and
+        # broke that test's correlation check; 0.05x does not.
+        if valid.any():
+            face_scale = np.sqrt(np.maximum(mesh.area_faces[face_idx], 1e-300))
+            plausible = t >= face_scale * 0.05
+            valid = valid & plausible
         return pts[valid], t[valid]
 
     try:
