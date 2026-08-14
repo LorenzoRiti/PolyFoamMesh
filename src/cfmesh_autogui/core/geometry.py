@@ -394,15 +394,6 @@ def sample_thickness_field(
     """
     if n_samples <= 0 or mesh.area <= 0 or len(mesh.faces) == 0:
         return np.zeros((0, 3)), np.zeros(0)
-    try:
-        pts, face_idx = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
-    except Exception:
-        return np.zeros((0, 3)), np.zeros(0)
-    if len(pts) == 0:
-        return np.zeros((0, 3)), np.zeros(0)
-    normals = np.asarray(mesh.face_normals[face_idx], dtype=np.float64)
-    norms = np.linalg.norm(normals, axis=1, keepdims=True)
-    normals = normals / np.where(norms > 0, norms, 1.0)
 
     eps = max(bbox_max * 1e-6, 1e-12)
     _BATCH = 512
@@ -428,14 +419,70 @@ def sample_thickness_field(
             np.minimum.at(out, lo + ray_ids[valid], dist[valid])
         return out
 
-    inward = _nearest_hits(pts, -normals)
-    missing = ~np.isfinite(inward)
-    outward = np.full(len(pts), np.inf, dtype=np.float64)
-    if missing.any():
-        outward[missing] = _nearest_hits(pts[missing], normals[missing])
-    t = np.where(np.isfinite(inward), inward, outward)
-    valid = np.isfinite(t) & (t > 0.0) & (t < bbox_max * 2)
-    return pts[valid], t[valid]
+    def _measure(pts: np.ndarray, face_idx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if len(pts) == 0:
+            return pts, np.zeros(0)
+        normals = np.asarray(mesh.face_normals[face_idx], dtype=np.float64)
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = normals / np.where(norms > 0, norms, 1.0)
+        inward = _nearest_hits(pts, -normals)
+        missing = ~np.isfinite(inward)
+        outward = np.full(len(pts), np.inf, dtype=np.float64)
+        if missing.any():
+            outward[missing] = _nearest_hits(pts[missing], normals[missing])
+        t = np.where(np.isfinite(inward), inward, outward)
+        valid = np.isfinite(t) & (t > 0.0) & (t < bbox_max * 2)
+        return pts[valid], t[valid]
+
+    try:
+        pts1, face_idx1 = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
+    except Exception:
+        return np.zeros((0, 3)), np.zeros(0)
+    pts1, t1 = _measure(pts1, face_idx1)
+    if len(pts1) == 0:
+        return pts1, t1
+
+    # Densification pass: a uniform-by-AREA sample (trimesh's default)
+    # under-represents a narrow, low-area feature relative to the rest of
+    # the part — a thin fin or a tight throat can end up with only a
+    # handful of samples, so the true local minimum thickness there is
+    # easily missed even though the feature itself was "seen". Take the
+    # faces behind the thinnest quartile of pass 1 and resample THOSE
+    # specifically (plus their immediate face-adjacency neighbours, so
+    # the resample isn't confined to a single triangle), independent of
+    # their share of total surface area. This refines the estimate where
+    # it's already known to be thin; it does not find an entirely
+    # unsampled thin region pass 1 missed outright — full-coverage
+    # guarantees would need octree/medial-axis sampling (see the
+    # `passage-thickness field only for STL` commit's near-term LFS plan).
+    try:
+        thin_cutoff = np.percentile(t1, 25)
+        thin_faces = np.unique(face_idx1[t1 <= thin_cutoff])
+        if len(thin_faces):
+            adjacency = mesh.face_adjacency
+            adj_mask = np.isin(adjacency[:, 0], thin_faces) | np.isin(adjacency[:, 1], thin_faces)
+            neighbour_faces = adjacency[adj_mask].ravel()
+            dense_faces = np.unique(np.concatenate([thin_faces, neighbour_faces]))
+            n_extra = min(n_samples, max(len(dense_faces) * 8, 32))
+            face_areas = mesh.area_faces[dense_faces]
+            face_areas = np.where(face_areas > 0, face_areas, face_areas.mean() or 1.0)
+            rng = np.random.default_rng(seed)
+            picks = rng.choice(dense_faces, size=n_extra, p=face_areas / face_areas.sum())
+            tri = mesh.triangles[picks]
+            r1 = rng.random(n_extra)
+            r2 = rng.random(n_extra)
+            sqrt_r1 = np.sqrt(r1)
+            bary = np.stack([1 - sqrt_r1, sqrt_r1 * (1 - r2), sqrt_r1 * r2], axis=1)
+            pts2 = np.einsum("ij,ijk->ik", bary, tri)
+            pts2, t2 = _measure(pts2, picks)
+        else:
+            pts2, t2 = np.zeros((0, 3)), np.zeros(0)
+    except Exception:
+        pts2, t2 = np.zeros((0, 3)), np.zeros(0)
+
+    if len(pts2):
+        return np.vstack([pts1, pts2]), np.concatenate([t1, t2])
+    return pts1, t1
 
 
 def check_watertight(meshes: list[trimesh.Trimesh]) -> tuple[bool, int, str]:
