@@ -670,6 +670,136 @@ def compute_patch_cell_sizes(
     return patch_sizes, boundary_cell_size, boundary_refinement_thickness
 
 
+def build_graded_refinement_boxes(
+    meshes: list[trimesh.Trimesh],
+    detail: str = "medium",
+    global_max_cell: float = 0.05,
+    cells_across: int = 8,
+    growth_rate: float = 1.2,
+    max_boxes: int = 200,
+    seed: int = 0xC0FFEE,
+) -> list[dict]:
+    """Approximate a GMSH-style continuous local-sizing field for cfMesh
+    using many small, growth-rate-graded ``objectRefinements`` boxes.
+
+    cfMesh/cartesianMesh has no equivalent of GMSH's ``setSizeCallback``
+    — a continuous, point-by-point size field with smooth grading
+    between fine and coarse regions. Its only real refinement tool is a
+    handful of discrete zones (``objectRefinements``), and this
+    project's own ``throat_detector.detect_refinement_regions`` only
+    ever emits the few "significant minima" it finds (2-3 zones,
+    typically), leaving everything else at the uniform global size —
+    good enough to flag an obvious narrow gap, not a substitute for a
+    graded field. This builds a MUCH denser approximation instead:
+
+      1. Sample local passage thickness across the whole surface (the
+         same ray-cast ``sample_thickness_field`` GMSH's own passage-
+         thickness field and this session's feature-aware minCellSize
+         already use — validated, not the throat_detector's former
+         from-scratch reimplementation).
+      2. Convert each sample to a target cell size (thickness /
+         cells_across, clamped to [global_max_cell/20, global_max_cell]).
+      3. Growth-rate relax the target sizes across ALL samples (same
+         eikonal/Dijkstra propagation GMSH's own curvature field uses,
+         ``gmsh_wrapper._relax_size_field_growth_rate``) — this is what
+         gives a SMOOTH transition between a fine throat and the coarse
+         bulk instead of a hard step at a zone boundary.
+      4. Voxelize the relaxed field into a coarse 3D grid and emit one
+         box per occupied voxel whose target size is meaningfully finer
+         than the global max — a discretized, graded approximation of
+         the continuous field, using cfMesh's only real primitive.
+
+    ``max_boxes`` caps the voxel count (a very large objectRefinements
+    block would bloat meshDict and slow cfMesh's own zone lookup) — the
+    voxel grid is coarsened until the box count fits.
+
+    Returns a list of box dicts (schema matching
+    ``meshdict_gen.build_object_refinements``'s box form: xmin/xmax/
+    ymin/ymax/zmin/zmax/cell_size). Empty list (never raises) when there
+    is nothing to refine or sampling fails.
+    """
+    if not meshes or global_max_cell <= 0:
+        return []
+    try:
+        all_verts = np.vstack([np.asarray(m.vertices) for m in meshes])
+        bbox_lo = all_verts.min(axis=0)
+        bbox_hi = all_verts.max(axis=0)
+        bbox_max = float(max(bbox_hi - bbox_lo))
+        if bbox_max <= 1e-12:
+            return []
+
+        preset = _DETAIL_PRESETS.get(detail, _DETAIL_PRESETS["medium"])
+        n_samples_total = preset.get("samples", 6000)
+        areas = np.asarray([max(m.area, 1e-12) for m in meshes])
+        total_area = float(areas.sum())
+
+        pts_list: list[np.ndarray] = []
+        thick_list: list[np.ndarray] = []
+        for mesh, area in zip(meshes, areas):
+            n_local = max(int(n_samples_total * area / total_area), 16)
+            pts, thick = sample_thickness_field(mesh, n_local, bbox_max, seed=seed)
+            if len(pts):
+                pts_list.append(pts)
+                thick_list.append(thick)
+        if not pts_list:
+            return []
+        points = np.vstack(pts_list)
+        thickness = np.concatenate(thick_list)
+
+        h_min = global_max_cell / 20.0
+        target = np.clip(thickness / max(cells_across, 1), h_min, global_max_cell)
+
+        from cfmesh_autogui.core.gmsh_wrapper import _relax_size_field_growth_rate
+        relaxed = _relax_size_field_growth_rate(points, target, growth_rate)
+
+        # Only keep samples that actually call for something finer than
+        # the bulk — no point emitting a box for a voxel that would just
+        # ask for the same size cfMesh already uses everywhere.
+        keep = relaxed < global_max_cell * 0.9
+        if not keep.any():
+            return []
+        points = points[keep]
+        relaxed = relaxed[keep]
+
+        # Voxelize, coarsening the grid until the box count fits max_boxes.
+        n_target = max(4, int(round(max_boxes ** (1.0 / 3.0))))
+        for _attempt in range(6):
+            voxel = bbox_max / n_target
+            if voxel <= 1e-12:
+                break
+            idx = np.floor((points - bbox_lo) / voxel).astype(np.int64)
+            keys, inverse = np.unique(idx, axis=0, return_inverse=True)
+            if len(keys) <= max_boxes:
+                break
+            n_target = max(2, n_target // 2)
+        else:
+            voxel = bbox_max / max(n_target, 1)
+            idx = np.floor((points - bbox_lo) / voxel).astype(np.int64)
+            keys, inverse = np.unique(idx, axis=0, return_inverse=True)
+
+        min_size_per_voxel = np.full(len(keys), np.inf)
+        np.minimum.at(min_size_per_voxel, inverse, relaxed)
+
+        pad = voxel * 0.1
+        boxes: list[dict] = []
+        for k, cell_size in zip(keys, min_size_per_voxel):
+            if not np.isfinite(cell_size):
+                continue
+            lo = bbox_lo + k * voxel - pad
+            hi = bbox_lo + (k + 1) * voxel + pad
+            boxes.append({
+                "type": "box",
+                "xmin": float(lo[0]), "xmax": float(hi[0]),
+                "ymin": float(lo[1]), "ymax": float(hi[1]),
+                "zmin": float(lo[2]), "zmax": float(hi[2]),
+                "cell_size": float(cell_size),
+            })
+        return boxes[:max_boxes]
+    except Exception:
+        logger.exception("build_graded_refinement_boxes failed")
+        return []
+
+
 def suggest_cell_sizes(
     meshes: list[trimesh.Trimesh] | None = None,
     detail: str = "medium",
