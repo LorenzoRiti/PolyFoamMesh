@@ -19,7 +19,7 @@ This module implements the STAR-CCM+ approach:
 Usage::
 
     agg = PolyAggregator()
-    agg.params.min_tets_per_cluster = 5
+    agg.params.min_tets_per_cluster = 20
     result = agg.run(case_dir, geometry_path="geo.step")
     print(f"{result.cells_before} -> {result.cells_after} cells "
           f"({result.reduction_pct:.1f}% reduction)")
@@ -63,8 +63,14 @@ class AggregationParams:
     Attributes:
         min_tets_per_cluster: Minimum tetrahedra to form a poly cell.
             1 = most aggressive (every vertex becomes a poly cell).
-            10 = conservative (only dense regions become poly).
-            Default 5 balances reduction and quality.
+            30 = conservative (only dense regions become poly).
+            Default 20 targets ~2x reduction (e.g. 10M tet -> 5M poly)
+            instead of the ~5-6x an aggressive threshold gives: on the
+            benchmark geometry, thresholds below ~20 plateau at max
+            skewness ~10 / non-ortho ~91, while >=20 drops to ~2.8 / ~67
+            (near the ~0.9 / ~66 of the source tet mesh) -- more
+            aggressive clustering pulls in tets whose faces are far from
+            coplanar, and OpenFOAM penalises exactly that non-planarity.
         merge_coplanar_faces: Merge faces sharing the same plane.
         coplanar_tolerance: Dot-product threshold for coplanarity.
         quasi_coplanar_tolerance: Cosine slack (0 = off, the default) that
@@ -80,7 +86,7 @@ class AggregationParams:
         bl_n_layers: Number of prism layers at boundaries.
         bl_growth_rate: Layer-to-layer growth ratio.
     """
-    min_tets_per_cluster: int = 5
+    min_tets_per_cluster: int = 20
     merge_coplanar_faces: bool = True
     coplanar_tolerance: float = 1e-6
     quasi_coplanar_tolerance: float = 0.0
@@ -860,6 +866,16 @@ class PolyAggregator:
                     is_internal = other_cell >= 0 and other_cell in used_cells and other_cell in tet_ids
 
                     if not is_internal:
+                        # ``faces[fid]`` is wound once, globally, as "normal
+                        # points from the ORIGINAL tet owner to the ORIGINAL
+                        # tet neighbour". If this cluster is built from the
+                        # original neighbour side (fown != tid), that
+                        # winding points INTO this cluster, not out of it --
+                        # flip it so every face this cluster emits is
+                        # outward-facing from ITS OWN cell, regardless of
+                        # which side of the original tet pair it came from.
+                        if fown != tid:
+                            fverts = list(reversed(fverts))
                         v_pos = [points[v] for v in fverts]
                         nrm = face_normal(v_pos)
                         cluster_faces.append(Face(
@@ -872,9 +888,24 @@ class PolyAggregator:
                             patch_type=ptype,
                         ))
 
-            # Merge coplanar faces
+            # Merge coplanar faces -- BOUNDARY faces only. An internal face
+            # (is_boundary=False, shared with another final cell) is built
+            # independently on each side from the original tet mesh's face
+            # ids, so both sides start out with identical vertex sets and
+            # the frozenset-based internal/boundary dedup below can match
+            # them. Merging internal faces changes their vertex set on one
+            # side only (the other cell doesn't know about the merge),
+            # breaking that match: the "merged" internal face is then
+            # mistaken for two separate boundary faces, corrupting
+            # owner/neighbour topology (observed as skewness in the
+            # hundreds and non-orthogonality pinned near the 180 deg cap,
+            # i.e. inverted-normal faces).
             if self.params.merge_coplanar_faces and len(cluster_faces) > 1:
-                cluster_faces = self._merge_cluster_faces(cluster_faces, points)
+                boundary_subset = [f for f in cluster_faces if f.is_boundary]
+                internal_subset = [f for f in cluster_faces if not f.is_boundary]
+                if len(boundary_subset) > 1:
+                    boundary_subset = self._merge_cluster_faces(boundary_subset, points)
+                cluster_faces = internal_subset + boundary_subset
 
             new_poly_cells.append({
                 "id": poly_id,
@@ -892,63 +923,129 @@ class PolyAggregator:
                     fverts = faces[fid]
                     is_bface = fid in bface_to_patch
                     pname, ptype = bface_to_patch.get(fid, ("", ""))
-                    fown = int(owner[fid])
-                    fnei = int(neighbour[fid]) if fid < len(neighbour) and neighbour[fid] >= 0 else -1
-                    other_cell = fnei if fown == cid else fown
-                    if other_cell < 0 or other_cell not in used_cells:
-                        v_pos = [points[v] for v in fverts]
-                        nrm = face_normal(v_pos)
-                        remaining_faces.append(Face(
-                            vertices=fverts,
-                            normal=nrm,
-                            owner=poly_id,
-                            neighbour=-1,
-                            is_boundary=is_bface,
-                            patch_name=pname,
-                            patch_type=ptype,
-                        ))
+                    # A leftover (unclustered) tet keeps ALL of its faces --
+                    # it isn't merged with anything, so unlike the cluster
+                    # case above there is no "internal to this cell" face to
+                    # drop. Dropping faces whose other side happens to
+                    # already belong to a poly cluster (the previous
+                    # behaviour) silently deleted real faces of this tet,
+                    # producing illegal cells with < 4 faces once enough of
+                    # its neighbours had been clustered.
+                    #
+                    # Same winding fix as the cluster loop above: flip when
+                    # this tet is the original neighbour side, so the face
+                    # is outward-facing from THIS cell.
+                    if int(owner[fid]) != cid:
+                        fverts = list(reversed(fverts))
+                    v_pos = [points[v] for v in fverts]
+                    nrm = face_normal(v_pos)
+                    remaining_faces.append(Face(
+                        vertices=fverts,
+                        normal=nrm,
+                        owner=poly_id,
+                        neighbour=-1,
+                        is_boundary=is_bface,
+                        patch_name=pname,
+                        patch_type=ptype,
+                    ))
                 new_poly_cells.append({
                     "id": poly_id,
                     "faces": remaining_faces,
                     "vertices": list({v for f in remaining_faces for v in f.vertices}),
                 })
 
-        # Build flat face list with owner/neighbour + patch map
-        new_faces: list[list[int]] = []
-        new_owner: list[int] = []
-        new_neighbour: list[int] = []
-        face_patch_map: dict[int, tuple[str, str]] = {}
-        face_index = 0
-
-        # Filter out cells with 0 faces (clusters where all faces were internal)
+        # Filter out cells with 0 faces (clusters where all faces were
+        # internal), THEN renumber the survivors 0..N-1 contiguously.
+        # Cell "id" was assigned as len(new_poly_cells) at creation time
+        # (before this filter), so a filtered-out cell left a gap in the
+        # id sequence; writing owner/neighbour with those stale, gapped
+        # ids made checkMesh infer a phantom cell (0 faces) at every gap.
         new_poly_cells = [c for c in new_poly_cells if c["faces"]]
+        for new_id, cell in enumerate(new_poly_cells):
+            cell["id"] = new_id
 
+        # Collect every face row as emitted by its owning cell above. A
+        # genuine internal face was independently appended TWICE -- once by
+        # each of the two cells it borders (a cluster's construction and a
+        # neighbouring leftover tet's, or two different clusters) -- so
+        # grouping by vertex set recovers the true topology: a group of one
+        # row is a real boundary face, a group of two is one internal face
+        # shared by exactly those two cells (a single row, not two).
+        raw_faces: list[list[int]] = []
+        raw_owner: list[int] = []
+        raw_patch: list[tuple[str, str] | None] = []
         for cell in new_poly_cells:
             for f in cell["faces"]:
-                new_faces.append(f.vertices)
-                new_owner.append(cell["id"])
-                new_neighbour.append(-1)
-                if f.is_boundary and f.patch_name:
-                    face_patch_map[face_index] = (f.patch_name, f.patch_type)
-                face_index += 1
+                raw_faces.append(f.vertices)
+                raw_owner.append(cell["id"])
+                raw_patch.append(
+                    (f.patch_name, f.patch_type)
+                    if f.is_boundary and f.patch_name else None
+                )
 
-        # Store for _write_boundary
-        self._face_patch_map = face_patch_map
+        groups: dict[frozenset[int], list[int]] = {}
+        for i, verts in enumerate(raw_faces):
+            groups.setdefault(frozenset(verts), []).append(i)
 
-        # Fix neighbour for internal faces (faces shared by cells).
-        # Use a dict keyed by frozenset of vertices for O(n) lookup,
-        # instead of O(n²) nested loop.
-        face_key_map: dict[frozenset[int], int] = {}
-        for i in range(len(new_faces)):
-            if new_neighbour[i] >= 0:
-                continue
-            key = frozenset(new_faces[i])
-            if key in face_key_map:
-                j = face_key_map[key]
-                new_neighbour[i] = new_owner[j]
-                new_neighbour[j] = new_owner[i]
+        internal_faces: list[list[int]] = []
+        internal_owner: list[int] = []
+        internal_neighbour: list[int] = []
+        boundary_faces: list[list[int]] = []
+        boundary_owner: list[int] = []
+        boundary_patch: list[tuple[str, str]] = []
+
+        for idxs in groups.values():
+            if len(idxs) == 2 and raw_owner[idxs[0]] != raw_owner[idxs[1]]:
+                i, j = idxs
+                lo, hi = (i, j) if raw_owner[i] < raw_owner[j] else (j, i)
+                internal_faces.append(raw_faces[lo])
+                internal_owner.append(raw_owner[lo])
+                internal_neighbour.append(raw_owner[hi])
             else:
-                face_key_map[key] = i
+                # len == 1 (genuine boundary face), a same-owner pair
+                # (can happen after coplanar-face merging collapses two
+                # distinct faces onto the same vertex set), or >= 3 rows
+                # (non-manifold input) -- keep every row as its own
+                # boundary face rather than guessing a merge.
+                for i in idxs:
+                    boundary_faces.append(raw_faces[i])
+                    boundary_owner.append(raw_owner[i])
+                    boundary_patch.append(raw_patch[i] or ("walls", "patch"))
+
+        # OpenFOAM's polyMesh format requires internal faces first, sorted
+        # upper-triangular (owner ascending, then neighbour ascending),
+        # followed by boundary faces grouped contiguously by patch.
+        order = sorted(
+            range(len(internal_faces)),
+            key=lambda k: (internal_owner[k], internal_neighbour[k]),
+        )
+        internal_faces = [internal_faces[k] for k in order]
+        internal_owner = [internal_owner[k] for k in order]
+        internal_neighbour = [internal_neighbour[k] for k in order]
+
+        patch_order: list[str] = []
+        patch_seen: set[str] = set()
+        for name, _ in boundary_patch:
+            if name not in patch_seen:
+                patch_seen.add(name)
+                patch_order.append(name)
+        patch_rank = {name: k for k, name in enumerate(patch_order)}
+        border = sorted(
+            range(len(boundary_faces)), key=lambda k: patch_rank[boundary_patch[k][0]]
+        )
+        boundary_faces = [boundary_faces[k] for k in border]
+        boundary_owner = [boundary_owner[k] for k in border]
+        boundary_patch = [boundary_patch[k] for k in border]
+
+        new_faces = internal_faces + boundary_faces
+        new_owner = internal_owner + boundary_owner
+        new_neighbour = internal_neighbour + [-1] * len(boundary_faces)
+
+        # Store for _write_boundary / _compute_boundary_patches
+        self._face_patch_map = {
+            len(internal_faces) + k: boundary_patch[k]
+            for k in range(len(boundary_faces))
+        }
 
         return (
             new_poly_cells,
@@ -1194,7 +1291,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version="CFMesh-AutoGUI PolyAggregator 1.0.0")
     parser.add_argument("--case-dir", "-c", required=True, help="OpenFOAM case directory")
     parser.add_argument("--geometry", "-g", default="", help="Geometry file (STEP/STL)")
-    parser.add_argument("--min-tets", type=int, default=5, help="Min tets per cluster (1=aggressive, 10=conservative)")
+    parser.add_argument("--min-tets", type=int, default=20, help="Min tets per cluster (1=aggressive, 30=conservative)")
     parser.add_argument("--no-bl", action="store_true", help="Disable boundary layers")
     args = parser.parse_args(argv)
 

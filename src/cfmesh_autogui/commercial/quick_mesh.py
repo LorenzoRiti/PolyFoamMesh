@@ -198,7 +198,10 @@ class QuickMesh:
                 try:
                     from cfmesh_autogui.commercial.poly_aggregator import PolyAggregator
                     agg = PolyAggregator()
-                    agg.params.min_tets_per_cluster = 5
+                    # 20 = ~2x cell reduction (was 5 = ~5-6x, at the cost
+                    # of much worse skewness/non-orthogonality -- see
+                    # AggregationParams.min_tets_per_cluster docstring).
+                    agg.params.min_tets_per_cluster = 20
                     agg_result = agg.run(case_dir, geometry_path)
                     if agg_result.success:
                         result.cell_count = agg_result.cells_after
