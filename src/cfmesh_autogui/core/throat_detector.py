@@ -28,12 +28,23 @@ def _sample_thickness_field(
     Returns (points, thicknesses):
       - points: (N, 3) array of sample point coordinates
       - thicknesses: (N,) array of local thickness at each point
-    """
-    import trimesh
-    import time as _time
 
-    all_pts: list[np.ndarray] = []
-    all_thick: list[float] = []
+    Delegates to ``core.geometry.sample_thickness_field`` (per mesh,
+    proportioned by area) instead of this module's own former
+    from-scratch ray-cast. That reimplementation cast up to 19 rays per
+    sample point in a "cone" of directions around the surface normal and
+    kept the SHORTEST hit across all of them — which, unlike a plain
+    inward-normal ray-cast, can and did latch onto the nearest bit of
+    nearby curved surface in an off-axis direction rather than the true
+    opposite-wall passage width. Measured live on a venturi (wide 1.0 m
+    ends, throat 0.30 m at the middle): it reported a "narrow passage" at
+    the wide end near a cap edge and never found the real throat at all.
+    ``geometry.sample_thickness_field`` is the SAME function this
+    session's passage-thickness field for GMSH/STL and the local-feature
+    densification already use, and is verified accurate on this exact
+    venturi shape (~1.99 at the wide ends, ~0.34 at the throat).
+    """
+    from cfmesh_autogui.core.geometry import sample_thickness_field
 
     if not meshes:
         return np.empty((0, 3), dtype=np.float64), np.empty(0, dtype=np.float64)
@@ -41,76 +52,20 @@ def _sample_thickness_field(
     areas = np.asarray([max(m.area, 1e-12) for m in meshes])
     total_area = float(areas.sum())
 
-    eps = max(bbox_max * 1e-6, 1e-12)
-    deadline = _time.monotonic() + 30.0  # 30s timeout
-
+    all_pts: list[np.ndarray] = []
+    all_thick: list[np.ndarray] = []
     for mesh, area in zip(meshes, areas):
         n_local = max(int(n_samples_total * area / total_area), 16)
-        try:
-            pts, face_idx = trimesh.sample.sample_surface(mesh, n_local, seed=seed)
-        except Exception:
-            continue
+        pts, thick = sample_thickness_field(mesh, n_local, bbox_max, seed=seed)
         if len(pts) == 0:
             continue
-        normals = np.asarray(mesh.face_normals[face_idx], dtype=np.float64)
-        ray_origins = np.asarray(pts, dtype=np.float64)
-
-        thick = np.zeros(len(pts), dtype=np.float64)
-        for j, (origin, normal) in enumerate(zip(ray_origins, normals)):
-            if _time.monotonic() > deadline:
-                logger.warning("Thickness sampling timed out after 30s (processed %d/%d pts)", j, len(pts))
-                break
-            d = normal / max(np.linalg.norm(normal), 1e-12)
-            directions = [-d, d]
-            for ang in [0.5, 1.0, 1.5]:
-                for axis_vec in [
-                    np.array([1.0, 0.0, 0.0]),
-                    np.array([0.0, 1.0, 0.0]),
-                    np.array([0.0, 0.0, 1.0]),
-                ]:
-                    if abs(np.dot(d, axis_vec)) > 0.9:
-                        axis_vec = np.array([0.0, 1.0, 0.0])
-                    rot_axis = np.cross(d, axis_vec)
-                    rn = np.linalg.norm(rot_axis)
-                    if rn < 1e-12:
-                        continue
-                    rot_axis /= rn
-                    c, s = np.cos(ang), np.sin(ang)
-                    offset_dir = d * c + rot_axis * s
-                    offset_dir /= max(np.linalg.norm(offset_dir), 1e-12)
-                    directions.append(offset_dir)
-                    directions.append(-offset_dir)
-
-            min_dist = 0.0
-            for ddir in directions:
-                try:
-                    res = mesh.ray.intersects_location(
-                        ray_origins=[origin], ray_directions=[ddir]
-                    )
-                    hits = res[0] if res and len(res[0]) else None
-                    if hits is not None and len(hits) > 0:
-                        dists = np.linalg.norm(np.asarray(hits) - origin, axis=1)
-                        dists = dists[dists > eps]
-                        if len(dists) > 0:
-                            d_min = float(dists.min())
-                            if min_dist == 0 or d_min < min_dist:
-                                min_dist = d_min
-                except Exception:
-                    pass
-            thick[j] = min_dist
-        else:
-            pass  # completed without timeout
-        valid = (thick > eps) & (thick < bbox_max * 2)
-        min_sensible = max(bbox_max * 0.002, eps * 10)
-        valid = valid & (thick >= min_sensible)
-        if valid.any():
-            all_pts.append(ray_origins[valid])
-            all_thick.extend(thick[valid].tolist())
+        all_pts.append(pts)
+        all_thick.append(thick)
 
     if not all_pts:
         return np.empty((0, 3), dtype=np.float64), np.empty(0, dtype=np.float64)
 
-    return np.vstack(all_pts), np.asarray(all_thick, dtype=np.float64)
+    return np.vstack(all_pts), np.concatenate(all_thick)
 
 
 def _find_significant_minima_3d(
