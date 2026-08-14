@@ -424,6 +424,8 @@ def merge_acceptable(
     tol: float = 1e-6,
     quasi_tol: float = 0.0,
     max_skew: float = 0.9,
+    na: np.ndarray | None = None,
+    nb: np.ndarray | None = None,
 ) -> bool:
     """Whether faces A and B may merge (strictly or quasi-) coplanarly.
 
@@ -432,9 +434,13 @@ def merge_acceptable(
     ``quasi_tol > 0``, pairs whose normals agree within ``1 - tol - quasi_tol``
     are additionally considered, and the merged polygon is accepted only if
     its warpage skewness stays at or below ``max_skew``.
+
+    ``na``/``nb`` let a caller pass already-computed face normals (e.g. the
+    cached ``Face.normal``) instead of recomputing them from ``verts_a``/
+    ``verts_b`` on every pairwise comparison.
     """
-    na = face_normal(verts_a)
-    nb = face_normal(verts_b)
+    na = face_normal(verts_a) if na is None else na
+    nb = face_normal(verts_b) if nb is None else nb
     dot = float(abs(np.dot(na, nb)))
     if dot < 1.0 - tol:
         if quasi_tol <= 0.0 or dot < 1.0 - tol - quasi_tol:
@@ -751,16 +757,40 @@ class PolyAggregator:
         For each vertex, records which cells (tetrahedra) contain it.
         Returns dict: vertex_id -> list of cell_ids.
         """
-        vt_adj: dict[int, list[int]] = {}
+        n_faces = len(faces)
+        cell_arrs: list[np.ndarray] = []
+        id_arrs: list[np.ndarray] = []
         for cell_id, face_ids in enumerate(cell_faces):
             verts_this_cell: set[int] = set()
             for fid in face_ids:
-                if fid < len(faces):
+                if fid < n_faces:
                     verts_this_cell.update(faces[fid])
-            for v in verts_this_cell:
-                if v not in vt_adj:
-                    vt_adj[v] = []
-                vt_adj[v].append(cell_id)
+            if not verts_this_cell:
+                continue
+            arr = np.fromiter(verts_this_cell, dtype=np.int64, count=len(verts_this_cell))
+            cell_arrs.append(arr)
+            id_arrs.append(np.full(arr.shape[0], cell_id, dtype=np.int64))
+
+        if not cell_arrs:
+            return {}
+
+        verts_cat = np.concatenate(cell_arrs)
+        cells_cat = np.concatenate(id_arrs)
+        # Stable sort so, for a given vertex, the grouped cell ids keep the
+        # ascending cell-id order the original incremental-append loop
+        # produced (ties broken by original position).
+        order = np.argsort(verts_cat, kind="stable")
+        verts_sorted = verts_cat[order]
+        cells_sorted = cells_cat[order]
+        uniq_verts, start_idx, counts = np.unique(
+            verts_sorted, return_index=True, return_counts=True
+        )
+
+        vt_adj: dict[int, list[int]] = {}
+        for v, start, count in zip(
+            uniq_verts.tolist(), start_idx.tolist(), counts.tolist()
+        ):
+            vt_adj[v] = cells_sorted[start:start + count].tolist()
         return vt_adj
 
     def _aggregate(
@@ -958,6 +988,8 @@ class PolyAggregator:
                         tol=self.params.coplanar_tolerance,
                         quasi_tol=self.params.quasi_coplanar_tolerance,
                         max_skew=self.params.max_merge_skewness,
+                        na=result[i].normal,
+                        nb=result[j].normal,
                     ):
                         merged_v = merge_two_faces(va, vb)
                         # Map merged vertex coordinates back to original indices
@@ -1003,17 +1035,19 @@ class PolyAggregator:
             p = tuple(points[idx])
             lookup[p] = idx
         # Also try rounding for floating-point tolerance
+        candidate_idx = np.fromiter(set(verts_i) | set(verts_j), dtype=np.int64)
+        candidate_pts = points[candidate_idx]
         result: list[int] = []
         for mv in merged_verts:
             mt = tuple(mv)
             if mt in lookup:
                 result.append(lookup[mt])
             else:
-                best_idx = min(
-                    set(verts_i) | set(verts_j),
-                    key=lambda idx: np.linalg.norm(points[idx] - mv),
-                )
-                result.append(best_idx)
+                # Vectorized nearest-point search over the (small) candidate
+                # set, instead of a Python min()/lambda calling
+                # np.linalg.norm once per candidate.
+                dists = np.linalg.norm(candidate_pts - mv, axis=1)
+                result.append(int(candidate_idx[np.argmin(dists)]))
         return result
 
     def _cleanup(self) -> None:
