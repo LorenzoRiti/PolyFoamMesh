@@ -30,7 +30,7 @@ _extract_data_block = _mod._extract_data_block
 
 def test_params_defaults():
     p = AggregationParams()
-    assert p.min_tets_per_cluster == 5
+    assert p.min_tets_per_cluster == 20
     assert p.merge_coplanar_faces
     assert abs(p.coplanar_tolerance - 1e-6) < 1e-12
     assert p.preserve_boundary_patches
@@ -279,7 +279,7 @@ def test_parse_face_list_hex():
 
 def test_aggregator_init():
     agg = PolyAggregator()
-    assert agg.params.min_tets_per_cluster == 5
+    assert agg.params.min_tets_per_cluster == 20
     agg.params.min_tets_per_cluster = 10
     assert agg.params.min_tets_per_cluster == 10
 
@@ -900,7 +900,7 @@ def test_exported_from_package():
     assert AggregationParams is not None
     assert AggregationResult is not None
     p = AggregationParams()
-    assert p.min_tets_per_cluster == 5
+    assert p.min_tets_per_cluster == 20
 
 
 def test_cli_main_min_tets_flag():

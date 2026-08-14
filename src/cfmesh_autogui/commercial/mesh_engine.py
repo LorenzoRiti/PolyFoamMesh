@@ -742,7 +742,11 @@ class MeshEngine:
         )
 
         agg = PolyAggregator()
-        agg.params.min_tets_per_cluster = 5
+        # 20 = ~2x cell reduction, not the ~5-6x an aggressive threshold
+        # gives -- past this point aggregation pulls in tets whose faces
+        # are far from coplanar, driving skewness/non-orthogonality up
+        # (see AggregationParams.min_tets_per_cluster docstring).
+        agg.params.min_tets_per_cluster = 20
         agg.params.bl_enabled = self._params.bl_enabled
         agg.params.bl_n_layers = self._params.bl_n_layers
 
