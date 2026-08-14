@@ -115,6 +115,7 @@ class ParamsPanel(QWidget):
         self._case_dir = ""
         self._meshing_state = False
         self._suggest_meshes: list[trimesh.Trimesh] = []  # ✅ F-017
+        self._feature_min_cell_cache: dict[str, float] = {}
         self._undo_stack: QUndoStack | None = None
         self._prev_cell_params = {"max_cell": 0.05, "min_cell": 0.01}
         self._setup_ui()
@@ -939,6 +940,10 @@ class ParamsPanel(QWidget):
     def set_suggest_meshes(self, meshes: list) -> None:
         self._suggest_meshes = list(meshes) if meshes else []
         self._geometry_volume = self._safe_geometry_volume()
+        # Invalidate the feature-aware minCellSize cache (see
+        # _derive_cell_sizes_from_target) -- new geometry, old ray-cast
+        # results no longer apply.
+        self._feature_min_cell_cache = {}
         if hasattr(self, "_detail_slider"):
             self._on_detail_changed(self._detail_slider.value())
 
@@ -1093,16 +1098,61 @@ class ParamsPanel(QWidget):
 
         cell size ~ (bbox_volume / cells)^(1/3), max a bit above, min a
         bit below. bbox defaults to 1m when geometry hasn't been loaded.
+
+        minCellSize is then tightened (never loosened) toward the
+        geometry's own local passage/feature thickness when a geometry is
+        loaded (``suggest_cell_sizes`` — ray-cast based, see
+        ``core.geometry.sample_thickness_field``), instead of staying a
+        fixed 0.5x multiple of the uniform bulk size. A fixed multiple
+        never adapts to how narrow an actual throat or fin is: GMSH's own
+        mesher recomputes a rich local sizing FIELD internally regardless
+        of what min/max bounds this slider sends it, so a generic minCell
+        barely matters there, but cfMesh's cartesianMesh has exactly ONE
+        knob for local refinement (minCellSize — it only refines cells
+        already larger than the estimated feature size), so if that knob
+        never reflects the true local thickness, cartesianMesh has
+        nothing meaningful to refine toward and the slider only ever
+        changes overall coarseness uniformly, never local detail.
         """
         if not hasattr(self, "_max_cell") or not hasattr(self, "_min_cell"):
             return
         bbox = getattr(self, "_bbox_dim", 1.0) or 1.0
-        import math
         cell_size = (bbox ** 3 / max(cells, 1)) ** (1.0 / 3.0)
         floor = 1e-10
         s_max = max(cell_size * 1.6, floor * 2.0)
         # Keep a strict gap after QDoubleSpinBox precision/clamping.
         s_min = max(min(cell_size * 0.5, s_max * 0.45), floor)
+
+        meshes = getattr(self, "_suggest_meshes", None)
+        if meshes:
+            # Cached per detail level: the fine-grained cell-count slider
+            # fires this on every drag tick (0..20 positions), but only 5
+            # distinct detail buckets ever feed suggest_cell_sizes below —
+            # re-running its ray-casting on every tick would make dragging
+            # the slider visibly laggy for no benefit (the feature-derived
+            # minimum doesn't change between ticks in the same bucket).
+            detail = self.get_detail_level()
+            cache = getattr(self, "_feature_min_cell_cache", None)
+            if cache is None:
+                cache = self._feature_min_cell_cache = {}
+            if detail in cache:
+                feature_min = cache[detail]
+            else:
+                feature_min = 0.0
+                try:
+                    from cfmesh_autogui.core.geometry import suggest_cell_sizes
+                    _, feature_min = suggest_cell_sizes(
+                        meshes, detail=detail, bbox_max_dim=bbox,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Feature-aware minCellSize skipped (slider update)",
+                        exc_info=True,
+                    )
+                cache[detail] = feature_min
+            if feature_min > floor:
+                s_min = min(s_min, feature_min)
+
         if s_min >= s_max:
             s_min = s_max * 0.4
         self._max_cell.blockSignals(True)

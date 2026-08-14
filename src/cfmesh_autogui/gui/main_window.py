@@ -284,7 +284,6 @@ class MainWindow(QMainWindow):
 
         QShortcut("Ctrl+R", self, activated=self._params.trigger_meshing)
         QShortcut("Ctrl+N", self, activated=self._on_reset)
-        QShortcut("Ctrl+M", self, activated=self._on_quick_mesh)
         QShortcut("Ctrl+Q", self, activated=self.close)
 
         hm = self.menuBar().addMenu("&Help")
@@ -401,15 +400,6 @@ class MainWindow(QMainWindow):
         self._ribbon_btns["template"].setToolTip(
             "Start from a predefined case template (internal flow, "
             "external aero, CHT, etc.) with pre-configured settings."
-        )
-        self._ribbon_btns["quick"] = _make_ribbon_btn("Quick Mesh", "quick", self._on_quick_mesh, checkable=False)
-        qm = self._ribbon_btns["quick"]
-        qm.setCheckable(False)
-        qm.setAutoExclusive(False)
-        qm.setStyleSheet(
-            f"QToolButton {{ background:{ORANGE_500}; color:white; border:1px solid {ORANGE_600}; "
-            "border-radius:4px; padding:4px 16px; font-weight:700; }"
-            f"QToolButton:hover {{ background:{ORANGE_400}; }}"
         )
         # Adaptive (OODA) Mesh — runs the closed-loop meshing engine
         self._ribbon_btns["adaptive"] = _make_ribbon_btn(
