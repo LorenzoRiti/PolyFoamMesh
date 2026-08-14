@@ -16,6 +16,8 @@ from _test_helpers import load_commercial_module
 
 _mod = load_commercial_module("quality_engine")
 local_refinement_boxes_from_checkmesh_sets = _mod.local_refinement_boxes_from_checkmesh_sets
+QualityEngine = _mod.QualityEngine
+QualityMetrics = _mod.QualityMetrics
 
 
 HEADER_BINARY = (
@@ -113,3 +115,103 @@ def test_local_refinement_boxes_zero_cell_size_returns_empty(tmp_path):
     case_dir = tmp_path / "case"
     boxes = local_refinement_boxes_from_checkmesh_sets(case_dir, cell_size=0.0)
     assert boxes == []
+
+
+# ---------------------------------------------------------------------------
+# _add_local_refinement_boxes: meshDict text splicing
+# ---------------------------------------------------------------------------
+
+_SAMPLE_BOX = [{
+    "type": "box", "xmin": -1.0, "xmax": 1.0, "ymin": -1.0, "ymax": 1.0,
+    "zmin": -1.0, "zmax": 1.0, "cell_size": 0.05,
+}]
+
+
+def test_add_local_refinement_boxes_appends_when_absent():
+    text = "maxCellSize 0.1;\nminCellSize 0.01;\n"
+    out = QualityEngine._add_local_refinement_boxes(text, _SAMPLE_BOX)
+    assert "objectRefinements" in out
+    assert "refinementBox_0" in out
+    assert "cellSize 0.05;" in out
+    assert "maxCellSize 0.1;" in out  # original content preserved
+
+
+def test_add_local_refinement_boxes_merges_into_existing_block():
+    text = (
+        "maxCellSize 0.1;\n"
+        "objectRefinements\n{\n"
+        "    refinementBox_0\n    {\n"
+        "        type    box;\n        centre  (0 0 0);\n"
+        "        lengthX 2;\n        lengthY 2;\n        lengthZ 2;\n"
+        "        cellSize 0.2;\n    }\n"
+        "}\n"
+    )
+    out = QualityEngine._add_local_refinement_boxes(text, _SAMPLE_BOX)
+    # Original entry survives...
+    assert "cellSize 0.2;" in out
+    assert "refinementBox_0" in out
+    # ...and the new one is merged in, renumbered past it, still inside
+    # the SAME objectRefinements block (only one such block in the file).
+    assert "cellSize 0.05;" in out
+    assert "refinementBox_1" in out
+    assert out.count("objectRefinements") == 1
+
+
+def test_add_local_refinement_boxes_empty_payload_is_noop():
+    text = "maxCellSize 0.1;\n"
+    out = QualityEngine._add_local_refinement_boxes(text, [])
+    assert out == text
+
+
+# ---------------------------------------------------------------------------
+# _decide_fixes: prefers local_refine over the global relax when a small,
+# targeted set of bad cells is available
+# ---------------------------------------------------------------------------
+
+def test_decide_fixes_prefers_local_refine_when_boxes_available(tmp_path, monkeypatch):
+    case_dir = tmp_path / "case"
+    (case_dir / "system").mkdir(parents=True)
+    (case_dir / "system" / "meshDict").write_text(
+        "maxCellSize 0.1;\nminCellSize 0.01;\n", encoding="ascii",
+    )
+    fake_boxes = [{"xmin": 0, "xmax": 1, "ymin": 0, "ymax": 1, "zmin": 0, "zmax": 1,
+                   "cell_size": 0.005, "n_cells": 5}]
+    monkeypatch.setattr(
+        _mod, "local_refinement_boxes_from_checkmesh_sets",
+        lambda *a, **k: fake_boxes,
+    )
+    qe = QualityEngine()
+    metrics = QualityMetrics(max_skewness=8.0, cells=1000)
+    fixes = qe._decide_fixes(metrics, case_dir)
+    actions = [f.action for f in fixes]
+    assert "local_refine" in actions
+    assert "relax" not in actions
+
+
+def test_decide_fixes_falls_back_to_relax_when_defect_is_widespread(tmp_path, monkeypatch):
+    case_dir = tmp_path / "case"
+    (case_dir / "system").mkdir(parents=True)
+    (case_dir / "system" / "meshDict").write_text(
+        "maxCellSize 0.1;\nminCellSize 0.01;\n", encoding="ascii",
+    )
+    # 500 flagged cells out of 1000 total (50%) -- over the 20% cutoff.
+    fake_boxes = [{"xmin": 0, "xmax": 1, "ymin": 0, "ymax": 1, "zmin": 0, "zmax": 1,
+                   "cell_size": 0.005, "n_cells": 500}]
+    monkeypatch.setattr(
+        _mod, "local_refinement_boxes_from_checkmesh_sets",
+        lambda *a, **k: fake_boxes,
+    )
+    qe = QualityEngine()
+    metrics = QualityMetrics(max_skewness=8.0, cells=1000)
+    fixes = qe._decide_fixes(metrics, case_dir)
+    actions = [f.action for f in fixes]
+    assert "relax" in actions
+    assert "local_refine" not in actions
+
+
+def test_decide_fixes_no_case_dir_falls_back_to_relax():
+    qe = QualityEngine()
+    metrics = QualityMetrics(max_skewness=8.0, cells=1000)
+    fixes = qe._decide_fixes(metrics, None)
+    actions = [f.action for f in fixes]
+    assert "relax" in actions

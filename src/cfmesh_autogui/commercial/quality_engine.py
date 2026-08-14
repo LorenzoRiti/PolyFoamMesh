@@ -55,10 +55,13 @@ class QualityMetrics:
 @dataclass
 class AutoFixAction:
     """Description of a single auto-fix action."""
-    action: str = ""       # smooth, refine, remesh, split, disable_bl
+    action: str = ""       # smooth, refine, remesh, split, disable_bl, local_refine
     target_metric: str = ""
     current_value: float = 0.0
     detail: str = ""
+    # "local_refine" only: the objectRefinements-box dicts from
+    # local_refinement_boxes_from_checkmesh_sets, applied by _apply_fix.
+    payload: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -281,7 +284,7 @@ class QualityEngine:
                 logger.info("Quality OK at iteration %d", i)
                 break
 
-            fixes = self._decide_fixes(report.metrics)
+            fixes = self._decide_fixes(report.metrics, case_dir)
             if not fixes:
                 logger.info("No applicable fix at iteration %d", i)
                 break
@@ -453,22 +456,84 @@ class QualityEngine:
     # ------------------------------------------------------------------
     # Auto-fix logic
     # ------------------------------------------------------------------
-    def _decide_fixes(self, metrics: QualityMetrics) -> list[AutoFixAction]:
+    @staticmethod
+    def _read_min_cell_size(case_dir: Path) -> float | None:
+        """Best-effort read of the current ``minCellSize`` from meshDict."""
+        meshdict_path = case_dir / "system" / "meshDict"
+        if not meshdict_path.exists():
+            return None
+        try:
+            text = meshdict_path.read_text(encoding="ascii", errors="replace")
+            m = re.search(rf"minCellSize\s+({QualityEngine._OF_FLOAT});", text)
+            return float(m.group(1)) if m else None
+        except Exception:
+            logger.exception("Could not read minCellSize from %s", meshdict_path)
+            return None
+
+    def _local_refine_fix(
+        self, metrics: QualityMetrics, case_dir: Path | None, target_metric: str,
+    ) -> AutoFixAction | None:
+        """Try a targeted fix from checkMesh's own problem sets before
+        falling back to a global relax — see
+        ``local_refinement_boxes_from_checkmesh_sets``. Only used when the
+        affected cells are a small slice of the mesh (< 20%): a defect
+        that widespread is better served by the existing global relax,
+        since a "local" box covering most of the domain buys nothing over
+        it while adding meshDict complexity.
+        """
+        if case_dir is None:
+            return None
+        min_cell = self._read_min_cell_size(case_dir)
+        if not min_cell or min_cell <= 0:
+            return None
+        try:
+            boxes = local_refinement_boxes_from_checkmesh_sets(
+                case_dir, cell_size=min_cell * 0.5,
+            )
+        except Exception:
+            logger.exception("Local refinement box detection failed for %s", case_dir)
+            return None
+        if not boxes:
+            return None
+        total_flagged = sum(b.get("n_cells", 0) for b in boxes)
+        if metrics.cells > 0 and total_flagged > metrics.cells * 0.2:
+            logger.info(
+                "Local refinement: %d/%d cells flagged (>20%%), falling back "
+                "to global relax", total_flagged, metrics.cells,
+            )
+            return None
+        return AutoFixAction(
+            action="local_refine",
+            target_metric=target_metric,
+            current_value=float(total_flagged),
+            detail=f"{len(boxes)} targeted refinement box(es) "
+                   f"({total_flagged} flagged cells) from checkMesh sets",
+            payload=boxes,
+        )
+
+    def _decide_fixes(
+        self, metrics: QualityMetrics, case_dir: Path | None = None,
+    ) -> list[AutoFixAction]:
         """Decide which auto-fix actions to apply based on metrics."""
         fixes: list[AutoFixAction] = []
         thr = THRESHOLDS
 
         if metrics.max_skewness > thr["skewness_max"]:
-            # Skewness: first try relaxing cell sizes (proportional to severity).
-            # If BL is active, also consider reducing layers.
-            severity = (metrics.max_skewness - thr["skewness_max"]) / thr["skewness_max"]
-            relax_factor = 1.0 + min(severity * 0.5, 0.5)
-            fixes.append(AutoFixAction(
-                action="relax",
-                target_metric="skewness",
-                current_value=metrics.max_skewness,
-                detail=f"Increase maxCell by {relax_factor:.0%}, decrease minCell by {relax_factor*0.5:.0%}",
-            ))
+            local_fix = self._local_refine_fix(metrics, case_dir, "skewness")
+            if local_fix is not None:
+                fixes.append(local_fix)
+            else:
+                # Skewness: relax cell sizes globally (proportional to
+                # severity) when no small, targeted set of bad cells was
+                # found to refine instead.
+                severity = (metrics.max_skewness - thr["skewness_max"]) / thr["skewness_max"]
+                relax_factor = 1.0 + min(severity * 0.5, 0.5)
+                fixes.append(AutoFixAction(
+                    action="relax",
+                    target_metric="skewness",
+                    current_value=metrics.max_skewness,
+                    detail=f"Increase maxCell by {relax_factor:.0%}, decrease minCell by {relax_factor*0.5:.0%}",
+                ))
 
         if metrics.max_non_orthogonality > thr["non_ortho_max"]:
             # Non-orthogonality: reduce BL layers first (preserves mesh near other walls),
@@ -523,9 +588,68 @@ class QualityEngine:
             text = self._coarsen_mesh(text, factor=1.5)
         elif fix.action == "split":
             text = self._reduce_max_cell(text, factor=0.7)
+        elif fix.action == "local_refine":
+            text = self._add_local_refinement_boxes(text, fix.payload)
 
         meshdict_path.write_text(text, encoding="ascii")
         logger.info("Applied fix: %s on %s", fix.action, fix.target_metric)
+
+    @staticmethod
+    def _add_local_refinement_boxes(text: str, boxes: list[dict]) -> str:
+        """Insert/merge an ``objectRefinements`` block built from
+        ``boxes`` (see ``local_refinement_boxes_from_checkmesh_sets``)
+        into an existing meshDict's text.
+
+        A meshDict already has an ``objectRefinements { ... }`` block
+        whenever curvature/manual refinement zones were configured
+        upfront — appending a SECOND top-level block of the same name
+        would make cfMesh only honour whichever one it parses last
+        (dictionary semantics, not a merge), silently dropping the
+        pre-existing zones. Detect and merge into it instead; only
+        append a brand-new block when none exists yet.
+        """
+        from cfmesh_autogui.core.meshdict_gen import build_object_refinements
+
+        new_lines = build_object_refinements(boxes)
+        if not new_lines:
+            return text
+        # New entries only: build_object_refinements always numbers from
+        # refinementBox_0, so re-number past however many already exist to
+        # avoid colliding with existing entries when merging.
+        existing_count = len(re.findall(r"\brefinementBox_\d+\b", text)) if "objectRefinements" in text else 0
+        if existing_count:
+            new_lines = [
+                re.sub(r"refinementBox_(\d+)", lambda m: f"refinementBox_{int(m.group(1)) + existing_count}", ln)
+                for ln in new_lines
+            ]
+
+        m = re.search(r"objectRefinements\s*\{", text)
+        if m is None:
+            return text.rstrip() + "\n\n" + "\n".join(new_lines) + "\n"
+
+        # Splice the new entries just before the block's closing brace —
+        # find it by matching balanced braces from the opening one found
+        # above (entries themselves contain nested { } pairs).
+        depth = 0
+        i = m.end() - 1  # position of the '{' just matched
+        close_idx = None
+        for j in range(i, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    close_idx = j
+                    break
+        if close_idx is None:
+            # Malformed existing block (unbalanced braces) -- append a
+            # fresh block rather than risk writing something cfMesh can't
+            # even parse.
+            return text.rstrip() + "\n\n" + "\n".join(new_lines) + "\n"
+        entries_text = "\n".join(
+            ln for ln in new_lines if ln not in ("objectRefinements", "{", "}", "")
+        )
+        return text[:close_idx] + entries_text + "\n" + text[close_idx:]
 
     _OF_FLOAT = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
 
