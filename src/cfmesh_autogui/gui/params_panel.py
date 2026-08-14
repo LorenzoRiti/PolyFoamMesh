@@ -116,6 +116,7 @@ class ParamsPanel(QWidget):
         self._meshing_state = False
         self._suggest_meshes: list[trimesh.Trimesh] = []  # ✅ F-017
         self._feature_min_cell_cache: dict[str, float] = {}
+        self._patch_sizes_cache: dict[str, dict] = {}
         self._undo_stack: QUndoStack | None = None
         self._prev_cell_params = {"max_cell": 0.05, "min_cell": 0.01}
         self._setup_ui()
@@ -940,10 +941,11 @@ class ParamsPanel(QWidget):
     def set_suggest_meshes(self, meshes: list) -> None:
         self._suggest_meshes = list(meshes) if meshes else []
         self._geometry_volume = self._safe_geometry_volume()
-        # Invalidate the feature-aware minCellSize cache (see
-        # _derive_cell_sizes_from_target) -- new geometry, old ray-cast
-        # results no longer apply.
+        # Invalidate the feature-aware minCellSize / per-patch-size caches
+        # (see _derive_cell_sizes_from_target / _geometry_cell_estimate)
+        # -- new geometry, old ray-cast results no longer apply.
         self._feature_min_cell_cache = {}
+        self._patch_sizes_cache = {}
         if hasattr(self, "_detail_slider"):
             self._on_detail_changed(self._detail_slider.value())
 
@@ -1184,34 +1186,44 @@ class ParamsPanel(QWidget):
     def _geometry_cell_estimate(self) -> tuple[int, int, int] | None:
         """Estimate cells from actual solid volume and derived cell sizes.
 
-        NOTE: this is the blind volume/avg-cell-size formula
-        (``estimate_cell_count``), known to be inaccurate when local
-        refinement covers a small fraction of the volume — the codebase's
-        own history documents >10x errors from exactly this. Tried
-        switching this to the geometry-aware two-zone model
-        (``estimate_cell_count_geometric``, already used in
-        main_window.py's pre-flight estimate right before meshing starts)
-        and reverted it: on a venturi test case, that model COLLAPSED to
-        the 100-cell floor instead of improving on the blind estimate —
-        ``compute_patch_cell_sizes``'s per-patch size (from ITS OWN
-        internal detail-level defaults, not the actual max_cell in use)
-        can end up coarser than the domain scale, and the shell-volume
-        computation then clamps to the ENTIRE domain for a single patch,
-        leaving zero core volume. That bug likely also affects the
-        pre-flight estimate in some geometries (it happened not to
-        trigger on the one screenshot compared against). Left as the
-        blind formula here rather than ship a worse number; fixing
-        estimate_cell_count_geometric's degenerate case is separate,
-        untouched work.
+        Uses the geometry-aware two-zone model (near-wall shell + bulk
+        core, ``estimate_cell_count_geometric``) instead of dividing the
+        WHOLE volume by one average cell size — the blind average is
+        exactly what the codebase's own history flags as producing >10x
+        estimate errors (a small, finely-sized patch occupies a tiny
+        fraction of the VOLUME but a huge fraction of the CELLS). This is
+        the same model already used right before the real meshing run
+        starts (main_window.py's pre-flight estimate) — the live slider
+        label was the one place still using the older, blind formula.
+
+        An earlier attempt at this wiring found and had to revert a real
+        bug in estimate_cell_count_geometric first (a patch coarser than
+        the core cell could make its "shell volume" clamp to the ENTIRE
+        domain, collapsing the estimate to the 100-cell floor) — now
+        fixed at the source (patches not finer than core_cell are
+        skipped, matching what compute_patch_cell_sizes's own docstring
+        already claimed but never enforced), so this wiring is safe.
         """
         volume = float(getattr(self, "_geometry_volume", 0.0))
-        if volume <= 0.0 or not hasattr(self, "_max_cell"):
+        meshes = getattr(self, "_suggest_meshes", None)
+        if volume <= 0.0 or not hasattr(self, "_max_cell") or not meshes:
             return None
         try:
-            from cfmesh_autogui.core.geometry import estimate_cell_count
+            from cfmesh_autogui.core.geometry import (
+                compute_patch_cell_sizes, estimate_cell_count_geometric,
+            )
 
-            return estimate_cell_count(
-                volume, self._max_cell.value(), self._min_cell.value(),
+            detail = self.get_detail_level()
+            cache = getattr(self, "_patch_sizes_cache", None)
+            if cache is None:
+                cache = self._patch_sizes_cache = {}
+            if detail not in cache:
+                patch_sizes, _bc_size, _bc_thick = compute_patch_cell_sizes(
+                    meshes, detail=detail,
+                )
+                cache[detail] = patch_sizes
+            return estimate_cell_count_geometric(
+                meshes, volume, self._max_cell.value(), cache[detail],
             )
         except Exception as exc:
             logger.debug("Geometry cell estimate skipped: %s", exc)
