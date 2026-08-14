@@ -2160,6 +2160,40 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 logger.warning("Refinement detection skipped: %s", exc)
 
+        # Graded refinement field (cfMesh only): detect_refinement_regions
+        # above only ever emits the few "significant minima" zones it
+        # finds (2-3, typically) — a real fix for "there's an unrefined
+        # gap" but nowhere near GMSH's continuous, smoothly-graded local
+        # sizing field, which cfMesh has no equivalent of. This builds a
+        # much denser approximation: many small boxes, growth-rate graded,
+        # covering the WHOLE surface's local thickness variation rather
+        # than just its sharpest few minima — see
+        # geometry.build_graded_refinement_boxes's own docstring for the
+        # full method. Kept separate from self._throat_zones (which also
+        # feeds the BL/throat compatibility check and the viewer's sphere
+        # display — RefinementZone objects, a different shape than these
+        # plain box dicts) and merged into object_refinements alongside it
+        # further down.
+        self._graded_refinement_boxes = None
+        if _cfmesh_needs_explicit_refinement and self._meshes:
+            try:
+                from cfmesh_autogui.core.geometry import build_graded_refinement_boxes
+                detail = self._params.get_detail_level()
+                raw_max = self._params.get_mesh_params().get("max_cell_size", 0.05)
+                boxes = build_graded_refinement_boxes(
+                    self._meshes, detail=detail, global_max_cell=raw_max,
+                )
+                if boxes:
+                    self._graded_refinement_boxes = boxes
+                    self._log.append_log(
+                        f"{Tag.DICT} {len(boxes)} graded refinement box(es) "
+                        f"built (local thickness field, cell sizes "
+                        f"{min(b['cell_size'] for b in boxes):.5f}-"
+                        f"{max(b['cell_size'] for b in boxes):.5f}m)."
+                    )
+            except Exception as exc:
+                logger.warning("Graded refinement field skipped: %s", exc)
+
         try:
             self._do_meshing_pipeline(my_id, surface_file, bbox_dim)
         except Exception as e:
@@ -2364,6 +2398,9 @@ class MainWindow(QMainWindow):
                     bl_params = adjusted_bl
                 except Exception as exc:
                     logger.debug("BL throat check skipped: %s", exc)
+        graded_boxes = getattr(self, "_graded_refinement_boxes", None)
+        if graded_boxes:
+            object_refinements = list(object_refinements or []) + graded_boxes
         manual_refs = self._params.get_manual_refinements()
         if manual_refs:
             object_refinements = list(object_refinements or []) + manual_refs
