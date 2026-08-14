@@ -2114,23 +2114,17 @@ class MainWindow(QMainWindow):
         # feature-aware one — cfMesh's own automatic-refinement heuristic
         # did not consider the passage a "feature" worth refining on its
         # own). detect_refinement_regions/throat_detector.py is exactly the
-        # mechanism that used to provide this for cfMesh, but was disabled
-        # and hidden behind get_auto_refine_enabled() (off by default) when
-        # "Rifinitura automatica" was introduced as a supposedly-equivalent
-        # single control — it only replaced the job for GMSH, leaving
-        # cfMesh with nothing. Re-enable it here specifically for cfMesh,
-        # under the SAME visible "Rifinitura automatica" toggle the user
-        # already expects to control this (not the separate, still-hidden
-        # get_auto_refine_enabled() checkbox) — one control, correct
-        # behaviour per mesher, instead of a second competing switch.
+        # mechanism that provides this for cfMesh, wired here off the SAME
+        # visible "Rifinitura automatica" toggle the user already expects
+        # to control this (the previous separate, hidden, off-by-default
+        # get_auto_refine_enabled() checkbox was dead UI — removed
+        # 2026-08-14, see params_panel.py).
         self._throat_zones = None
         _cfmesh_needs_explicit_refinement = (
             getattr(self, "_current_mesher_type", "") == "cfmesh"
             and self._params.get_adaptive_sizing_enabled()
         )
-        if (
-            _cfmesh_needs_explicit_refinement or self._params.get_auto_refine_enabled()
-        ) and self._meshes:
+        if _cfmesh_needs_explicit_refinement and self._meshes:
             try:
                 from cfmesh_autogui.core.throat_detector import (
                     detect_refinement_regions,
