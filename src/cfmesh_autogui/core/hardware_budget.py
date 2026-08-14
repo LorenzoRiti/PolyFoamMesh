@@ -98,3 +98,43 @@ def total_ram_bytes() -> int:
     except Exception:
         pass
     return 8 * 1024**3
+
+
+def wsl_ram_bytes(wsl_distro: str = "Ubuntu") -> tuple[int, int] | None:
+    """(total, available) bytes actually allocated to the WSL2 VM
+    cartesianMesh/checkMesh run inside — NOT the same as the host
+    Windows numbers above.
+
+    WSL2 defaults to a memory cap of 50% of the host's RAM (or whatever
+    ``.wslconfig`` sets), independent of how much RAM the host machine
+    actually has. Capping cfMesh's cell budget against the HOST'S RAM
+    (as this module's own ``available_ram_bytes``/``total_ram_bytes``
+    do) can therefore let a request through that the host has room for
+    but the WSL2 VM cartesianMesh actually runs in does not — measured
+    live: a 32 GB host with WSL2 capped at ~15 GB total / ~9 GB free
+    let an 8-11M cell request past a host-based budget, then failed
+    inside WSL2 during parallel decomposition/reconstruction.
+
+    Returns ``None`` (never raises) when WSL isn't available or the
+    call fails/times out — callers should fall back to the host-only
+    budget in that case, not treat it as a hard error.
+    """
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["wsl.exe", "-d", wsl_distro, "--", "bash", "-lc", "free -b"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        m = re.search(r"^Mem:\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)", result.stdout, re.MULTILINE)
+        if not m:
+            return None
+        total, available = int(m.group(1)), int(m.group(2))
+        if total <= 0:
+            return None
+        return total, available
+    except Exception:
+        return None
