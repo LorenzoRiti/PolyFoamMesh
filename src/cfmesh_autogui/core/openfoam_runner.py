@@ -160,6 +160,35 @@ def analyze_error(full_output: str) -> ErrorInfo:
             "Likely cause: degenerate geometry or extreme cell size ratio. Reduce max/min cell size ratio.",
             detail,
         )
+    # cfMesh's own C++ exceptions are frequently thrown as a bare
+    # `char const*`, which nothing catches -> std::terminate -> SIGABRT.
+    # The shell then reports "Aborted (core dumped)" and the process exits
+    # 134. Until this was added, that whole failure mode fell through to
+    # the empty ErrorInfo() at the bottom, i.e. the app decided "no error
+    # recognised" while cartesianMesh had in fact core-dumped, so the user
+    # got a silent/generic failure with no next step.
+    #
+    # Reproduced on the bf_roundtrip fixture (a plain 1 m cylinder): it
+    # dies in "Smoothing mesh surface before mapping" with
+    # `terminate called after throwing an instance of 'char const*'`.
+    # Measured on that case, the crash is NOT monotonic in cell size —
+    # maxCellSize 0.25, 0.10 and 0.05 all abort while 0.15 meshes fine —
+    # so the actionable advice is to nudge the size, not simply refine.
+    if (
+        "terminate called after throwing" in lo
+        or "core dumped" in lo
+        or "aborted (core dumped)" in lo
+    ):
+        return ErrorInfo(
+            ErrorType.CRASH,
+            "cartesianMesh aborted (uncaught internal cfMesh exception).",
+            "This is a crash inside cfMesh itself, not a bad case setup. "
+            "It is usually triggered by one specific cell-size/geometry "
+            "combination: try a moderately different Max Cell Size (a "
+            "nearby value often meshes cleanly), or simplify/repair the "
+            "surface in that region.",
+            detail,
+        )
     if "non-mappable" in lo:
         return ErrorInfo(
             ErrorType.NON_MAPPABLE,
