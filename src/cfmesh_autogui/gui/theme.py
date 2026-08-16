@@ -28,10 +28,7 @@ from PySide6.QtCore import QObject, Signal, Slot, Qt
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import QApplication
 
-from cfmesh_autogui.gui.design_tokens import (
-    APP_NAME, APP_VERSION, FONT_SANS,
-    LIGHT, DARK, NEUTRAL_50, NEUTRAL_900,
-)
+from cfmesh_autogui.gui.design_tokens import APP_NAME, FONT_SANS, LIGHT, DARK
 
 logger = logging.getLogger(__name__)
 

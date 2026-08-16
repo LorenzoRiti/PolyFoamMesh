@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QGridLayout, QFrame, QMessageBox,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QWidget,
+    QGridLayout,
+    QFrame,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont

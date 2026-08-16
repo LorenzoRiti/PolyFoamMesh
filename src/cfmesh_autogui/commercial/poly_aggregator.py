@@ -840,7 +840,7 @@ class PolyAggregator:
             key=lambda x: -len(x[1]),
         )
 
-        for vert_id, tet_ids in sorted_verts:
+        for _vert_id, tet_ids in sorted_verts:
             # Skip if any of these tets already belong to another cluster
             if any(tid in used_cells for tid in tet_ids):
                 continue

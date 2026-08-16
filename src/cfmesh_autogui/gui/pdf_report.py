@@ -2,17 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm, cm
-from reportlab.lib.colors import (
-    HexColor, white, black, grey,
-)
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak,
-)
+from reportlab.lib.units import mm
+from reportlab.lib.colors import HexColor, white, grey
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 
 COLOR_PASS = HexColor("#27ae60")

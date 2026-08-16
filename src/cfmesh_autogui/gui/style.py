@@ -7,9 +7,14 @@ label). New code should prefer `design_tokens` constants directly.
 from __future__ import annotations
 
 from cfmesh_autogui.gui.design_tokens import (
-    SUCCESS, SUCCESS_LIGHT, WARNING, WARNING_LIGHT,
-    ERROR, ERROR_LIGHT, NEUTRAL_500, NEUTRAL_400,
-    FONT_SIZE_MD, FONT_SIZE_SM, PRIMARY_600,
+    SUCCESS,
+    WARNING,
+    ERROR,
+    NEUTRAL_500,
+    NEUTRAL_400,
+    FONT_SIZE_MD,
+    FONT_SIZE_SM,
+    PRIMARY_600,
 )
 
 # Legacy aliases (kept for backward compat — prefer design_tokens.*)

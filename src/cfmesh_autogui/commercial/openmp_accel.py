@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,6 @@ class OMPConfig:
         cfMesh's OpenMP parallel regions have ~85% parallel fraction
         on typical hex-dominant meshing workloads.
         """
-        from math import log as _log
         if self.n_threads <= 1:
             return 1.0
         parallel_frac = 0.85

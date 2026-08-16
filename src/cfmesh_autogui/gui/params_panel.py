@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-from pathlib import Path
 
 import trimesh  # ✅ F-017
 from PySide6.QtCore import Qt, Signal
@@ -1040,7 +1038,6 @@ class ParamsPanel(QWidget):
     def _slider_to_cells(self, value: int) -> int:
         """Map slider position 0..20 to a target cell count (log 10K..20M)."""
         t = max(0, min(self._CELL_TARGET_BUCKETS, int(value))) / self._CELL_TARGET_BUCKETS
-        import math
         cells = self._CELL_TARGET_MIN * (self._CELL_TARGET_MAX / self._CELL_TARGET_MIN) ** t
         return int(round(cells))
 
@@ -1387,9 +1384,7 @@ class ParamsPanel(QWidget):
         if not isinstance(data, dict):
             return
         base = float(data.get("base_size") or 0.01)
-        from cfmesh_autogui.core.refinement_boxes import (
-            apply_level, label_for, box_cell_size,
-        )
+        from cfmesh_autogui.core.refinement_boxes import label_for, box_cell_size
         data["level"] = int(level)
         data["cell_size"] = box_cell_size(int(level), base)
         item.setData(Qt.UserRole, data)

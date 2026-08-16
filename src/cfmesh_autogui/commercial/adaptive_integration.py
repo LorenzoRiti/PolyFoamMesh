@@ -240,9 +240,6 @@ class OODAWorkflowAdapter:
         if not self._meshes:
             return
         try:
-            from cfmesh_autogui.core.geometry import (
-                compute_bbox_full, compute_curvature,
-            )
             for m in self._meshes:
                 if hasattr(m, 'vertices') and len(m.vertices) > 0:
                     pass  # geometry already loaded
@@ -417,7 +414,6 @@ class OODAWorkflowAdapter:
         sizing["n_cores"] = n_cores
         self._result.phase_history.append("INTENT_GENERATION")
 
-        from cfmesh_autogui.commercial.mesh_engine import MeshEngineParams
         from cfmesh_autogui.commercial.quality_engine import QualityEngine
         from cfmesh_autogui.commercial.parallel_mesh import ParallelMeshEngine, DecomposeParams
 

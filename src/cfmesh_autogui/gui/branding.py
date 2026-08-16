@@ -5,13 +5,19 @@ zero external image dependencies. Resolution-independent and theme-aware.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, QPointF
-from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFont, QFontMetrics, QPolygonF
-from PySide6.QtWidgets import QApplication, QStyle
+from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFont, QPolygonF
+from PySide6.QtWidgets import QApplication
 
 from cfmesh_autogui.gui.design_tokens import (
-    APP_NAME, APP_VERSION, APP_DESCRIPTION, APP_VENDOR, APP_COPYRIGHT, APP_BUILD_YEAR,
-    PRIMARY_600, PRIMARY_500, ORANGE_500, FLUENT_DARK, NEUTRAL_50, NEUTRAL_900, NEUTRAL_800,
+    APP_NAME,
+    APP_VERSION,
+    APP_DESCRIPTION,
+    APP_VENDOR,
+    APP_BUILD_YEAR,
+    PRIMARY_600,
+    PRIMARY_500,
+    ORANGE_500,
 )
 
 

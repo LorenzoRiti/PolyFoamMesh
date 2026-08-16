@@ -6,19 +6,31 @@ credits section. Uses design tokens for all colors and spacing.
 from __future__ import annotations
 
 import platform
-import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QGuiApplication
+from PySide6.QtGui import QFont, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QSizePolicy,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QFrame,
 )
 
 from cfmesh_autogui.gui.design_tokens import (
-    APP_NAME, APP_VERSION, APP_DESCRIPTION, APP_VENDOR, APP_COPYRIGHT,
-    APP_LICENSE, APP_WEBSITE, APP_BUILD_YEAR,
-    PRIMARY_600, ORANGE_500, NEUTRAL_800, NEUTRAL_600, NEUTRAL_400,
+    APP_NAME,
+    APP_VERSION,
+    APP_DESCRIPTION,
+    APP_VENDOR,
+    APP_COPYRIGHT,
+    APP_LICENSE,
+    APP_WEBSITE,
+    PRIMARY_600,
+    ORANGE_500,
+    NEUTRAL_800,
+    NEUTRAL_600,
+    NEUTRAL_400,
 )
 
 
@@ -66,10 +78,10 @@ class AboutDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(440)
         self.setMaximumWidth(480)
-        self.setStyleSheet(f"""
-            QDialog {{ background:#f8f9fb; }}
-            QLabel {{ color:#1e293b; }}
-            QPushButton {{ min-width:80px; }}
+        self.setStyleSheet("""
+            QDialog { background:#f8f9fb; }
+            QLabel { color:#1e293b; }
+            QPushButton { min-width:80px; }
         """)
 
         layout = QVBoxLayout(self)
@@ -142,8 +154,8 @@ class AboutDialog(QDialog):
 
         # Tech stack
         tech = QLabel(
-            f"<b>Tech Stack:</b> PySide6 · pyVista · cadquery · "
-            f"trimesh · meshio · reportlab · OpenFOAM v2512"
+            "<b>Tech Stack:</b> PySide6 · pyVista · cadquery · "
+            "trimesh · meshio · reportlab · OpenFOAM v2512"
         )
         tech.setWordWrap(True)
         tech.setStyleSheet(f"color: {NEUTRAL_600}; font-size:11px;")

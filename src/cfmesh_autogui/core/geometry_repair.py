@@ -250,7 +250,7 @@ def attempt_auto_repair(
 
 def _main(argv: list[str]) -> int:
     """CLI entry point for --watertight mode (frozen exe or dev)."""
-    import sys, json
+    import json
     cmd = argv[0] if len(argv) > 0 else ""
     if cmd != "check":
         print(json.dumps({"success": False, "error": f"Unknown command: {cmd}"}))
@@ -259,7 +259,7 @@ def _main(argv: list[str]) -> int:
 
 
 def _run_watertight_check(stl_paths: list[str]) -> int:
-    import sys, json, trimesh, trimesh.grouping as _grouping
+    import json, trimesh, trimesh.grouping as _grouping
     from cfmesh_autogui.core.geometry import compute_bbox_dim
     meshes = [trimesh.load(sp) for sp in stl_paths]
     try:
