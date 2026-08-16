@@ -237,9 +237,14 @@ def analyze_error(full_output: str) -> ErrorInfo:
 class MeshWorker(QObject):
     """Runs cartesianMesh via WSL2 in a background QThread.
 
-    Uses select.select() for non-blocking stdout reads so that
-    thread interruption requests are checked even when the
-    subprocess produces no output for a long time (B13 fix).
+    Reads stdout from a dedicated reader thread (NOT select.select(), which
+    on Windows only works on sockets, never on pipes) so that interruption
+    requests are still honoured while the subprocess is silent for a long
+    time.
+
+    Contract: run() ALWAYS emits `finished` exactly once, on every path
+    including unexpected errors. Callers block on that signal, so a missing
+    emit is not a lost error message — it is a permanent hang.
     """
 
     log_line = Signal(str)
@@ -368,6 +373,7 @@ class MeshWorker(QObject):
             self.finished.emit(1, f"Unexpected error: {exc}")
             return
 
+        reader_error: Exception | None = None
         try:
             if process.stdout:
                 # V1.1: threading-based reader (Windows: select only works on sockets, not pipes)
@@ -382,8 +388,16 @@ class MeshWorker(QObject):
                             self._process_line(line, full_output)
                             if len(full_output) % 3 == 0:
                                 self.progress_update.emit(-1)
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - reported below
+                        # Previously "except Exception: pass". This thread
+                        # reads the mesher's ENTIRE output; swallowing a
+                        # failure here silently truncated the log and left
+                        # the run looking normal, with nothing to diagnose
+                        # from. Hand it to run() instead, which folds it
+                        # into the reported output and fails the run.
+                        nonlocal reader_error
+                        reader_error = exc
+                        logger.exception("cartesianMesh output reader failed")
                     finally:
                         _reader_done.set()
 
@@ -419,6 +433,21 @@ class MeshWorker(QObject):
                                 self._process_line(line, full_output)
                         except Exception:
                             pass
+        except Exception as exc:
+            # MUST NOT propagate: this block used to have only a `finally`,
+            # so any unexpected exception here escaped run() and skipped the
+            # `self.finished.emit(...)` at the end of the method. Every
+            # caller waits on that signal (the GUI's progress flow, and the
+            # QEventLoop in tests/test_e2e_workflow.py), so the failure did
+            # not surface as an error — it surfaced as an app that never
+            # finishes meshing and never says why.
+            #
+            # Recorded, not swallowed: it goes to the logger AND into the
+            # output the caller receives, and execution falls through to the
+            # normal emit below so the run terminates as a FAILURE instead of
+            # hanging.
+            logger.exception("Unexpected error while reading cartesianMesh output")
+            reader_error = exc  # recorded once, appended below with the rest
         finally:
             if _stderr_thread is not None and _stderr_thread.is_alive():
                 _stderr_thread.join(timeout=2)
@@ -437,7 +466,15 @@ class MeshWorker(QObject):
                 except subprocess.TimeoutExpired:
                     logger.warning("Subprocess did not terminate within 5s after kill")
 
+        if reader_error is not None:
+            full_output.append(f"[error] Unexpected meshing error: {reader_error}")
         returncode = process.returncode if process.returncode is not None else -1
+        if reader_error is not None and returncode == 0:
+            # The mesher process itself may well have exited 0, but we failed
+            # to read/parse its output, so we cannot claim the run succeeded:
+            # downstream steps would consume a mesh we never validated.
+            # Report a failure and let analyze_error()/the caller surface it.
+            returncode = -1
         if interrupted:
             full_output.append("[cancelled] Process was interrupted by user request.")
 

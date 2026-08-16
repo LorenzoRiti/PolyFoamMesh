@@ -296,3 +296,56 @@ if __name__ == "__main__":
 
     app.quit()
     print("\nAll Fase 3 tests passed.")
+
+
+def test_mesh_worker_always_emits_finished_even_on_unexpected_error(monkeypatch):
+    """run() must emit `finished` on EVERY path, including an unexpected one.
+
+    Regression for a real hang: the subprocess-reading block had a `finally`
+    but no `except`, so any unexpected exception escaped run() and skipped
+    the terminating `self.finished.emit(...)`. Callers block on that signal
+    (the GUI progress flow, and the QEventLoop in test_e2e_workflow), so the
+    symptom was not an error message — it was meshing that never finished
+    and never explained why.
+
+    Here _process_line is forced to raise mid-read; the worker must still
+    report completion, with a non-zero code and the error text in the output.
+    """
+    import shutil
+    import tempfile
+
+    import cfmesh_autogui.core.openfoam_runner as ofr
+
+    boom = RuntimeError("synthetic reader failure")
+
+    def _raise(self, line, full_output):
+        raise boom
+
+    monkeypatch.setattr(ofr.MeshWorker, "_process_line", _raise, raising=True)
+
+    # NOT pytest's tmp_path: it lives under the user profile, which on this
+    # machine contains a space, and MeshWorker legitimately refuses such a
+    # case dir up front (OpenFOAM cannot handle spaces in paths). That guard
+    # would short-circuit the run before the reader is ever reached.
+    case_dir = Path(tempfile.mkdtemp(prefix="cfmesh_emit_test_", dir="C:/"))
+    cfg = OFConfig()
+    # A command that succeeds fast and prints something to read, so the
+    # patched _process_line is reached without needing WSL/OpenFOAM.
+    monkeypatch.setattr(
+        cfg, "build_command", lambda case_dir, **kw: [sys.executable, "-c", "print('x')"],
+        raising=False,
+    )
+
+    try:
+        worker = ofr.MeshWorker(case_dir, cfg)
+        seen = {}
+        worker.finished.connect(lambda code, out: seen.update(code=code, out=out))
+        worker.run()  # synchronous call: no thread, no event loop needed
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+    assert "code" in seen, "finished was never emitted -> the caller would hang forever"
+    assert seen["code"] != 0, f"an unexpected error must not report success: {seen['code']}"
+    assert "synthetic reader failure" in seen["out"], (
+        "the cause must reach the caller, not vanish: " + seen["out"][-300:]
+    )
