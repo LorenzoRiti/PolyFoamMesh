@@ -274,7 +274,7 @@ class CloudMesher:
             logger.info("Result downloaded: %s (%d bytes)", result_path, result_path.stat().st_size)
             return result_path
         except Exception as exc:
-            raise RuntimeError(f"Failed to download result for {job.id}: {exc}")
+            raise RuntimeError(f"Failed to download result for {job.id}: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Session sharing

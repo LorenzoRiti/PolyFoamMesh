@@ -294,8 +294,8 @@ class _PythonPolyMesher:
                 triangles = np.asarray(mesh.faces, dtype=np.int32)
                 patch_ids = np.zeros(len(triangles), dtype=np.int32)
                 return vertices, triangles, patch_ids
-            except ImportError:
-                raise ValueError(f"Unsupported format: {ext}")
+            except ImportError as exc:
+                raise ValueError(f"Unsupported format: {ext}") from exc
 
     # -----------------------------------------------------------------------
     # Size field
