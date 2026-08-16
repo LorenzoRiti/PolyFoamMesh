@@ -207,7 +207,7 @@ def main():
 
     Path("C:/cfmesh_poly_bench/baseline_metrics.json").write_text(
         json.dumps(results, indent=2, default=str))
-    print(f"\nBaseline saved")
+    print("\nBaseline saved")
 
 if __name__ == "__main__":
     main()

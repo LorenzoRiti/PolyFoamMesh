@@ -4,17 +4,24 @@ import logging
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QSizePolicy, QPushButton, QDialog, QPlainTextEdit,
-    QApplication, QFileDialog, QMessageBox,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QFrame,
+    QSizePolicy,
+    QPushButton,
+    QDialog,
+    QPlainTextEdit,
+    QApplication,
+    QFileDialog,
+    QMessageBox,
 )
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal
 
 from cfmesh_autogui.gui.style import (
     COLOR_PASS, COLOR_WARN, COLOR_FAIL, COLOR_BG_DIM,
     COLOR_TEXT_DIM, FS_METRIC, FS_BTN_TINY, status_pill, metric_label,
 )
-from cfmesh_autogui.gui.design_tokens import SUCCESS, WARNING, ERROR, NEUTRAL_500, NEUTRAL_400, FONT_SIZE_MD, FONT_SIZE_SM  # ✅ F-019
 
 logger = logging.getLogger(__name__)
 

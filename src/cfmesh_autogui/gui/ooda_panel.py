@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
-    QGridLayout,
-)
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QLabel, QProgressBar, QGridLayout
 from PySide6.QtGui import QFont
 
-from cfmesh_autogui.gui.style import COLOR_PASS, COLOR_DANGER, COLOR_TEXT_DISABLED
+from cfmesh_autogui.gui.style import COLOR_PASS, COLOR_DANGER
 from cfmesh_autogui.gui.design_tokens import ORANGE_500
 
 

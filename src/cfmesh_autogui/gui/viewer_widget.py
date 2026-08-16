@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 import struct
-import time as _time
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cfmesh_autogui.core.of_reader import _read_header_bytes
 from cfmesh_autogui.gui.task_runner import FunctionWorker, TaskManager
 
 logger = logging.getLogger(__name__)
@@ -1387,7 +1385,7 @@ class ViewerWidget(QWidget):
             try:
                 self._plotter.clear()
                 ec = self._edge_color()
-                for i, (name, pd) in enumerate(patches.items()):
+                for _i, (name, pd) in enumerate(patches.items()):
                     if show_decimated:
                         try:
                             pd = pd.decimate_pro(self.DECIMATE_TARGET)
@@ -1840,7 +1838,7 @@ class ViewerWidget(QWidget):
                     bounds[2 * k + 1] = d
                 elif n[k] < -0.5:
                     bounds[2 * k] = -d
-        for idx, v in enumerate(bounds):
+        for _idx, v in enumerate(bounds):
             if v is None:
                 return (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
         return [float(v) for v in bounds]

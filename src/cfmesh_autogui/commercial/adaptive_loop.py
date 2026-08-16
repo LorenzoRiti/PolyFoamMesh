@@ -811,7 +811,7 @@ def compute_node_curvature(graph: UnifiedMeshGraph, node_id: int) -> float:
         return 0.0
     # Find all faces containing this node
     face_ids: set[int] = set()
-    for cid, cell in graph.cells.items():
+    for _cid, cell in graph.cells.items():
         for fid in cell.face_indices:
             face = graph.faces.get(fid)
             if face and node_id in face.node_indices:
@@ -847,7 +847,7 @@ def smooth_node_normals(graph: UnifiedMeshGraph, n_iterations: int = 3) -> None:
             # Gather incident face normals weighted by area
             sx = sy = sz = 0.0
             total_area = 0.0
-            for cid, cell in graph.cells.items():
+            for _cid, cell in graph.cells.items():
                 if nid not in cell.node_indices:
                     continue
                 for fid in cell.face_indices:
@@ -876,7 +876,7 @@ def ray_cast_gap(
     """
     dx, dy, dz = direction
     best = max_dist
-    for nid, node in graph.nodes.items():
+    for _nid, node in graph.nodes.items():
         if node.entity_type not in (MeshEntityType.BOUNDARY, MeshEntityType.BL_LAYER):
             continue
         # Vector from origin to node
@@ -1306,7 +1306,7 @@ def compute_mesh_statistics(graph: UnifiedMeshGraph) -> MeshStatistics:
     s.total_edges = len(graph.edges)
 
     vols: list[float] = []
-    for cid, cell in graph.cells.items():
+    for _cid, cell in graph.cells.items():
         s.total_cells += 1
         et = cell.entity_type.name
         s.cell_types[et] = s.cell_types.get(et, 0) + 1
@@ -1333,7 +1333,7 @@ def compute_mesh_statistics(graph: UnifiedMeshGraph) -> MeshStatistics:
         s.volume_max = max(vols)
         s.volume_avg = sum(vols) / len(vols)
 
-    for nid, node in graph.nodes.items():
+    for _nid, node in graph.nodes.items():
         if node.entity_type == MeshEntityType.BOUNDARY:
             s.n_boundary += 1
 
@@ -1552,7 +1552,7 @@ class AdaptiveLoopEngine:
         self._sizing.build_from_bbox()
 
         # Build face geometry (normals, centroids, areas)
-        for fid, face in self._graph.faces.items():
+        for _fid, face in self._graph.faces.items():
             pos = [self._graph.node_pos(nid) for nid in face.node_indices]
             if len(pos) >= 3:
                 face.normal = face_normal(pos)
@@ -1788,7 +1788,7 @@ class AdaptiveLoopEngine:
 
         # 2. For each internal edge, collect the incident tetra centroids
         edge_poly_faces: list[tuple[list[Vec3], list[int]]] = []
-        for eid, edge in core_graph.edges.items():
+        for _eid, edge in core_graph.edges.items():
             if not edge.is_internal:
                 continue
             cells_around = [
@@ -2069,7 +2069,7 @@ class AdaptiveLoopEngine:
 
         # Cells from max(owner, neighbour) + 1
         max_cell = max(owner_list + nbr_list + [-1]) + 1 if (owner_list or nbr_list) else 0
-        for cid in range(max_cell):
+        for _cid in range(max_cell):
             cell = MeshCell(entity_type=MeshEntityType.CORE_TETRA)
             self._graph.add_cell(cell)
 

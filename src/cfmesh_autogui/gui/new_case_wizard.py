@@ -4,15 +4,28 @@ import logging
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QComboBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QCheckBox, QSpinBox, QFileDialog, QMessageBox,
-    QProgressBar, QListWidget, QTextEdit, QApplication,
+    QWizard,
+    QWizardPage,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QCheckBox,
+    QSpinBox,
+    QFileDialog,
+    QMessageBox,
+    QProgressBar,
+    QListWidget,
+    QTextEdit,
 )
-from PySide6.QtCore import Qt, Slot, QThread
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 
-from cfmesh_autogui.gui.style import COLOR_ACCENT, COLOR_DANGER, COLOR_PASS, COLOR_TEXT_DIM
+from cfmesh_autogui.gui.style import COLOR_ACCENT, COLOR_TEXT_DIM
 
 logger = logging.getLogger(__name__)
 

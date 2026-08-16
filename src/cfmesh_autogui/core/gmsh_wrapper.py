@@ -99,7 +99,6 @@ def _available_ram_bytes() -> int:
         except Exception:
             pass
     try:
-        import resource
         pages = os.sysconf("SC_AVPHYS_PAGES")
         page_size = os.sysconf("SC_PAGE_SIZE")
         return int(pages * page_size)
@@ -2310,5 +2309,4 @@ def _cli_main(argv):
             sys.exit(1)
 
 if __name__ == "__main__":
-    import sys
     _cli_main(sys.argv)

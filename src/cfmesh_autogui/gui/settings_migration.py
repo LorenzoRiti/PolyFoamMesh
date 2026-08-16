@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PySide6.QtCore import QSettings, QByteArray
+from PySide6.QtCore import QSettings
 
-from cfmesh_autogui.gui.design_tokens import APP_NAME, APP_VERSION
+from cfmesh_autogui.gui.design_tokens import APP_VERSION
 from cfmesh_autogui.core.validation import ValidationResult, validate_settings
 
 logger = logging.getLogger(__name__)
