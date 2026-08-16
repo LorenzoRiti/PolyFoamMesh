@@ -84,11 +84,11 @@ __all__ = [
 
 try:
     from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
-except ImportError:
+except ImportError as exc:
     raise ImportError(
         "PySide6 is required for cfmesh_autogui. "
         "Install with: pip install PySide6"
-    )
+    ) from exc
 
 from cfmesh_autogui.config import OFConfig
 from cfmesh_autogui.octopoda_local import octo

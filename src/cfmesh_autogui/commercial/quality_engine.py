@@ -360,10 +360,10 @@ class QualityEngine:
             cmd = cfg.build_check_mesh_cmd(case_dir)
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             return r.stdout + r.stderr
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("checkMesh timed out after 120s")
-        except FileNotFoundError:
-            raise RuntimeError("WSL not found for checkMesh")
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("checkMesh timed out after 120s") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError("WSL not found for checkMesh") from exc
 
     def _parse_metrics(self, raw: str) -> QualityMetrics:
         """Parse checkMesh output into QualityMetrics.
