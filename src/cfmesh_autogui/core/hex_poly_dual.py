@@ -60,6 +60,7 @@ from cfmesh_autogui.core.tet_poly_dual import (
     _cell_centres,
     _detect_defects,
     _face_geometry,
+    _newell,
     _newell_dot,
 )
 
@@ -325,8 +326,8 @@ class HexPolyDualConverter:
             if patch_of_bnd[f1] != patch_of_bnd[f2]:
                 feat_edge[ei] = True  # patch seam
                 continue
-            n1 = _newell_vec(points, faces_raw[n_int_primal + f1])
-            n2 = _newell_vec(points, faces_raw[n_int_primal + f2])
+            n1 = _newell(points, faces_raw[n_int_primal + f1])
+            n2 = _newell(points, faces_raw[n_int_primal + f2])
             m1 = float(np.linalg.norm(n1))
             m2 = float(np.linalg.norm(n2))
             if m1 < 1e-300 or m2 < 1e-300:
@@ -603,7 +604,7 @@ class HexPolyDualConverter:
             vs = faces_l[f]
             for v in vs:
                 vert_out.setdefault(v, np.zeros(3))
-                vert_out[v] += _newell_vec(P.points, vs)
+                vert_out[v] += _newell(P.points, vs)
 
         # every boundary vertex (both endpoints of every boundary edge)
         bnd_verts: set[int] = set()
@@ -942,19 +943,6 @@ def _walk_edge_fan(group, bfaces, cf_map, owner_l, neigh_l, va, vb):
             "incident cells — non-manifold primal edge."
         )
     return ring, [start_face] + walk, True
-
-
-def _newell_vec(points: np.ndarray, verts) -> np.ndarray:
-    """Newell area vector of a polygon (magnitude = 2x area, direction = normal)."""
-    p = points[list(verts)]
-    n = np.zeros(3)
-    k = len(p)
-    for i in range(k):
-        j = (i + 1) % k
-        n[0] += (p[i, 1] - p[j, 1]) * (p[i, 2] + p[j, 2])
-        n[1] += (p[i, 2] - p[j, 2]) * (p[i, 0] + p[j, 0])
-        n[2] += (p[i, 0] - p[j, 0]) * (p[i, 1] + p[j, 1])
-    return 0.5 * n
 
 
 def _emit_edge_face(poly, ca, cb, xyz, pts_in, va, vb, faces, own, nb):

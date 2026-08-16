@@ -12,14 +12,7 @@ from pathlib import Path
 
 import cadquery as cq
 import trimesh
-from PySide6.QtCore import (
-    QSize,
-    Qt,
-    QThread,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import QSize, Qt, QTimer, Slot
 from PySide6.QtGui import (
     QGuiApplication,
     QKeySequence,
@@ -83,13 +76,7 @@ from cfmesh_autogui.core.openfoam_runner import (
 from cfmesh_autogui.core.stl_writer import export_surface_file
 from cfmesh_autogui.core.workflow import MeshingWorkflow, Status, Step
 from cfmesh_autogui.gui.constants import MAX_RECENT_STEP_FILES, MAX_STEP_FILE_BYTES
-from cfmesh_autogui.gui.design_tokens import (
-    APP_VERSION,
-    ORANGE_400,
-    ORANGE_500,
-    ORANGE_600,
-    STATUS_READY,
-)
+from cfmesh_autogui.gui.design_tokens import APP_VERSION, STATUS_READY
 from cfmesh_autogui.gui.log_panel import LogPanel
 from cfmesh_autogui.gui.log_tags import Tag
 from cfmesh_autogui.gui.params_panel import ParamsPanel
@@ -2643,21 +2630,6 @@ class MainWindow(QMainWindow):
                 root = Path(str(root).replace(" ", "_"))
         return root
 
-    def _write_control_dict(self, case_dir: Path) -> None:
-        (case_dir / "system" / "controlDict").write_text(
-            "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
-            "application cartesianMesh;\n"
-            "startFrom startTime; startTime 0;\n"
-            "stopAt endTime; endTime 1000;\n"
-            "deltaT 1;\n"
-            "writeControl timeStep; writeInterval 1;\n"
-            "writeFrequency 1;\n"
-            "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
-            "writeCompression on; timeFormat general; timePrecision 6;\n"
-            "runTimeModifiable true;\n",
-            encoding="ascii",
-        )
-
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
         from cfmesh_autogui.core.openfoam_runner import GmshVolumeWorker
         logger.info(
@@ -2748,7 +2720,11 @@ class MainWindow(QMainWindow):
         # downstream of the freeze ever ran.
         (self._case_dir / "system").mkdir(parents=True, exist_ok=True)
         (self._case_dir / "constant").mkdir(parents=True, exist_ok=True)
-        self._write_control_dict(self._case_dir)
+        # Shared writer (this class used to carry a byte-identical private
+        # copy of it, while ALSO importing this same function a few hundred
+        # lines below — two spellings of one thing, and a silent drift risk).
+        from cfmesh_autogui.commercial.mesh_engine import _write_control_dict
+        _write_control_dict(self._case_dir)
         (self._case_dir / "system" / "fvSchemes").write_text(
             "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n"
             "ddtSchemes { default steadyState; }\n"
@@ -4159,7 +4135,15 @@ class MainWindow(QMainWindow):
                 )
                 self._params.set_bl_enabled(False)
                 try:
-                    from cfmesh_autogui.core.meshdict_gen import write_meshdict
+                    # NB: no local "from ... import write_meshdict" here.
+                    # write_meshdict is already imported at module level; a
+                    # second import INSIDE this method rebinds the name as a
+                    # function-scoped local, which made the *earlier*
+                    # recovery branch above (the meshDict regeneration for a
+                    # non-BL failure) raise UnboundLocalError before ever
+                    # reaching its own call — silently swallowed by the
+                    # surrounding "except Exception", so auto-recovery just
+                    # looked like it "didn't help". Found by ruff F823.
                     from cfmesh_autogui.core.stl_writer import export_surface_file
                     names = [m.metadata.get("name", "wall") for m in self._meshes]
                     meshes_for_export = list(self._meshes)
