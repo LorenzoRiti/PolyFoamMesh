@@ -139,6 +139,33 @@ def test_analyze_error():
     print("PASS: test_analyze_error")
 
 
+def test_analyze_error_detects_cfmesh_abort():
+    """A cfMesh core dump must NOT be classified as "no error".
+
+    cfMesh throws bare `char const*` exceptions that nothing catches, so
+    the process dies via std::terminate -> SIGABRT (shell: "Aborted (core
+    dumped)", exit 134). Before this was handled, analyze_error() fell
+    through to the empty ErrorInfo(), i.e. the app reported no recognised
+    error while the mesher had in fact crashed.
+
+    The text below is the real tail captured from cartesianMesh dying on
+    the bf_roundtrip cylinder fixture.
+    """
+    real_output = (
+        "Found 24 boundary faces \n"
+        "Smoothing mesh surface before mapping.\n"
+        "terminate called after throwing an instance of 'char const*'\n"
+    )
+    ei = analyze_error(real_output)
+    assert ei.error_type == ErrorType.CRASH, f"Got {ei.error_type}"
+    assert ei.message, "a crash must carry a message"
+    assert ei.suggestion, "a crash must carry an actionable suggestion"
+
+    # The shell-level wording alone must be enough too (stderr-only case).
+    ei2 = analyze_error("bash: line 1: 2540 Aborted (core dumped) cartesianMesh")
+    assert ei2.error_type == ErrorType.CRASH, f"Got {ei2.error_type}"
+
+
 def test_analyze_error_all_types():  # ✅ F-027
     # CRASH
     ei = analyze_error("floating point exception")
