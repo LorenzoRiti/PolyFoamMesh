@@ -59,6 +59,7 @@ from pathlib import Path
 import numpy as np
 
 from cfmesh_autogui.core import foam_mesh_io as fio
+from cfmesh_autogui.core.tet_poly_dual import _newell
 
 logger = logging.getLogger(__name__)
 
@@ -88,16 +89,6 @@ def _gil_yield(step: int, every: int = 256) -> None:
         time.sleep(0)
 
 
-def _newell(points: np.ndarray, verts) -> np.ndarray:
-    """Newell area vector (magnitude = 2x face area, direction = normal)."""
-    p = points[list(verts)]
-    n = np.zeros(3)
-    for i in range(len(p)):
-        j = (i + 1) % len(p)
-        n[0] += (p[i, 1] - p[j, 1]) * (p[i, 2] + p[j, 2])
-        n[1] += (p[i, 2] - p[j, 2]) * (p[i, 0] + p[j, 0])
-        n[2] += (p[i, 0] - p[j, 0]) * (p[i, 1] + p[j, 1])
-    return 0.5 * n
 
 
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):

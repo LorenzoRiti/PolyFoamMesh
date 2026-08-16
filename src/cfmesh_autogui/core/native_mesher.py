@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,7 +50,12 @@ import trimesh
 from scipy.spatial import ConvexHull
 
 from cfmesh_autogui.core import foam_mesh_io as fio
-from cfmesh_autogui.core.tet_poly_dual import _cell_centres, _detect_defects, _face_geometry
+from cfmesh_autogui.core.tet_poly_dual import (
+    _cell_centres,
+    _detect_defects,
+    _face_geometry,
+    _newell,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,18 +83,6 @@ _FACE_EDGES = [
     [2, 11, 6, 10], [8, 7, 11, 3], [1, 10, 5, 9],
 ]
 _PLANE_TOL = 1e-8
-
-
-def _newell(points, verts) -> np.ndarray:
-    p = np.array([points[v] for v in verts], dtype=np.float64)
-    n = np.zeros(3)
-    k = len(p)
-    for i in range(k):
-        j = (i + 1) % k
-        n[0] += (p[i, 1] - p[j, 1]) * (p[i, 2] + p[j, 2])
-        n[1] += (p[i, 2] - p[j, 2]) * (p[i, 0] + p[j, 0])
-        n[2] += (p[i, 0] - p[j, 0]) * (p[i, 1] + p[j, 1])
-    return 0.5 * n
 
 
 def _dedup_poly(ids):
