@@ -948,7 +948,10 @@ def scale_meshes(meshes: list[trimesh.Trimesh], factor: float) -> list[trimesh.T
     return meshes
 
 
-def cfmesh_cell_budget(max_cells_override: int | None = None) -> dict:
+def cfmesh_cell_budget(
+    max_cells_override: int | None = None,
+    parallel_cores: int = 1,
+) -> dict:
     """RAM-aware cell-count ceiling for cfMesh/cartesianMesh — the
     equivalent of ``gmsh_wrapper._hardware_budget`` for the tet/GMSH
     path, which had NO counterpart on the cfMesh side (``validate_cell_sizes``
@@ -1006,10 +1009,25 @@ def cfmesh_cell_budget(max_cells_override: int | None = None) -> dict:
         wsl_max_cells = max(200_000, int(max(wsl_by_available, wsl_by_total)))
         max_cells = min(max_cells, wsl_max_cells)
 
+    # Parallel peak: in MPI each rank holds a partition AND
+    # reconstructParMesh briefly needs the full mesh again on top —
+    # the documented gap this budget never modelled. Shrink the ceiling
+    # when running across cores so the base-mesh budget leaves headroom
+    # for the transient peak (~1.5x at 2 ranks, ~2x at >=8).
+    if parallel_cores and int(parallel_cores) > 1:
+        n = int(parallel_cores)
+        peak_factor = min(2.0, 1.0 + 0.08 * (n - 1))
+        max_cells = max(200_000, int(max_cells / peak_factor))
+        wsl_max_cells = (
+            max(200_000, int(wsl_max_cells / peak_factor))
+            if wsl_max_cells is not None else None
+        )
+
     return {
         "max_cells": max_cells, "explicit": False,
         "host_max_cells": int(max(by_available, by_total)),
         "wsl_max_cells": wsl_max_cells,
+        "parallel_cores": int(parallel_cores),
     }
 
 
