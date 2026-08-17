@@ -123,7 +123,8 @@ def run_native_poly(
             try:
                 progress(pct, stage, msg)
             except Exception:  # pragma: no cover
-                pass
+                # a broken progress callback must never abort the bridge
+                logger.debug("native_poly_bridge: progress callback failed", exc_info=True)
 
     try:
         if not meshes:

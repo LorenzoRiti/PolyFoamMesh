@@ -351,7 +351,8 @@ class GeometryPipeline:
                         angles = np.degrees(np.arccos(np.clip(dot_prods, -1, 1)))
                         sharp_edges += int((angles > 30).sum())
             except Exception:
-                pass
+                # feature analysis is best-effort: a bad mesh keeps the defaults
+                logger.debug("geometry_pipeline: sharp-edge scan failed", exc_info=True)
 
             # Curvature radius estimate (via edge lengths)
             try:
@@ -366,7 +367,8 @@ class GeometryPipeline:
                         e_min = float(lengths.min()) / 2.0
                         curv_radius = min(curv_radius, e_min)
             except Exception:
-                pass
+                # curvature estimate is best-effort
+                logger.debug("geometry_pipeline: curvature scan failed", exc_info=True)
 
             # Gap detection (non-watertight boundary edges). face_adjacency_edges
             # holds vertex-index pairs, not a boolean mask — `~` on it produced
@@ -391,7 +393,9 @@ class GeometryPipeline:
                             gap_count += 1
                             min_gap = min(min_gap, float(gap_lens.min()))
                 except Exception:
-                    pass
+                    # gap detection is best-effort (a known historical bug here
+                    # silently reported zero gaps — now at least traceable)
+                    logger.debug("geometry_pipeline: gap scan failed", exc_info=True)
 
         if curv_radius == float("inf"):
             curv_radius = 0.0

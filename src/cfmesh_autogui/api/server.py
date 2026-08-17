@@ -31,6 +31,8 @@ try:
     from pydantic import BaseModel
     _HAS_FASTAPI = True
 except ImportError:
+    # fastapi not installed: the API server is unavailable (optional feature)
+    logger.debug("FastAPI not installed — API server disabled", exc_info=True)
     _HAS_FASTAPI = False
 
 from cfmesh_autogui.octopoda_local import octo

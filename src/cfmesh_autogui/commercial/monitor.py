@@ -241,6 +241,8 @@ class QualityMonitor:
                 result["non_orthogonality"].append(float(m.group(3)))
                 result["aspect_ratio"].append(float(m.group(4)))
             except (ValueError, IndexError):
+                # malformed checkMesh cell line: skip it, keep the rest
+                logger.debug("monitor: unparseable cell line %r", m.group(0))
                 continue
 
         # Fallback: if no per-cell data, use the max as a proxy
@@ -281,6 +283,8 @@ class QualityMonitor:
                     "aspect": float(m.group(4)),
                 })
             except (ValueError, IndexError):
+                # malformed checkMesh cell line: skip it, keep the rest
+                logger.debug("monitor: unparseable cell line %r", m.group(0))
                 continue
 
         if not cells:

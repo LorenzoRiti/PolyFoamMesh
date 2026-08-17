@@ -1,8 +1,10 @@
 """Lightweight local Octopoda runtime — zero external dependencies."""
 from __future__ import annotations
-import json, os, datetime
+import json, logging, os, datetime
 from datetime import timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _OCTO_DIR = Path(os.environ.get("APPDATA", os.path.expanduser("~"))) / "cfmesh-autogui" / "octopoda"
 _MAX_EVENTS = 1000  # trim events.jsonl to this many lines after each append
@@ -40,7 +42,8 @@ class OctopodaRuntime:
             if len(lines) > _MAX_EVENTS:
                 log.write_text("\n".join(lines[-_MAX_EVENTS:]) + "\n")
         except OSError:
-            pass
+            # log file locked/in-use — trimming is best-effort, never fatal
+            logger.debug("octopoda: could not trim %s", log, exc_info=True)
 
     def detect_loop(self, agent: str, step: str, max_repeat: int = 3) -> bool:
         log = _OCTO_DIR / "events.jsonl"

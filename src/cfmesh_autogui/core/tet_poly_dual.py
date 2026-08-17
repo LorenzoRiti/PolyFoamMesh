@@ -361,7 +361,9 @@ class TetPolyDualConverter:
             try:
                 self._log_cb(msg)
             except Exception:  # pragma: no cover - logging must never break a run
-                pass
+                # a broken log callback (e.g. a destroyed Qt widget) must never
+                # abort the conversion — record it and keep meshing
+                logger.debug("tet_poly_dual: log callback failed", exc_info=True)
 
     def _check_cancel(self) -> None:
         if self._cancel_cb is not None and self._cancel_cb():

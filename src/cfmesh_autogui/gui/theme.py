@@ -229,7 +229,8 @@ def _detect_system_mode() -> str:
                 if scheme == Qt.ColorScheme.Light:
                     return "light"
         except Exception:
-            pass
+            # Qt API probe failed — fall back to the window-background heuristic
+            logger.debug("theme: color scheme probe failed", exc_info=True)
     # Fallback: if the default window background is dark, assume dark mode
     if app is not None:
         bg = app.palette().color(QPalette.Window)
@@ -257,7 +258,8 @@ def apply_theme(app: QApplication | None = None) -> str:
             if hasattr(hints, "colorSchemeChanged"):
                 hints.colorSchemeChanged.connect(_on_system_scheme_changed)
         except Exception:
-            pass
+            # live scheme-change tracking unavailable — theme still applies
+            logger.debug("theme: colorSchemeChanged wiring failed", exc_info=True)
 
     qss = _load_qss(mgr._resolved_mode)
     app.setStyleSheet(qss)

@@ -92,7 +92,9 @@ def cases_disk_usage_mb() -> float:
         try:
             total += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
         except OSError:
-            pass
+            # a file deleted mid-scan (concurrent cleanup) must not abort the
+            # whole usage estimate — skip it and keep going
+            logger.debug("cases_disk_usage_mb: stat failed under %s", d, exc_info=True)
     return total / (1024 * 1024)
 
 

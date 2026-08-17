@@ -208,7 +208,8 @@ class OpenMPAccel:
                         try:
                             result.add((int(open(f).read().strip()),))
                         except (OSError, ValueError):
-                            pass
+                            # unreadable/racy cpu file: skip it, count what we can
+                            logger.debug("openmp_accel: could not read %s", f, exc_info=True)
                 if result:
                     return max(len(result), 1)
             elif system == "Windows":

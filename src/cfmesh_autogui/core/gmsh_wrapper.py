@@ -67,7 +67,7 @@ def _fmt_bytes(n: int) -> str:
                 return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
             val /= 1024
     except Exception:
-        pass
+        logger.debug("gmsh_wrapper.fmt_bytes: cannot format %r, returning raw", n)
     return str(n)
 
 
@@ -97,13 +97,13 @@ def _available_ram_bytes() -> int:
             if stat.ullAvailPhys:
                 return int(stat.ullAvailPhys)
         except Exception:
-            pass
+            logger.debug("gmsh_wrapper: Windows RAM probe failed", exc_info=True)
     try:
         pages = os.sysconf("SC_AVPHYS_PAGES")
         page_size = os.sysconf("SC_PAGE_SIZE")
         return int(pages * page_size)
     except Exception:
-        pass
+        logger.debug("gmsh_wrapper: sysconf probe failed", exc_info=True)
     return 4 * 1024**3  # unknown platform/failure: assume 4 GB free, conservative
 
 
@@ -137,11 +137,11 @@ def _total_ram_bytes() -> int:
             if stat.ullTotalPhys:
                 return int(stat.ullTotalPhys)
         except Exception:
-            pass
+            logger.debug("gmsh_wrapper: Windows RAM probe failed", exc_info=True)
     try:
         return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
     except Exception:
-        pass
+        logger.debug("gmsh_wrapper: sysconf probe failed", exc_info=True)
     return 8 * 1024**3
 
 
@@ -216,7 +216,9 @@ def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
         try:
             length = gmsh_mod.model.occ.getMass(dim, tag)
         except Exception:
-            pass
+            # occ.getMass only works on OCC-kernel entities (STEP input) —
+            # fall back to the bbox-based length below
+            logger.debug("gmsh_wrapper: occ.getMass failed for dim=%d tag=%d", dim, tag, exc_info=True)
         if not length or length <= 1e-9:
             # occ.getMass only works on OCC-kernel entities (STEP input).
             # STL input goes through classifySurfaces()/createGeometry(),
@@ -229,6 +231,8 @@ def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
                 dx, dy, dz = bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]
                 length = math.sqrt(dx * dx + dy * dy + dz * dz)
             except Exception:
+                # degenerate entity — skip it, keep measuring the rest
+                logger.debug("gmsh_wrapper: getBoundingBox failed dim=%d tag=%d", dim, tag, exc_info=True)
                 continue
         if length and length > 1e-9:
             curve_lengths.append((tag, length))
@@ -350,6 +354,8 @@ def _sample_curvature_size_field(
         try:
             lo, hi = gmsh_mod.model.getParametrizationBounds(dim, tag)
         except Exception:
+            # entity has no parametrization — skip it, keep sampling the rest
+            logger.debug("gmsh_wrapper: getParametrizationBounds failed dim=%d tag=%d", dim, tag, exc_info=True)
             continue
         if dim == 1:
             us = np.linspace(lo[0], hi[0], per_entity)
@@ -358,6 +364,8 @@ def _sample_curvature_size_field(
                 curvs = gmsh_mod.model.getCurvature(dim, tag, param_coord)
                 coords = gmsh_mod.model.getValue(dim, tag, param_coord)
             except Exception:
+                # curvature probe failed for this entity — skip it
+                logger.debug("gmsh_wrapper: getCurvature failed dim=%d tag=%d", dim, tag, exc_info=True)
                 continue
             for i in range(len(us)):
                 c = curvs[i] if i < len(curvs) else 0.0
@@ -377,6 +385,8 @@ def _sample_curvature_size_field(
                 curvs = gmsh_mod.model.getCurvature(dim, tag, param_coord)
                 coords = gmsh_mod.model.getValue(dim, tag, param_coord)
             except Exception:
+                # curvature probe failed for this entity — skip it
+                logger.debug("gmsh_wrapper: getCurvature failed dim=%d tag=%d", dim, tag, exc_info=True)
                 continue
             n_pts = len(param_coord) // 2
             for i in range(n_pts):
@@ -738,7 +748,9 @@ def _configure_curvature_size_field(
                     extra_points.append(xyz)
                     extra_sizes.append(float(relaxed[idx]))
             except Exception:
-                continue  # best-effort seeding; the size callback alone still applies
+                # best-effort seeding; the size callback alone still applies
+                logger.debug("gmsh_wrapper: seed tree query failed", exc_info=True)
+                continue
         if extra_points:
             points = np.vstack([points, np.asarray(extra_points, dtype=np.float64)])
             relaxed = np.concatenate([relaxed, np.asarray(extra_sizes, dtype=np.float64)])
@@ -1044,7 +1056,8 @@ def _configure_adaptive_sizing(
         try:
             gmsh_mod.option.setNumber(opt, _gmsh_thread_count())
         except Exception:
-            pass  # option name varies across GMSH versions; NumThreads alone still helps
+            # option name varies across GMSH versions; NumThreads alone still helps
+            logger.debug("gmsh_wrapper: thread option %s not accepted", opt, exc_info=True)
 
     # A-priori curvature size field: an explicit, growth-rate-limited
     # size field built from the CAD kernel's own local curvature radius
@@ -1199,7 +1212,8 @@ def gmsh_shutdown():
         try:
             gmsh.finalize()
         except Exception:
-            pass
+            # best-effort teardown
+            logger.debug("gmsh_wrapper: gmsh.finalize failed", exc_info=True)
         _GMSH_INITIALIZED = False
 
 
@@ -1700,7 +1714,7 @@ def _gmsh_thread_count() -> int:
         try:
             return max(1, int(env))
         except ValueError:
-            pass
+            logger.debug("gmsh_wrapper: bad thread env value %r", env, exc_info=True)
     cpus = os.cpu_count() or 4
     base = max(1, min(cpus // 2, 8))
     # RAM-aware backoff: GMSH's 3D mesher keeps a per-thread chunk of the
@@ -2265,7 +2279,8 @@ def _cli_main(argv):
                 n_gaps = len(_detect_surface_gaps(g, me))
                 poly_dual_risk = n_surfaces > 30 or n_gaps >= 20
             except Exception:
-                pass
+                # risk heuristic is best-effort; default (no risk) is safe
+                logger.debug("gmsh_wrapper: poly_dual_risk probe failed", exc_info=True)
             print(json.dumps({
                 "success": True, "path": str(result_path), "names": names,
                 "poly_dual_risk": poly_dual_risk, "n_surfaces": n_surfaces, "n_gaps": n_gaps,

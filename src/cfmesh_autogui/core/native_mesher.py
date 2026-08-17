@@ -334,7 +334,9 @@ class NativeMesher:
             try:
                 self._log_cb(msg)
             except Exception:  # pragma: no cover
-                pass
+                # a broken log callback (e.g. destroyed Qt widget) must never
+                # abort the native mesher — record it and keep meshing
+                logger.debug("native_mesher: log callback failed", exc_info=True)
 
     def _check_cancel(self) -> None:
         if self._cancel_cb is not None and self._cancel_cb():
@@ -786,6 +788,9 @@ class NativeMesher:
                     try:
                         h = ConvexHull(u)
                     except Exception:
+                        # degenerate (co-planar/collinear) face points: skip
+                        # this face, keep meshing the others
+                        logger.debug("native_mesher: ConvexHull failed on face", exc_info=True)
                         continue
                     poly = _dedup_poly([pts_on_face[i] for i in h.vertices])
                     if poly is None:

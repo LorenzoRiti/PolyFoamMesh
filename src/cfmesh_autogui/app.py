@@ -23,7 +23,7 @@ try:
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 except (AttributeError, ValueError):
-    pass  # non-reconfigurable stream (e.g. redirected to something unusual)
+    logger.debug("stdout/stderr not reconfigurable — non-UTF-8 console", exc_info=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +51,7 @@ try:
     if _ocp_dir not in _os.environ.get("PATH", ""):
         _os.environ["PATH"] = _ocp_dir + _os.pathsep + _os.environ.get("PATH", "")
 except Exception:
-    pass  # OCP not yet installed — will fail later with clear message
+    logger.debug("OCP not yet installed — PATH fix skipped (will fail later with a clear message)", exc_info=True)
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QSplashScreen
@@ -215,7 +215,9 @@ def main():
                 f"Unhandled exception:\n\n{typ.__name__}: {val}\n\n"
                 "Check the log for details.")
         except Exception:
-            pass
+            # even the error dialog failed (GUI already broken) — fall through
+            # to the original hook so the exception still reaches stderr
+            logger.debug("exception hook: error dialog failed", exc_info=True)
         _orig_excepthook(typ, val, tb)
     _sys.excepthook = _exception_hook
     if hasattr(_sys, "unraisablehook"):

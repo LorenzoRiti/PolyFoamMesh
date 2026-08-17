@@ -8,8 +8,11 @@ cfMesh, until now) not guessing at all.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 def fmt_bytes(n: int) -> str:
@@ -21,7 +24,7 @@ def fmt_bytes(n: int) -> str:
                 return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
             val /= 1024
     except Exception:
-        pass
+        logger.debug("fmt_bytes: cannot format %r, returning raw", n)
     return str(n)
 
 
@@ -51,13 +54,13 @@ def available_ram_bytes() -> int:
             if stat.ullAvailPhys:
                 return int(stat.ullAvailPhys)
         except Exception:
-            pass
+            logger.debug("available_ram_bytes: Windows API probe failed", exc_info=True)
     try:
         pages = os.sysconf("SC_AVPHYS_PAGES")
         page_size = os.sysconf("SC_PAGE_SIZE")
         return int(pages * page_size)
     except Exception:
-        pass
+        logger.debug("available_ram_bytes: sysconf probe failed", exc_info=True)
     return 4 * 1024**3  # unknown platform/failure: assume 4 GB free, conservative
 
 
@@ -92,11 +95,11 @@ def total_ram_bytes() -> int:
             if stat.ullTotalPhys:
                 return int(stat.ullTotalPhys)
         except Exception:
-            pass
+            logger.debug("total_ram_bytes: Windows API probe failed", exc_info=True)
     try:
         return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
     except Exception:
-        pass
+        logger.debug("total_ram_bytes: sysconf probe failed", exc_info=True)
     return 8 * 1024**3
 
 

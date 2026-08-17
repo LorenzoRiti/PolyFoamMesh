@@ -498,7 +498,8 @@ class PolyAggregator:
             try:
                 self._progress_callback(pct, msg)
             except (TypeError, ValueError):
-                pass
+                # a broken progress callback must never abort aggregation
+                logger.debug("poly_aggregator: progress callback failed", exc_info=True)
 
     def run(
         self, case_dir: Path | str,

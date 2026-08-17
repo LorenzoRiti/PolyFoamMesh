@@ -409,7 +409,9 @@ class ParallelMeshEngine:
                 capture_output=True, text=True, timeout=5,
             )
         except Exception:
-            pass
+            # kill is best-effort: a dead/already-exited process must not
+            # raise out of the cancel path
+            logger.debug("parallel_mesh: taskkill failed for pid %s", pid, exc_info=True)
 
     def _step_parallel_mesh(self) -> None:
         """Run cartesianMesh in parallel via MPI on all subdomains."""

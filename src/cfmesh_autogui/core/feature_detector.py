@@ -139,6 +139,8 @@ class FeatureDetector:
                 try:
                     _, elem_edges = gmsh.model.mesh.getElementEdges(etype, etags)
                 except Exception:
+                    # degenerate element: skip it, keep detecting the rest
+                    logger.debug("feature_detector: getElementEdges failed", exc_info=True)
                     continue
                 if elem_edges.ndim < 2:
                     continue
@@ -243,6 +245,8 @@ class FeatureDetector:
                         try:
                             _, coords, _ = gmsh.model.mesh.getNodes(2, a)
                         except Exception:
+                            # gap probe failed for this pair — try the next
+                            logger.debug("feature_detector: getNodes failed", exc_info=True)
                             continue
                         coords = np.array(coords).reshape(-1, 3)
                         if len(coords) < 2:
@@ -252,6 +256,8 @@ class FeatureDetector:
                             try:
                                 closest, _ = gmsh.model.getClosestPoint(2, b, pt.tolist())
                             except Exception:
+                                # closest-point probe failed — try the next sample
+                                logger.debug("feature_detector: getClosestPoint failed", exc_info=True)
                                 continue
                             dist = float(np.linalg.norm(np.array(closest) - pt))
                             if not (0.0 < dist < gap_threshold):
@@ -269,7 +275,8 @@ class FeatureDetector:
         try:
             gmsh.model.mesh.clear()
         except Exception:
-            pass
+            # best-effort cleanup — a stale GMSH session must not abort detection
+            logger.debug("feature_detector: gmsh mesh.clear failed", exc_info=True)
 
         # Every length gathered above (edge lengths, gap widths, curvature
         # radius) is in the CAD file's own units, and suggest_cell_sizes()
@@ -338,7 +345,8 @@ class FeatureDetector:
                 import gmsh
                 gmsh.finalize()
             except Exception:
-                pass
+                # best-effort teardown
+                logger.debug("feature_detector: gmsh.finalize failed", exc_info=True)
             self._gmsh_initialized = False
 
 
