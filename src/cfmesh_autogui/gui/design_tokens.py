@@ -301,7 +301,10 @@ PROGRESSBAR_BORDER_RADIUS = 3
 # Application metadata (used by the splash screen and About dialog)
 # ---------------------------------------------------------------------------
 APP_NAME         = "CFMesh-AutoGUI"
-APP_VERSION      = "2.0.0"
+# Single source of truth: cfmesh_autogui._version. Re-exported here because
+# about_dialog / branding / main_window / api.server all import APP_VERSION
+# from design_tokens. (noqa F401: re-export, not an unused import)
+from cfmesh_autogui._version import __version__ as APP_VERSION  # noqa: F401
 APP_DESCRIPTION  = "Commercial-grade cartesian mesh generator for OpenFOAM"
 APP_VENDOR       = "CFMesh-AutoGUI Project"
 APP_COPYRIGHT    = "© 2026 CFMesh-AutoGUI"

@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest  # noqa: F401 — @pytest.mark.wsl below
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import os as _os
 try:
@@ -194,6 +196,7 @@ def test_analyze_error_all_types():  # ✅ F-027
     print("PASS: test_analyze_error_all_types")
 
 
+@pytest.mark.wsl
 def test_mesh_worker():
     if not OFConfig().validate():
         print("SKIP: OpenFOAM not available via WSL")

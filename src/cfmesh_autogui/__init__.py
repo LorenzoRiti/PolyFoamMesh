@@ -1,2 +1,4 @@
-# ✅ F-021: allineato a design_tokens.APP_VERSION (2.0.0)
-__version__ = "2.0.0"
+# Single source of truth: src/cfmesh_autogui/_version.py
+from cfmesh_autogui._version import __version__
+
+__all__ = ["__version__"]

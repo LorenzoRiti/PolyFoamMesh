@@ -2720,11 +2720,10 @@ class MainWindow(QMainWindow):
         # downstream of the freeze ever ran.
         (self._case_dir / "system").mkdir(parents=True, exist_ok=True)
         (self._case_dir / "constant").mkdir(parents=True, exist_ok=True)
-        # Shared writer (this class used to carry a byte-identical private
-        # copy of it, while ALSO importing this same function a few hundred
-        # lines below — two spellings of one thing, and a silent drift risk).
-        from cfmesh_autogui.commercial.mesh_engine import _write_control_dict
-        _write_control_dict(self._case_dir)
+        # Single shared writer (core.case_setup.write_control_dict) — no
+        # longer reached through commercial.mesh_engine.
+        from cfmesh_autogui.core.case_setup import write_control_dict
+        write_control_dict(self._case_dir)
         (self._case_dir / "system" / "fvSchemes").write_text(
             "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n"
             "ddtSchemes { default steadyState; }\n"
@@ -3521,8 +3520,8 @@ class MainWindow(QMainWindow):
             surface_file = "constant/triSurface/surface.fms" if fms_path.exists() else "constant/triSurface/surface.stl"
             write_meshdict(self._case_dir, raw_max, raw_min, bl_params=bl_params,
                            patch_names=all_names, surface_file=surface_file)
-            from cfmesh_autogui.commercial.mesh_engine import _write_control_dict
-            _write_control_dict(self._case_dir)
+            from cfmesh_autogui.core.case_setup import write_control_dict
+            write_control_dict(self._case_dir)
         except Exception as e:
             logger.error("Direct remesh setup failed: %s", e)
             self._log.append_log(f"{Tag.ERROR} Direct remesh setup failed: {e}")

@@ -65,9 +65,14 @@ def _wsl_available() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _wsl_available(), reason="OpenFOAM/WSL not available"
-)
+pytestmark = [
+    pytest.mark.skipif(not _wsl_available(), reason="OpenFOAM/WSL not available"),
+    # wsl: also excluded by default via `-m "not wsl"` — the skipif above only
+    # checks that WSL *responds*, not that cartesianMesh actually works (a
+    # broken OpenFOAM install core-dumps and the test fails instead of
+    # skipping). Marking it lets CI/other machines skip it explicitly.
+    pytest.mark.wsl,
+]
 
 
 def _run_in_case(cfg: OFConfig, case: Path, cmd: str, timeout: int = 180):

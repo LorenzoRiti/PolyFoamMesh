@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from cfmesh_autogui.core.case_setup import write_control_dict as _write_control_dict
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -449,18 +450,3 @@ def _shq(path: str) -> str:
     """Shell-quote a path."""
     import shlex
     return shlex.quote(path)
-
-
-def _write_control_dict(case_dir: Path) -> None:
-    """Write minimal controlDict for cartesianMesh background step."""
-    (case_dir / "system" / "controlDict").write_text(
-        "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
-        "application cartesianMesh;\n"
-        "startFrom startTime; startTime 0;\n"
-        "stopAt endTime; endTime 1000;\n"
-        "deltaT 1;\n"
-        "writeControl timeStep; writeInterval 1;\n"
-        "writeFormat binary; writePrecision 6;\n"
-        "runTimeModifiable true;\n",
-        encoding="ascii",
-    )
