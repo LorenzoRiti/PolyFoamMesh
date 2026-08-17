@@ -2,6 +2,8 @@ import sys
 import shutil
 from pathlib import Path
 
+import pytest  # noqa: F401 — @pytest.mark.wsl below
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import os as _os
 try:
@@ -30,6 +32,7 @@ from PySide6.QtCore import QEventLoop, QThread, Qt, QTimer
 E2E_TIMEOUT_SECONDS = 180
 
 
+@pytest.mark.wsl
 def test_full_workflow():
     of_config = OFConfig()
     if not of_config.validate():

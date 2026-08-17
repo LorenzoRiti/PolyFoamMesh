@@ -500,6 +500,29 @@ def _write_system_file(case_dir: Path, filename: str, content: str):
     (system_dir / filename).write_text(content, encoding="ascii")
 
 
+def write_control_dict(case_dir: Path) -> None:
+    """Write the minimal controlDict cartesianMesh needs to run.
+
+    Single implementation used by every meshing path (mesh_engine,
+    snappy_hex_mesh, main_window) — formerly duplicated verbatim in
+    mesh_engine.py and snappy_hex_mesh.py with subtle field drift.
+    """
+    _write_system_file(
+        case_dir,
+        "controlDict",
+        "FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }\n"
+        "application cartesianMesh;\n"
+        "startFrom startTime; startTime 0;\n"
+        "stopAt endTime; endTime 1000;\n"
+        "deltaT 1;\n"
+        "writeControl timeStep; writeInterval 1;\n"
+        "writeFrequency 1;\n"
+        "purgeWrite 0; writeFormat binary; writePrecision 6;\n"
+        "writeCompression on; timeFormat general; timePrecision 6;\n"
+        "runTimeModifiable true;\n",
+    )
+
+
 def _write_field_file(
     case_dir: Path, time_dir: str, filename: str, dims: str, internal: str,
     patches: list[PatchInfo], field_class: str = "volScalarField",

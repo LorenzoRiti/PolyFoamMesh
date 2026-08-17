@@ -51,7 +51,7 @@ in una GUI professionale per produrre mesh pronte per CFD senza intervento manua
 
 ## Requirements
 
-- **Python** 3.10+
+- **Python** 3.11+
 - **GMSH** `pip install gmsh` — runs natively on Windows
 - **OpenFOAM v2512** via WSL2 Ubuntu (for cfMesh volume fill)
 - **Windows 10/11** (WSL2 support required for cfMesh path)
@@ -109,22 +109,33 @@ cfmesh-autogui/
 ├── src/cfmesh_autogui/
 │   ├── app.py                  # Entry point (splash, theme, i18n)
 │   ├── config.py               # OpenFOAM/WSL configuration
-│   ├── core/
+│   ├── _version.py             # Single version source (imported everywhere)
+│   ├── core/                   # Engine layer (no GUI imports)
 │   │   ├── geometry.py         # CAD import (cadquery, trimesh)
 │   │   ├── gmsh_wrapper.py     # GMSH Python API wrapper
 │   │   ├── meshdict_gen.py     # cfMesh meshDict generator
 │   │   ├── feature_detector.py # Sharp edges, gaps, curvature
 │   │   ├── stl_writer.py       # Surface STL export
 │   │   ├── boundary_reader.py  # OpenFOAM boundary parser
-│   │   ├── case_setup.py       # OpenFOAM case setup
+│   │   ├── case_setup.py       # OpenFOAM case setup + controlDict
 │   │   ├── openfoam_runner.py  # cfMesh runner + error analysis
-│   │   └── mesh_converter.py   # MSH → OpenFOAM conversion
+│   │   ├── mesh_converter.py   # MSH → OpenFOAM conversion
+│   │   └── …                   # workflow, session, validation, …
+│   ├── commercial/             # Advanced meshing modules
+│   │   ├── mesh_engine.py      # Multi-algorithm engine + escalation
+│   │   ├── quality_engine.py   # Quality auto-fix loops
+│   │   ├── adaptive_loop.py    # OODA adaptive refinement
+│   │   ├── snappy_hex_mesh.py  # SnappyHexMesh pipeline
+│   │   ├── batch_mesh.py       # Headless batch meshing
+│   │   └── …                   # ~30 modules (BL, mosaic, amr, …)
+│   ├── api/server.py           # Optional FastAPI headless server
 │   └── gui/
 │       ├── main_window.py      # Main window (menu, export, undo)
 │       ├── params_panel.py     # 4-tab parameter panel
 │       ├── viewer_widget.py    # 3D viewer (PyVistaQt)
 │       ├── new_case_wizard.py  # 3-step guided wizard
 │       ├── quality_panel.py    # checkMesh + PDF + auto-fix
+│       ├── task_runner.py      # One concurrency pattern (TaskManager)
 │       ├── pdf_report.py       # PDF quality report generator
 │       ├── log_panel.py        # Log output panel
 │       ├── about_dialog.py     # About dialog
@@ -141,18 +152,42 @@ cfmesh-autogui/
 │   ├── compile_i18n.bat        #   Windows batch compiler
 │   └── compile_i18n.py         #   Python compiler script
 ├── installer/                  # NSIS / Inno Setup scripts
-├── tests/                      # pytest test suite (114 tests)
+├── tests/                      # pytest test suite (96 files, ~1.000 tests)
+├── benchmarks/                 # Meshing benchmark scripts + results
 ├── dist/                       # PyInstaller EXE output
 │   └── CFMesh-AutoGUI.exe      #   Standalone executable
-└── docs/                       # Documentation
+└── docs/                       # Documentation + handoff notes
 ```
 
 ## Testing
 
 ```bash
+# Full suite (~1.000 tests; slow tests marked, run everything)
 pytest tests/ -v
-# 114 passed, 1 skipped
+
+# Fast subset used by the pre-commit hook (pure logic, no GMSH/Qt/WSL)
+pytest tests/test_workflow.py tests/test_meshdict_gen.py tests/test_journal.py \
+       tests/test_template_engine.py tests/test_octopoda.py \
+       tests/test_settings_migration.py tests/test_config.py tests/test_validation.py -q
 ```
+
+### Pre-commit gate (local quality check)
+
+The repo ships a `.pre-commit-config.yaml` that runs automatically before
+every commit:
+
+1. **ruff check** (rules E9/F/B) on staged `.py` files
+2. **fast pytest subset** (pure-logic tests, ~18 s)
+
+Install once with:
+
+```bash
+C:\Users\Davide Valoroso\AppData\Local\Programs\Python\Python311\python.exe -m pre_commit install
+```
+
+The `entry:` lines in the config point to that absolute Python path — update
+them if you move the project to another machine. Bypass in an emergency with
+`git commit --no-verify`.
 
 ## Documentazione
 

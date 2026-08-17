@@ -62,6 +62,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "tests"]
 markers = [
     "slow: long-running tests (real-valve fixture etc.); skip with -m 'not slow'",
+    "wsl: requires live WSL2 + OpenFOAM (real cartesianMesh run); skip with -m 'not wsl'",
 ]
 
 [tool.ruff]
