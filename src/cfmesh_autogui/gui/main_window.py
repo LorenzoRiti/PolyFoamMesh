@@ -53,6 +53,7 @@ from cfmesh_autogui.core.geometry import (
     estimate_cell_count_geometric,
     load_geometry,
     load_step,
+    cfmesh_cell_budget,
     scale_meshes,
     suggest_cell_sizes,
     tessellate_patches,
@@ -858,26 +859,37 @@ class MainWindow(QMainWindow):
     ) -> bool:
         """Ask before starting a mesh that will take a long time.
 
-        For meshes under 2M cells or 10 min estimate, proceeds silently.
-        For 2M-25M cells, asks with a clear time estimate.
-        For 25M-80M cells, warns that this may exceed available resources.
-        For 80M+ cells, blocks with a hard limit — WSL2's default 8GB RAM
-        cannot handle meshes of this size (cfMesh would be OOM-killed).
+        The HARD limit is the real RAM-based budget (cfmesh_cell_budget),
+        not a fixed 80M: WSL2's memory cap differs per machine, and a mesh
+        above the budget gets OOM-killed inside Linux. Below the budget,
+        for meshes under 2M cells or 10 min estimate, proceeds silently;
+        otherwise asks with a clear time estimate.
         """
-        if est_cells >= 80_000_000:
+        # unit tests call this method on a stub without _params — default
+        # to serial (no parallel peak) there
+        parallel_enabled, n_cores = False, 1
+        params = getattr(self, "_params", None)
+        if params is not None:
+            parallel_enabled, n_cores = params.get_parallel_params()
+        budget = cfmesh_cell_budget(
+            parallel_cores=n_cores if parallel_enabled else 1,
+        )
+        budget_cells = budget["max_cells"]
+        if est_cells >= budget_cells:
             hours = est_seconds / 3600.0
             msg = (
-                f"<b>Mesh troppo grande per WSL2</b><br><br>"
-                f"La stima è di ~{est_cells:,} celle "
-                f"(~{hours:.1f} ore).<br><br>"
+                f"<b>Mesh oltre la memoria disponibile</b><br><br>"
+                f"La stima è di ~{est_cells:,} celle, ma questo computer può "
+                f"gestirne ~{budget_cells:,} (limite RAM).<br><br>"
                 f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
-                "WSL2 ha un limite di memoria predefinito di 8 GB — una mesh "
-                "di questa dimensione esaurirebbe la RAM e causerebbe il crash "
-                "del motore di mesh (OOM killer di Linux).<br><br>"
+                "Il motore di mesh gira in WSL2, che ha un tetto di memoria "
+                "proprio: oltre questo limite il sistema operativo uccide il "
+                "processo (OOM killer) e il meshing crasha.<br><br>"
                 "<b>Suggerimenti:</b><br>"
-                "• Usa un livello di dettaglio più grossolano (es. Fine o Media)<br>"
-                "• Aumenta la memoria di WSL2: <code>wsl --set-memory Ubuntu 32G</code><br>"
-                "• Riduci la dimensione massima della cella nel pannello Advanced"
+                "• Usa un livello di dettaglio più grossolano (es. Media o Grossolana)<br>"
+                "• Riduci la dimensione massima della cella nel pannello Advanced<br>"
+                "• Aumenta la memoria di WSL2: <code>wsl --set-memory Ubuntu 32G</code> "
+                "poi riavvia WSL"
             )
             QMessageBox.critical(self, "Mesh Troppo Grande", msg)
             return False
@@ -888,7 +900,7 @@ class MainWindow(QMainWindow):
         minutes = est_seconds / 60.0
         hours = minutes / 60.0
 
-        if est_cells >= 25_000_000:
+        if est_cells >= budget_cells * 0.5:
             msg = (
                 f"<b>Mesh molto grande:</b> ~{est_cells:,} celle "
                 f"(~{hours:.1f} ore stimate).<br><br>"

@@ -468,8 +468,17 @@ def write_meshdict(
                 logger.warning("meshDict RAM safeguard: %s", w)
             if ram_warnings and min_cell_size > max_cell_size / 2.0:
                 min_cell_size = max_cell_size / 2.0
+        else:
+            logger.warning(
+                "meshDict RAM safeguard skipped: surface file not found at %s — "
+                "the requested cell sizes will be written UNCHANGED, which can "
+                "crash on a mesh that exceeds available RAM", stl_path,
+            )
     except Exception:
-        logger.exception("meshDict RAM safeguard skipped (best-effort)")
+        logger.exception(
+            "meshDict RAM safeguard FAILED — requested cell sizes written "
+            "UNCHANGED, run is at risk of an out-of-memory crash"
+        )
 
     # Audit log: every write_meshdict call records caller, values, and timestamp
     _audit_log = Path.home() / ".cfmesh_meshdict_audit.log"
