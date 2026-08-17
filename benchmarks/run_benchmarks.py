@@ -113,7 +113,7 @@ def _vtk_quality_check(case_dir: Path, main_logger) -> dict | None:
     This is a fast local check (no WSL needed after foamToVTK completes).
     """
     try:
-        import pyvista
+        import pyvista  # noqa: F401 — import-guard: availability probe, not a usage
     except ImportError:
         return None
 
