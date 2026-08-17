@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest  # noqa: F401 — @pytest.mark.slow below
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -403,6 +404,7 @@ def test_map_verts_to_indices():
     assert result == [0, 1, 2, 3]
 
 
+@pytest.mark.slow
 def test_fallback_tet_mesh_no_wsl(tmp_path):
     """Verify fallback handles missing WSL gracefully."""
     agg = PolyAggregator()
@@ -768,6 +770,7 @@ def test_aggregate_large(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_run_with_generated_stl(tmp_path):
     """End-to-end test: generate STL, create case, run aggregator.
 
@@ -855,6 +858,7 @@ def test_progress_callback(tmp_path):
     # The important thing is that set_progress_callback doesn't crash
 
 
+@pytest.mark.slow
 def test_progress_callback_reports_phases(tmp_path):
     """Verify progress callback reports meaningful phases during a real run."""
     from cfmesh_autogui.commercial.verification import VerificationSuite

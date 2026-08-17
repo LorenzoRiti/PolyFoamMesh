@@ -126,6 +126,9 @@ def build_meshdict_lines(
     patch_names: list[str] | None = None,
     patch_types: dict[str, str] | None = None,
     object_refinements: list[dict] | None = None,
+    local_refinement: dict[str, dict] | None = None,
+    edge_mesh_refinement: list[dict] | None = None,
+    workflow_stop_after: str | None = None,
 ) -> list[str]:
     """Build meshDict content for cfMesh v2512.
 
@@ -148,6 +151,22 @@ def build_meshdict_lines(
             {type:"box", xmin, xmax, ymin, ymax, zmin, zmax, cell_size}.
             If None or empty, no local refinement. Malformed entries are
             skipped with a warning, never fatal.
+        local_refinement: dict {patch_regex: {additional_refinement_levels: N,
+            refinement_thickness: metres}} — refines the VOLUME of cells
+            within refinement_thickness of the named patches by N octree
+            levels (cfMesh's native currency: LEVELS, not absolute metres —
+            see commit 9904d65 for why absolute sizes crash the octree).
+            Distinct from patch_cell_size (which fixes size ON the faces).
+            Each entry validated; malformed entries are skipped with a
+            warning, never fatal.
+        edge_mesh_refinement: list of dicts {edge_file: path, levels: N} —
+            refines cells near feature edges read from an OpenFOAM edgeMesh
+            file (eMesh/obj/vtk — NOT the .fms surface format, which
+            cartesianMesh rejects: "Unknown edge format fms", verified
+            against the installed binary). If None, no edge refinement.
+        workflow_stop_after: step name to stop after (cfMesh workflowControls
+            stopAfter; e.g. "refineBoundaryLayers"). If None, no workflow
+            controls block is written.
     """
     lines: list[str] = [
         'FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }',
@@ -272,6 +291,106 @@ def build_meshdict_lines(
     if object_refinements:
         lines.extend(build_object_refinements(object_refinements))
 
+    # localRefinement: refines the VOLUME of cells within
+    # `refinementThickness` of the named patches by `additionalRefinementLevels`
+    # octree levels. This is the "make cells smaller near THIS wall" control
+    # that patchCellSize (which fixes size ON the faces) does not provide.
+    #
+    # CRITICAL — work in cfMesh's native currency (LEVELS, not metres):
+    # imposing absolute cell sizes on an octree that reasons in levels
+    # crashed and slowed real user geometry (commit 9904d65, feature
+    # disabled after that). additionalRefinementLevels N halves the cell
+    # N times near the patch — a level-relative, crash-free formulation.
+    # Verified against the installed cartesianMesh binary: the block is
+    # accepted and applied ("Refining boundary boxes to the given size").
+    if local_refinement:
+        lines.append("localRefinement")
+        lines.append("{")
+        emitted = 0
+        for patch_regex, cfg in local_refinement.items():
+            try:
+                levels = int(cfg.get("additional_refinement_levels", 1))
+                thickness = float(cfg.get("refinement_thickness", 0.0))
+                if levels < 1 or thickness <= 0.0:
+                    raise ValueError(f"levels={levels} thickness={thickness}")
+            except (AttributeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Skipping malformed localRefinement entry %r: %s",
+                    patch_regex, exc,
+                )
+                continue
+            lines.append(f'    "{patch_regex}"')
+            lines.append("    {")
+            lines.append(f"        additionalRefinementLevels {levels};")
+            lines.append(f"        refinementThickness {thickness:.8g};")
+            lines.append("    }")
+            emitted += 1
+        if emitted:
+            lines.append("}")
+            lines.append("")
+        else:
+            # nothing valid emitted — drop the now-empty block
+            # (we appended the block name AND its opening brace)
+            lines.pop()
+            lines.pop()
+
+    # edgeMeshRefinement: refines cells near feature edges read from an
+    # OpenFOAM edgeMesh file.
+    #
+    # VERIFIED LIMITATION (against the installed binary): the file must be a
+    # real edgeMesh format — eMesh / featureEdgeMesh / obj / vtk / ... — NOT
+    # the .fms surface file that generate_fms() writes. cartesianMesh rejects
+    # .fms outright: "Unknown edge format fms for file ... Valid types:
+    # (bdf eMesh featureEdgeMesh nas nastran obj starcd vtk)". The .fms is
+    # meant to be the *surfaceFile*, not an edge file. Generate an edge mesh
+    # with surfaceFeatureExtract (writeFeatureEdgeMesh) if this path is used.
+    if edge_mesh_refinement:
+        lines.append("edgeMeshRefinement")
+        lines.append("{")
+        emitted = 0
+        for entry in edge_mesh_refinement:
+            if not isinstance(entry, dict):
+                logger.warning(
+                    "Skipping malformed edgeMeshRefinement entry: %r", entry
+                )
+                continue
+            edge_file = entry.get("edge_file")
+            levels = entry.get("levels")
+            try:
+                levels = int(levels) if levels is not None else 1
+                if not edge_file or levels < 1:
+                    raise ValueError(f"edge_file={edge_file!r} levels={levels}")
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "Skipping malformed edgeMeshRefinement entry: %s", exc
+                )
+                continue
+            lines.append(f'    "edgeRefinement_{emitted}"')
+            lines.append("    {")
+            lines.append(f'        edgeFile "{edge_file}";')
+            lines.append(f"        additionalRefinementLevels {levels};")
+            lines.append("    }")
+            emitted += 1
+        if emitted:
+            lines.append("}")
+            lines.append("")
+        else:
+            lines.pop()
+            lines.pop()
+
+    # workflowControls: lets a run stop after a named phase (or restart from
+    # the latest completed step on the next invocation). Exposed so the
+    # meshing pipeline can stop after e.g. surface refinement to inspect the
+    # partial mesh — the mechanism the pipeline front needs to diagnose a
+    # core dump. Verified: cartesianMesh accepts the block and completes the
+    # run with the mesh written to disk.
+    if workflow_stop_after:
+        lines.append("workflowControls")
+        lines.append("{")
+        lines.append(f'    stopAfter "{workflow_stop_after}";')
+        lines.append("}")
+        lines.append("")
+
     # renameBoundary: without this cfMesh types every patch as `wall`, so an
     # inlet/outlet cannot take a flow boundary condition downstream.
     names = list(patch_names or [])
@@ -312,6 +431,9 @@ def write_meshdict(
     patch_names: list[str] | None = None,
     patch_types: dict[str, str] | None = None,
     object_refinements: list[dict] | None = None,
+    local_refinement: dict[str, dict] | None = None,
+    edge_mesh_refinement: list[dict] | None = None,
+    workflow_stop_after: str | None = None,
     max_cells_override: int | None = None,
 ) -> Path:
     case_dir = Path(case_dir)
@@ -369,6 +491,9 @@ def write_meshdict(
         patch_names=patch_names,
         patch_types=patch_types,
         object_refinements=object_refinements,
+        local_refinement=local_refinement,
+        edge_mesh_refinement=edge_mesh_refinement,
+        workflow_stop_after=workflow_stop_after,
     )
 
     if bl_params:

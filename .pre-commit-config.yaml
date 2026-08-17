@@ -5,7 +5,7 @@
 #
 # Then every "git commit" runs the hooks below automatically:
 #   - ruff check  (fast: only staged .py files, ~1-2 s)
-#   - fast pytest subset (pure-logic tests, no GMSH/Qt/WSL, ~18 s)
+#   - pytest fast subset via markers: `-m "not slow and not wsl"` (~44 s)
 #
 # To bypass in an emergency:  git commit --no-verify
 #
@@ -21,9 +21,14 @@
 # scripts with pre-existing lint debt — decide separately whether to
 # clean them or drop them from git.
 #
-# The fast-test list is deliberately small: test files that are pure logic
-# (no GMSH, no Qt, no WSL, no trimesh/cadquery). The full suite belongs
-# to CI / manual runs:  <python311> -m pytest tests -m "not slow and not wsl"
+# The test selector uses the real markers (pyproject.toml):
+#   - slow : long-running tests (real GMSH/aggregator runs)
+#   - wsl  : tests that run real cartesianMesh/OpenFOAM in WSL2
+# Excluding both leaves a green ~44 s suite that covers everything that
+# does NOT need GMSH-heavy work or a live OpenFOAM install. The full
+# suite (including slow+wsl) is run manually:
+#   <python311> -m pytest tests -m "not slow and not wsl"   # fast gate
+#   <python311> -m pytest tests                              # everything
 
 repos:
   - repo: local
@@ -36,10 +41,10 @@ repos:
         types: [python]
         exclude: '^tools/'
 
-      # --- Fast pure-logic test subset (no GMSH/Qt/WSL) ---
+      # --- Fast pytest suite via markers (no slow, no wsl) ---
       - id: pytest-fast
-        name: pytest fast subset (pure logic, ~18 s)
-        entry: '"C:/Users/Davide Valoroso/AppData/Local/Programs/Python/Python311/python.exe" -m pytest tests/test_workflow.py tests/test_meshdict_gen.py tests/test_journal.py tests/test_template_engine.py tests/test_octopoda.py tests/test_settings_migration.py tests/test_config.py tests/test_validation.py -q --no-header -p no:cacheprovider'
+        name: "pytest fast suite (markers: not slow, not wsl)"
+        entry: '"C:/Users/Davide Valoroso/AppData/Local/Programs/Python/Python311/python.exe" -m pytest tests -m "not slow and not wsl" -q --no-header -p no:cacheprovider'
         language: system
         pass_filenames: false
         always_run: true

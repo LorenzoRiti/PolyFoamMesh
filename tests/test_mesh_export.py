@@ -73,9 +73,14 @@ def _wsl_available() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _wsl_available(), reason="OpenFOAM/WSL not available"
-)
+pytestmark = [
+    pytest.mark.skipif(not _wsl_available(), reason="OpenFOAM/WSL not available"),
+    # wsl: every test here builds the fixture via a real cartesianMesh run,
+    # and the skipif above only checks WSL reachability, not that OpenFOAM
+    # actually works — on a broken install the fixture hangs 300s. Excluded
+    # from the default run via -m "not wsl".
+    pytest.mark.wsl,
+]
 
 
 @pytest.fixture(scope="module")

@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest  # noqa: F401 — @pytest.mark.wsl below
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from _test_helpers import load_commercial_module
@@ -175,6 +177,7 @@ def _wsl_available() -> bool:
         return False
 
 
+@pytest.mark.wsl
 def test_run_actually_meshes_in_parallel_on_real_wsl():
     """Real end-to-end run against WSL2 OpenFOAM, from genuinely fresh state
     (no pre-written meshDict). Pins down four independent bugs found live in

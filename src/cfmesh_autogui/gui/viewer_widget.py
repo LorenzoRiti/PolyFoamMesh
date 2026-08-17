@@ -103,24 +103,58 @@ def _read_of_block_binary(path: Path, raw: bytes) -> str:
     cls = cls_match.group(1) if cls_match else ""
     if cls == "faceList":
         return _binary_faces_to_ascii(body_bytes)
-    # Default: points, vectorField etc. â€” flat doubles
-    return _binary_doubles_to_ascii(body_bytes)
+    # Default: points, vectorField etc. - flat doubles. The element count
+    # from the header is what bounds the stream; see _binary_doubles_to_ascii.
+    return _binary_doubles_to_ascii(body_bytes, int(m.group(1)) * _OF_FIELD_WIDTH.get(cls, 1))
 
 
-def _binary_doubles_to_ascii(data: bytes) -> str:
-    """Convert binary double array to space-separated ASCII string."""
+# Components per element, by FoamFile class. Anything unlisted is treated as
+# scalar (1), which at worst reads fewer values than are present - never more.
+_OF_FIELD_WIDTH = {
+    "vectorField": 3,
+    "pointField": 3,
+    "scalarField": 1,
+    "labelField": 1,
+    "sphericalTensorField": 1,
+    "symmTensorField": 6,
+    "tensorField": 9,
+}
+
+
+def _binary_doubles_to_ascii(data: bytes, n_values: int | None = None) -> str:
+    """Convert a binary float64 array to a space-separated ASCII string.
+
+    ``n_values`` is how many doubles to read, taken from the element count in
+    the FoamFile header. It is not a nicety: this function used to delimit the
+    stream by scanning for the closing ``)``, which cannot work. Raw float64
+    bytes are arbitrary, so 0x29 (the byte for ')') occurs constantly inside
+    legitimate coordinates, and the data was truncated at the first one.
+
+    Measured on a 16415-point cfMesh mesh (cartesianMesh, writeFormat binary):
+    the scan cut the stream after 38 doubles, so _parse_of_points() raised
+    "cannot reshape array of size 38 into shape (3)" and the caller turned
+    that into a silent None - i.e. the viewer showed nothing at all for any
+    binary mesh, which is the format the app writes by default.
+    """
     pos = 0
-    while pos < len(data) and data[pos:pos+1] in (b'\n', b' ', b'\r'):
+    while pos < len(data) and data[pos:pos + 1] in (b'\n', b' ', b'\r'):
         pos += 1
     data = data[pos:]
-    # Find closing paren and stop there
-    end_pos = data.find(b')')
-    if end_pos >= 0:
-        data = data[:end_pos]
-    n_floats = len(data) // 8
-    if n_floats == 0:
+
+    available = len(data) // 8
+    if n_values is None or n_values <= 0 or n_values > available:
+        # Header count missing or inconsistent with the file: fall back to
+        # whatever is actually there rather than raising. Still never scans
+        # for ')' - a short read beats a truncated one.
+        if n_values:
+            logger.debug(
+                "Binary field claims %d values but only %d fit in %d bytes; "
+                "reading what is present.", n_values, available, len(data),
+            )
+        n_values = available
+    if n_values == 0:
         return ""
-    values = struct.unpack(f"<{n_floats}d", data[:n_floats * 8])
+    values = struct.unpack(f"<{n_values}d", data[:n_values * 8])
     return " ".join(f"{v:.10g}" for v in values)
 
 
@@ -441,10 +475,17 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
         all_faces = _parse_of_faces(poly_dir / "faces")
         patches = _parse_boundary(poly_dir / "boundary")
     except (ValueError, IndexError, OSError, MemoryError) as exc:
+        # This used to say the failure was "normal for large binary cfMesh
+        # meshes". It was not: size was never the discriminator. Measured on
+        # one mesh written both ways, the 938 KB BINARY faces file failed
+        # while the 1.0 MB ASCII one parsed fine - the larger file was the
+        # one that worked, and both were far below the 5 MB cutoff above.
+        # The real cause was the ')'-scan truncation fixed in
+        # _binary_doubles_to_ascii. Blaming size sent anyone reading this log
+        # looking in the wrong place, so say only what is actually known.
         logger.warning(
-            "Manual mesh parsing failed for %s: %s. "
-            "This is normal for large binary cfMesh meshes â€” "
-            "foamToVTK must be used instead.",
+            "Manual mesh parsing failed for %s: %s. Falling back to "
+            "foamToVTK; run it for this case if the viewer stays empty.",
             poly_dir, exc,
         )
         return None
