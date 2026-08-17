@@ -12,10 +12,13 @@ tail gmsh_wrapper prints on completion.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 LogFn = Callable[[str], None]
 
@@ -90,6 +93,8 @@ def run_gmsh_volume(
                         payload = json.loads(line)
                         break
                     except json.JSONDecodeError:
+                        # progress/log line, not the JSON tail — keep scanning
+                        logger.debug("gmsh_subprocess: line is not JSON, skipping")
                         continue
             if payload is not None and payload.get("success"):
                 payload["wall_time_s"] = time.monotonic() - t0
@@ -125,6 +130,8 @@ def run_gmsh_to_foam(
                 payload = json.loads(line)
                 break
             except json.JSONDecodeError:
+                # a JSON-looking line that isn't valid JSON — keep scanning
+                logger.debug("gmsh_subprocess: malformed JSON line skipped")
                 continue
     if rc != 0 or payload is None or not payload.get("success"):
         tail = "\n".join((stdout + stderr)[-30:])

@@ -244,7 +244,8 @@ class OODAWorkflowAdapter:
                 if hasattr(m, 'vertices') and len(m.vertices) > 0:
                     pass  # geometry already loaded
         except ImportError:
-            pass
+            # optional geometry library missing — meshes will be loaded lazily
+            logger.debug("adaptive_integration: pre-load skipped (ImportError)", exc_info=True)
 
     def _phase_intent_generation(self) -> dict[str, Any]:
         """Compute cell sizes, BL parameters from geometry.

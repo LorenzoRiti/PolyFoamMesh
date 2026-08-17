@@ -580,7 +580,8 @@ class TaskManager(QObject):
                 try:
                     sig.disconnect()
                 except (TypeError, RuntimeError):
-                    pass
+                    # signal already disconnected during teardown — fine
+                    logger.debug("task_runner: disconnect failed on %s", sig_name, exc_info=True)
         self._task_of_sender.pop(id(relay), None)
         relay.deleteLater()
         # Keep strong references to worker+thread until the C++ objects are
@@ -602,7 +603,8 @@ class TaskManager(QObject):
         try:
             self._retired.remove(task)
         except ValueError:
-            pass
+            # already removed by a concurrent cleanup — fine, nothing to release
+            logger.debug("task_runner: task not in retired set (concurrent cleanup)", exc_info=True)
 
     def _force_cleanup(self, name: str, reason: str) -> None:
         task = self._tasks.get(name)
@@ -664,7 +666,8 @@ class TaskManager(QObject):
         try:
             thread.setParent(None)  # never destroyed by the manager
         except RuntimeError:
-            pass
+            # thread already gone (concurrent teardown) — nothing to detach
+            logger.debug("task_runner: thread already destroyed for '%s'", name, exc_info=True)
         self._zombies.append((name, worker, thread, relay))
         self._tasks.pop(name, None)
         self._task_of_sender.pop(id(relay), None)
@@ -680,7 +683,7 @@ class TaskManager(QObject):
             self.task_cancelled.emit(name, "cancelled (stuck task detached)")
         except RuntimeError:
             # Object being torn down concurrently — nothing to report to.
-            pass
+            logger.debug("task_runner: task_cancelled emit failed (teardown)", exc_info=True)
 
     @property
     def zombies(self) -> list[str]:

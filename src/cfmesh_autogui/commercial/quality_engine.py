@@ -422,6 +422,8 @@ class QualityEngine:
                 data["non_orthogonality"].append(float(m.group(3)))
                 data["aspect_ratio"].append(float(m.group(4)))
             except (ValueError, IndexError):
+                # malformed checkMesh cell line: skip it, keep the rest
+                logger.debug("quality_engine: unparseable cell line %r", m.group(0))
                 continue
 
         # Fallback: use average metrics when per-cell data unavailable

@@ -669,6 +669,8 @@ def latest_time_dir(case_dir: Path) -> str | None:
             try:
                 v = float(p.name)
             except ValueError:
+                # time-dir-looking name that isn't a number: skip it
+                logger.debug("solution_adaptive: ignoring non-numeric time dir %s", p.name)
                 continue
             if v > 0:
                 times.append((v, p.name))

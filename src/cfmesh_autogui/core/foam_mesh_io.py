@@ -286,7 +286,9 @@ def read_label_list(path: Path) -> np.ndarray:
             try:
                 data.append(int(stripped))
             except ValueError:
-                pass
+                # non-numeric line in an int list: skip it (robust parse of
+                # hand-edited/legacy OpenFOAM files), never abort the read
+                logger.debug("_read_int_list: skipping non-int line %r", stripped)
     return np.array(data, dtype=np.int32)
 
 

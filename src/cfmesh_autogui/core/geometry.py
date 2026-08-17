@@ -344,6 +344,9 @@ def _sample_thickness_one_mesh(
             try:
                 res = mesh.ray.intersects_location(ray_origins=o, ray_directions=d)
             except Exception:
+                # one bad ray batch must not abort the whole thickness field —
+                # skip it and measure the remaining origins
+                logger.debug("thickness field: ray batch failed", exc_info=True)
                 continue
             if not res or len(res[0]) == 0:
                 continue
@@ -429,6 +432,9 @@ def sample_thickness_field(
             try:
                 res = mesh.ray.intersects_location(ray_origins=o, ray_directions=d)
             except Exception:
+                # one bad ray batch must not abort the whole thickness field —
+                # skip it and measure the remaining origins
+                logger.debug("thickness field: ray batch failed", exc_info=True)
                 continue
             if not res or len(res[0]) == 0:
                 continue
@@ -555,7 +561,9 @@ def check_watertight(meshes: list[trimesh.Trimesh]) -> tuple[bool, int, str]:
             combined.edges[_grouping.group_rows(combined.edges_sorted, require_count=1)]
         )
     except Exception:  # pragma: no cover - defensive
-        pass
+        # grouping API change or degenerate geometry: fall back to n_open=0
+        # (still reports "not watertight" with an unknown edge count)
+        logger.debug("check_watertight: open-edge count failed", exc_info=True)
 
     return False, n_open, (
         f"Geometry is not watertight: {n_open} open boundary edges. "

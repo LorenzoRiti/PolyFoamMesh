@@ -9,9 +9,12 @@ on disk.
 from __future__ import annotations
 
 import gzip
+import logging
 import re
 import struct
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def read_of_text(path: Path | str, errors: str = "replace") -> str:
@@ -46,7 +49,8 @@ def _read_header_bytes(path: Path, max_bytes: int = _HEADER_READ_SIZE) -> bytes:
         with gzip.open(path, "rb") as f:
             gz_data = f.read(max_bytes)
     except (OSError, gzip.BadGzipFile):
-        pass
+        # not gzip (or truncated) — fall through to the plain-file read
+        logger.debug("_read_header_bytes: gzip probe failed for %s", path, exc_info=True)
     if gz_data and gz_data[:2] == b"\x1f\x8b":
         # File was gzip but we only got compressed bytes from gzip.open
         # (can happen when gzip.open fails to decompress)
@@ -74,7 +78,8 @@ def _read_of_bytes(path: Path) -> bytes:
             if header == b"\x1f\x8b":
                 return f.read()
     except (OSError, gzip.BadGzipFile):
-        pass
+        # not gzip — plain read below
+        logger.debug("_read_of_bytes: gzip probe failed for %s", path, exc_info=True)
     return path.read_bytes()
 
 
