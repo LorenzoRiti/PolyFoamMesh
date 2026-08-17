@@ -15,6 +15,7 @@ import os
 import ctypes
 import shlex
 import signal
+import struct
 import subprocess
 import threading
 import time
@@ -168,12 +169,31 @@ def analyze_error(full_output: str) -> ErrorInfo:
     # recognised" while cartesianMesh had in fact core-dumped, so the user
     # got a silent/generic failure with no next step.
     #
-    # Reproduced on the bf_roundtrip fixture (a plain 1 m cylinder): it
-    # dies in "Smoothing mesh surface before mapping" with
-    # `terminate called after throwing an instance of 'char const*'`.
-    # Measured on that case, the crash is NOT monotonic in cell size —
-    # maxCellSize 0.25, 0.10 and 0.05 all abort while 0.15 meshes fine —
-    # so the actionable advice is to nudge the size, not simply refine.
+    # Reproduced on the bf_roundtrip fixture, which is NOT a 1 m cylinder:
+    # its STL measures 0.002 m across (create_test_cylinder(1.0, 2.0) is in
+    # cadquery's native mm, and tessellate_patches converts mm->m). The test
+    # then asks for maxCellSize 0.25 — cells 125x larger than the whole body.
+    #
+    # An earlier version of this comment claimed the crash was "not monotonic
+    # in cell size" because 0.25/0.10/0.05 abort while 0.15 meshes fine, and
+    # advised nudging the size. A full sweep on that fixture showed the
+    # premise was wrong: 0.15 does not mesh fine, it produces 8 cells.
+    #
+    #   maxCellSize  vs bbox   exit  cells        maxCellSize  vs bbox  exit  cells
+    #   0.25         125x      134   8            0.0025       1.25x    0     8
+    #   0.20         100x      134   8            0.002        1.0x     0     32
+    #   0.15          75x        0   8            0.001        0.5x     0     120
+    #   0.12          60x      134   8            0.0005       0.25x    0     640
+    #   0.10          50x      134   8            0.0002       0.1x     0     5336
+    #   0.05          25x      134   8            0.0001       0.05x    0     26768
+    #
+    # So there is no lucky value to find. EVERY size at or above the bounding
+    # box collapses to the same degenerate 8-cell octree; the only thing that
+    # varies is whether cfMesh aborts or returns 0 with a useless mesh. The
+    # old advice steered the user straight into that silent-garbage case,
+    # which is worse than the crash. Refining below the geometry scale is the
+    # only thing that actually works — hence preflight_cell_size() below,
+    # which catches this before cfMesh ever runs.
     if (
         "terminate called after throwing" in lo
         or "core dumped" in lo
@@ -182,11 +202,14 @@ def analyze_error(full_output: str) -> ErrorInfo:
         return ErrorInfo(
             ErrorType.CRASH,
             "cartesianMesh aborted (uncaught internal cfMesh exception).",
-            "This is a crash inside cfMesh itself, not a bad case setup. "
-            "It is usually triggered by one specific cell-size/geometry "
-            "combination: try a moderately different Max Cell Size (a "
-            "nearby value often meshes cleanly), or simplify/repair the "
-            "surface in that region.",
+            "Most often this means Max Cell Size is too large for the "
+            "geometry: cells at or above the size of the model itself "
+            "collapse the octree and cfMesh dies while smoothing the "
+            "surface. Check the model's real dimensions (a CAD file "
+            "authored in mm is imported as metres) and set Max Cell Size "
+            "well below the smallest overall dimension. Do not simply try "
+            "a nearby value — a size that merely stops the crash can still "
+            "produce a degenerate mesh.",
             detail,
         )
     if "non-mappable" in lo:
@@ -229,6 +252,166 @@ def analyze_error(full_output: str) -> ErrorInfo:
             detail,
         )
     return ErrorInfo()
+
+
+# ------------------------------------------------------------------
+# Pre-flight guard — cell size vs geometry scale
+# ------------------------------------------------------------------
+# cfMesh cannot mesh a body with cells the size of the body. Measured on the
+# bf_roundtrip fixture (see the sweep table in analyze_error above): at or
+# above 1.25x the bounding box every run collapsed to 8 cells, and 5 of those
+# 8 runs died with SIGABRT. At or below 1.0x, every run produced a sane,
+# monotonically growing mesh. The failure is therefore predictable from the
+# STL alone, with no cfMesh run needed — which is the whole point of doing it
+# here rather than reading it out of a core dump afterwards.
+
+# Below this many cells across the SMALLEST bounding-box dimension the run is
+# refused. 1.0 is exactly the measured cliff (<=1.0x bbox always worked,
+# >=1.25x bbox never did); the guard sits on the measurement rather than on a
+# safety factor invented on top of it.
+MIN_CELLS_ACROSS_FATAL = 1.0
+# Advisory only. NOT a measured cliff: every sample below 4 cells across in
+# the sweep was degenerate, but 4 is a round number chosen for margin, not a
+# boundary anyone measured. It warns, it never blocks.
+MIN_CELLS_ACROSS_WARN = 4.0
+
+
+@dataclass
+class PreflightIssue:
+    """A problem detectable before launching cfMesh."""
+
+    fatal: bool
+    message: str
+    suggestion: str = ""
+
+
+def _stl_bbox(path: Path) -> tuple[float, float, float] | None:
+    """Return the (dx, dy, dz) extent of an STL, or None if unreadable.
+
+    Handles both ASCII and binary STL without pulling in trimesh: this runs
+    on the meshing hot path, and a bounding box is 20 lines of struct work.
+    Returns None rather than raising — a guard that cannot read the file must
+    fail OPEN and let cfMesh proceed, never block a run it does not
+    understand.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            head = fh.read(84)
+            if len(head) < 84:
+                return None
+            # Binary STL: 80-byte header + uint32 count + 50 bytes/triangle.
+            n_tri = int.from_bytes(head[80:84], "little")
+            if size == 84 + 50 * n_tri and n_tri > 0:
+                lo = [float("inf")] * 3
+                hi = [float("-inf")] * 3
+                for _ in range(n_tri):
+                    rec = fh.read(50)
+                    if len(rec) < 50:
+                        return None
+                    # skip the 12-byte normal, read 3 vertices of 3 floats
+                    coords = struct.unpack("<9f", rec[12:48])
+                    for v in range(3):
+                        for a in range(3):
+                            c = coords[v * 3 + a]
+                            lo[a] = min(lo[a], c)
+                            hi[a] = max(hi[a], c)
+                return (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+
+        text = path.read_text(errors="replace")
+        verts = _STL_VERTEX_RE.findall(text)
+        if not verts:
+            return None
+        lo = [float("inf")] * 3
+        hi = [float("-inf")] * 3
+        for tri in verts:
+            for a in range(3):
+                c = float(tri[a])
+                lo[a] = min(lo[a], c)
+                hi[a] = max(hi[a], c)
+        return (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+_STL_VERTEX_RE = re.compile(
+    r"vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)"
+)
+_MESHDICT_MAX_CELL_RE = re.compile(r"^\s*maxCellSize\s+([-\d.eE+]+)\s*;", re.MULTILINE)
+_MESHDICT_SURFACE_RE = re.compile(r'^\s*surfaceFile\s+"?([^";]+)"?\s*;', re.MULTILINE)
+
+
+def preflight_cell_size(case_dir: Path | str) -> PreflightIssue | None:
+    """Detect a doomed maxCellSize/geometry combination before running cfMesh.
+
+    Returns None when the case looks runnable OR when the check cannot be
+    performed (missing meshDict, non-STL surface, unreadable STL). Never
+    guesses: an unknown case is allowed through.
+    """
+    case_dir = Path(case_dir)
+    mesh_dict = case_dir / "system" / "meshDict"
+    try:
+        text = mesh_dict.read_text(errors="replace")
+    except OSError:
+        return None
+
+    m_size = _MESHDICT_MAX_CELL_RE.search(text)
+    m_surf = _MESHDICT_SURFACE_RE.search(text)
+    if not m_size or not m_surf:
+        return None
+    try:
+        max_cell = float(m_size.group(1))
+    except ValueError:
+        return None
+    if max_cell <= 0:
+        return None
+
+    surface = (case_dir / m_surf.group(1).strip()).resolve()
+    if surface.suffix.lower() != ".stl" or not surface.is_file():
+        # .fms and friends: not parsed here, so say nothing.
+        return None
+
+    bbox = _stl_bbox(surface)
+    if bbox is None:
+        return None
+    # Ignore genuinely flat dimensions (a 2D-ish extrusion): a zero span
+    # would otherwise report "0 cells across" for a perfectly valid case.
+    spans = [s for s in bbox if s > 0]
+    if not spans:
+        return None
+    smallest = min(spans)
+    cells_across = smallest / max_cell
+
+    if cells_across >= MIN_CELLS_ACROSS_WARN:
+        return None
+
+    detail = (
+        f"Max Cell Size is {max_cell:g}, but the surface measures "
+        f"{bbox[0]:g} x {bbox[1]:g} x {bbox[2]:g} - only "
+        f"{cells_across:.2f} cells across its smallest dimension."
+    )
+    if cells_across >= MIN_CELLS_ACROSS_FATAL:
+        return PreflightIssue(
+            fatal=False,
+            message=f"Max Cell Size is very coarse for this geometry. {detail}",
+            suggestion=(
+                f"Consider a Max Cell Size around {smallest / 20:g} "
+                f"(~20 cells across the model)."
+            ),
+        )
+    return PreflightIssue(
+        fatal=True,
+        message=f"Max Cell Size is larger than the geometry itself. {detail}",
+        suggestion=(
+            "cfMesh cannot mesh a body with cells bigger than the body: the "
+            "octree collapses to a handful of cells and cartesianMesh "
+            "usually aborts while smoothing the surface. If the model looks "
+            f"far smaller than expected, check its units - {bbox[0]:g} m "
+            "across suggests a file authored in mm and read as metres. "
+            f"Otherwise set Max Cell Size to about {smallest / 20:g} "
+            f"(~20 cells across the model)."
+        ),
+    )
 
 
 # ------------------------------------------------------------------
@@ -327,6 +510,21 @@ class MeshWorker(QObject):
             self.log_line.emit(f"ERROR: {msg}")
             self.finished.emit(1, msg)
             return
+
+        # Pre-flight: a cell size at or above the model size is a guaranteed
+        # failure, and cfMesh reports it as a core dump minutes later (or,
+        # worse, as a successful 8-cell mesh). Catch it here, where we can
+        # still say something useful about WHY.
+        issue = preflight_cell_size(self._case_dir)
+        if issue is not None:
+            if issue.fatal:
+                self.log_line.emit(f"ERROR: {issue.message}")
+                self.log_line.emit(issue.suggestion)
+                self.finished.emit(1, f"{issue.message}\n{issue.suggestion}")
+                return
+            self.log_line.emit(f"WARNING: {issue.message}")
+            if issue.suggestion:
+                self.log_line.emit(issue.suggestion)
 
         cmd = self._of_config.build_command(self._case_dir)
         self.log_line.emit(f"[cmd] {' '.join(cmd)}")
