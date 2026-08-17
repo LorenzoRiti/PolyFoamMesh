@@ -186,6 +186,127 @@ def test_legacy_zone_still_cube():
     print("PASS: legacy cube semantics preserved")
 
 
+
+
+# ---------------------------------------------------------------------------
+# localRefinement / edgeMeshRefinement / workflowControls (cfMesh features
+# that were never used — verified against the installed cartesianMesh binary
+# before implementation, per the project rule of not trusting dictionary keys
+# on faith).
+# ---------------------------------------------------------------------------
+
+
+def test_local_refinement_emits_levels_not_metres():
+    """localRefinement refines the VOLUME near a patch in cfMesh's native
+    currency: octree LEVELS (additionalRefinementLevels), never absolute
+    cell sizes — the latter crashed real geometry (commit 9904d65)."""
+    import re
+    lines = build_meshdict_lines(
+        local_refinement={
+            "wall": {"additional_refinement_levels": 2, "refinement_thickness": 0.02},
+        },
+    )
+    content = "\n".join(lines)
+    assert "localRefinement" in content
+    assert re.search(r'"wall"\s*\{', content)
+    assert "additionalRefinementLevels 2;" in content
+    assert "refinementThickness 0.02;" in content
+    # levels, never metres-as-levels: no cellSize key inside localRefinement
+    lr = content.split("localRefinement")[1].split("}")[0]
+    assert "cellSize" not in lr
+    print("PASS: localRefinement in octree-level currency")
+
+
+def test_local_refinement_malformed_skipped_not_fatal():
+    """Bad entries (negative thickness, non-int levels) are skipped with a
+    warning; valid siblings still emitted; an all-bad dict yields no block."""
+    content = "\n".join(build_meshdict_lines(
+        local_refinement={
+            "bad": {"additional_refinement_levels": 1, "refinement_thickness": -1},
+            "ok": {"additional_refinement_levels": 1, "refinement_thickness": 0.01},
+        },
+    ))
+    assert "localRefinement" in content
+    assert '"ok"' in content
+    assert "bad" not in content
+    # all-invalid -> no empty block left behind
+    content2 = "\n".join(build_meshdict_lines(
+        local_refinement={
+            "x": {"additional_refinement_levels": 0, "refinement_thickness": 0.01},
+        },
+    ))
+    assert "localRefinement" not in content2
+    print("PASS: malformed localRefinement skipped")
+
+
+def test_edge_mesh_refinement_requires_real_edge_file():
+    """edgeMeshRefinement takes an OpenFOAM edgeMesh file (eMesh/obj/vtk).
+    The .fms surface file is NOT accepted (cartesianMesh: 'Unknown edge
+    format fms') — the emitted block must carry the edgeFile path so the
+    caller controls which edge mesh to point at."""
+    import re
+    lines = build_meshdict_lines(
+        edge_mesh_refinement=[
+            {"edge_file": "constant/triSurface/surface.eMesh", "levels": 1},
+        ],
+    )
+    content = "\n".join(lines)
+    assert "edgeMeshRefinement" in content
+    assert "edgeFile" in content
+    assert 'edgeFile "constant/triSurface/surface.eMesh";' in content
+    assert "additionalRefinementLevels 1;" in content
+    assert ".fms" not in content
+    print("PASS: edgeMeshRefinement emits edgeFile")
+
+
+def test_edge_mesh_refinement_malformed_skipped():
+    """An entry without edge_file is skipped; only valid ones emitted."""
+    content = "\n".join(build_meshdict_lines(
+        edge_mesh_refinement=[
+            {"edge_file": None, "levels": 1},
+            {"edge_file": "x.eMesh", "levels": 2},
+        ],
+    ))
+    assert "edgeMeshRefinement" in content
+    # numbering counts VALID entries only: the invalid one is skipped,
+    # so the first valid entry is edgeRefinement_0 with levels=2
+    assert "edgeRefinement_0" in content
+    assert "edgeRefinement_1" not in content
+    assert "additionalRefinementLevels 2;" in content
+    print("PASS: malformed edgeMeshRefinement skipped")
+
+
+def test_workflow_controls_stop_after():
+    """workflowControls/stopAfter lets a run stop after a named phase —
+    the hook the pipeline front needs to inspect a partial mesh."""
+    lines = build_meshdict_lines(workflow_stop_after="refineBoundaryLayers")
+    content = "\n".join(lines)
+    assert "workflowControls" in content
+    assert 'stopAfter "refineBoundaryLayers";' in content
+    # default: no workflow block
+    assert "workflowControls" not in "\n".join(build_meshdict_lines())
+    print("PASS: workflowControls stopAfter")
+
+
+def test_write_meshdict_with_features():
+    """write_meshdict passes the new params through to the file on disk."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = write_meshdict(
+            tmp,
+            max_cell_size=0.3, min_cell_size=0.1,
+            local_refinement={
+                "wall": {"additional_refinement_levels": 1, "refinement_thickness": 0.05},
+            },
+            edge_mesh_refinement=[{"edge_file": "surf.eMesh", "levels": 1}],
+            workflow_stop_after="refineBoundaryLayers",
+        )
+        content = out.read_text()
+        assert "localRefinement" in content
+        assert "edgeMeshRefinement" in content
+        assert "workflowControls" in content
+        assert 'stopAfter "refineBoundaryLayers";' in content
+    print("PASS: write_meshdict with features")
+
 if __name__ == "__main__":
     test_basic_has_robust_flags()
     test_basic_no_bl()
