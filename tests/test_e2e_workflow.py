@@ -32,8 +32,30 @@ from PySide6.QtCore import QEventLoop, QThread, Qt, QTimer
 E2E_TIMEOUT_SECONDS = 180
 
 
+@pytest.fixture(scope="module")
+def qapp():
+    """Measured, not assumed: without a QCoreApplication/QApplication
+    instance, QEventLoop.exec() below never returns AND QTimer never fires.
+
+    Probed on PySide6 6.11.1: a 2s single-shot QTimer driving a QEventLoop
+    fires in 2.01s with an application instance, and had not fired after
+    120s without one. Same for the cross-thread queued `finished` signal —
+    the worker's emit() returns normally, but the event is never delivered
+    to this thread.
+
+    So the watchdog below is not merely "late" without this fixture, it is
+    inert, and the whole test hangs forever with no assertion. The
+    __main__ block at the bottom of this file builds a QApplication; under
+    pytest nothing did, which is exactly why this test hung past 600s.
+
+    QApplication (not QCoreApplication): matches every other GUI test
+    module in this suite, and step [7/7] renders mesh patches.
+    """
+    return QApplication.instance() or QApplication([])
+
+
 @pytest.mark.wsl
-def test_full_workflow():
+def test_full_workflow(qapp):
     of_config = OFConfig()
     if not of_config.validate():
         print("SKIP: OpenFOAM not available")
