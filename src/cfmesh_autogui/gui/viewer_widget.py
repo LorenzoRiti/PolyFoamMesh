@@ -135,6 +135,13 @@ def _binary_doubles_to_ascii(data: bytes, n_values: int | None = None) -> str:
     "cannot reshape array of size 38 into shape (3)" and the caller turned
     that into a silent None - i.e. the viewer showed nothing at all for any
     binary mesh, which is the format the app writes by default.
+
+    Why this survived so long: tests/test_e2e_workflow.py step [7/7] is what
+    covers this path, and it wrote `writeFormat ascii` until commit aaf5e12
+    switched it to `binary`. From that commit the step could no longer pass -
+    but by then the same test hung at step [5/7] for a missing QApplication
+    (fixed in f18785c), so it never got far enough to report it. One bug was
+    hiding the other; do not assume a green-looking suite exercised this.
     """
     pos = 0
     while pos < len(data) and data[pos:pos + 1] in (b'\n', b' ', b'\r'):
