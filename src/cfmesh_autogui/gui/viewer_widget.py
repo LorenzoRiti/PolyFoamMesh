@@ -58,6 +58,21 @@ def _strip_of_comments(text: str) -> str:
     return text
 
 
+def _strip_of_comments_keep_offsets(text: str) -> str:
+    """Like _strip_of_comments, but blanks comments to spaces instead of
+    deleting them, so every surviving character keeps its ORIGINAL index.
+
+    Required wherever a position found by scanning the stripped text is
+    later used to slice the raw, un-stripped bytes (see
+    _read_of_block_binary): deleting characters shifts every index after
+    the comment, so an index computed on the shortened text no longer
+    points at the same byte in the original buffer.
+    """
+    text = re.sub(r"/\*.*?\*/", lambda m: " " * len(m.group(0)), text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", lambda m: " " * len(m.group(0)), text)
+    return text
+
+
 def _is_binary_of(path: Path) -> bool:
     """Check if an OpenFOAM file is in binary format (reads only header)."""
     from cfmesh_autogui.core.of_reader import _read_header_bytes
@@ -84,12 +99,18 @@ def _read_of_block_binary(path: Path, raw: bytes) -> str:
     For faces: returns 'n1 (v0 v1 ...)  n2 (v0 v1 ...) ...'
     """
     text_part = raw.decode("ascii", errors="replace")
+    # Deletes comments -> shifts every later index -> NOT usable to locate a
+    # position that will slice `raw`. Only safe for content extraction
+    # (e.g. the class= match below), never for offsets into raw.
     text_part = _strip_of_comments(text_part)
-    # Binary data can contain stray byte 0x7D ('}'), so text_part.find("}")
-    # is unreliable. Limit the search to the first 512 chars (safe header size).
-    header_end = text_part[:512].rfind("}")
+    # Length-preserving: comments become spaces of the same width, so an
+    # index found here still points at the same byte in `raw`. Binary data
+    # can contain a stray 0x7D ('}'), so the search is capped to the first
+    # 512 chars (safe header size) to avoid matching one inside the body.
+    header_scan = _strip_of_comments_keep_offsets(raw.decode("ascii", errors="replace"))
+    header_end = header_scan[:512].rfind("}")
     if header_end < 0:
-        header_end = text_part.find("}")
+        header_end = header_scan.find("}")
         if header_end < 0:
             raise ValueError(f"Cannot find FoamFile header end in {path}")
     body = raw[header_end + 1:] if header_end != -1 else raw
