@@ -147,7 +147,7 @@ def test_parallel_emits_progress():
     except Exception:
         pass
     # Callback should have been called at least once
-    assert len(messages) >= 0
+    assert len(messages) >= 1
 
 
 def test_parallel_sets_ncores_in_sizing():

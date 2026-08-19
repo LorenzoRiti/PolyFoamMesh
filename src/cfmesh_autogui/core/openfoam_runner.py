@@ -624,13 +624,9 @@ class MeshWorker(QObject):
                 if not _stop_reader.is_set():
                     _stdout_thread.join(timeout=2)
                     if not _reader_done.is_set():
-                        try:
-                            for line in process.stdout:
-                                if _stop_reader.is_set():
-                                    break
-                                self._process_line(line, full_output)
-                        except Exception:
-                            pass
+                        # Reader thread still running — wait for it to finish
+                        # rather than reading stdout concurrently (race condition).
+                        _stdout_thread.join(timeout=10)
         except Exception as exc:
             # MUST NOT propagate: this block used to have only a `finally`,
             # so any unexpected exception here escaped run() and skipped the
@@ -704,13 +700,6 @@ class MeshWorker(QObject):
                     capture_output=True,
                     timeout=5,
                 )
-            if wsl_distro:
-                with suppress(OSError, subprocess.TimeoutExpired):
-                    subprocess.run(
-                        ["wsl.exe", "--terminate", wsl_distro],
-                        capture_output=True,
-                        timeout=10,
-                    )
         else:
             with suppress(OSError, ProcessLookupError):
                 os.killpg(os.getpgid(pid), signal.SIGKILL)
@@ -1898,7 +1887,7 @@ def _kill_pid_tree(pid: int) -> None:
 
 # Job handles that must stay open for KILL_ON_JOB_CLOSE to apply; cleaned
 # up when the child exits (see _stream_subprocess).
-_JOB_HANDLES: set = set()
+_JOB_HANDLES: dict[int, int] = {}  # proc_handle -> job_handle
 
 # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — kills every process in the job when
 # the last handle to the job is closed (i.e. when our process dies).
@@ -1976,7 +1965,7 @@ def _harden_windows_child(proc) -> None:
                     ctypes.byref(info), ctypes.sizeof(info),
                 ):
                     if kernel32.AssignProcessToJobObject(job, handle):
-                        _JOB_HANDLES.add(job)
+                        _JOB_HANDLES[handle] = job
     except Exception:
         logger.debug("Windows child hardening failed (non-fatal)", exc_info=True)
 
@@ -1990,16 +1979,11 @@ def _release_job(proc) -> None:
         handle = int(proc._handle)
     except Exception:
         return
-    # The job object is not directly keyed by pid; scan-and-close is O(n)
-    # but n is tiny (one job per concurrently running subprocess).
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        for job in list(_JOB_HANDLES):
-            try:
-                if kernel32.CloseHandle(job):
-                    _JOB_HANDLES.discard(job)
-            except Exception:
-                pass
+        job = _JOB_HANDLES.pop(handle, None)
+        if job:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle(job)
     except Exception:
         pass
 

@@ -69,9 +69,12 @@ class OFConfig:
         if raw.startswith("/"):
             return raw.replace("'", "'\\''")
         case_dir = Path(case_dir).resolve()
-        drive = case_dir.drive[0].lower()
+        drive_letter = case_dir.drive[:1].lower() if case_dir.drive else ""
+        if not drive_letter or not case_dir.drive.endswith(":"):
+            # UNC or relative path without drive — use full path translation
+            return f"/mnt/wsl/{raw.replace(chr(92), '/')}".replace("'", "'\\''")
         rel = str(case_dir).split(":", 1)[1].replace("\\", "/")
-        return f"/mnt/{drive}{rel}".replace("'", "'\\''")
+        return f"/mnt/{drive_letter}{rel}".replace("'", "'\\''")
 
     def _build_wsl_cmd(self, bash_code: str) -> list[str]:
         return [

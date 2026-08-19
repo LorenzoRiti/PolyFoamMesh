@@ -890,7 +890,7 @@ def test_progress_callback_reports_phases(tmp_path):
     agg.set_progress_callback(_cb)
     result = agg.run(case_dir, geometry_path=str(stl_path))
     # May fail without GMSH - but callback should have been set without error
-    assert result.success or not result.success
+    assert hasattr(result, 'success')
 
 
 def test_exported_from_package():

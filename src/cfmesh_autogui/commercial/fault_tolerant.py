@@ -123,6 +123,9 @@ class FaultTolerantWorkflow:
             self._step_import()
             self._step_detect_gaps()
             self._step_prepare_meshdict()
+            # NOTE: the actual cartesianMesh / volume-fill step is not yet
+            # implemented.  success=True means the meshDict was prepared, not
+            # that a valid volume mesh was produced.
             self._result.success = True
             octo.log_event("fault_tolerant", "workflow_complete", {})
         except Exception as exc:

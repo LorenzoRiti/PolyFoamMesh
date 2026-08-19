@@ -73,7 +73,8 @@ class LogPanel(QTextEdit):
             self._insert_line(text)
 
     def _insert_line(self, text: str):
-        html = str(text)
+        from html import escape
+        html = escape(str(text))
         html = html.replace("[ERROR]", f'<span style="color:{ERROR_LIGHT};font-weight:bold">[ERROR]</span>')
         html = html.replace("[WARN]", f'<span style="color:{WARNING_LIGHT};font-weight:bold">[WARN]</span>')
         html = html.replace("[DONE]", f'<span style="color:{SUCCESS_LIGHT};font-weight:bold">[DONE]</span>')

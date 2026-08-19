@@ -1101,7 +1101,12 @@ class ParamsPanel(QWidget):
         if not hasattr(self, "_max_cell") or not hasattr(self, "_min_cell"):
             return
         bbox = getattr(self, "_bbox_dim", 1.0) or 1.0
-        cell_size = (bbox ** 3 / max(cells, 1)) ** (1.0 / 3.0)
+        extents = getattr(self, "_bbox_extents", None)
+        if extents and all(v > 0 for v in extents):
+            volume = extents[0] * extents[1] * extents[2]
+        else:
+            volume = bbox ** 3
+        cell_size = (volume / max(cells, 1)) ** (1.0 / 3.0)
         floor = 1e-10
         s_max = max(cell_size * 1.6, floor * 2.0)
         # Keep a strict gap after QDoubleSpinBox precision/clamping.

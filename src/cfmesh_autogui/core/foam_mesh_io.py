@@ -444,8 +444,21 @@ def write_polymesh(
             p = tmp_poly / name
             if not p.exists() or p.stat().st_size == 0:
                 raise RuntimeError(f"Verification failed: {name} is empty or missing")
+        backup = poly_dir.with_suffix(".bak")
         if poly_dir.exists():
-            shutil.rmtree(poly_dir)
-        shutil.move(str(tmp_poly), str(poly_dir))
+            if backup.exists():
+                shutil.rmtree(backup)
+            shutil.move(str(poly_dir), str(backup))
+        try:
+            shutil.move(str(tmp_poly), str(poly_dir))
+        except Exception:
+            # Restore from backup if move fails
+            if backup.exists():
+                shutil.move(str(backup), str(poly_dir))
+            raise
+        else:
+            # Clean up backup on success
+            if backup.exists():
+                shutil.rmtree(backup)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

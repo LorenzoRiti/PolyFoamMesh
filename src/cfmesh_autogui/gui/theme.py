@@ -256,6 +256,10 @@ def apply_theme(app: QApplication | None = None) -> str:
         try:
             hints = app.styleHints()
             if hasattr(hints, "colorSchemeChanged"):
+                try:
+                    hints.colorSchemeChanged.disconnect(_on_system_scheme_changed)
+                except (TypeError, RuntimeError):
+                    pass
                 hints.colorSchemeChanged.connect(_on_system_scheme_changed)
         except Exception:
             # live scheme-change tracking unavailable — theme still applies

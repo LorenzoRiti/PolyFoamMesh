@@ -27,10 +27,10 @@ from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
 
-# Regex patterns for checkMesh metric extraction
-_RE_NONORTHO = re.compile(r"Max non-orthogonality = ([\d.]+).*?average = ([\d.]+)", re.DOTALL)
-_RE_SKEW = re.compile(r"Max skewness = ([\d.]+).*?average = ([\d.]+)", re.DOTALL)
-_RE_ASPECT = re.compile(r"Max aspect ratio = ([\d.]+)", re.DOTALL)
+# Regex patterns for checkMesh metric extraction (supports both legacy and v2512+ formats)
+_RE_NONORTHO = re.compile(r"Max non-orthogonality\s*=\s*([\d.]+).*?average\s*[=:]\s*([\d.]+)", re.DOTALL)
+_RE_SKEW = re.compile(r"Max skewness\s*=\s*([\d.]+).*?average\s*[=:]\s*([\d.]+)", re.DOTALL)
+_RE_ASPECT = re.compile(r"Max aspect ratio\s*=\s*([\d.]+)", re.DOTALL)
 _RE_CELLS = re.compile(r"cells:\s+(\d+)", re.IGNORECASE)
 _RE_NEGVOL = re.compile(r"There are (\d+).*?negative volume", re.IGNORECASE)
 _RE_MINVOL = re.compile(r"Min volume = (-?[\d.eE+-]+)", re.IGNORECASE)

@@ -42,7 +42,10 @@ def run_gmsh_volume(step_path: Path, msh_path: Path, detail: str,
     dt = time.monotonic() - t0
     if r.returncode != 0:
         raise RuntimeError(f"GMSH {detail} failed:\n{r.stdout[-2000:]}\n{r.stderr[-800:]}")
-    info = json.loads(r.stdout.strip().splitlines()[-1])
+    try:
+        info = json.loads(r.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise RuntimeError(f"GMSH {detail} returned non-JSON output:\n{r.stdout[-2000:]}") from exc
     if not info.get("success"):
         raise RuntimeError(f"GMSH {detail} failed: {info.get('error')}")
     info["wall_time_s"] = dt

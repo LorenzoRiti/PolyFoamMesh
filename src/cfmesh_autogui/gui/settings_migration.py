@@ -143,7 +143,7 @@ class AppSettings:
         known = set(_SETTINGS_SCHEMA.keys())
         removed = 0
         for key in self._qs.allKeys():
-            if key not in known and not key.startswith("app/"):
+            if key not in known and not key.startswith("app/") and not key.startswith("params/"):
                 logger.info("Purging stale setting: %s", key)
                 self._qs.remove(key)
                 removed += 1
