@@ -581,8 +581,12 @@ class MeshEngine:
 
         # Final fallback: try serial
         logger.warning("Parallel mesh failed — falling back to serial")
+        saved_cores = self._params.n_cores
         self._params.n_cores = 1
-        self._run_serial_mesh(case_dir, raw_max, raw_min, None, patch_names)
+        try:
+            self._run_serial_mesh(case_dir, raw_max, raw_min, None, patch_names)
+        finally:
+            self._params.n_cores = saved_cores
 
     def _run_serial_mesh(
         self, case_dir: Path,

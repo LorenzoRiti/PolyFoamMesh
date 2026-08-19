@@ -134,7 +134,5 @@ if __name__ == "__main__":
             ok = hm["passed"] and pm["passed"] and pm["prisms"] > 0 and pm["polyhedra"] > 0
             print(f"  P3a VERDICT ({tag}): "
                   f"{'PASS (prisms+poly through polyDualMesh, Mesh OK)' if ok else 'FAIL'}")
-            if ok:
-                sys.exit(0)
     print("P3a: no configuration produced prism+poly with Mesh OK")
     sys.exit(1)

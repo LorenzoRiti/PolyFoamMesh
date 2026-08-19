@@ -155,7 +155,7 @@ def validate_stl_solids(path: Path | str) -> dict[str, int]:
                 solids[current] = count
             current = None
             continue
-        if current is not None and re.match(r".*facet", line, re.IGNORECASE):
+        if current is not None and re.match(r"\s*facet\b", line, re.IGNORECASE):
             count += 1
     return solids
 

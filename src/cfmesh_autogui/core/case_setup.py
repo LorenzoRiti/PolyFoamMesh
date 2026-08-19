@@ -288,10 +288,12 @@ class _PolyMeshGeometry:
                 continue
             c_accum = [0.0, 0.0, 0.0]
             n_accum = [0.0, 0.0, 0.0]
+            nv = 0
             for face in self.faces[start:end]:
                 verts = [self.points[v] for v in face if 0 <= v < len(self.points)]
                 if len(verts) < 3:
                     continue
+                nv += len(verts)
                 for v in verts:
                     for k in range(3):
                         c_accum[k] += v[k]
@@ -308,9 +310,9 @@ class _PolyMeshGeometry:
                 n_accum[1] += ny
                 n_accum[2] += nz
             nf = len(self.faces[start:end])
-            if nf:
+            if nv:
                 for k in range(3):
-                    c_accum[k] /= nf
+                    c_accum[k] /= nv
             norm = (n_accum[0] ** 2 + n_accum[1] ** 2 + n_accum[2] ** 2) ** 0.5
             if norm > 1e-30:
                 for k in range(3):

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import numpy as np
+import pytest
 import trimesh
 
 from cfmesh_autogui.core.throat_detector import (
@@ -58,15 +59,14 @@ def test_a_venturi_finds_throat():
     """(a) Venturi: should find the throat constriction when sampling is sufficient."""
     meshes = _build_venturi()
     zones = detect_refinement_regions(meshes, detail="fine", global_max_cell=0.05)
-    # Known limitation: throat detection depends on ray-cast sampling density
-    # and mesh tessellation quality. On coarse meshes (~1200 verts) the throat
-    # may not form clusters above the noise floor.
-    if zones:
-        for z in zones:
-            assert z.cell_size < 0.05, f"Cell size {z.cell_size} not finer than global"
-            assert z.local_thickness > 0, "Local thickness must be positive"
-            assert z.radius > 0, "Radius must be positive"
-            print(f"  Venturi zone: centre={z.centre}, thickness={z.local_thickness:.4f}, cellSize={z.cell_size:.5f}")
+    assert isinstance(zones, list), "detect_refinement_regions must return a list"
+    if not zones:
+        pytest.skip("No refinement zones detected (known tessellation-dependent limitation)")
+    for z in zones:
+        assert z.cell_size < 0.05, f"Cell size {z.cell_size} not finer than global"
+        assert z.local_thickness > 0, "Local thickness must be positive"
+        assert z.radius > 0, "Radius must be positive"
+        print(f"  Venturi zone: centre={z.centre}, thickness={z.local_thickness:.4f}, cellSize={z.cell_size:.5f}")
 
 
 # ---------------------------------------------------------------------------
@@ -118,12 +118,12 @@ def test_c_external_gap_detected():
     meshes = _build_gap_geometry()
     # The gap is very small (0.02m), so the threshold needs to be sensitive
     zones = detect_refinement_regions(meshes, detail="fine", global_max_cell=0.05)
-    # The gap should be detected as a narrow passage
-    assert isinstance(zones, list)
-    if zones:
-        # If detected, thickness should be close to the gap width
-        min_thickness = min(z.local_thickness for z in zones)
-        print(f"  Gap geometry: min detected thickness={min_thickness:.4f}m (expected ~0.02m)")
+    assert isinstance(zones, list), "detect_refinement_regions must return a list"
+    if not zones:
+        pytest.skip("No refinement zones detected (known tessellation-dependent limitation)")
+    # If detected, thickness should be close to the gap width
+    min_thickness = min(z.local_thickness for z in zones)
+    print(f"  Gap geometry: min detected thickness={min_thickness:.4f}m (expected ~0.02m)")
 
 
 # ---------------------------------------------------------------------------
@@ -140,11 +140,8 @@ def test_d_simple_cube_no_false_zones():
     """(d) Cube: should generate FEW refinement zones (ideally 0)."""
     meshes = _build_cube()
     zones = detect_refinement_regions(meshes, detail="medium", global_max_cell=0.05)
-    # A cube has uniform thickness, so ideally 0 zones. Edge artifacts from
-    # ray-casting may produce some spurious clusters on coarse tessellations.
-    logger.info(f"Cube refinement zones: {len(zones)} (tolerance < 5)")
-    if len(zones) >= 5:
-        logger.warning(f"Cube produced {len(zones)} zones (expected < 5)")
+    assert isinstance(zones, list), "detect_refinement_regions must return a list"
+    assert len(zones) < 5, f"Cube produced {len(zones)} zones (expected < 5)"
 
 
 def test_meshdict_with_refinement_zones():

@@ -558,7 +558,10 @@ class PolyBoundaryLayerEngine:
         patch_of = np.empty(n_bnd, dtype=np.int64)
         for pi, p in enumerate(patches):
             s = p["startFace"] - n_int
-            patch_of[s:s + p["nFaces"]] = pi
+            nf = p["nFaces"]
+            if s < 0 or s + nf > n_bnd:
+                continue
+            patch_of[s:s + nf] = pi
 
         if apply_to_all:
             selected = set(range(n_bnd))

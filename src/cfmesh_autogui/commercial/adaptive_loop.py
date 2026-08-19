@@ -2593,7 +2593,7 @@ def _parse_of_face_list(text: str) -> list[list[int]]:
 def _write_of_points(path: Path, pts: list[tuple[float, float, float]]) -> None:
     """Write OpenFOAM points file."""
     lines = [
-        "/*--------------------------------*- C++ -*----------------------------------*\\",
+        "/*--------------------------------*- C++ -*----------------------------------*/",
         "FoamFile { version 2.0; format ascii; class vectorField; object points; }",
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //",
         "",
@@ -2609,7 +2609,7 @@ def _write_of_points(path: Path, pts: list[tuple[float, float, float]]) -> None:
 def _write_of_face_list(path: Path, faces: list[list[int]]) -> None:
     """Write OpenFOAM faces file."""
     lines = [
-        "/*--------------------------------*- C++ -*----------------------------------*\\",
+        "/*--------------------------------*- C++ -*----------------------------------*/",
         "FoamFile { version 2.0; format ascii; class faceList; object faces; }",
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //",
         "",
@@ -2626,7 +2626,7 @@ def _write_of_face_list(path: Path, faces: list[list[int]]) -> None:
 def _write_of_label_list(path: Path, vals: list[int]) -> None:
     """Write OpenFOAM labelList file (no -1 sentinels)."""
     lines = [
-        "/*--------------------------------*- C++ -*----------------------------------*\\",
+        "/*--------------------------------*- C++ -*----------------------------------*/",
         f"FoamFile {{ version 2.0; format ascii; class labelList; object {path.name}; }}",
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //",
         "",
@@ -2642,7 +2642,7 @@ def _write_of_label_list(path: Path, vals: list[int]) -> None:
 def _write_of_label_list_with_neg1(path: Path, vals: list[int]) -> None:
     """Write OpenFOAM labelList allowing -1 sentinel neighbours."""
     lines = [
-        "/*--------------------------------*- C++ -*----------------------------------*\\",
+        "/*--------------------------------*- C++ -*----------------------------------*/",
         f"FoamFile {{ version 2.0; format ascii; class labelList; object {path.name}; }}",
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //",
         "",
@@ -2661,7 +2661,7 @@ def _write_of_boundary(
 ) -> None:
     """Write OpenFOAM boundary file."""
     lines = [
-        "/*--------------------------------*- C++ -*----------------------------------*\\",
+        "/*--------------------------------*- C++ -*----------------------------------*/",
         "FoamFile { version 2.0; format ascii; class polyBoundaryMesh; object boundary; }",
         "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //",
         "",

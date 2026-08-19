@@ -3405,8 +3405,9 @@ class MainWindow(QMainWindow):
         self._ribbon_btns["cancel"].setVisible(False)
         self._params.set_all_enabled(True)
         # Track retry count to avoid infinite retry loops
-        fail_count = getattr(self, "_meshing_fail_count", 0) + 1
-        self._meshing_fail_count = fail_count
+        if exit_code != 0:
+            fail_count = getattr(self, "_meshing_fail_count", 0) + 1
+            self._meshing_fail_count = fail_count
         if exit_code != 0:
             self._set_workflow_stage("generate", "error")
             error = analyze_error(output)
@@ -3436,12 +3437,12 @@ class MainWindow(QMainWindow):
                 )
                 self._meshing_fail_count = 0
                 return
-            # Offer auto-recovery: reduce cell sizes by 30% and retry
+            # Offer auto-recovery: increase cell sizes by 30% and retry
             retry = QMessageBox.question(
                 self, "Meshing Failed",
                 f"cartesianMesh failed (exit {exit_code}).\n\n"
                 f"{error.message}\n\n"
-                "Auto-recovery: reduce cell sizes by 30% and retry?",
+                "Auto-recovery: increase cell sizes by 30% and retry?",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if retry == QMessageBox.Yes:

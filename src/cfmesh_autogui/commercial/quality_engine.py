@@ -683,8 +683,25 @@ class QualityEngine:
 
     @staticmethod
     def _disable_boundary_layers(text: str) -> str:
-        """Remove boundaryLayers block from meshDict."""
-        return re.sub(r"\nboundaryLayers\s*\{[^}]*\}", "", text, flags=re.DOTALL)
+        """Remove boundaryLayers block from meshDict (handles nested braces)."""
+        pattern = re.compile(r"\nboundaryLayers\s*\{")
+        while (m := pattern.search(text)):
+            start = m.start()
+            # Find matching closing brace
+            depth = 0
+            end = -1
+            for i in range(m.end() - 1, len(text)):
+                if text[i] == '{':
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            if end < 0:
+                break  # unbalanced — don't remove anything
+            text = text[:start] + text[end:]
+        return text
 
     @staticmethod
     def _coarsen_mesh(text: str, factor: float = 1.5) -> str:
