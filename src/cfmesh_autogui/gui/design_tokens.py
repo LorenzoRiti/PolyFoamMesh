@@ -310,5 +310,5 @@ APP_VENDOR       = "CFMesh-AutoGUI Project"
 APP_COPYRIGHT    = "© 2026 CFMesh-AutoGUI"
 APP_DOMAIN       = "cfmesh-autogui.local"
 APP_WEBSITE      = "https://github.com/cfmesh-autogui"
-APP_LICENSE      = "MIT License"
+APP_LICENSE      = "Proprietary — All Rights Reserved"
 APP_BUILD_YEAR   = 2026

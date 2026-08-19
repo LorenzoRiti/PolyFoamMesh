@@ -4180,6 +4180,58 @@ class MainWindow(QMainWindow):
                     logger.warning("BL fix failed: %s", e)
                     self._log.append_log(f"{Tag.FIX} BL fix error: {e}")
                     return False
+            if error_info.error_type in (ErrorType.FOAM_FATAL, ErrorType.CRASH):
+                # Smarter retry: coarser cells + reduced ratio
+                factor = 1.5 if attempt == 1 else 2.0
+                p = self._params.get_mesh_params()
+                new_max = p["max_cell_size"] * factor
+                new_min = max(p["min_cell_size"] * 1.2, new_max * 0.1)
+                self._log.append_log(
+                    f"{Tag.FIX} Crash/fatal — coarsening cells: "
+                    f"max {p['max_cell_size']:.4g} → {new_max:.4g}, "
+                    f"min {p['min_cell_size']:.4g} → {new_min:.4g}"
+                )
+                try:
+                    names = [m.metadata.get("name", "wall") for m in self._meshes]
+                    bl = self._params.get_bl_params()
+                    write_meshdict(
+                        self._case_dir,
+                        max_cell_size=new_max,
+                        min_cell_size=new_min,
+                        bl_params=bl,
+                        patch_names=names,
+                    )
+                    self._params._max_cell.setValue(new_max)
+                    self._params._min_cell.setValue(new_min)
+                    return True
+                except Exception as e:
+                    logger.warning("Coarsen fix failed: %s", e)
+                    self._log.append_log(f"{Tag.FIX} Coarsen fix error: {e}")
+                    return False
+            if error_info.error_type == ErrorType.NON_MAPPABLE:
+                # Too many cells or bad topology — coarsen aggressively
+                p = self._params.get_mesh_params()
+                new_max = p["max_cell_size"] * 2.0
+                self._log.append_log(
+                    f"{Tag.FIX} Non-mappable — doubling max cell: "
+                    f"{p['max_cell_size']:.4g} → {new_max:.4g}"
+                )
+                try:
+                    names = [m.metadata.get("name", "wall") for m in self._meshes]
+                    bl = self._params.get_bl_params()
+                    write_meshdict(
+                        self._case_dir,
+                        max_cell_size=new_max,
+                        min_cell_size=p["min_cell_size"],
+                        bl_params=bl,
+                        patch_names=names,
+                    )
+                    self._params._max_cell.setValue(new_max)
+                    return True
+                except Exception as e:
+                    logger.warning("Coarsen fix failed: %s", e)
+                    self._log.append_log(f"{Tag.FIX} Coarsen fix error: {e}")
+                    return False
             return False
         return fix
 

@@ -526,7 +526,16 @@ class MeshWorker(QObject):
             if issue.suggestion:
                 self.log_line.emit(issue.suggestion)
 
-        cmd = self._of_config.build_command(self._case_dir)
+        try:
+            if hasattr(self._of_config, 'build_serial_tmpfs_command'):
+                try:
+                    cmd = self._of_config.build_serial_tmpfs_command(self._case_dir)
+                except Exception:
+                    cmd = self._of_config.build_command(self._case_dir)
+            else:
+                cmd = self._of_config.build_command(self._case_dir)
+        except Exception:
+            cmd = self._of_config.build_command(self._case_dir)
         self.log_line.emit(f"[cmd] {' '.join(cmd)}")
 
         process = None

@@ -7,14 +7,13 @@ name = "cfmesh-autogui"
 version = "2.0.1"
 description = "Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh"
 authors = [{name = "Davide Valoroso"}]
-license = {text = "MIT"}
+license = {text = "Proprietary — All Rights Reserved"}
 readme = "README.md"
 requires-python = ">=3.11"
 keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering",

@@ -502,6 +502,27 @@ class MeshEngine:
     # ------------------------------------------------------------------
     # Algorithm implementations
     # ------------------------------------------------------------------
+    def _estimate_cell_count(self, case_dir: Path) -> int:
+        """Estimate cell count from meshDict cell sizes and geometry bbox."""
+        try:
+            from cfmesh_autogui.core.geometry import compute_bbox_dim
+            tri_dir = case_dir / "constant" / "triSurface"
+            meshes = []
+            if tri_dir.is_dir():
+                import trimesh
+                for f in tri_dir.glob("*.stl"):
+                    m = trimesh.load(str(f), force="mesh")
+                    if m is not None:
+                        meshes.append(m)
+            if not meshes:
+                return 1_000_000  # assume large if can't estimate
+            bbox = compute_bbox_dim(meshes)
+            vol = bbox ** 3
+            avg_cell = (self._params.max_cell + self._params.min_cell) / 2
+            return int(vol / (avg_cell ** 3))
+        except Exception:
+            return 1_000_000  # assume large on failure
+
     def _run_cartesian_hex(self, case_dir: Path, meshes: list | None) -> None:
         """Run cfMesh cartesianMesh via WSL2 — parallel when n_cores > 1.
 
@@ -532,12 +553,19 @@ class MeshEngine:
             write_meshdict(case_dir, self._params.max_cell, self._params.min_cell,
                            bl_params=bl_params, patch_names=patch_names)
 
-        # Dispatch to parallel engine when n_cores > 1
+        # Dispatch to parallel engine when n_cores > 1 and mesh is large enough
+        # to benefit from MPI (overhead dominates for <500k cells)
         n_cores = getattr(self._params, 'n_cores', 1)
-        if n_cores > 1:
+        est_cells = self._estimate_cell_count(case_dir)
+        if n_cores > 1 and est_cells >= 500_000:
             self._run_parallel_mesh(case_dir, self._params.max_cell, self._params.min_cell,
                                      bl_params, patch_names, n_cores)
         else:
+            if n_cores > 1 and est_cells < 500_000:
+                logger.info(
+                    "Mesh too small for MPI (~%d cells < 500k threshold) — using serial.",
+                    est_cells,
+                )
             self._run_serial_mesh(case_dir, self._params.max_cell, self._params.min_cell,
                                    bl_params, patch_names)
 
@@ -606,11 +634,19 @@ class MeshEngine:
         logger.info("CartesianHex (serial): OK (max=%s min=%s)", raw_max, raw_min)
 
     def _run_cartesian_mesh_sync(self, case_dir: Path) -> bool:
-        """Run cartesianMesh synchronously and wait for it to actually finish."""
+        """Run cartesianMesh synchronously on WSL2 native tmpfs for speed."""
         import subprocess
 
         try:
-            cmd = self._of_config.build_command(case_dir)
+            # Try tmpfs command first (3-5x faster on WSL2), fall back to
+            # direct build_command for test mocks and non-WSL environments.
+            if hasattr(self._of_config, 'build_serial_tmpfs_command'):
+                try:
+                    cmd = self._of_config.build_serial_tmpfs_command(case_dir)
+                except Exception:
+                    cmd = self._of_config.build_command(case_dir)
+            else:
+                cmd = self._of_config.build_command(case_dir)
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=14400, check=False)
             return result.returncode == 0
         except subprocess.TimeoutExpired:

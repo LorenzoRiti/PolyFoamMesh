@@ -212,6 +212,61 @@ class OFConfig:
             f"source {shlex.quote(self.env_script)} 2>/dev/null; "
             f"bash {shlex.quote(linux_script)} 2>&1 | tail -200"
         )
+
+        return self._build_wsl_cmd(cmd)
+
+    def build_serial_tmpfs_command(
+        self, case_dir: Path | str, extra_args: list[str] | None = None,
+        cell_estimate: int = 0,
+    ) -> list[str]:
+        """Build WSL command for serial cartesianMesh on native tmpfs.
+
+        Like build_parallel_command but for serial runs: copies the case
+        to /tmp/ (native Linux tmpfs) to avoid the ~3-5× I/O penalty of
+        /mnt/c/ (Windows filesystem), runs cartesianMesh there, then
+        copies the polyMesh result back.
+        """
+        case_dir_resolved = Path(case_dir).resolve()
+        linux_case = self.wsl_linux_case_path(case_dir_resolved)
+        env_q = self.env_script
+        bin_q = self.cartesian_mesh_bin
+
+        extra = ""
+        if extra_args:
+            extra = " " + " ".join(shlex.quote(a) for a in extra_args)
+
+        script = (
+            f"#!/bin/bash\n"
+            f"set -o pipefail\n"
+            f"source {env_q} 2>/dev/null\n"
+            f"{self._openmp_env_prefix(cell_estimate=cell_estimate)}\n"
+            f'SRC="{linux_case}"\n'
+            f"TMPD=$(mktemp -d /tmp/cfmesh_serial_XXXXX)\n"
+            f"mkdir -p $TMPD/constant/triSurface $TMPD/system\n"
+            f'cp "$SRC/system/"* "$TMPD/system/" 2>/dev/null\n'
+            f'cp "$SRC/constant/triSurface/"* "$TMPD/constant/triSurface/" 2>/dev/null\n'
+            f"cd $TMPD\n"
+            f"{bin_q}{extra} 2>&1 | tee $TMPD/serial_mesh.log | tail -200\n"
+            f"RC=$?\n"
+            # copy result back
+            f'if [ -d "$TMPD/constant/polyMesh" ]; then\n'
+            f'  cp -r "$TMPD/constant/polyMesh" "$SRC/constant/" 2>/dev/null\n'
+            f'fi\n'
+            f'cp "$TMPD/serial_mesh.log" "$SRC/" 2>/dev/null\n'
+            f"rm -rf $TMPD\n"
+            f"exit $RC\n"
+        )
+
+        script_path = case_dir_resolved / "system" / "_run_serial_tmpfs.sh"
+        script_path.write_text(script, encoding="ascii", newline="")
+        linux_script = self.wsl_linux_case_path(script_path)
+
+        cmd = (
+            f"set -o pipefail; "
+            f"source {shlex.quote(self.env_script)} 2>/dev/null; "
+            f"bash {shlex.quote(linux_script)} 2>&1 | tail -200"
+        )
+
         return self._build_wsl_cmd(cmd)
 
     def build_check_mesh_cmd(self, case_dir: Path | str) -> list[str]:

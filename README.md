@@ -200,4 +200,4 @@ them if you move the project to another machine. Bypass in an emergency with
 
 ## License
 
-MIT License — © 2026 CFMesh-AutoGUI Project
+Proprietary — All Rights Reserved. © 2026 Davide Valoroso
