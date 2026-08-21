@@ -553,7 +553,7 @@ class MeshWorker(QObject):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=4096,
+                bufsize=1,
             )
             self._pid = process.pid
             self.progress_update.emit(0)
