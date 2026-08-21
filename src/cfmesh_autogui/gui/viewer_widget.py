@@ -292,6 +292,24 @@ def _human_size(n_bytes: int) -> str:
     return f"{n_bytes:.1f}TB"
 
 
+def _find_internal_vtu(case_dir: Path, vtk_subdir: str = "VTK_view") -> list[Path]:
+    """Locate the internal volume VTU(s) written by foamToVTK.
+
+    ``foamToVTK -constant`` writes to ``constant/<name>/`` (the ``-constant``
+    flag makes it use the constant/ time directory), so the file can live
+    under either ``<case>/<name>/`` or ``<case>/constant/<name>/``. Check both
+    — the old code only looked in ``<case>/<name>/``, so a ``-constant`` run
+    was never found and the viewer reported a false "no internal mesh".
+    """
+    for base in (case_dir / vtk_subdir, case_dir / "constant" / vtk_subdir):
+        if not base.exists():
+            continue
+        matches = sorted(base.glob("*_0/internal.vtu"))
+        if matches:
+            return matches
+    return []
+
+
 def _poly_dir_state(poly_dir: Path, max_retries: int = 3, delay_ms: int = 500) -> float | None:
     """Check that all required polyMesh files exist and return newest mtime.
 
@@ -361,7 +379,7 @@ def _run_foamtovtk_async(case_dir: Path, vtk_subdir: str, state: float) -> Path 
         stderr_detail = (stderr or stdout or "")[-500:]
         logger.warning("foamToVTK failed (rc=%d): %s", proc.returncode, stderr_detail)
         return None
-    matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
+    matches = _find_internal_vtu(case_dir, vtk_subdir)
     if matches:
         try:
             (case_dir / vtk_subdir / ".source_mtime").write_text(str(state))
@@ -392,7 +410,7 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
 
     vtk_subdir = "VTK_view"
     marker = case_dir / vtk_subdir / ".source_mtime"
-    existing = list((case_dir / vtk_subdir).glob("*_0/internal.vtu")) if (case_dir / vtk_subdir).exists() else []
+    existing = _find_internal_vtu(case_dir, vtk_subdir)
     if existing and marker.exists():
         try:
             if float(marker.read_text().strip()) == state:
@@ -1097,7 +1115,7 @@ class ViewerWidget(QWidget):
             # Timeout already handled cleanup â€” skip stale callback
             return
         if exit_code == 0:
-            matches = list((case_dir / vtk_subdir).glob("*_0/internal.vtu"))
+            matches = _find_internal_vtu(case_dir, vtk_subdir)
             if matches:
                 poly_dir = case_dir / "constant" / "polyMesh"
                 state = _poly_dir_state(poly_dir)
@@ -1211,7 +1229,7 @@ class ViewerWidget(QWidget):
         vtk_dir = case_dir / "VTK_view"
         internal_vtu = None
         if vtk_dir.exists():
-            candidates = sorted(vtk_dir.glob("*_0/internal.vtu"))
+            candidates = _find_internal_vtu(case_dir)
             if candidates:
                 internal_vtu = candidates[0]
 
@@ -1264,7 +1282,7 @@ class ViewerWidget(QWidget):
             return
         vtk_subdir = "VTK_view"
         marker = case_dir / vtk_subdir / ".source_mtime"
-        existing = list((case_dir / vtk_subdir).glob("*_0/internal.vtu")) if (case_dir / vtk_subdir).exists() else []
+        existing = _find_internal_vtu(case_dir, vtk_subdir)
         if existing and marker.exists():
             try:
                 if float(marker.read_text().strip()) == state:
@@ -1547,7 +1565,7 @@ class ViewerWidget(QWidget):
         vtk_dir = case_dir / "VTK_view"
         internal_vtu = None
         if vtk_dir.exists():
-            candidates = sorted(vtk_dir.glob("*_0/internal.vtu"))
+            candidates = _find_internal_vtu(case_dir)
             if candidates:
                 internal_vtu = candidates[0]
         if internal_vtu is not None:
@@ -1578,7 +1596,7 @@ class ViewerWidget(QWidget):
                 # Trigger foamToVTK on first retry â€” but only once.
                 case_dir = Path(self._mesh_case_dir)
                 vtk_dir = case_dir / "VTK_view"
-                has_vtu = bool(list(vtk_dir.glob("*_0/internal.vtu")) if vtk_dir.exists() else [])
+                has_vtu = bool(_find_internal_vtu(case_dir))
                 if self._mesh_retry_count == 1 and not has_vtu and not self._foam_to_vtk_attempted:
                     logger.info("VTU not found â€” starting foamToVTK before next retry")
                     self._foam_to_vtk_attempted = True

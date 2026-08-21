@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import re
 import shlex
 import shutil
@@ -35,8 +36,9 @@ from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
 from cfmesh_autogui.core import foam_mesh_io as fio  # noqa: E402
 from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
-CASE_A = Path("C:/polybench2/bl_partial_cylinder")
-CASE_B = Path("C:/polybench2/bl_partial_cube")
+_WORK = Path(os.environ.get("CFMESH_WORK", "C:/polybench2"))
+CASE_A = _WORK / "bl_partial_cylinder"
+CASE_B = _WORK / "bl_partial_cube"
 NL = 3
 
 

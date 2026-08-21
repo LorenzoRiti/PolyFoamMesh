@@ -13,6 +13,7 @@ Run:  python tools/bench_bl_poly_dual.py
 from __future__ import annotations
 
 import io
+import os
 import shlex
 import shutil
 import subprocess
@@ -36,7 +37,7 @@ from cfmesh_autogui.core.gmsh_subprocess import (  # noqa: E402
 )
 from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
-CASE = Path("C:/cfmesh_bench/bl_poly_dual_cylinder")
+CASE = Path(os.environ.get("CFMESH_WORK", "C:/cfmesh_bench")) / "bl_poly_dual_cylinder"
 
 
 def main() -> int:

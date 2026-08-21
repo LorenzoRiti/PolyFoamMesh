@@ -119,11 +119,26 @@ def run(case_dir: Path, stl: Path, mc: float, mi: float,
 
 
 if __name__ == "__main__":
-    stl = Path("C:/cfmesh_poly_bench/venturi.stl")
+    import argparse
+    import os
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--stl", default=os.environ.get("CFMESH_GEOM", "C:/cfmesh_poly_bench/venturi.stl"),
+                    help="surface STL to mesh (default: $CFMESH_GEOM)")
+    ap.add_argument("--work", default=os.environ.get("CFMESH_WORK", "C:/cfmesh_poly_bench"),
+                    help="scratch dir for cases (default: $CFMESH_WORK)")
+    args = ap.parse_args()
+
+    stl = Path(args.stl)
+    if not stl.exists():
+        print(f"SKIP: geometry not found: {stl} (set CFMESH_GEOM)")
+        sys.exit(0)
+    work = Path(args.work)
+    work.mkdir(parents=True, exist_ok=True)
     for bc in (True, False):
         tag = "bc" if bc else "nobc"
         print(f"\n===== config: {tag} =====")
-        out = run(Path(f"C:/cfmesh_poly_bench/p3a_venturi_{tag}"), stl, 0.08, 0.02,
+        out = run(work / f"p3a_venturi_{tag}", stl, 0.08, 0.02,
                   use_bc=bc)
         if out:
             hm, pm = out

@@ -65,3 +65,18 @@ def test_volume_mesh_mode_is_left_untouched():
     out = ViewerWidget._prepare_internal_vtu_grid(grid, "internal")
     assert out is grid
     assert out.n_cells == grid.n_cells
+
+def test_find_internal_vtu_checks_constant_dir():
+    """foamToVTK -constant writes under constant/<name>/; the viewer must
+    find internal.vtu there (T3.3), not only under <case>/<name>/."""
+    import tempfile
+    from pathlib import Path
+    from cfmesh_autogui.gui.viewer_widget import _find_internal_vtu
+    with tempfile.TemporaryDirectory() as td:
+        case = Path(td)
+        # Only the constant/ variant exists (the -constant output location).
+        target = case / "constant" / "VTK_view" / "0_0" / "internal.vtu"
+        target.parent.mkdir(parents=True)
+        target.write_text("dummy", encoding="utf-8")
+        found = _find_internal_vtu(case)
+        assert found and found[0] == target

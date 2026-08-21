@@ -22,8 +22,8 @@ from pathlib import Path
 
 REPO = Path(r"C:\Users\Davide Valoroso\cfmesh-autogui")
 PY = r"C:\Users\Davide Valoroso\AppData\Local\Programs\Python\Python311\python.exe"
-VALVE = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp")
-WORK = Path(r"C:\cfmesh_work\valve_resolution")
+VALVE = Path(os.environ.get("CFMESH_GEOM", r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp"))
+WORK = Path(os.environ.get("CFMESH_WORK", r"C:\cfmesh_work\valve_resolution"))
 
 
 def run_gmsh_volume(step_path: Path, msh_path: Path, detail: str,
@@ -141,5 +141,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--detail", default="medium",
                     choices=["coarse", "medium", "fine", "very_fine"])
+    ap.add_argument("--geom", default=str(VALVE),
+                    help="geometry file (default: $CFMESH_GEOM)")
+    ap.add_argument("--work", default=str(WORK),
+                    help="scratch dir (default: $CFMESH_WORK)")
     args = ap.parse_args()
+    VALVE = Path(args.geom)
+    WORK = Path(args.work)
+    if not VALVE.exists():
+        print(f"SKIP: geometry not found: {VALVE} (set CFMESH_GEOM)")
+        raise SystemExit(0)
     run_and_convert(args.detail)
