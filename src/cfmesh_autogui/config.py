@@ -96,7 +96,7 @@ class OFConfig:
             f"export OMPI_MCA_btl=vader,self 2>/dev/null; "
             f"source {env_quoted} 2>/dev/null; "
             f"{self._openmp_env_prefix(cell_estimate=cell_estimate)} "
-            f"cd {linux_case} && {bin_quoted}"
+            f"stdbuf -oL -eL bash -c 'cd {linux_case} && exec {bin_quoted}'"
         )
         if extra_args:
             env_cmd += " " + " ".join(shlex.quote(a) for a in extra_args)
@@ -159,15 +159,18 @@ class OFConfig:
             f"  cp -r $TMPD/system $TMPD/processor$i/\n"
             f"  cp -r $TMPD/constant $TMPD/processor$i/\n"
             f"done\n"
-            # run MPI-parallel meshing
-            f"mpirun --allow-run-as-root --oversubscribe "
+            # run MPI-parallel meshing — stdbuf -oL forces line-buffering so
+            # every cartesianMesh line appears in the GUI log immediately
+            # instead of being held until the 4K pipe buffer fills (the old
+            # `| tail -200` did exactly that: tail buffers until EOF).
+            f"stdbuf -oL -eL mpirun --allow-run-as-root --oversubscribe "
             f"-np {n_cores} {bin_q} -parallel 2>&1 | "
-            f"tee $TMPD/parallel_mesh.log | tail -200\n"
+            f"stdbuf -oL tee $TMPD/parallel_mesh.log\n"
             f"RC1=${{PIPESTATUS[0]}}\n"
             # reconstruct
             f"if [ $RC1 -eq 0 ]; then\n"
-            f"  reconstructParMesh -constant 2>&1 | "
-            f"tee -a $TMPD/parallel_mesh.log | tail -200\n"
+            f"  stdbuf -oL -eL reconstructParMesh -constant 2>&1 | "
+            f"stdbuf -oL tee -a $TMPD/parallel_mesh.log\n"
             f"  RC2=${{PIPESTATUS[0]}}\n"
             f"else\n"
             f"  RC2=$RC1\n"
@@ -207,10 +210,13 @@ class OFConfig:
         # Use "bash script.sh" instead of "chmod +x && ./script.sh"
         # because chmod +x doesn't work on WSL2's /mnt/c/ filesystem
         # (Windows filesystem has no executable bit support).
+        # No `| tail -200` here — that buffers until EOF and kills live
+        # log streaming. The full output is streamed line-by-line to the
+        # GUI via MeshWorker/TaskManager; the log file is preserved separately.
         cmd = (
             f"set -o pipefail; "
             f"source {shlex.quote(self.env_script)} 2>/dev/null; "
-            f"bash {shlex.quote(linux_script)} 2>&1 | tail -200"
+            f"stdbuf -oL -eL bash {shlex.quote(linux_script)} 2>&1"
         )
 
         return self._build_wsl_cmd(cmd)
@@ -246,7 +252,7 @@ class OFConfig:
             f'cp "$SRC/system/"* "$TMPD/system/" 2>/dev/null\n'
             f'cp "$SRC/constant/triSurface/"* "$TMPD/constant/triSurface/" 2>/dev/null\n'
             f"cd $TMPD\n"
-            f"{bin_q}{extra} 2>&1 | tee $TMPD/serial_mesh.log | tail -200\n"
+            f"stdbuf -oL -eL {bin_q}{extra} 2>&1 | stdbuf -oL tee $TMPD/serial_mesh.log\n"
             f"RC=$?\n"
             # copy result back
             f'if [ -d "$TMPD/constant/polyMesh" ]; then\n'
@@ -264,7 +270,7 @@ class OFConfig:
         cmd = (
             f"set -o pipefail; "
             f"source {shlex.quote(self.env_script)} 2>/dev/null; "
-            f"bash {shlex.quote(linux_script)} 2>&1 | tail -200"
+            f"stdbuf -oL -eL bash {shlex.quote(linux_script)} 2>&1"
         )
 
         return self._build_wsl_cmd(cmd)
