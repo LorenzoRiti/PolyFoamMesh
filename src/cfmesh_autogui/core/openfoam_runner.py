@@ -1297,12 +1297,16 @@ class CheckMeshWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, case_dir: Path | str, of_config: OFConfig, parent=None):
+    def __init__(self, case_dir: Path | str, of_config: OFConfig, parent=None,
+                 pipeline_staged: bool = False):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._of_config = of_config
         self._proc_holder: dict = {}
         self._cancelled = False
+        # Default OFF until validated: run checkMesh inside WSL native storage
+        # instead of on the slow 9P /mnt/c bridge.
+        self._pipeline_staged = pipeline_staged
 
     @Slot()
     def cancel(self):
@@ -1318,6 +1322,48 @@ class CheckMeshWorker(QObject):
 
     @Slot()
     def run(self):
+        if self._pipeline_staged:
+            from cfmesh_autogui.config import extract_poly_mesh_archive
+            cmd = self._of_config.build_staged_pipeline_command(
+                self._case_dir, steps=["checkMesh"],
+            )
+            self.log_line.emit(f"[checkMesh] {' '.join(cmd)}")
+            try:
+                returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                    cmd, None, 600,
+                    on_line=lambda ln: self.log_line.emit(f"[checkMesh] {ln}"),
+                    proc_holder=self._proc_holder,
+                )
+                extract_poly_mesh_archive(self._case_dir)
+                full = "\n".join(stdout_lines) + "\n" + "\n".join(stderr_lines)
+            except FileNotFoundError:
+                self.log_line.emit("[checkMesh] WSL not found")
+                self.failed.emit("WSL not found")
+                return
+            except Exception as exc:
+                if not self._cancelled:
+                    self.log_line.emit(f"[checkMesh] ERROR: {exc}")
+                    self.failed.emit(str(exc))
+                return
+            if self._cancelled:
+                self.log_line.emit("[checkMesh] Cancelled.")
+                return
+            if timed_out:
+                self.log_line.emit("[checkMesh] TIMEOUT (600s)")
+                self.failed.emit("checkMesh timed out after 600s")
+                return
+            report = parse_checkmesh_output(full)
+            self.log_line.emit(
+                f"[checkMesh] cells={report.cells} faces={report.faces} "
+                f"nonOrtho={report.max_non_ortho:.1f} "
+                f"skewness={report.max_skewness:.2f} "
+                f"aspectRatio={report.max_aspect_ratio:.0f}"
+            )
+            if not report.passed:
+                self.log_line.emit(f"[checkMesh] {report.status}")
+            self.finished.emit(report)
+            return
+
         cmd = self._of_config.build_check_mesh_cmd(self._case_dir)
 
         self.log_line.emit(f"[checkMesh] {' '.join(cmd)}")

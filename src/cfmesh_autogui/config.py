@@ -270,6 +270,86 @@ class OFConfig:
 
         return self._build_wsl_cmd(cmd)
 
+    def build_staged_pipeline_command(
+        self, case_dir: Path | str,
+        steps: list[str],
+        stage_root: str = "~/cfmesh_cases",
+    ) -> list[str]:
+        """Run a sequence of OpenFOAM/cfMesh steps inside WSL native storage.
+
+        Today only cartesianMesh runs on tmpfs; STL export, gmshToFoam,
+        polyDual and checkMesh still hammer the slow 9P ``/mnt/c`` bridge
+        (~3-5x slower than native Linux storage). This stages the case under
+        ``~/cfmesh_cases/<ts>/``, runs the requested steps sequentially THERE,
+        then copies back ONLY the final artifacts as one compressed archive
+        (``tar -czf``), unpacked on the Windows side via
+        ``config.extract_poly_mesh_archive()``.
+
+        Args:
+            case_dir: Windows case directory (source of inputs / target of
+                outputs).
+            steps: shell commands to run sequentially in the staged case
+                (e.g. ``["cartesianMesh", "polyDualMesh 90 -overwrite"]``).
+            stage_root: WSL directory under which timestamped cases are made.
+
+        Returns:
+            The ``wsl.exe`` command list (run via subprocess).
+        """
+        case_dir_resolved = Path(case_dir).resolve()
+        linux_case = self.wsl_linux_case_path(case_dir_resolved)
+        env_q = self.env_script
+
+        step_lines: list[str] = []
+        for i, step in enumerate(steps):
+            step_lines.append(f"echo '=== step {i}: {step} ==='\n")
+            step_lines.append(
+                f"stdbuf -oL -eL {step} 2>&1 | stdbuf -oL tee -a $STAGE/pipeline.log\n"
+            )
+            step_lines.append("RC=${PIPESTATUS[0]}\n")
+            step_lines.append(
+                "if [ $RC -ne 0 ]; then echo 'STEP FAILED rc='$RC; break; fi\n"
+            )
+
+        script = (
+            f"#!/bin/bash\n"
+            f"set -o pipefail\n"
+            f"source {env_q} 2>/dev/null\n"
+            f"{self._openmp_env_prefix()}\n"
+            f"export OMPI_MCA_btl=^openib,openfabric,uct\n"
+            f'SRC="{linux_case}"\n'
+            f'STAGE_ROOT="{stage_root}"\n'
+            f"TS=$(date +%Y%m%d_%H%M%S)\n"
+            f"STAGE=$STAGE_ROOT/$TS\n"
+            f"mkdir -p $STAGE/constant $STAGE/system\n"
+            # 1. stage inputs (whole constant/ so polyDual/checkMesh see the
+            #    existing polyMesh too; triSurface is the small common case)
+            f'rsync -a "$SRC/system/"* "$STAGE/system/" 2>/dev/null\n'
+            f'rsync -a "$SRC/constant/"* "$STAGE/constant/" 2>/dev/null\n'
+            f"cd $STAGE\n"
+            # 2. run requested steps sequentially
+            + "".join(step_lines)
+            # 3. copy back ONLY final artifacts, compressed
+            + (
+                'if [ -d "$STAGE/constant/polyMesh" ]; then\n'
+                '  tar -C "$STAGE/constant" -czf "$SRC/constant/polyMesh.tar.gz" polyMesh\n'
+                'fi\n'
+                'cp "$STAGE/pipeline.log" "$SRC/" 2>/dev/null\n'
+                "rm -rf $STAGE\n"
+                "exit $RC\n"
+            )
+        )
+
+        script_path = case_dir_resolved / "system" / "_run_staged_pipeline.sh"
+        script_path.write_text(script, encoding="ascii", newline="")
+        linux_script = self.wsl_linux_case_path(script_path)
+
+        cmd = (
+            f"set -o pipefail; "
+            f"source {shlex.quote(self.env_script)} 2>/dev/null; "
+            f"stdbuf -oL -eL bash {shlex.quote(linux_script)} 2>&1"
+        )
+        return self._build_wsl_cmd(cmd)
+
     def build_serial_tmpfs_command(
         self, case_dir: Path | str, extra_args: list[str] | None = None,
         cell_estimate: int = 0,
