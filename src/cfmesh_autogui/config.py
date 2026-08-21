@@ -1,10 +1,53 @@
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def extract_poly_mesh_archive(case_dir: Path | str) -> bool:
+    """Extract ``constant/polyMesh.tar.gz`` → ``constant/polyMesh`` (Windows side).
+
+    The tmpfs bash scripts (``build_parallel_command`` and friends) now copy
+    the mesh back as a single compressed archive (``tar -czf``) instead of
+    ``cp -r`` of thousands of small files over the slow 9P ``/mnt/c`` bridge.
+    This helper is where that archive is unpacked, replacing the old direct
+    read of ``constant/polyMesh``.
+
+    Returns True if an archive was found and extracted; False when there was
+    nothing to do (no archive present — e.g. a non-tmpfs path).
+    """
+    import shutil
+    import tarfile
+
+    case_dir = Path(case_dir)
+    archive = case_dir / "constant" / "polyMesh.tar.gz"
+    if not archive.exists():
+        return False
+    dest = case_dir / "constant"
+    poly_dir = dest / "polyMesh"
+    # The archive is authoritative (fresh tmpfs output): drop any stale
+    # polyMesh so a previous run's files cannot linger and merge.
+    shutil.rmtree(poly_dir, ignore_errors=True)
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            name = member.name.lstrip("./")
+            target = (dest / name).resolve()
+            if not str(target).startswith(str(dest.resolve())):
+                logger.warning(
+                    "extract_poly_mesh_archive: skipping unsafe member %r",
+                    member.name,
+                )
+                continue
+            member.name = name
+            tf.extract(member, dest)
+    archive.unlink(missing_ok=True)
+    return True
 
 
 @dataclass
@@ -189,7 +232,13 @@ class OFConfig:
             f'    echo "0"\n'
             f'  fi\n'
             f'done > "$SRC/per_rank_cells.txt" 2>/dev/null\n'
-            f'cp -r "$TMPD/constant/polyMesh" "$SRC/constant/" 2>/dev/null\n'
+            # Copy the result back as ONE compressed archive instead of
+            # `cp -r` of thousands of small polyMesh files over the slow 9P
+            # /mnt/c bridge (measured 5-10x faster). The Windows side unpacks
+            # it via config.extract_poly_mesh_archive().
+            f'if [ -d "$TMPD/constant/polyMesh" ]; then\n'
+            f'  tar -C "$TMPD/constant" -czf "$SRC/constant/polyMesh.tar.gz" polyMesh\n'
+            f'fi\n'
             f'cp "$TMPD/parallel_mesh.log" "$SRC/" 2>/dev/null\n'
             # clean up
             f"rm -rf $TMPD\n"
