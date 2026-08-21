@@ -194,11 +194,14 @@ def main() -> None:
                     "reconstructPar); None = serial")
     ap.add_argument("--no-solve", action="store_true",
                     help="build geometry + mesh + case only")
+    ap.add_argument("--geom", default=os.environ.get("CFMESH_GEOM", ""),
+                    help="existing geometry to use instead of building a venturi "
+                    "(default: $CFMESH_GEOM)")
     args = ap.parse_args()
 
     work = Path(args.workdir)
     work.mkdir(parents=True, exist_ok=True)
-    step_path = work / "venturi.step"
+    step_path = Path(args.geom) if args.geom else work / "venturi.step"
 
     sys.path.insert(0, str(REPO / "src"))
     from cfmesh_autogui.config import OFConfig

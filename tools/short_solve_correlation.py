@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -34,8 +35,8 @@ from cfmesh_autogui.core.solution_adaptive import (  # noqa: E402
     compute_indicator, load_solution, run_solver, set_end_time,
 )
 
-WORK = Path(r"C:\cfmesh_work\short_solve")
-STEP = Path(r"C:\cfmesh_work\venturi_run8\venturi.step")
+WORK = Path(os.environ.get("CFMESH_WORK", r"C:\cfmesh_work\short_solve"))
+STEP = Path(os.environ.get("CFMESH_GEOM", r"C:\cfmesh_work\venturi_run8\venturi.step"))
 BUDGETS = [200, 400, 3000]
 cfg = OFConfig()
 
@@ -112,4 +113,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if not STEP.exists():
+        print(f"SKIP: geometry not found: {STEP} (set CFMESH_GEOM)")
+        raise SystemExit(0)
     main()

@@ -93,7 +93,21 @@ def test_exported_case_loads_in_openfoam():
     meshes = tessellate_patches(classify_faces(create_test_cylinder(1.0, 2.0).val()))
     names = [m.metadata.get("name", "wall") for m in meshes]
     export_surface_file(meshes, case)
-    write_meshdict(case, 0.25, 0.125, patch_names=names)
+    # The fixture is authored in cadquery's native mm and tessellate_patches
+    # converts mm->m, so the body is ~0.002 m across. A fixed maxCellSize of
+    # 0.25 was 125x the body — cells >= body collapse the octree and cfMesh
+    # aborts (exit 134, the long-standing "always failed" failure). Derive the
+    # cell size from the actual bbox (min_dim/20, ~20 cells across the model)
+    # instead of a hardcoded value.
+    import numpy as np
+    # Per-mesh (max-min) per axis; ignore genuinely flat (zero) spans so a
+    # 2D-ish cap doesn't collapse the cell size to 0.
+    dims = np.vstack([m.bounds[1] - m.bounds[0] for m in meshes])
+    positive = dims[dims > 0]
+    min_dim = float(positive.min())
+    max_cell = min_dim / 20
+    min_cell = max_cell / 2
+    write_meshdict(case, max_cell, min_cell, patch_names=names)
     (case / "system" / "controlDict").write_text(CONTROL_DICT, encoding="ascii")
 
     r = _run_in_case(cfg, case, "cartesianMesh > log.mesh 2>&1", timeout=300)
