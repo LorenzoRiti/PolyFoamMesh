@@ -352,3 +352,43 @@ def test_mesh_worker_always_emits_finished_even_on_unexpected_error(monkeypatch)
     assert "synthetic reader failure" in seen["out"], (
         "the cause must reach the caller, not vanish: " + seen["out"][-300:]
     )
+
+# ------------------------------------------------------------------
+# P2: stage-based progress + ETA (no WSL needed - pure _process_line)
+# ------------------------------------------------------------------
+def test_match_stage_recognizes_cfmesh_stages():
+    """cfMesh v2512 stage lines map to the expected (name, bucket)."""
+    worker = MeshWorker(Path("."), OFConfig())
+    cases = {
+        "Reading surface from file": ("read", 0),
+        "Creating octree": ("octree", 10),
+        "Refining the octree": ("refine", 40),
+        "Smoothing the surface": ("smooth", 60),
+        "Checking the mesh": ("check", 80),
+        "Writing mesh": ("write", 90),
+    }
+    for line, expected in cases.items():
+        assert worker._match_stage(line) == expected, line
+    assert worker._match_stage("some unrelated line") is None
+
+
+def test_process_line_stage_advances_progress():
+    """A stage line advances the bar to its bucket start."""
+    worker = MeshWorker(Path("."), OFConfig())
+    progress = []
+    worker.progress_update.connect(progress.append)
+    worker._process_line("Reading surface from file", [])
+    assert progress and progress[-1] == 0
+    worker._process_line("Refining the octree", [])
+    assert progress[-1] == 40
+
+
+def test_process_line_explicit_pct_emits_eta():
+    """An explicit % line emits an ETA (never invented without data)."""
+    worker = MeshWorker(Path("."), OFConfig())
+    worker._start_time = 100.0  # fake elapsed baseline
+    etas = []
+    worker.eta_update.connect(etas.append)
+    worker._process_line("Progress: 50%", [])
+    assert etas, "expected an ETA to be emitted"
+    assert "ETA" in etas[0]

@@ -434,6 +434,7 @@ class MeshWorker(QObject):
     finished = Signal(int, str)
     cell_count_found = Signal(int)
     progress_update = Signal(int)
+    eta_update = Signal(str)
 
     # V1.1: scan stdout line for the cell count (F2)
     # cfMesh v2512 output looks like:
@@ -450,6 +451,22 @@ class MeshWorker(QObject):
     )
     # V1.1: subprocess PID for fallback kill (S7)
     _PID_FILE = "process.pid"
+
+    # Ordered cfMesh v2512 pipeline stages -> progress-bar bucket start.
+    # Matched against real cartesianMesh output lines so the bar advances by
+    # STAGE (read -> octree -> refine -> smooth -> check -> write) instead of
+    # jumping on the row-count heuristic. Buckets are the plan's example
+    # ranges (read 0-10, octree 10-40, refine 40-60, smooth 60-80, check
+    # 80-90, write 90-100). The row-count heuristic remains only as a
+    # fallback when no stage line and no explicit % is seen.
+    _STAGE_PATTERNS = [
+        (re.compile(r"reading surface", re.IGNORECASE), "read", 0),
+        (re.compile(r"creating octree|building octree", re.IGNORECASE), "octree", 10),
+        (re.compile(r"refin", re.IGNORECASE), "refine", 40),
+        (re.compile(r"smooth", re.IGNORECASE), "smooth", 60),
+        (re.compile(r"checking the mesh|checking mesh", re.IGNORECASE), "check", 80),
+        (re.compile(r"writing mesh|writing polymesh", re.IGNORECASE), "write", 90),
+    ]
 
     # Maximum wall-clock time for a single meshing run (hours:min:sec)
     # 4 hours supports ~25M cells at ~1800 cells/sec sustained throughput.
@@ -469,36 +486,49 @@ class MeshWorker(QObject):
         full_output.append(clean)
         self.log_line.emit(clean)
 
-        # Progress percentage from explicit OpenFOAM output
+        # Progress percentage from explicit OpenFOAM output (highest
+        # priority — authoritative when present). Also emit an ETA derived
+        # from it; never invent an ETA without explicit % data.
         m = self._PROGRESS_PCT_RE.search(clean)
         if m:
             try:
                 pct = int(m.group(1))
                 self.progress_update.emit(min(pct, 100))
+                self._emit_eta(pct)
             except (ValueError, AttributeError):
                 pass
+            return
+
+        # Stage match: advance the bar by cfMesh pipeline STAGE (read ->
+        # octree -> refine -> smooth -> check -> write) instead of by row
+        # count, so a long single stage doesn't look frozen or jumpy.
+        stage = self._match_stage(clean)
+        if stage is not None:
+            name, bucket = stage
+            self.progress_update.emit(bucket)
+            self.log_line.emit(f"[stage] {name}")
+            return
 
         # Estimate progress from line count — after 500 lines switch to
         # indeterminate busy animation so a 10-min large mesh doesn't look
         # frozen at 95%. The main window shows setRange(0,0) for value==-1.
-        if not m:
-            n_lines = len(full_output)
-            if n_lines < 20:
-                pct = n_lines * 5
-                self.progress_update.emit(min(int(pct), 19))
-            elif n_lines < 100:
-                pct = 20 + (n_lines - 20) * 0.5
-                self.progress_update.emit(min(int(pct), 59))
-            elif n_lines < 500:
-                pct = 60 + (n_lines - 100) * 0.1
-                self.progress_update.emit(min(int(pct), 94))
-            else:
-                # Large mesh: keep bar pulsing + periodic time hint in log
-                self.progress_update.emit(-1)
-                if n_lines % 200 == 0:
-                    elapsed = int(_now() - self._start_time) if self._start_time else 0
-                    mins, secs = divmod(elapsed, 60)
-                    self.log_line.emit(f"[meshing] still running... {mins}m{secs:02d}s elapsed ({n_lines} log lines)")
+        n_lines = len(full_output)
+        if n_lines < 20:
+            pct = n_lines * 5
+            self.progress_update.emit(min(int(pct), 19))
+        elif n_lines < 100:
+            pct = 20 + (n_lines - 20) * 0.5
+            self.progress_update.emit(min(int(pct), 59))
+        elif n_lines < 500:
+            pct = 60 + (n_lines - 100) * 0.1
+            self.progress_update.emit(min(int(pct), 94))
+        else:
+            # Large mesh: keep bar pulsing + periodic time hint in log
+            self.progress_update.emit(-1)
+            if n_lines % 200 == 0:
+                elapsed = int(_now() - self._start_time) if self._start_time else 0
+                mins, secs = divmod(elapsed, 60)
+                self.log_line.emit(f"[meshing] still running... {mins}m{secs:02d}s elapsed ({n_lines} log lines)")
 
         # Cell count detection (unchanged)
         if not self._cell_count_emitted:
@@ -511,6 +541,28 @@ class MeshWorker(QObject):
                     self._cell_count_emitted = True
                 except (ValueError, AttributeError):
                     logger.debug("Could not parse cell count from line: %s", clean)
+
+    def _match_stage(self, clean: str) -> tuple[str, int] | None:
+        """Return (stage_name, bucket_start) for a cfMesh stage line, else None."""
+        for pattern, name, bucket in self._STAGE_PATTERNS:
+            if pattern.search(clean):
+                return name, bucket
+        return None
+
+    def _emit_eta(self, pct: int) -> None:
+        """Emit an ETA string to the status bar, derived ONLY from an explicit
+        percentage: eta = elapsed * (100 - pct) / pct. Never invents data."""
+        if pct <= 0 or not self._start_time:
+            return
+        elapsed = _now() - self._start_time
+        if elapsed <= 0:
+            return
+        remaining = elapsed * (100 - pct) / pct
+        total = elapsed + remaining
+        self.eta_update.emit(
+            f"ETA {int(remaining // 60)}m{int(remaining % 60):02d}s "
+            f"(~{int(total // 60)}m{int(total % 60):02d}s total, {pct}%)"
+        )
 
     @Slot()
     def run(self):
@@ -740,6 +792,7 @@ class RetryRunner(QObject):
     log_emitted = Signal(str)
     cell_count_relay = Signal(int)
     progress_update = Signal(int)
+    eta_update = Signal(str)
 
     _UNCONNECTED_RE = re.compile(r"unconnected|non-mappable", re.IGNORECASE)
 
@@ -853,6 +906,7 @@ class RetryRunner(QObject):
         if self._on_log:
             self._worker.log_line.connect(self._on_log, Qt.QueuedConnection)
         self._worker.progress_update.connect(self.progress_update, Qt.DirectConnection)
+        self._worker.eta_update.connect(self.eta_update, Qt.DirectConnection)
         self._worker.finished.connect(self._on_attempt_finished, Qt.QueuedConnection)
         self._worker.finished.connect(lambda *a: self._thread.quit(), Qt.QueuedConnection)
         self._worker.cell_count_found.connect(self.cell_count_found, Qt.QueuedConnection)
