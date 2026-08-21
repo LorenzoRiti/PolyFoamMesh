@@ -302,6 +302,8 @@ class ParallelMeshEngine:
                 raise CancelledError("Cancelled after parallel mesh step")
             self._step_reconstruct()
 
+            from cfmesh_autogui.config import extract_poly_mesh_archive
+            extract_poly_mesh_archive(self._case_dir)
             from cfmesh_autogui.core.boundary_reader import count_cells
             self._result.cell_count = count_cells(self._case_dir)
 
@@ -429,6 +431,12 @@ class ParallelMeshEngine:
 
         logger.info("Parallel mesh on %d cores (method=%s)...", n, self._params.method)
         result = self._run_subprocess_with_cancel(cmd, self._TIMEOUT_S)
+
+        # Unpack the compressed copy-back (constant/polyMesh.tar.gz) into
+        # constant/polyMesh — the tmpfs script now ships the mesh as one
+        # archive instead of `cp -r` over the slow 9P bridge.
+        from cfmesh_autogui.config import extract_poly_mesh_archive
+        extract_poly_mesh_archive(case_dir)
 
         if result.returncode == 0:
             logger.info("Parallel meshing + reconstruct OK")
