@@ -3288,8 +3288,19 @@ class MainWindow(QMainWindow):
             self._runner.progress_update.disconnect(self._on_progress_update)
         except (RuntimeError, TypeError):
             pass
+        try:
+            self._runner.eta_update.disconnect(self._on_eta_update)
+        except (RuntimeError, TypeError):
+            pass
         self._runner.cell_count_relay.connect(self._on_cell_count_found, Qt.QueuedConnection)
         self._runner.progress_update.connect(self._on_progress_update, Qt.QueuedConnection)
+        self._runner.eta_update.connect(self._on_eta_update, Qt.QueuedConnection)
+
+    @Slot(str)
+    def _on_eta_update(self, text: str) -> None:
+        """Show the meshing ETA in the status bar (only when explicit % data
+        produced it — see MeshWorker._emit_eta; never invented)."""
+        self._status.showMessage(text)
 
     @Slot(str)
     @Slot(str)
