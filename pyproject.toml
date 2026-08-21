@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfmesh-autogui"
-version = "2.0.1"
+version = "2.1.0"
 description = "Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh"
 authors = [{name = "Davide Valoroso"}]
 license = {text = "Proprietary — All Rights Reserved"}
