@@ -553,19 +553,15 @@ class MeshEngine:
             write_meshdict(case_dir, self._params.max_cell, self._params.min_cell,
                            bl_params=bl_params, patch_names=patch_names)
 
-        # Dispatch to parallel engine when n_cores > 1 and mesh is large enough
-        # to benefit from MPI (overhead dominates for <500k cells)
+        # Dispatch to parallel engine when n_cores > 1.
+        # Memory-based clamping in ParallelMeshEngine._clamp_cores_to_available_memory()
+        # is the proper guard — it measures actual WSL2 RAM and per-rank usage
+        # instead of using an arbitrary cell-count threshold.
         n_cores = getattr(self._params, 'n_cores', 1)
-        est_cells = self._estimate_cell_count(case_dir)
-        if n_cores > 1 and est_cells >= 500_000:
+        if n_cores > 1:
             self._run_parallel_mesh(case_dir, self._params.max_cell, self._params.min_cell,
                                      bl_params, patch_names, n_cores)
         else:
-            if n_cores > 1 and est_cells < 500_000:
-                logger.info(
-                    "Mesh too small for MPI (~%d cells < 500k threshold) — using serial.",
-                    est_cells,
-                )
             self._run_serial_mesh(case_dir, self._params.max_cell, self._params.min_cell,
                                    bl_params, patch_names)
 

@@ -200,18 +200,30 @@ class OpenMPAccel:
         try:
             system = platform.system()
             if system == "Linux":
-                result = set()
-                for path in ("/sys/devices/system/cpu/cpu*/topology/core_id",
-                             "/sys/devices/system/cpu/cpu*/topology/physical_package_id"):
-                    import glob
-                    for f in glob.glob(path):
-                        try:
-                            result.add((int(open(f).read().strip()),))
-                        except (OSError, ValueError):
-                            # unreadable/racy cpu file: skip it, count what we can
-                            logger.debug("openmp_accel: could not read %s", f, exc_info=True)
-                if result:
-                    return max(len(result), 1)
+                import glob as _glob
+                # Count unique (package, core) tuples — core_id alone repeats
+                # across sockets (core 0 on socket 0 and core 0 on socket 1
+                # are different cores), so physical_package_id must be included.
+                cores: set[tuple[int, int]] = set()
+                pkg: dict[int, int] = {}
+                for f in _glob.glob("/sys/devices/system/cpu/cpu*/topology/physical_package_id"):
+                    try:
+                        with open(f) as fh:
+                            # f is like .../cpu3/topology/physical_package_id
+                            cpu_id = int(f.split("/")[4][3:])
+                            pkg[cpu_id] = int(fh.read().strip())
+                    except (OSError, ValueError, IndexError):
+                        logger.debug("openmp_accel: could not read %s", f, exc_info=True)
+                for f in _glob.glob("/sys/devices/system/cpu/cpu*/topology/core_id"):
+                    try:
+                        with open(f) as fh:
+                            cpu_id = int(f.split("/")[4][3:])
+                            core_id = int(fh.read().strip())
+                            cores.add((pkg.get(cpu_id, 0), core_id))
+                    except (OSError, ValueError, IndexError):
+                        logger.debug("openmp_accel: could not read %s", f, exc_info=True)
+                if cores:
+                    return max(len(cores), 1)
             elif system == "Windows":
                 import subprocess
                 cmd = ["wmic", "cpu", "get", "NumberOfCores"]

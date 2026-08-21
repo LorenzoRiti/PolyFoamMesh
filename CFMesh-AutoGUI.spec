@@ -10,10 +10,12 @@ import sys
 # sees it.  Without it the frozen exe's GMSH path fails with
 # "ImportError: DLL load failed".  Copy it next to the frozen gmsh.py
 # (moduledir = the _internal bundle root in one-dir mode).
-_GMSH_DLL = os.path.join(sys.prefix, "Lib", "gmsh-4.15.dll")
-if not os.path.exists(_GMSH_DLL):
-    raise SystemExit(f"gmsh DLL not found at {_GMSH_DLL} — GMSH poly path "
-                     f"would be broken in the frozen exe.")
+import glob as _glob
+_gmsh_candidates = _glob.glob(os.path.join(sys.prefix, "Lib", "gmsh-*.dll"))
+if not _gmsh_candidates:
+    raise SystemExit("gmsh DLL not found (gmsh-*.dll) — GMSH poly path "
+                     "would be broken in the frozen exe.")
+_GMSH_DLL = sorted(_gmsh_candidates)[-1]  # highest version if multiple
 
 # casadi ships ~100 sibling DLLs (optional solver plugins: bonmin, cbc,
 # clp, ipopt, ...) directly in its own package folder rather than a
@@ -34,7 +36,7 @@ if not os.path.exists(_GMSH_DLL):
 casadi_datas, casadi_binaries, casadi_hidden = collect_all('casadi')
 
 a = Analysis(
-    ['src\\cfmesh_autogui\\app.py'],
+    [os.path.join('src', 'cfmesh_autogui', 'app.py')],
     pathex=[],
     binaries=casadi_binaries,
     datas=[('templates', 'templates'), ('plugins', 'plugins'),

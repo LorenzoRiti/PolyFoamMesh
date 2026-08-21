@@ -2302,6 +2302,18 @@ class MainWindow(QMainWindow):
         self._params.set_geometry_cell_estimate(lo, est, hi)
         self._log.append_log(f"{Tag.EST} ~{est:,} cells (~{time_str}), range {lo:,}-{hi:,}")
 
+        # Show implied resolution: cells across the narrowest passage
+        from cfmesh_autogui.core.geometry import compute_bbox_full
+        dx, dy, dz = compute_bbox_full(self._meshes)
+        dims = sorted([d for d in (dx, dy, dz) if d > 0])
+        if len(dims) >= 2:
+            cross = dims[1]  # median dimension
+            cells_across = max(1, int(cross / safe_max))
+            self._log.append_log(
+                f"{Tag.EST} Resolution: ~{cells_across} cells across "
+                f"the passage ({cross:.4f} m / {safe_max:.4f} m)"
+            )
+
         if not self._confirm_large_mesh(est, est_secs, safe_max, safe_min):
             self._log.append_log(f"{Tag.CANCELLED} Meshing cancelled before start.")
             self._params.set_all_enabled(True)
