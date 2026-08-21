@@ -1011,7 +1011,7 @@ class RetryRunner(QObject):
                     "— clicca 'Show Log' per il log completo."
                 )
                 self._on_log(
-                    "[error-detail] Raw exit code: %d | Ultime 5 righe:\n  %s"
+                    "[error-detail] Raw exit code: %d | Last 5 lines:\n  %s"
                     % (exit_code, "\n  ".join(output.strip().split("\n")[-5:]))
                 )
             if self._on_finished:
@@ -1925,15 +1925,15 @@ class QualityFixWorker(QObject):
             text = applied_text.read_text(encoding="ascii")
             for fix in fixes:
                 if fix.action == "relax":
-                    text = QualityEngine._relax_cell_sizes(text, factor=1.2)
+                    text = QualityEngine._relax_cell_sizes(text, factor=fix.factor or 1.2)
                 elif fix.action == "reduce_bl":
                     text = QualityEngine._reduce_boundary_layers(text)
                 elif fix.action == "disable_bl":
                     text = QualityEngine._disable_boundary_layers(text)
                 elif fix.action == "remesh":
-                    text = QualityEngine._coarsen_mesh(text, factor=1.3)
+                    text = QualityEngine._coarsen_mesh(text, factor=fix.factor or 1.3)
                 elif fix.action == "split":
-                    text = QualityEngine._reduce_max_cell(text, factor=0.7)
+                    text = QualityEngine._reduce_max_cell(text, factor=fix.factor or 0.7)
                 self.log_line.emit(
                     f"[quality-fix] {fix.action}: {fix.detail}"
                 )
@@ -2192,8 +2192,8 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
                     if now - _rate["last_emit"] >= 1.0 / _MAX_LINE_RATE_PER_S:
                         if _rate["suppressed"]:
                             on_line(
-                                prefix + f"... ({_rate['suppressed']} righe "
-                                "soppresse dal log live) ..."
+                                prefix + f"... ({_rate['suppressed']} lines "
+                                "suppressed from live log) ..."
                             )
                             _rate["suppressed"] = 0
                         on_line(prefix + line if prefix else line)
@@ -2245,8 +2245,8 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
 
     if _rate["suppressed"]:
         on_line(
-            f"... ({_rate['suppressed']} righe soppresse dal log live — "
-            "output troppo verboso) ..."
+            f"... ({_rate['suppressed']} lines suppressed from live log — "
+            "output too verbose) ..."
         )
         _rate["suppressed"] = 0
 

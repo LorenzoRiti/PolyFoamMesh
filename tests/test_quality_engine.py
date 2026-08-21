@@ -212,3 +212,24 @@ if __name__ == "__main__":
     test_reduce_max_cell()
     test_export_json()
     print("ALL PASS")
+
+def test_decide_fixes_sets_severity_factor():
+    """High-severity metrics must produce a factor != the _apply_fix default
+    (T4.1): _apply_fix must use the severity-computed factor, not a hardcoded
+    one."""
+    qe = QualityEngine()
+    # Very high skewness -> relax_factor = 1.0 + min(sev*0.5, 0.5) = 1.5
+    m = QualityMetrics(max_skewness=8.0, max_non_orthogonality=40, max_aspect_ratio=500)
+    fixes = qe._decide_fixes(m)
+    relax = next(f for f in fixes if f.action == "relax")
+    assert relax.factor is not None
+    assert relax.factor != 1.2  # default in _apply_fix
+    assert relax.factor > 1.2   # high severity -> stronger relax
+
+    # Many negative cells -> remesh factor > 1.5 default
+    m2 = QualityMetrics(neg_cells=200)
+    fixes2 = qe._decide_fixes(m2)
+    remesh = next(f for f in fixes2 if f.action == "remesh")
+    assert remesh.factor is not None
+    assert remesh.factor != 1.5
+    assert remesh.factor > 1.5

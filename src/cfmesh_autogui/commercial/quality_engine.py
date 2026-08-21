@@ -59,6 +59,9 @@ class AutoFixAction:
     target_metric: str = ""
     current_value: float = 0.0
     detail: str = ""
+    # Severity-derived factor computed by _decide_fixes and applied by
+    # _apply_fix (relax/remesh/split). None = fall back to the default.
+    factor: float | None = None
     # "local_refine" only: the objectRefinements-box dicts from
     # local_refinement_boxes_from_checkmesh_sets, applied by _apply_fix.
     payload: list[dict] = field(default_factory=list)
@@ -534,6 +537,7 @@ class QualityEngine:
                     action="relax",
                     target_metric="skewness",
                     current_value=metrics.max_skewness,
+                    factor=relax_factor,
                     detail=f"Increase maxCell by {relax_factor:.0%}, decrease minCell by {relax_factor*0.5:.0%}",
                 ))
 
@@ -557,6 +561,7 @@ class QualityEngine:
                 action="remesh",
                 target_metric="neg_vol",
                 current_value=float(negatives),
+                factor=factor,
                 detail=f"Coarsen cells by {factor:.0%}",
             ))
 
@@ -567,6 +572,7 @@ class QualityEngine:
                 action="split",
                 target_metric="aspect_ratio",
                 current_value=metrics.max_aspect_ratio,
+                factor=reduction,
                 detail=f"Reduce maxCellSize by {(1 - reduction):.0%}",
             ))
         return fixes
@@ -581,15 +587,15 @@ class QualityEngine:
         text = meshdict_path.read_text(encoding="ascii", errors="replace")
 
         if fix.action == "relax":
-            text = self._relax_cell_sizes(text, factor=1.2)
+            text = self._relax_cell_sizes(text, factor=fix.factor or 1.2)
         elif fix.action == "reduce_bl":
             text = self._reduce_boundary_layers(text)
         elif fix.action == "disable_bl":
             text = self._disable_boundary_layers(text)
         elif fix.action == "remesh":
-            text = self._coarsen_mesh(text, factor=1.5)
+            text = self._coarsen_mesh(text, factor=fix.factor or 1.5)
         elif fix.action == "split":
-            text = self._reduce_max_cell(text, factor=0.7)
+            text = self._reduce_max_cell(text, factor=fix.factor or 0.7)
         elif fix.action == "local_refine":
             text = self._add_local_refinement_boxes(text, fix.payload)
 
