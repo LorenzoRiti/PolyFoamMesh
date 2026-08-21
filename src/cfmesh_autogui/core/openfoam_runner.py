@@ -478,18 +478,27 @@ class MeshWorker(QObject):
             except (ValueError, AttributeError):
                 pass
 
-        # Estimate progress from line count (diminishing granularity after ~200 lines)
+        # Estimate progress from line count — after 500 lines switch to
+        # indeterminate busy animation so a 10-min large mesh doesn't look
+        # frozen at 95%. The main window shows setRange(0,0) for value==-1.
         if not m:
             n_lines = len(full_output)
             if n_lines < 20:
                 pct = n_lines * 5
+                self.progress_update.emit(min(int(pct), 19))
             elif n_lines < 100:
                 pct = 20 + (n_lines - 20) * 0.5
+                self.progress_update.emit(min(int(pct), 59))
             elif n_lines < 500:
                 pct = 60 + (n_lines - 100) * 0.1
+                self.progress_update.emit(min(int(pct), 94))
             else:
-                pct = 95
-            self.progress_update.emit(min(int(pct), 99))
+                # Large mesh: keep bar pulsing + periodic time hint in log
+                self.progress_update.emit(-1)
+                if n_lines % 200 == 0:
+                    elapsed = int(_now() - self._start_time) if self._start_time else 0
+                    mins, secs = divmod(elapsed, 60)
+                    self.log_line.emit(f"[meshing] still running... {mins}m{secs:02d}s elapsed ({n_lines} log lines)")
 
         # Cell count detection (unchanged)
         if not self._cell_count_emitted:
