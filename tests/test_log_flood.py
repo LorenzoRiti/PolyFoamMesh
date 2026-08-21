@@ -62,7 +62,7 @@ def test_log_panel_flood_drops_burst_and_stays_bounded(qapp):
         _pump(10)
     assert panel._pending == 0, "queued appends never drained"
     assert panel._dropped == 0, "suppression note not consumed"
-    assert "soppresse" in panel.toPlainText()
+    assert "suppressed" in panel.toPlainText()
 
 
 def test_log_panel_suppression_note_is_visible_after_flood(qapp):
@@ -81,7 +81,7 @@ def test_log_panel_suppression_note_is_visible_after_flood(qapp):
     while panel._pending > 0 and time.monotonic() < deadline:
         _pump(10)
     assert panel._pending == 0
-    assert "soppresse" in panel.toPlainText()
+    assert "suppressed" in panel.toPlainText()
     assert panel._dropped == 0
 
 
@@ -106,4 +106,4 @@ def test_stream_subprocess_throttles_live_lines_but_captures_all(qapp):
     # But the live forwarding is throttled (50 lines/s max) and notes the
     # suppression — the GUI never sees a 5000-line burst in one go.
     assert len(live) < 500, f"live lines not throttled: {len(live)}"
-    assert any("soppresse" in line for line in live)
+    assert any("suppressed" in line for line in live)

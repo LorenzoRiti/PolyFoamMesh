@@ -652,6 +652,18 @@ class ViewerWidget(QWidget):
         self._measure_check.toggled.connect(self._on_measure_toggled)
         toolbar.addWidget(self._measure_check)
 
+        toolbar.addSpacing(8)
+
+        toolbar.addWidget(QLabel("Decimazione:"))
+        self._decimate_combo = QComboBox()
+        self._decimate_combo.addItems(["Auto", "Metà", "Completa"])
+        self._decimate_combo.setCurrentText("Auto")
+        self._decimate_combo.setToolTip(
+            "Auto: decima solo oltre ~2M celle (al 20%). Metà: decima sempre "
+            "alla metà. Completa: mostra la mesh intera senza decimare."
+        )
+        toolbar.addWidget(self._decimate_combo)
+
         self._stats_label = QLabel("")
         self._stats_label.setStyleSheet(
             "font-size: 11px; padding: 2px 8px; background: rgba(0,0,0,30); border-radius: 3px;"
@@ -1364,12 +1376,12 @@ class ViewerWidget(QWidget):
             grid = pv.read(str(vtu_path))
             grid = self._prepare_internal_vtu_grid(grid, mode)
             n_cells = grid.n_cells
-            show_dec = n_cells > self.DECIMATE_THRESHOLD
+            threshold, target = self._decimation_settings()
+            show_dec = n_cells > threshold
             if show_dec:
                 # Cap the rendered surface so the GPU/OpenGL render on the
                 # GUI thread can never hang the whole app: extremely large
                 # grids decimate to ~1M cells instead of the 20% target.
-                target = self.DECIMATE_TARGET
                 if n_cells > 10_000_000:
                     target = min(target, 1_000_000 / n_cells)
                 try:
@@ -1468,14 +1480,15 @@ class ViewerWidget(QWidget):
                 "Loaded %d mesh patches (%d total faces) for %s",
                 len(patches), total_faces, case_dir,
             )
-            show_decimated = total_faces > self.DECIMATE_THRESHOLD
+            threshold, target = self._decimation_settings()
+            show_decimated = total_faces > threshold
             try:
                 self._plotter.clear()
                 ec = self._edge_color()
                 for _i, (name, pd) in enumerate(patches.items()):
                     if show_decimated:
                         try:
-                            pd = pd.decimate_pro(self.DECIMATE_TARGET)
+                            pd = pd.decimate_pro(target)
                         except Exception:
                             pass
                     self._plotter.add_mesh(
@@ -1652,6 +1665,20 @@ class ViewerWidget(QWidget):
     DECIMATE_THRESHOLD = 2_000_000
     # Target fraction of original cells after decimation
     DECIMATE_TARGET = 0.2
+
+    def _decimation_settings(self) -> tuple[float, float]:
+        """Return (threshold, target) for the current "Decimazione" combo.
+
+        Auto: decimate only above DECIMATE_THRESHOLD, to DECIMATE_TARGET.
+        Metà: always decimate to half (threshold 0, target 0.5).
+        Completa: never decimate (threshold inf, target 1.0).
+        """
+        mode = self._decimate_combo.currentText()
+        if mode == "Metà":
+            return 0.0, 0.5
+        if mode == "Completa":
+            return float("inf"), 1.0
+        return float(self.DECIMATE_THRESHOLD), float(self.DECIMATE_TARGET)
 
     def _load_stats_async(self, case_dir: Path):
         """Load mesh stats in the background (deferred via timer)."""

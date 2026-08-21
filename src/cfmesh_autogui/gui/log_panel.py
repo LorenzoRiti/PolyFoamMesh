@@ -67,8 +67,8 @@ class LogPanel(QTextEdit):
                 dropped = self._dropped
                 self._dropped = 0
                 self._insert_line(
-                    f"... {dropped} righe soppresse (flusso di log troppo "
-                    "intenso) ..."
+                    f"... {dropped} lines suppressed (log stream too "
+                    "intense) ..."
                 )
             self._insert_line(text)
 
