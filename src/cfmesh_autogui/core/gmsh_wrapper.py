@@ -1697,6 +1697,24 @@ def apply_solution_size_field(
     }
 
 
+def _resolve_algo3d() -> int | None:
+    """3D meshing algorithm override via ``CFMESH_GMSH_ALGO3D``.
+
+    Values: 1 = classic Delaunay, 6 = Frontal-Delaunay, 10 = HXT.
+    Returns None when the env var is unset/invalid — the caller then keeps
+    its current default behaviour (HXT). Used by tools/bench_hxt_ab.py to
+    A/B the 3D algorithm without touching the default path.
+    """
+    env = os.environ.get("CFMESH_GMSH_ALGO3D", "").strip()
+    if not env:
+        return None
+    try:
+        return int(env)
+    except ValueError:
+        logger.debug("gmsh_wrapper: bad CFMESH_GMSH_ALGO3D value %r", env, exc_info=True)
+        return None
+
+
 def _gmsh_thread_count() -> int:
     """Number of threads GMSH should use for meshing.
 
@@ -1953,7 +1971,23 @@ def generate_volume_mesh(
     # reparametrized surfaces produced by STL reconstruction (long curved
     # patches parametrize badly); HXT meshes directly off the discrete
     # boundary triangulation and doesn't hit this.
-    gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT
+    #
+    # CFMESH_GMSH_ALGO3D lets an A/B benchmark (tools/bench_hxt_ab.py) pick
+    # the 3D algorithm (1=Delaunay, 6=Frontal, 10=HXT). Unset = current
+    # default behaviour (HXT). When HXT is explicitly requested we ALSO set
+    # Mesh.MaxNumThreads3D: HXT only parallelises when that option is set —
+    # General.NumThreads alone leaves it at 1 thread, which is why past
+    # "already tried HXT, doesn't work" tests saw no speedup.
+    algo3d = _resolve_algo3d()
+    if algo3d is None:
+        gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT (current default)
+    else:
+        gmsh.option.setNumber("Mesh.Algorithm3D", algo3d)
+        if algo3d == 10:
+            try:
+                gmsh.option.setNumber("Mesh.MaxNumThreads3D", _gmsh_thread_count())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not set GMSH MaxNumThreads3D: %s", exc)
     # MeshAdapt (1) for 2D, not Frontal-Delaunay (6). Measured over
     # repeated runs on a real CAD part (a valve with periodic Cone/
     # Cylinder/BSpline surfaces whose OCC seam curve is legitimately

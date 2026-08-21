@@ -187,3 +187,32 @@ def test_gmsh_thread_count_ignores_bad_override():
     assert n >= 1
     assert n <= max(1, min(cpus // 2, 8))
 
+
+# ------------------------------------------------------------------
+# HXT A/B: CFMESH_GMSH_ALGO3D override (T1.1)
+# ------------------------------------------------------------------
+def test_resolve_algo3d_defaults_to_none():
+    """Unset CFMESH_GMSH_ALGO3D must return None (keep current default)."""
+    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {}, clear=False):
+        _os.environ.pop("CFMESH_GMSH_ALGO3D", None)
+        assert gw._resolve_algo3d() is None
+
+
+def test_resolve_algo3d_honours_override():
+    """CFMESH_GMSH_ALGO3D must be parsed to an int (1/6/10)."""
+    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import os as _os
+    for val, expected in (("10", 10), ("6", 6), ("1", 1)):
+        with mock.patch.dict(_os.environ, {"CFMESH_GMSH_ALGO3D": val}, clear=False):
+            assert gw._resolve_algo3d() == expected
+
+
+def test_resolve_algo3d_ignores_bad_override():
+    """A non-numeric CFMESH_GMSH_ALGO3D must fall back to None (default)."""
+    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {"CFMESH_GMSH_ALGO3D": "abc"}, clear=False):
+        assert gw._resolve_algo3d() is None
+
