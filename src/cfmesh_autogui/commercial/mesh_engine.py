@@ -652,11 +652,34 @@ class MeshEngine:
             logger.warning("WSL not found for cartesianMesh")
             return False
 
-    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 90) -> None:
-        """Convert hex mesh to polyhedral via polyDualMesh."""
+    def _run_polyhedral(self, case_dir: Path, feature_angle: float = 90,
+                        pipeline_staged: bool = False) -> None:
+        """Convert hex mesh to polyhedral via polyDualMesh.
+
+        ``pipeline_staged`` (default OFF until validated): run polyDualMesh
+        inside WSL native storage (~/cfmesh_cases) instead of on the slow 9P
+        /mnt/c bridge, then copy the result back compressed. OFF keeps the
+        current direct path intact.
+        """
         logger.info(
-            "polyDualMesh: case_dir=%s feature_angle=%g", case_dir, feature_angle,
+            "polyDualMesh: case_dir=%s feature_angle=%g staged=%s",
+            case_dir, feature_angle, pipeline_staged,
         )
+        if pipeline_staged:
+            from cfmesh_autogui.config import extract_poly_mesh_archive
+            cmd = self._of_config.build_staged_pipeline_command(
+                case_dir, steps=[f"polyDualMesh {feature_angle} -overwrite"],
+            )
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
+            extract_poly_mesh_archive(case_dir)
+            if r.returncode != 0:
+                logger.error(
+                    "polyDualMesh (staged) failed (exit %d): %s",
+                    r.returncode, (r.stdout or r.stderr or "")[-500:],
+                )
+                raise RuntimeError(f"polyDualMesh failed (exit {r.returncode})")
+            logger.info("Polyhedral conversion OK (staged, featureAngle=%g)", feature_angle)
+            return
         cmd = self._of_config.build_poly_dual_cmd(
             case_dir, feature_angle=feature_angle,
         )

@@ -85,3 +85,22 @@ if __name__ == "__main__":
     test_wsl_linux_path_escapes_single_quotes()
     test_validate_case_path_empty()
     print("ALL PASS")
+
+def test_build_staged_pipeline_command_contains_steps_and_tar():
+    """The staged pipeline script must run the steps and copy back the
+    polyMesh as one compressed archive (T1.2)."""
+    import tempfile
+    cfg = OFConfig()
+    with tempfile.TemporaryDirectory() as td:
+        case = Path(td) / "case"
+        (case / "system").mkdir(parents=True)
+        cmd = cfg.build_staged_pipeline_command(
+            case, steps=["cartesianMesh", "polyDualMesh 90 -overwrite"],
+        )
+        assert isinstance(cmd, list) and cmd
+        script = (case / "system" / "_run_staged_pipeline.sh").read_text(encoding="ascii")
+        assert "cartesianMesh" in script
+        assert "polyDualMesh 90 -overwrite" in script
+        assert "polyMesh.tar.gz" in script
+        assert "rsync" in script
+        assert "pipeline.log" in script
