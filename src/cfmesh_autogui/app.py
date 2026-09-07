@@ -1,4 +1,4 @@
-"""CFMesh-AutoGUI application entry point.
+"""PolyFoamMesh application entry point.
 
 Configures logging (before any module imports to capture init errors),
 shows a branded splash, applies the design system theme, and launches
@@ -136,7 +136,7 @@ def main():
     # frozen bootloader does not support the `-m` flag — it just re-runs
     # this same main() regardless of arguments, which opened a second GUI
     # window that immediately crashed (confirmed live: a second
-    # "CFMesh-AutoGUI.exe" process appeared with an "Unhandled exception
+    # "PolyFoamMesh.exe" process appeared with an "Unhandled exception
     # in script" title every time feature detection ran). Detect that
     # exact invocation shape here and dispatch to the CLI entry point
     # instead of ever reaching QApplication.
@@ -178,9 +178,9 @@ def main():
         _sys.exit(0)
 
     if len(_sys.argv) > 1 and _sys.argv[1] in ("--help", "-h"):
-        print(f"CFMesh-AutoGUI v{__version__} — OpenFOAM mesh preprocessor")
+        print(f"PolyFoamMesh v{__version__} — OpenFOAM mesh preprocessor")
         print()
-        print("Usage: CFMesh-AutoGUI [options]")
+        print("Usage: PolyFoamMesh [options]")
         print()
         print("Options:")
         print("  --help, -h         Show this help message and exit")
@@ -195,10 +195,10 @@ def main():
         _sys.exit(0)
 
     if len(_sys.argv) > 1 and _sys.argv[1] in ("--version", "-v"):
-        print(f"CFMesh-AutoGUI v{__version__}")
+        print(f"PolyFoamMesh v{__version__}")
         _sys.exit(0)
 
-    logger.info("Starting CFMesh-AutoGUI v%s...", __version__)
+    logger.info("Starting PolyFoamMesh v%s...", __version__)
     logger.info("Python %s, PySide6, PyVista, GMSH, meshio")
     logger.info("Args: %s", _sys.argv[1:])
 

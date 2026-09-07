@@ -79,7 +79,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 # one-dir build: the EXE is just the bootloader + embedded PYZ; the
-# libraries/data live next to it in dist/CFMesh-AutoGUI/ (fast startup,
+# libraries/data live next to it in dist/PolyFoamMesh/ (fast startup,
 # no per-run temp extraction, and friendlier to SmartScreen than a
 # 500 MB one-file exe).
 exe = EXE(
@@ -87,7 +87,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='CFMesh-AutoGUI',
+    name='PolyFoamMesh',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -109,5 +109,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=['*msvcp*', '*vcruntime*', '*concrt*'],
-    name='CFMesh-AutoGUI',
+    name='PolyFoamMesh',
 )

@@ -1,4 +1,4 @@
-"""Branding assets for CFMesh-AutoGUI.
+"""Branding assets for PolyFoamMesh.
 
 All assets are generated programmatically (QPainter) so the bundle has
 zero external image dependencies. Resolution-independent and theme-aware.

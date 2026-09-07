@@ -21,6 +21,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cfmesh_autogui.core.patch_roles import (
+    ROLE_EMPTY,
+    ROLE_INLET,
+    ROLE_OUTLET,
+    ROLE_SYMMETRY,
+    ROLE_WALL,
+    match_role,
+)
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -169,17 +177,30 @@ class BCEditor:
         return changed
 
     def _name_to_type(self, name: str) -> str:
-        lower = name.lower()
-        if lower in ("inlet", "in", "inflow", "velocityinlet"):
+        """Map a patch name to a BC type via ``patch_roles.match_role``.
+
+        Returns the same vocabulary as before (``"inlet"`` / ``"outlet"`` /
+        ``"wall"`` / ``"symmetry"`` / ``"patch"``) so ``PATCH_COLORS`` and
+        ``BC_PRESETS`` keep working; symmetry and empty both map to
+        ``"symmetry"``.
+
+        ``match_role`` — not ``classify_patch`` — is deliberate. It returns
+        ``None`` for a name carrying no keyword instead of defaulting it to
+        a wall, so ``_detect_type`` reaches its geometric branch for
+        unnamed-patch cases (GMSH emits ``surface_N`` for every patch, and
+        geometry is the only thing that can tell an inlet from a wall
+        there). Defaulting those to "wall" here silently pre-empted the
+        geometry path that exists precisely to answer them.
+        """
+        role = match_role(name)
+        if role == ROLE_INLET:
             return "inlet"
-        if lower in ("outlet", "out", "outflow", "pressureoutlet", "open"):
+        if role == ROLE_OUTLET:
             return "outlet"
-        if lower in ("wall", "walls", "blade", "blades", "body", "hull",
-                     "surface", "wing", "foil", "boundary"):
-            return "wall"
-        if lower in ("symmetry", "sym", "symmetryplane", "cyclic",
-                     "periodic", "empty"):
+        if role in (ROLE_SYMMETRY, ROLE_EMPTY):
             return "symmetry"
+        if role == ROLE_WALL:
+            return "wall"
         return "patch"
 
     def _detect_type(

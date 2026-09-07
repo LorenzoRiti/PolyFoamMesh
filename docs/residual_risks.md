@@ -74,7 +74,107 @@ source of truth.
   63.252 nel fixpoint; il drop a 0 layer perde il volume). Causa radice:
   angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
   concavità delle celle duali non è rilevabile dalle normali di parete.
-  Il fallback globale su 5 scale resta il comportamento della valvola.
+   Il fallback globale su 5 scale resta il comportamento della valvola.
+
+## Boundary Layer Patch Selection — single source of truth
+
+- `core/patch_roles.py` is now the **only** place that answers "is this
+  boundary patch a wall?". It used to be answered independently, and
+  differently, in `gui/main_window.py::_is_wall_patch`,
+  `commercial/bl_engine.py::detect_wall_patches`,
+  `commercial/bc_editor.py::_name_to_type`, `core/case_setup.py::_patch_role`
+  and `core/meshdict_gen.py::infer_patch_type`. All but the last now delegate
+  (`infer_patch_type` maps to an OpenFOAM *boundary type*, which needs finer
+  distinctions than a role — e.g. `wedge` and `cyclic` are not symmetry
+  planes).
+- Two-level API on purpose: `classify_patch()` defaults a silent name to
+  `wall` (the safe majority, used where a decision is mandatory — BL
+  extrusion); `match_role()` returns `None` for a silent name so callers with
+  a geometric fallback (`bc_editor`, `case_setup`) still reach it. GMSH names
+  every patch `surface_N`, so treating "no keyword" as "wall" pre-empted
+  geometry on exactly the cases geometry exists to solve.
+- **The "apply BL to every patch" fallback is gone.** When neither the
+  boundary type/name nor the geometric inference identifies a wall — closed
+  domains, external aero, multi-inlet manifolds — the poly worker
+  (`core/openfoam_runner.py::poly_bl_patch_selection`) now excludes only what
+  is positively known to be an inlet/outlet/symmetry and extrudes from the
+  rest; if nothing is left it **skips the boundary layers**. Previously it
+  extruded into all patches, i.e. prisms in the inlets and outlets, on
+  precisely the geometries where the least is known. checkMesh accepts that,
+  so the failure only surfaced when the solver diverged. A mesh without
+  layers is a recoverable warning; a mesh with layers in the inlet is a wrong
+  answer.
+- An explicit user override ("Apply BL to all patches") is still honoured
+  literally — the guard must not make a deliberate choice impossible.
+- Regression coverage: `tests/test_poly_bl_patch_selection.py` (the decision
+  function) and `tests/test_wall_detection_chain.py` (all four entry points
+  must agree, and must agree on "skip", never "everywhere").
+
+## Poly Mesh Quality Remediation
+
+- `commercial/poly_remediation.py` (new). The tet→poly path previously had
+  **no** automated remediation: `QualityEngine.auto_fix` and
+  `MeshOptimizer.optimize` both drive their loop through a cfMesh
+  `cartesianMesh` re-run, which `mesh_remeshable` refuses whenever a tet
+  backup exists — i.e. exactly for the dual-poly path. A defective poly mesh
+  was analysed and then left untouched.
+- The loop is strictly non-regressive: one keep-best `poly_smoother` pass per
+  iteration (interior dual vertices, boundary pinned), accepted only when the
+  defect count measured by the in-process checkMesh replica strictly
+  decreases; otherwise the candidate is discarded and the mesh left
+  byte-identical. Bounded by iteration and wall-time caps.
+- The concave-feature defect class (boundary-face pyramid failures) is
+  detected and **skipped**, per the measured dead ends in
+  `docs/handoff_poly_bl_deepseek.md`.
+- Degrading to the tet mesh is available but **opt-in only** (reported, never
+  applied automatically): the user asked for poly.
+- Local refinement is deliberately NOT implemented here:
+  `local_refinement_boxes_from_checkmesh_sets` emits cfMesh
+  `objectRefinements`, which only make sense as input to a cfMesh re-mesh,
+  and this path has no re-mesh.
+
+## Adaptive Escalation Substitutes Algorithms — by design, now reported
+
+- `MeshEngine` escalation is **on by default** (`adaptive_escalation=True`,
+  `max_escalation_steps=3`). When the requested algorithm fails the quality
+  gates the engine escalates along
+  `CartesianHex → HexCorePoly → Tetrahedral → PolyAggregated → SnappyHexMesh`
+  and returns `success=True` with a **different topology than requested** — a
+  user whose solver needs hex-dominant could get tet and a green checkmark.
+- `MeshEngineResult` now exposes `algorithm_substituted` plus
+  `original_algorithm`, `escalation_reason` and `metrics_before/after`, and
+  this propagates to `QuickMeshResult`, `FullAutoResult`, the one-click JSON
+  report and the `verification` A/B suite (which flags `[SUBSTITUTED]`).
+  `success` still means "a mesh was produced" — `quality_passed` is the
+  separate, authoritative quality flag.
+- **Known limitation:** the main GUI meshing path does not go through
+  `MeshEngine` (it uses `RetryRunner`/`cartesianMesh` directly and never
+  builds a `MeshEngineResult`), so a GUI user is not yet warned in the log.
+  The substitution is recorded in the artefacts that do flow through
+  `MeshEngine` (quick mesh, one-click, A/B verification). Wiring a GUI
+  warning is the remaining work.
+- **Redundant rung removed (2026-09-02):** `HEX_CORE_POLY` and `POLYHEDRAL`
+  dispatch to the identical pipeline (`_run_cartesian_hex` +
+  `_run_polyhedral`), i.e. `polyDualMesh` over the whole mesh. The ladder
+  used to climb `Polyhedral → HexCorePoly`, which re-ran the entire pipeline
+  only to rebuild the same dual mesh — a no-op that consumed one of just
+  three escalation attempts. The rung is now `POLYHEDRAL` (rank 2) instead of
+  `HEX_CORE_POLY` (rank 3): identical result for a hex start, and a
+  `POLYHEDRAL` start escalates straight to tetrahedral instead of into
+  itself. Guarded by `test_escalation_ladder_no_redundant_dispatch` and
+  `test_next_escalation_from_polyhedral_skips_the_no_op`.
+- **`HexCorePolyBoundary` is not a Mosaic mesher.** It was labelled "Hex Core
+  + Poly Boundary (Mosaic-style)" while producing no hex core, no poly
+  transition zone and no prisms. Relabelled "Hex → Polyhedral (cfMesh
+  polyDualMesh)"; the enum value is unchanged so existing case configs still
+  load. `commercial/mosaic.py` likewise only runs whole-mesh `polyDualMesh
+  90` — its "Mosaic" name is historical and its docstrings now say so.
+  Implementing a true Mosaic topology remains out of scope.
+- **`polyDualMesh` increases the cell count (~15-30%)**, it does not reduce
+  it. Two descriptions claimed a 40-60% reduction; corrected. The *tet→poly
+  barycentric dual* is the one that reduces cells (~4-5x, measured:
+  box_obstacle 12597 → 2575, pipe 10014 → 2437). Different code paths — do
+  not conflate them.
 
 ## Viewer
 
@@ -113,9 +213,8 @@ source of truth.
 ## Packaging And Runtime
 
 - The frozen EXE is rebuilt on demand (`pyinstaller --clean --noconfirm
-  CFMesh-AutoGUI.spec`). The `dist/` artifact is not refreshed automatically
-  and may lag the source tree. (Build/package rename to PolyFoamMesh is
-  pending — see [docs/dev/DISTRIBUZIONE.md](dev/DISTRIBUZIONE.md).)
+  PolyFoamMesh.spec`). The `dist/` artifact is not refreshed automatically
+  and may lag the source tree.
 - The API server module (`cfmesh_autogui.api.server`) imports cleanly with
   the installed FastAPI; it remains a CI/CD surface, not part of the GUI.
 

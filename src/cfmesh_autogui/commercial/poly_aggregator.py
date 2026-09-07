@@ -1289,7 +1289,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="STAR-CCM+ style polyhedral aggregation (headless)",
     )
-    parser.add_argument("--version", action="version", version="CFMesh-AutoGUI PolyAggregator 1.0.0")
+    parser.add_argument("--version", action="version", version="PolyFoamMesh PolyAggregator 1.0.0")
     parser.add_argument("--case-dir", "-c", required=True, help="OpenFOAM case directory")
     parser.add_argument("--geometry", "-g", default="", help="Geometry file (STEP/STL)")
     parser.add_argument("--min-tets", type=int, default=20, help="Min tets per cluster (1=aggressive, 30=conservative)")

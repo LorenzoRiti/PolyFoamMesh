@@ -29,7 +29,7 @@ class OctopodaRuntime:
             return json.loads(p.read_text())["value"]
         return None
 
-    def log_event(self, agent: str, step: str, details: str) -> None:
+    def log_event(self, agent: str, step: str, details: str | dict) -> None:
         log = _OCTO_DIR / "events.jsonl"
         with open(log, "a") as f:
             f.write(json.dumps({"agent": agent, "step": step, "details": details, "ts": datetime.datetime.now(timezone.utc).isoformat()}) + "\n")

@@ -29,7 +29,7 @@ sys.path.insert(0, str(SRC))
 
 from cfmesh_autogui.config import OFConfig  # noqa: E402
 from cfmesh_autogui.core.foam_mesh_io import (  # noqa: E402
-    read_polymesh, write_polymesh,
+    read_polymesh,
 )
 
 FIXDIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures"

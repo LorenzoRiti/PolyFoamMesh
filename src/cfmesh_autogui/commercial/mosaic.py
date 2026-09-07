@@ -1,15 +1,17 @@
-"""Mosaic / Poly-Hedral Connectivity — inspired by Star-CCM+ Mosaic.
+"""Polyhedral conversion via cfMesh polyDualMesh.
 
-Generates a conformal polyhedral cap layer at the interface between
-the hex-dominant core (cfMesh cartesianMesh) and the prism-layer
-region, producing a smoothly graded transition with cell volume
-ratio below 1:10.
+Runs cfMesh's ``polyDualMesh`` over the whole hex-dominant mesh,
+converting every cell to an arbitrary polyhedron (a dual-mesh
+operation). Despite the historical "Mosaic" name, this is NOT a
+Star-CCM+ Mosaic-style mesher: there is no hex core, no conformal
+polyhedral transition cap layer and no interface detection — the
+entire mesh is converted in place.
 
 Pipeline:
-  1. Hex-dominant core mesh (cfMesh cartesianMesh)
-  2. Detect interface layer between hex-core and walls
-  3. Generate conformal polyhedral transition (polyDualMesh)
-  4. Quality check on poly-hex interface
+  1. Count hex cells before conversion
+  2. polyDualMesh 90 -overwrite over the whole mesh
+  3. Count poly cells after conversion
+  4. Estimate a volume-ratio proxy (checkMesh max/min volume, else heuristic)
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ _OF_FLOAT_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 @dataclass
 class MosaicParams:
-    """Parameters controlling the mosaic poly-hex transition."""
+    """Parameters controlling the polyDualMesh conversion."""
     n_smoothing_iterations: int = 3
     volume_ratio_target: float = 8.0
     preserve_original: bool = True
@@ -57,7 +59,11 @@ class MosaicResult:
 
 
 class MosaicEngine:
-    """Poly-Hex connectivity (Mosaic) engine.
+    """PolyDualMesh conversion engine (historically named "Mosaic").
+
+    Converts the whole hex-dominant mesh to polyhedral via cfMesh's
+    polyDualMesh. The "Mosaic" name is historical — this is not a
+    Star-CCM+ Mosaic-style mesher.
 
     Usage::
 
@@ -82,12 +88,12 @@ class MosaicEngine:
         self._params = params
 
     def run(self) -> MosaicResult:
-        """Execute the mosaic polyhedral conversion.
+        """Execute the polyDualMesh conversion.
 
         Steps:
           1. Run polyDualMesh on the hex-dominant mesh
           2. Parse cell count before/after
-          3. Estimate volume ratio at transition
+          3. Estimate a volume-ratio proxy
         """
         start = datetime.now()
         self._result = MosaicResult()
@@ -172,7 +178,7 @@ class MosaicEngine:
         return count_cells(self._case_dir)
 
     def _estimate_volume_ratio(self) -> float:
-        """Estimate the cell volume ratio at the hex→poly transition.
+        """Estimate a cell volume-ratio proxy.
 
         Uses the ratio of max to min cell volume from checkMesh output
         when available, otherwise a heuristic based on cell counts.

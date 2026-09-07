@@ -1,4 +1,4 @@
-"""Single source of truth for the CFMesh-AutoGUI version.
+"""Single source of truth for the PolyFoamMesh version.
 
 Imported by both `cfmesh_autogui/__init__.py` (package `__version__`)
 and `cfmesh_autogui/gui/design_tokens.py` (UI `APP_VERSION`), so the

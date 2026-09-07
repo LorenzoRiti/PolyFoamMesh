@@ -1,15 +1,15 @@
-; NSIS installer for CFMesh-AutoGUI v2.0
+; NSIS installer for PolyFoamMesh v2.0
 ; Requires: NSIS 3.x
 
-!define PRODUCT_NAME "CFMesh-AutoGUI"
+!define PRODUCT_NAME "PolyFoamMesh"
 !define PRODUCT_VERSION "2.0.0"
 !define PRODUCT_PUBLISHER "Davide Valoroso"
-!define PRODUCT_WEB_SITE "https://cfmesh-autogui.local"
+!define PRODUCT_WEB_SITE "https://polyfoammesh.local"
 
 SetCompressor lzma
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "CFMesh-AutoGUI-${PRODUCT_VERSION}-Setup.exe"
+OutFile "PolyFoamMesh-${PRODUCT_VERSION}-Setup.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 RequestExecutionLevel admin
 

@@ -10,10 +10,10 @@ Wraps all available meshing algorithms into a single API with:
 
 Algorithms:
   - ``CartesianHex`` — cfMesh cartesianMesh via WSL2 (default, hex-dominant)
-  - ``Polyhedral`` — polyDualMesh conversion (AUMENTA le celle, dual hex→poly)
+  - ``Polyhedral`` — polyDualMesh conversion (dual hex→poly, AUMENTA le celle ~15-30%)
   - ``PolyAggregated`` — GMSH tet + aggregazione (RIDUCE le celle 3-5x, Star-CCM+ style)
   - ``Tetrahedral`` — GMSH direct tet mesh (no WSL needed)
-  - ``HexCorePolyBoundary`` — Mosaic-style: hex core + poly transition + prism
+  - ``HexCorePolyBoundary`` — hex→poly dual via polyDualMesh (same code path as Polyhedral)
   - ``CartesianCutCell`` — cfMesh cartesianCutMesh
   - ``SnappyHexMesh`` — OpenFOAM native snappyHexMesh (castellated + snap + layers)
   - ``MmgAdaptation`` — MMG anisotropic post-mesh adaptation
@@ -34,12 +34,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cfmesh_autogui.core.case_setup import write_control_dict as _write_control_dict
 from cfmesh_autogui.core.quality_thresholds import ADAPTIVE_THRESHOLDS
 from cfmesh_autogui.core.validation import validate_case_dir
 from cfmesh_autogui.octopoda_local import octo
+
+if TYPE_CHECKING:  # config pulls in the WSL probe; keep it out of import time
+    from cfmesh_autogui.config import OFConfig
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +66,16 @@ class MeshingAlgorithm(Enum):
 # faces; see commit 4b98813). It stays selectable explicitly (no-WSL
 # fallback in _resolve_auto_mesher) but must never be silently substituted
 # by auto-escalation.
+# The rung between hex and tet is POLYHEDRAL, not HEX_CORE_POLY: the two
+# dispatch to the same cartesianMesh + polyDualMesh pipeline, so starting from
+# hex they produce the *identical* mesh — but only POLYHEDRAL (rank 2) leaves
+# the ladder monotonic for a POLYHEDRAL start. With HEX_CORE_POLY (rank 3)
+# here, a user who selected Polyhedral escalated into a rung that re-ran the
+# whole pipeline only to rebuild the same dual mesh, burning one of just
+# max_escalation_steps=3 attempts on a no-op.
 ESCALATION_LADDER: list[tuple[MeshingAlgorithm, str]] = [
     (MeshingAlgorithm.CARTESIAN_HEX, "default hex"),
-    (MeshingAlgorithm.HEX_CORE_POLY, "hex + poly boundary (better non-ortho)"),
+    (MeshingAlgorithm.POLYHEDRAL, "hex→poly dual (polyDualMesh, better non-ortho)"),
     (MeshingAlgorithm.TETRAHEDRAL, "tetrahedral (complex geometry fallback)"),
     (MeshingAlgorithm.POLY_AGGREGATED, "polyhedral aggregated (Star-CCM+ style, 3-5x fewer cells)"),
     (MeshingAlgorithm.SNAPPY_HEX_MESH, "snappyHexMesh (industrial robust)"),
@@ -106,10 +116,10 @@ ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
     },
     MeshingAlgorithm.POLYHEDRAL: {
         "label": "Polyhedral (cfMesh polyDualMesh)",
-        "description": "Poliedri arbitrari, riduce celle del 40-60%",
+        "description": "Poliedri arbitrari via polyDualMesh (dual mesh, aumenta le celle ~15-30%)",
         "requires_wsl": True,
         "cell_types": "polyhedral",
-        "best_for": "post-processing, riduzione celle",
+        "best_for": "post-processing, mesh poliedrica",
         "quality_rank": 2,
     },
     MeshingAlgorithm.TETRAHEDRAL: {
@@ -121,12 +131,12 @@ ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
         "quality_rank": 3,
     },
     MeshingAlgorithm.HEX_CORE_POLY: {
-        "label": "Hex Core + Poly Boundary (Mosaic-style)",
-        "description": "Nucleo esaedrico + transizione poliedrica + prismi",
+        "label": "Hex → Polyhedral (cfMesh polyDualMesh)",
+        "description": "Converte l'intera mesh hex-dominant in poliedri via polyDualMesh (dual mesh, aumenta le celle ~15-30%)",
         "requires_wsl": True,
-        "cell_types": "hex-core + poly + prism",
-        "best_for": "CFD avanzato: boundary layer + qualità",
-        "quality_rank": 1,
+        "cell_types": "polyhedral",
+        "best_for": "post-processing, mesh poliedrica",
+        "quality_rank": 2,
     },
     MeshingAlgorithm.CARTESIAN_CUT: {
         "label": "Cartesian Cut-Cell (cfMesh)",
@@ -214,6 +224,27 @@ class MeshEngineResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
+    @property
+    def algorithm_substituted(self) -> bool:
+        """True when the engine escalated away from the requested algorithm."""
+        return bool(self.original_algorithm) and self.original_algorithm != self.algorithm
+
+    def print_summary(self) -> None:
+        """Print a human-readable summary, including any algorithm substitution."""
+        status = "OK" if self.success else "FAILED"
+        print(
+            f"Mesh: {status} | {self.cell_count:,} cells | "
+            f"algorithm={self.algorithm} | "
+            f"quality={'PASS' if self.quality_passed else 'FAIL'}"
+        )
+        if self.algorithm_substituted:
+            print(
+                f"  NOTE: algorithm substituted "
+                f"{self.original_algorithm} -> {self.algorithm}"
+            )
+            if self.escalation_reason:
+                print(f"  Reason: {self.escalation_reason}")
+
 
 class MeshEngine:
     """Unified multi-algorithm meshing engine with adaptive quality feedback.
@@ -232,11 +263,22 @@ class MeshEngine:
         4. Log escalation reason and compare metrics before/after
     """
 
-    def __init__(self) -> None:
+    def __init__(self, of_config: OFConfig | None = None) -> None:
+        """Build the engine, optionally bound to a pre-configured OFConfig.
+
+        ``of_config`` is optional and mirrors ``ParallelMeshEngine``: callers
+        that already resolved the WSL distro / OpenFOAM installation (the
+        adaptive integration, which runs inside an OODA loop over an existing
+        case) pass theirs; everyone else gets a default. It used to take no
+        argument at all, which made ``MeshEngine(of_config)`` a hard
+        TypeError at runtime on the one call site that passes one
+        (``adaptive_integration.py``) — reachable from the Solve Adaptive
+        ribbon button.
+        """
         self._params = MeshEngineParams()
         self._escalation_step = 0
         from cfmesh_autogui.config import OFConfig
-        self._of_config = OFConfig()
+        self._of_config = of_config or OFConfig()
 
     def configure(self, params: MeshEngineParams) -> None:
         self._params = params
@@ -392,6 +434,8 @@ class MeshEngine:
                 "cells": result.cell_count,
                 "quality": result.quality_passed,
                 "escalation_steps": escalation_count,
+                "substituted": result.algorithm_substituted,
+                "original_algorithm": result.original_algorithm,
             })
 
         except Exception as exc:

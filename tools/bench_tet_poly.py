@@ -9,9 +9,9 @@ input (GMSH is non-deterministic — a re-mesh would invalidate the comparison).
 
 Usage::
 
-    python tests/bench_tet_poly.py ref1                 # dual, reuse C:\\polybench
-    python tests/bench_tet_poly.py ref1 --conv dual --json out.json
-    python tests/bench_tet_poly.py ref1 --conv dual --repeat 3   # stability
+    python tools/bench_tet_poly.py ref1                 # dual, reuse C:\\polybench
+    python tools/bench_tet_poly.py ref1 --conv dual --json out.json
+    python tools/bench_tet_poly.py ref1 --conv dual --repeat 3   # stability
 
 Only the barycentric-dual converter is benchmarked here: the merge-based
 terminal-face converter is retired and has been removed from this harness.

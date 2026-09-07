@@ -7,7 +7,7 @@ Generates a large geometry and measures:
 4. gzip detection
 
 Usage:
-    python tests/bench_large_mesh.py
+    python tools/bench_large_mesh.py
 """
 
 import io, os, shlex, shutil, subprocess, sys, time, re

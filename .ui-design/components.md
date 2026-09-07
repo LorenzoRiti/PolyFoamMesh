@@ -1,4 +1,4 @@
-# Component Guidelines — CFMesh-AutoGUI Design System
+# Component Guidelines — PolyFoamMesh Design System
 
 > Commercial-grade usage rules for every widget. **All values come from
 > `design_tokens.py` — never hardcode colors / spacing / font sizes in widget code.**

@@ -94,7 +94,7 @@ def create_app(data_dir: str | None = None) -> Any:
         )
 
     app = FastAPI(
-        title="CFMesh-AutoGUI API",
+        title="PolyFoamMesh API",
         description="Headless meshing API for CI/CD integration",
         version="1.0.0",
     )

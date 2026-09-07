@@ -74,6 +74,78 @@ def poly_geo_wall_patch_names(case_dir: Path | str) -> list[str]:
     except Exception:  # noqa: BLE001 - not inferable (e.g. closed domain)
         return []
 
+
+def poly_bl_patch_selection(
+    case_dir: Path | str,
+    apply_to_all_override: bool = False,
+) -> tuple[list[str] | None, bool, list[str]]:
+    """Decide which boundary patches the poly BL step may touch.
+
+    Returns ``(patch_names, apply_to_all, notes)``:
+
+    - ``patch_names is None``  -> **skip the BL entirely** (nothing safe to
+      extrude from).  The caller must report this rather than extruding.
+
+    Three tiers, cheapest and most authoritative first:
+
+    1. An explicit user override means "all patches" and is honoured
+       literally — that is the user's call to make.
+    2. Boundary type / name, then the geometric inference
+       (``poly_wall_patch_names`` / ``poly_geo_wall_patch_names``).
+    3. When both fail (every patch unnamed GMSH ``surface_N`` *and* no
+       inlet/outlet could be placed — closed domains, external aero,
+       multi-inlet manifolds), exclude only what is positively known to be
+       a non-wall and extrude from the rest.  If that leaves nothing, skip.
+
+    Tier 3 is the one that used to be "apply to ALL".  It fired on exactly
+    the geometries where the least is known, and it put prism stacks in the
+    inlets and outlets: checkMesh accepts that, so the failure only surfaces
+    when the solver diverges.  A mesh without layers is a recoverable
+    warning; a mesh with layers in the inlet is a wrong answer.
+    """
+    if apply_to_all_override:
+        return [], True, []
+
+    notes: list[str] = []
+    try:
+        walls = poly_wall_patch_names(case_dir)
+    except Exception:  # noqa: BLE001 - best effort
+        walls = []
+    if not walls:
+        walls = poly_geo_wall_patch_names(case_dir)
+    if walls:
+        return walls, False, notes
+
+    from cfmesh_autogui.core.patch_roles import split_wall_patches
+
+    try:
+        from cfmesh_autogui.core.boundary_reader import parse_boundary
+
+        all_names = [
+            p.name
+            for p in parse_boundary(
+                Path(case_dir) / "constant" / "polyMesh" / "boundary"
+            )
+        ]
+    except Exception:  # noqa: BLE001 - best effort
+        all_names = []
+
+    walls2, excluded = split_wall_patches(all_names)
+    if not walls2:
+        notes.append(
+            "no wall patch identified and every boundary patch is named or "
+            "typed as inlet, outlet or symmetry — boundary layers skipped"
+        )
+        return None, False, notes
+
+    if excluded:
+        notes.append(
+            "excluded non-wall patches: "
+            + ", ".join(f"{n} ({r})" for n, r in excluded)
+        )
+    return walls2, False, notes
+
+
 __all__ = [
     "ErrorType", "ErrorInfo", "analyze_error",
     "MeshWorker", "RetryRunner",
@@ -81,6 +153,8 @@ __all__ = [
     "CheckMeshWorker", "PolyDualWorker", "QualityFixWorker", "ParallelMeshWorker",
     "DecomposeParWorker", "WslCheckWorker",
     "generate_fms",
+    "poly_wall_patch_names", "poly_geo_wall_patch_names",
+    "poly_bl_patch_selection",
 ]
 
 try:
@@ -1610,15 +1684,6 @@ class DualPolyWorker(QObject):
                 f"growth {bl.get('thicknessRatio', 1.2)}"
             )
 
-            def _wall_patch_names() -> list[str]:
-                """Patches the default (wall-only) BL should touch: boundary
-                type == 'wall' or an explicit *wall* name.  Raw GMSH cases
-                (surface_N) fall back to the geometric inference."""
-                try:
-                    return poly_wall_patch_names(self._case_dir)
-                except Exception:  # noqa: BLE001 - best effort
-                    return []
-
             try:
                 bres = None
                 kw = dict(
@@ -1631,32 +1696,29 @@ class DualPolyWorker(QObject):
                     log=self.log_line.emit,
                     cancel=lambda: self._cancelled,
                 )
+                # Single decision point — see poly_bl_patch_selection for why
+                # the last tier no longer means "apply to ALL".
+                patch_names, apply_to_all, notes = poly_bl_patch_selection(
+                    self._case_dir, apply_to_all_override=apply_all,
+                )
+                for line in notes:
+                    self.log_line.emit(f"[poly] {line}")
                 if apply_all:
                     self.log_line.emit(
                         "[poly] BL on ALL boundary patches "
                         "(override 'Apply BL to all patches' is on)"
                     )
                     bres = engine.run(apply_to_all=True, **kw)
+                elif patch_names is None:
+                    bres = None
                 else:
-                    walls = _wall_patch_names()
-                    if not walls:
-                        walls = poly_geo_wall_patch_names(self._case_dir)
-                    if walls:
-                        self.log_line.emit(
-                            "[poly] BL on wall patches only: "
-                            f"{', '.join(sorted(walls))}"
-                        )
-                        bres = engine.run(
-                            patch_names=walls, apply_to_all=False, **kw,
-                        )
-                    else:
-                        self.log_line.emit(
-                            "[poly] WARN: no wall patches identified (by "
-                            "type, name or geometry) — BL applied to ALL "
-                            "boundary patches (name/type the wall patches, "
-                            "or enable the override, to restrict the BL)"
-                        )
-                        bres = engine.run(apply_to_all=True, **kw)
+                    self.log_line.emit(
+                        "[poly] BL on wall patches only: "
+                        f"{', '.join(sorted(patch_names))}"
+                    )
+                    bres = engine.run(
+                        patch_names=patch_names, apply_to_all=False, **kw,
+                    )
             except Exception as exc:  # noqa: BLE001 - keep the poly mesh
                 self.log_line.emit(f"[poly] WARN: boundary layers failed: {exc}")
                 bres = None

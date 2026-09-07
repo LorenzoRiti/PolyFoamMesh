@@ -25,7 +25,6 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-import numpy as np  # noqa: E402
 import trimesh  # noqa: E402
 
 from cfmesh_autogui.config import OFConfig  # noqa: E402

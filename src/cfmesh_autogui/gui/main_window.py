@@ -53,6 +53,7 @@ from cfmesh_autogui.core.geometry import (
     estimate_cell_count_geometric,
     load_geometry,
     load_step,
+    split_single_stl_patch,
     cfmesh_cell_budget,
     scale_meshes,
     suggest_cell_sizes,
@@ -169,7 +170,7 @@ def _free_disk_gb(path: str | Path) -> float:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CFMesh-AutoGUI")
+        self.setWindowTitle("PolyFoamMesh")
         self.resize(1400, 900)
 
         self._of_config = OFConfig()
@@ -186,7 +187,7 @@ class MainWindow(QMainWindow):
         self._unscaled_meshes: list[trimesh.Trimesh] = []
         self._scaled_meshes: list[trimesh.Trimesh] | None = None
         self._current_scale: float = 1.0
-        octo.log_event("main_window", "init", f"CFMesh-AutoGUI v{APP_VERSION} started")
+        octo.log_event("main_window", "init", f"PolyFoamMesh v{APP_VERSION} started")
 
         self._setup_ribbon()
         self._setup_ui()
@@ -277,7 +278,7 @@ class MainWindow(QMainWindow):
         hm = self.menuBar().addMenu("&Help")
         hm.addAction("Keyboard Shortcuts...", self._show_shortcuts)
         hm.addSeparator()
-        hm.addAction("About CFMesh-AutoGUI...", self._show_about)
+        hm.addAction("About PolyFoamMesh...", self._show_about)
 
         vm = self.menuBar().addMenu("&View")
         theme_menu = vm.addMenu("Theme")
@@ -798,11 +799,31 @@ class MainWindow(QMainWindow):
 
         def work(worker):
             worker.report_progress("Loading STL...", 30.0)
-            return list(load_geometry(path))
+            meshes = list(load_geometry(path))
+            # STL has no metadata: auto-detect inlet/outlet/wall from pure
+            # geometry (feature-edge components + axis caps) when the file
+            # loaded as a single patch. Opt-out: CFMESH_STL_AUTO_PATCHES=0.
+            if (
+                os.environ.get("CFMESH_STL_AUTO_PATCHES", "1") != "0"
+                and len(meshes) == 1
+                and meshes[0].metadata.get("name") in (Path(path).stem, "unnamed")
+            ):
+                worker.report_progress("Detecting patches...", 60.0)
+                try:
+                    meshes = split_single_stl_patch(meshes[0])
+                except Exception as exc:
+                    logger.debug("STL auto patch detection skipped: %s", exc)
+            return meshes
 
         def on_done(_name: str, meshes):
             self._unscaled_meshes = meshes
             self._apply_loaded_meshes("STL")
+            split = [m for m in meshes if m.metadata.get("auto_split")]
+            if split:
+                names = ", ".join(sorted({m.metadata["name"] for m in split}))
+                self._log.append_log(
+                    f"{Tag.GEOM} Auto-rilevate {len(split)} patch da STL: {names}"
+                )
 
         def on_failed(_name: str, msg: str):
             logger.error("Failed to load STL: %s", msg)
@@ -3408,6 +3429,15 @@ class MainWindow(QMainWindow):
                 viewer_cancel()
             except Exception as exc:
                 logger.debug("viewer cancel failed: %s", exc)
+
+        # Stop any pending mesh-view retry so the 3-retry loop does not
+        # keep firing after the user has explicitly cancelled meshing.
+        mesh_display_cancel = getattr(self._viewer, "cancel_mesh_display", None)
+        if callable(mesh_display_cancel):
+            try:
+                mesh_display_cancel()
+            except Exception as exc:
+                logger.debug("viewer mesh display cancel failed: %s", exc)
 
         self._params.set_meshing_state(False)
         self._params.set_all_enabled(True)

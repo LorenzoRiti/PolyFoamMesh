@@ -1,4 +1,4 @@
-"""Unified background-task execution for the CFMesh-AutoGUI UI.
+"""Unified background-task execution for the PolyFoamMesh UI.
 
 This module is the ONE concurrency pattern for the application (decision
 recorded in .slim/deepwork/hardening-anti-freeze.md):

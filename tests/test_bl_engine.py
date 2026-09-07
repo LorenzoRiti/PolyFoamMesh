@@ -85,11 +85,11 @@ def test_detect_wall_patches():
     assert "inlet" not in walls
 
 
-def test_detect_wall_patches_fallback():
+def test_detect_wall_patches_no_walls_returns_empty():
     bl = BLEngine()
     names = ["inlet", "outlet", "symmetry"]
     walls = bl.detect_wall_patches(names)
-    assert len(walls) == len(names), "Should fallback to all patches"
+    assert walls == [], "No wall patches should mean no BL candidates, not all patches"
 
 
 def test_detect_collisions_ok():
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     test_calculate_from_flow_high_re()
     test_calculate_from_flow_invalid_re()
     test_detect_wall_patches()
-    test_detect_wall_patches_fallback()
+    test_detect_wall_patches_no_walls_returns_empty()
     test_detect_collisions_ok()
     test_detect_collisions_warning()
     test_detect_collisions_critical()

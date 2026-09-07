@@ -1,15 +1,13 @@
 """Mesh Conversion & Export Factory — output formats for every major CFD solver.
 
-Supported formats:
+Supported formats (keys of ``EXPORT_FORMAT_REGISTRY`` — the registry is the
+single source of truth, and every key has a matching ``_export_*`` handler):
   - OpenFOAM (native polyMesh)
   - CGNS (.cgns)
-  - VTU/VTM (ParaView)
-  - ANSYS Fluent (.cas/.msh)
-  - STAR-CCM+ (.ccm)
+  - VTU (ParaView)
   - Abaqus (.inp)
   - SU2 (.su2)
   - GMSH (.msh)
-  - TetGen (.poly)
   - STL (surface)
 """
 
