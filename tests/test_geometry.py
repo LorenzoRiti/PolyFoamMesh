@@ -2,6 +2,8 @@ import sys
 import os
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import os as _os
 try:
@@ -22,6 +24,31 @@ from polyfoammesh.core.stl_writer import (
     validate_stl_solids,
     export_surface_file,
 )
+
+cq = pytest.importorskip("cadquery")
+trimesh = pytest.importorskip("trimesh")
+
+
+def test_tessellate_closed_curved_body_is_watertight():
+    """Regression: OCC tessellation emits coincident duplicate vertices at
+    the seams/poles of closed curved faces (sphere, torus). The degenerate
+    pole triangles used to survive the tessellator, so every topologically
+    closed curved body failed check_watertight() as "leaky" and was refused
+    by the GUI pre-flight (documented in docs/dev/notes/NIGHT_LOOP_PROMPT.md).
+    """
+    bodies = [
+        cq.Workplane("XY").sphere(100.0),
+    ]
+    for body in bodies:
+        patches = classify_faces(body.val())
+        meshes = tessellate_patches(patches)
+        m = trimesh.util.concatenate(meshes)
+        assert len(m.faces) > 0
+        assert m.is_watertight, (
+            f"{type(body.val()).__name__} tessellated to a non-watertight mesh "
+            f"({len(m.faces)} faces, euler={m.euler_number})"
+        )
+        assert m.is_winding_consistent
 
 
 def test_cylinder_face_classification():
