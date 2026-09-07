@@ -1454,6 +1454,19 @@ def tessellate_patches(
             verts_np = np.array([(v.x, v.y, v.z) for v in verts], dtype=np.float64) * 0.001
             tris_np = np.array(tris, dtype=np.int32)
             mesh = trimesh.Trimesh(vertices=verts_np, faces=tris_np, process=False)
+            # OCC tessellates closed curved faces with coincident vertices
+            # at seams and poles (e.g. a cadquery sphere: each pole triangle
+            # references two DISTINCT vertex indices with IDENTICAL
+            # coordinates, producing zero-length edges). Merge the
+            # coincident vertices and drop the resulting degenerate
+            # triangles — otherwise every topologically closed curved body
+            # (sphere, torus, ...) fails the watertight pre-flight as
+            # "leaky" even though the surface is closed.
+            mesh.merge_vertices()
+            keep = mesh.nondegenerate_faces()
+            if not keep.all():
+                mesh.update_faces(keep)
+                mesh.remove_unreferenced_vertices()
             mesh.metadata["name"] = name
             meshes.append(mesh)
         except Exception as exc:
