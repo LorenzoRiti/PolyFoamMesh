@@ -1831,6 +1831,30 @@ def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
     return zone_fields
 
 
+def _combine_zone_fields_with_bg(
+    gmsh_mod, zone_fields: list, bg_field_tag: int | None,
+) -> int | None:
+    """MIN-combine refinement-zone fields with the active background field.
+
+    Returns the tag to install as background mesh (or None when there is
+    nothing to install). Binding setAsBackgroundMesh() to the zone fields
+    alone would DISCARD the geometry-adaptive field already installed
+    (curvature/small-feature/gap sizing) — Min semantics guarantee a zone
+    can only ask for SMALLER cells, never larger.
+    """
+    if not zone_fields:
+        return bg_field_tag
+    if bg_field_tag is not None:
+        zone_fields = [bg_field_tag] + zone_fields
+    if len(zone_fields) == 1:
+        combined = zone_fields[0]
+    else:
+        combined = gmsh_mod.model.mesh.field.add("Min")
+        gmsh_mod.model.mesh.field.setNumbers(combined, "FieldsList", zone_fields)
+    gmsh_mod.model.mesh.field.setAsBackgroundMesh(combined)
+    return combined
+
+
 def generate_volume_mesh(
     filepath: Path | str,
     output_msh: Path | str,
@@ -2127,14 +2151,11 @@ def generate_volume_mesh(
     # then a Min field combines them all with the base adaptive sizing.
     if refinement_zones:
         zone_fields = _add_refinement_zone_fields(gmsh, refinement_zones)
-        # Combine all zone fields with Min (smallest cell size wins)
-        if len(zone_fields) == 1:
-            bg_field_tag = zone_fields[0]
-            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field_tag)
-        elif zone_fields:
-            bg_field_tag = gmsh.model.mesh.field.add("Min")
-            gmsh.model.mesh.field.setNumbers(bg_field_tag, "FieldsList", zone_fields)
-            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field_tag)
+        # MIN-combine with the geometry-adaptive background field instead of
+        # replacing it (docs/dev/solution_adaptive_handoff.md §1.4): a manual
+        # refinement zone must refine, never silently throw away the sizing
+        # that geometry already demanded everywhere else.
+        bg_field_tag = _combine_zone_fields_with_bg(gmsh, zone_fields, bg_field_tag)
 
     # Solution-adaptive sizing: a target-cell-size lattice computed from a CFD
     # solution's refinement indicator. Applied last so it layers on top of
