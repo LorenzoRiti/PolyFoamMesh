@@ -115,9 +115,9 @@ def test_job_response_completed():
     assert r.cell_count == 5000
 
 
-def test_create_app():
+def test_create_app(tmp_path):
     create_app = _get("create_app")
-    app = create_app(data_dir="C:/tmp_api_test")
+    app = create_app(data_dir=str(tmp_path))
     assert app is not None
 
 
@@ -135,16 +135,15 @@ def test_mesh_params_model_dump():
 
 
 if __name__ == "__main__":
-    import shutil
+    import tempfile
     test_job_status_enum()
     test_mesh_params_defaults()
     test_mesh_params_custom()
     test_health_response()
     test_job_response_defaults()
     test_job_response_completed()
-    test_create_app()
+    with tempfile.TemporaryDirectory() as _td:
+        test_create_app(Path(_td))
     test_create_app_default_dir()
     test_mesh_params_model_dump()
-    for d in [Path("C:/tmp_api_test")]:
-        if d.exists(): shutil.rmtree(d, ignore_errors=True)
     print("ALL PASS")

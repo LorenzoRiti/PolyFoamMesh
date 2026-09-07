@@ -243,7 +243,19 @@ def read_label_list(path: Path) -> np.ndarray:
             # neighbour on a real mesh) without needing a size threshold.
             probe_len = min(64, count * 4, len(raw) - data_start)
             probe = raw[data_start:data_start + probe_len] if probe_len > 0 else b""
-            looks_ascii = bool(re.match(rb'^[\s\-\d]*$', probe))
+            # A ')' inside the probe is decisive: the binary payload of a
+            # count-N list occupies exactly count*4 bytes, and probe_len is
+            # capped at count*4 — so a ')' can only appear there in the
+            # ASCII form ("... 4\n)\n"), never in genuine binary data. This
+            # matters for very short lists (3-4 entries) where the 64-byte
+            # probe would otherwise swallow the terminator. (On Windows this
+            # bug was masked because CRLF line endings made "N\n(" fail to
+            # match at all; on LF-only files short sets crashed with
+            # "Binary labels: need 12 bytes, got 9".)
+            if b")" in probe:
+                looks_ascii = True
+            else:
+                looks_ascii = bool(re.match(rb'^[\s\-\d]*$', probe))
             if not (looks_ascii and probe):
                 data = raw[data_start:data_start + count * 4]
                 if len(data) < count * 4:

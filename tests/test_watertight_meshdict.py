@@ -35,10 +35,13 @@ cq = pytest.importorskip("cadquery")
 
 from polyfoammesh.commercial.watertight import WatertightWorkflow  # noqa: E402
 from polyfoammesh.core.geometry import create_test_cylinder  # noqa: E402
+from _test_helpers import space_free_tmp_root  # noqa: E402
 
 # OpenFOAM/cfMesh reject paths with spaces (the user's home dir has one);
 # route through a space-free root like the rest of the suite/benchmarks do.
-WORK_ROOT = Path("C:/cfmesh_bench/watertight_meshdict_test")
+# On a space-free temp dir (Linux CI) that resolves to /tmp instead of the
+# drive root, so tests leave no 'C:' residue in the checkout.
+WORK_ROOT = space_free_tmp_root() / "cfmesh_bench" / "watertight_meshdict_test"
 
 
 @pytest.fixture

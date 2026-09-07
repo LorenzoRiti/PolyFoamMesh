@@ -38,10 +38,10 @@ except Exception:
 
 import pytest
 
-from _test_helpers import load_commercial_module
+from _test_helpers import load_commercial_module, space_free_tmp_root
 
 # OpenFOAM/cfMesh reject paths with spaces (the user's home dir has one).
-WORK_ROOT = Path("C:/cfmesh_bench/bl_contract_regression_test")
+WORK_ROOT = space_free_tmp_root() / "cfmesh_bench" / "bl_contract_regression_test"
 
 
 def _real_meshes(names):

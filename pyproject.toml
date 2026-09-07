@@ -31,6 +31,14 @@ dependencies = [
     "reportlab>=4.2.0",
     "pymeshfix>=0.17.0",
     "scipy>=1.11.0",
+    # trimesh optional deps the code paths actually use:
+    # - networkx: trimesh.repair.fill_holes (CAD healing) needs it at
+    #   call time; without it healing silently raises ModuleNotFoundError
+    #   on a fresh install (caught by CI: 2 test_cad_healing failures).
+    # - rtree: trimesh spatial queries used by native_mesher (cell-set
+    #   refinement); same class of failure ("No module named 'rtree'").
+    "networkx>=3.0",
+    "rtree>=1.3",
 ]
 
 [project.optional-dependencies]
