@@ -31,7 +31,7 @@ import pytest
 
 meshio = pytest.importorskip("meshio")
 
-from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh  # noqa: E402
+from polyfoammesh.core.mesh_converter import msh_to_of_polymesh  # noqa: E402
 
 # Two tetrahedra sharing the base triangle {0,1,2}: one apex above the
 # plane (vertex 3), one below (vertex 4). Both are ordered with positive

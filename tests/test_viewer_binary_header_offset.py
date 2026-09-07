@@ -30,7 +30,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-from cfmesh_autogui.gui.viewer_widget import _read_of_block_binary  # noqa: E402
+from polyfoammesh.gui.viewer_widget import _read_of_block_binary  # noqa: E402
 
 _BANNER = (
     "/*--------------------------------*- C++ -*----------------------------------*\\\n"

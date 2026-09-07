@@ -16,7 +16,7 @@ import pytest
 pv = pytest.importorskip("pyvista")
 vtk_common = pytest.importorskip("vtkmodules.vtkCommonDataModel")
 
-from cfmesh_autogui.gui.viewer_widget import ViewerWidget  # noqa: E402
+from polyfoammesh.gui.viewer_widget import ViewerWidget  # noqa: E402
 
 
 def _two_adjacent_hex_cells() -> "pv.UnstructuredGrid":
@@ -71,7 +71,7 @@ def test_find_internal_vtu_checks_constant_dir():
     find internal.vtu there (T3.3), not only under <case>/<name>/."""
     import tempfile
     from pathlib import Path
-    from cfmesh_autogui.gui.viewer_widget import _find_internal_vtu
+    from polyfoammesh.gui.viewer_widget import _find_internal_vtu
     with tempfile.TemporaryDirectory() as td:
         case = Path(td)
         # Only the constant/ variant exists (the -constant output location).

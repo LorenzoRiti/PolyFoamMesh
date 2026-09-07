@@ -12,7 +12,7 @@ from reportlab.platypus import (
 )
 
 OUT = Path(__file__).resolve().parent.parent / "installer" / "output" \
-    / "CFMesh-AutoGUI-2.1.0-Istruzioni.pdf"
+    / "PolyFoamMesh-2.1.0-Istruzioni.pdf"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
 ACCENT = colors.HexColor("#0f766e")       # teal-700
@@ -43,8 +43,8 @@ doc = SimpleDocTemplate(
     str(OUT), pagesize=A4,
     leftMargin=18 * mm, rightMargin=18 * mm,
     topMargin=16 * mm, bottomMargin=16 * mm,
-    title="CFMesh-AutoGUI 2.1.0 — Istruzioni",
-    author="CFMesh-AutoGUI",
+    title="PolyFoamMesh 2.1.0 — Istruzioni",
+    author="PolyFoamMesh",
 )
 
 def bullets(items):
@@ -55,7 +55,7 @@ def bullets(items):
     )
 
 story = []
-story.append(Paragraph("CFMesh-AutoGUI 2.1.0", st_title))
+story.append(Paragraph("PolyFoamMesh 2.1.0", st_title))
 story.append(Paragraph("Istruzioni di installazione e prova — per l'amico", st_sub))
 story.append(Spacer(1, 4))
 
@@ -69,13 +69,13 @@ story.append(bullets([
 
 story.append(Paragraph("2. Installazione", st_h1))
 story.append(bullets([
-    "Doppio clic su <b>CFMesh-AutoGUI-2.1.0-Setup.exe</b>.",
+    "Doppio clic su <b>PolyFoamMesh-2.1.0-Setup.exe</b>.",
     "Se Windows SmartScreen avvisa (“Windows ha protetto il PC”): "
     "clicca <b>“Ulteriori informazioni” → “Esegui comunque”</b>. "
     "L'exe non è firmato con un certificato a pagamento: è un falso "
     "positivo, il pacchetto è generato dalla macchina di sviluppo.",
     "Completa la procedura (in italiano). Alla fine l'app si avvia da sola.",
-    "D'ora in poi: menu <b>Start → CFMesh-AutoGUI</b> (o icona sul desktop).",
+    "D'ora in poi: menu <b>Start → PolyFoamMesh</b> (o icona sul desktop).",
 ]))
 
 story.append(Paragraph("3. Cosa puoi provare (funziona senza WSL)", st_h1))
@@ -129,8 +129,8 @@ story.append(Paragraph(
 
 story.append(Paragraph("5. Disinstallazione", st_h1))
 story.append(bullets([
-    "<b>Start → CFMesh-AutoGUI (cartella) → Disinstalla</b>, oppure",
-    "Impostazioni → App → CFMesh-AutoGUI → Disinstalla.",
+    "<b>Start → PolyFoamMesh (cartella) → Disinstalla</b>, oppure",
+    "Impostazioni → App → PolyFoamMesh → Disinstalla.",
     "Rimuove tutto (app, associazioni file, scorciatoie). I log restano in "
     "<font face='Courier'>%APPDATA%\\cfmesh-autogui\\logs</font> "
     "(puoi cancellare la cartella).",
@@ -150,15 +150,15 @@ story.append(PageBreak())
 story.append(Paragraph("Appendice — per chi sviluppa", st_h1))
 story.append(Paragraph("File del pacchetto:", st_h2))
 story.append(Paragraph(
-    "<font face='Courier'>installer/output/CFMesh-AutoGUI-2.1.0-Setup.exe"
+    "<font face='Courier'>installer/output/PolyFoamMesh-2.1.0-Setup.exe"
     "</font> — <i>da dare all'amico</i><br/>"
-    "<font face='Courier'>dist/CFMesh-AutoGUI/</font> — bundle one-dir "
+    "<font face='Courier'>dist/PolyFoamMesh/</font> — bundle one-dir "
     "(1.3 GB)", st_body))
 story.append(Spacer(1, 4))
 story.append(Paragraph("Ricompilare da sorgente:", st_h2))
 story.append(Paragraph(
     "<font face='Courier'>pyinstaller --noconfirm --clean "
-    "CFMesh-AutoGUI.spec<br/>"
+    "PolyFoamMesh.spec<br/>"
     "ISCC.exe installer\\inno_setup.iss</font>", st_code))
 story.append(Spacer(1, 6))
 story.append(Paragraph(

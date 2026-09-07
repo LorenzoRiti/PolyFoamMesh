@@ -10,45 +10,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _test_helpers import _load_module_from_file, _stub_pkg
 
 # Stub the gui and core packages (saved and restored so later test modules
-# can still import the real cfmesh_autogui.gui / .core packages instead of
+# can still import the real polyfoammesh.gui / .core packages instead of
 # an empty stub).
-_saved_gui = sys.modules.get("cfmesh_autogui.gui")
-_saved_core = sys.modules.get("cfmesh_autogui.core")
-_saved_tokens = sys.modules.get("cfmesh_autogui.gui.design_tokens")
-_stub_pkg("cfmesh_autogui.gui")
-tokens = types.ModuleType("cfmesh_autogui.gui.design_tokens")
-tokens.APP_NAME = "CFMesh-AutoGUI"
+_saved_gui = sys.modules.get("polyfoammesh.gui")
+_saved_core = sys.modules.get("polyfoammesh.core")
+_saved_tokens = sys.modules.get("polyfoammesh.gui.design_tokens")
+_stub_pkg("polyfoammesh.gui")
+tokens = types.ModuleType("polyfoammesh.gui.design_tokens")
+tokens.APP_NAME = "PolyFoamMesh"
 tokens.APP_VERSION = "2.0.1"
-sys.modules["cfmesh_autogui.gui.design_tokens"] = tokens
+sys.modules["polyfoammesh.gui.design_tokens"] = tokens
 
 # Also stub core (so validation import doesn't trigger core/__init__)
-_stub_pkg("cfmesh_autogui.core")
+_stub_pkg("polyfoammesh.core")
 try:
     val_mod = _load_module_from_file(
-        "cfmesh_autogui.core.validation",
-        Path(__file__).resolve().parents[1] / "src" / "cfmesh_autogui" / "core" / "validation.py",
-        "cfmesh_autogui.core",
+        "polyfoammesh.core.validation",
+        Path(__file__).resolve().parents[1] / "src" / "polyfoammesh" / "core" / "validation.py",
+        "polyfoammesh.core",
     )
 
     # Load settings_migration module directly
-    src = Path(__file__).resolve().parents[1] / "src" / "cfmesh_autogui" / "gui" / "settings_migration.py"
-    _mod = _load_module_from_file("cfmesh_autogui.gui.settings_migration", src, "cfmesh_autogui.gui")
+    src = Path(__file__).resolve().parents[1] / "src" / "polyfoammesh" / "gui" / "settings_migration.py"
+    _mod = _load_module_from_file("polyfoammesh.gui.settings_migration", src, "polyfoammesh.gui")
 finally:
     if _saved_gui is not None:
-        sys.modules["cfmesh_autogui.gui"] = _saved_gui
+        sys.modules["polyfoammesh.gui"] = _saved_gui
     else:
-        sys.modules.pop("cfmesh_autogui.gui", None)
+        sys.modules.pop("polyfoammesh.gui", None)
     if _saved_core is not None:
-        sys.modules["cfmesh_autogui.core"] = _saved_core
+        sys.modules["polyfoammesh.core"] = _saved_core
     else:
-        sys.modules.pop("cfmesh_autogui.core", None)
+        sys.modules.pop("polyfoammesh.core", None)
     # Restore the real design_tokens module — the stub above only carries
     # APP_NAME/APP_VERSION, so leaving it cached breaks every later test
     # module that imports real tokens (e.g. ORANGE_400).
     if _saved_tokens is not None:
-        sys.modules["cfmesh_autogui.gui.design_tokens"] = _saved_tokens
+        sys.modules["polyfoammesh.gui.design_tokens"] = _saved_tokens
     else:
-        sys.modules.pop("cfmesh_autogui.gui.design_tokens", None)
+        sys.modules.pop("polyfoammesh.gui.design_tokens", None)
 
 # Simple in-memory QSettings replacement
 class _FakeSettings:

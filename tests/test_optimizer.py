@@ -85,7 +85,7 @@ def test_optimizer_refuses_tet_mesh_remesh(tmp_path):
     GMSH tet mesh (pure-tet, no backup) — a silent swap would replace the
     user's tet mesh with an unrelated cfMesh hex at different dimensions."""
     import numpy as np
-    from cfmesh_autogui.core import foam_mesh_io
+    from polyfoammesh.core import foam_mesh_io
 
     poly = tmp_path / "constant" / "polyMesh"
     poly.mkdir(parents=True)

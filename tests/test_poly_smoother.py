@@ -17,12 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import pytest
 
-from cfmesh_autogui.core import foam_mesh_io as fio
-from cfmesh_autogui.core.poly_smoother import (
+from polyfoammesh.core import foam_mesh_io as fio
+from polyfoammesh.core.poly_smoother import (
     _boundary_vertex_mask,
     smooth_dual_mesh,
 )
-from cfmesh_autogui.core.tet_poly_dual import (
+from polyfoammesh.core.tet_poly_dual import (
     TetPolyDualConverter,
     _cell_centres,
     _detect_defects,

@@ -19,8 +19,8 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.meshdict_gen import write_meshdict  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.meshdict_gen import write_meshdict  # noqa: E402
 
 cfg = OFConfig()
 env_q = __import__("shlex").quote(cfg.env_script)

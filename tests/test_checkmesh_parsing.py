@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output
+from polyfoammesh.core.openfoam_runner import parse_checkmesh_output
 
 # Verbatim excerpt of real `checkMesh` output, OpenFOAM v2512, cfMesh cylinder.
 REAL_V2512 = """\

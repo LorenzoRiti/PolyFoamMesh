@@ -1,4 +1,4 @@
-"""Sphinx documentation configuration for CFMesh-AutoGUI.
+"""Sphinx documentation configuration for PolyFoamMesh.
 
 Usage::
 
@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # -- Project information -----------------------------------------------------
 
-project = "CFMesh-AutoGUI"
-copyright = "2026, CFMesh-AutoGUI Project"
+project = "PolyFoamMesh"
+copyright = "2026, PolyFoamMesh Project"
 author = "Davide Valoroso"
 
 # The full version, including alpha/beta/rc tags

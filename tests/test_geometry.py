@@ -12,12 +12,12 @@ try:
 except Exception:
     pass
 
-from cfmesh_autogui.core.geometry import (
+from polyfoammesh.core.geometry import (
     create_test_cylinder,
     classify_faces,
     tessellate_patches,
 )
-from cfmesh_autogui.core.stl_writer import (
+from polyfoammesh.core.stl_writer import (
     export_multisolid_stl,
     validate_stl_solids,
     export_surface_file,

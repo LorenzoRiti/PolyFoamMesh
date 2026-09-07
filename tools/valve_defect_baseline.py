@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from cfmesh_autogui.core.tet_poly_dual import (
+from polyfoammesh.core.tet_poly_dual import (
     DualPolyResult,
     TetPolyDualConverter,
 )
@@ -97,7 +97,7 @@ def run_conversion(backup: Path) -> tuple[Path, DualPolyResult, float]:
 
 def checkmesh_of(case: Path) -> dict:
     """Run checkMesh (WSL) and return the parse_checkmesh-style metrics."""
-    from cfmesh_autogui.config import OFConfig
+    from polyfoammesh.config import OFConfig
 
     cfg = OFConfig()
     env_q = shlex.quote(cfg.env_script)

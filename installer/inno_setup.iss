@@ -1,8 +1,8 @@
-; CFMesh-AutoGUI — Inno Setup installer for the PyInstaller one-dir bundle.
+; PolyFoamMesh — Inno Setup installer for the PyInstaller one-dir bundle.
 ;
-; Installs dist/CFMesh-AutoGUI/ (the self-contained app: exe bootloader +
+; Installs dist/PolyFoamMesh/ (the self-contained app: exe bootloader +
 ; _internal/ with Python + all dependencies — no Python required on the
-; target machine) to %LocalAppData%\Programs\CFMesh-AutoGUI (per-user,
+; target machine) to %LocalAppData%\Programs\PolyFoamMesh (per-user,
 ; NO admin needed), with Start Menu + optional desktop shortcut,
 ; file associations (.step/.stp/.stl) and a registry-cleaning uninstaller.
 ;
@@ -11,19 +11,19 @@
 ; which this installer does NOT ship (a notice in the app explains it).
 ;
 ; Build:  ISCC.exe installer\inno_setup.iss   (from the repo root)
-; Output: installer\output\CFMesh-AutoGUI-2.1.0-Setup.exe
+; Output: installer\output\PolyFoamMesh-2.1.0-Setup.exe
 
 #ifndef MyAppVersion
 #define MyAppVersion "2.1.0"
 #endif
-#define MyAppName "CFMesh-AutoGUI"
-#define MyAppPublisher "CFMesh-AutoGUI Project"
-#define MyAppExeName "CFMesh-AutoGUI.exe"
+#define MyAppName "PolyFoamMesh"
+#define MyAppPublisher "PolyFoamMesh Project"
+#define MyAppExeName "PolyFoamMesh.exe"
 #define MyAppAssocStep ".step"
 #define MyAppAssocStp ".stp"
 #define MyAppAssocStl ".stl"
 ; relative to installer/inno_setup.iss -> repo root
-#define MyAppDir "..\dist\CFMesh-AutoGUI"
+#define MyAppDir "..\dist\PolyFoamMesh"
 
 [Setup]
 AppId={{BD86A4BE-FD11-45CC-887E-4A6C4B1EE39D}
@@ -35,7 +35,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=CFMesh-AutoGUI-{#MyAppVersion}-Setup
+OutputBaseFilename=PolyFoamMesh-{#MyAppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

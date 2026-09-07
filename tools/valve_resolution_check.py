@@ -14,9 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -32,7 +30,7 @@ def run_gmsh_volume(step_path: Path, msh_path: Path, detail: str,
     env["PYTHONPATH"] = str(REPO / "src")
     env["GMSH_SOLUTION_SIZE_FIELD"] = ""
     cmd = [
-        PY, "-m", "cfmesh_autogui.core.gmsh_wrapper", "volume",
+        PY, "-m", "polyfoammesh.core.gmsh_wrapper", "volume",
         str(step_path), str(msh_path), detail,
         "0", "0", "1.2", "0", "0", "0",
     ]
@@ -97,7 +95,7 @@ def run_and_convert(detail: str) -> None:
         encoding="ascii",
     )
     # checkMesh needs system/fvSchemes (it loads finiteVolume libraries).
-    from cfmesh_autogui.core import case_setup as _cs
+    from polyfoammesh.core import case_setup as _cs
     (case_dir / "system" / "fvSchemes").write_text(
         _cs.FV_SCHEMES, encoding="ascii"
     )
@@ -109,7 +107,7 @@ def run_and_convert(detail: str) -> None:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
     conv = subprocess.run(
-        [PY, "-m", "cfmesh_autogui.core.gmsh_wrapper", "convert_to_foam",
+        [PY, "-m", "polyfoammesh.core.gmsh_wrapper", "convert_to_foam",
          str(case_dir), msh.name],
         capture_output=True, text=True, timeout=600, env=env, cwd=REPO,
         encoding="utf-8", errors="backslashreplace",
@@ -118,13 +116,13 @@ def run_and_convert(detail: str) -> None:
         print(f"[{detail}] gmshToFoam failed:\n{conv.stdout[-1500:]}")
         return
 
-    from cfmesh_autogui.config import OFConfig
+    from polyfoammesh.config import OFConfig
     check = subprocess.run(
         OFConfig().build_check_mesh_cmd(case_dir),
         capture_output=True, text=True, timeout=900, encoding="utf-8",
         errors="backslashreplace",
     )
-    from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output
+    from polyfoammesh.core.openfoam_runner import parse_checkmesh_output
     rep = parse_checkmesh_output(check.stdout + check.stderr)
     print(f"[{detail}] checkMesh: cells={rep.cells:,} passed={rep.passed} "
           f"maxNonOrtho={rep.max_non_ortho:.1f} maxSkew={rep.max_skewness:.3f} "

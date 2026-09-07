@@ -77,6 +77,20 @@ def test_export_format_descriptions():
         assert isinstance(info["requires_wsl"], bool)
 
 
+def test_every_registered_format_has_handler():
+    """The registry must never advertise a format with no handler.
+
+    A key in EXPORT_FORMAT_REGISTRY without a matching ``_export_<fmt>``
+    method would fail at runtime with "Export handler not implemented" —
+    the registry is the single source of truth, so this invariant is
+    enforced here.
+    """
+    for fmt in EXPORT_FORMAT_REGISTRY:
+        assert hasattr(MeshExporter, f"_export_{fmt}"), (
+            f"Registry advertises '{fmt}' but MeshExporter has no handler"
+        )
+
+
 def test_count_cells_no_polymesh():
     count = MeshExporter._count_cells(Path("/nonexistent"))
     assert count == 0

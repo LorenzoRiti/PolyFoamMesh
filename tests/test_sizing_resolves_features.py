@@ -31,7 +31,7 @@ import pytest
 
 cq = pytest.importorskip("cadquery")
 
-from cfmesh_autogui.core.geometry import (  # noqa: E402
+from polyfoammesh.core.geometry import (  # noqa: E402
     analyze_local_thickness,
     classify_faces,
     suggest_cell_sizes,

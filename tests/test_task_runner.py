@@ -21,7 +21,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
-from cfmesh_autogui.gui.task_runner import (
+from polyfoammesh.gui.task_runner import (
     FunctionWorker,
     TaskManager,
 )

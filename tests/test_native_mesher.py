@@ -18,8 +18,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from cfmesh_autogui.core.native_mesher import NativeMesher
-from cfmesh_autogui.core.tet_poly_dual import _cell_centres, _face_geometry
+from polyfoammesh.core.native_mesher import NativeMesher
+from polyfoammesh.core.tet_poly_dual import _cell_centres, _face_geometry
 
 
 def _run(tmp_path: Path, mesh, cell_size: float, **kw) -> "object":
@@ -65,7 +65,7 @@ def test_clean_cells_mode_is_dual_ready(tmp_path):
     r = _run(tmp_path, s, 0.15, clean_cells=True)
     assert r.success, r.errors
     # re-read and verify per-cell edge counts
-    from cfmesh_autogui.core import foam_mesh_io as fio
+    from polyfoammesh.core import foam_mesh_io as fio
 
     pts, faces, own, nb, patches = fio.read_polymesh(
         Path(r.out_dir))
@@ -88,7 +88,7 @@ def test_surface_patch_present(tmp_path):
     s = trimesh.creation.icosphere(subdivisions=1, radius=0.5)
     r = _run(tmp_path, s, 0.25)
     assert r.success
-    from cfmesh_autogui.core import foam_mesh_io as fio
+    from polyfoammesh.core import foam_mesh_io as fio
 
     _, faces, own, nb, patches = fio.read_polymesh(Path(r.out_dir))
     assert len(patches) >= 1

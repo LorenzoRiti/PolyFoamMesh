@@ -13,8 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cfmesh_autogui.core import gmsh_subprocess as gs  # noqa: E402
-from cfmesh_autogui.core.openfoam_runner import GmshVolumeWorker  # noqa: E402
+from polyfoammesh.core import gmsh_subprocess as gs  # noqa: E402
+from polyfoammesh.core.openfoam_runner import GmshVolumeWorker  # noqa: E402
 
 
 def _default_of(func, name: str):

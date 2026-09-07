@@ -1,11 +1,11 @@
-; CFMesh-AutoGUI Inno Setup Script
+; PolyFoamMesh Inno Setup Script
 ; Enterprise installer with silent mode, GPO deployment, and dependency check
 
-#define MyAppName "CFMesh-AutoGUI"
+#define MyAppName "PolyFoamMesh"
 #define MyAppVersion "2.0.1"
-#define MyAppPublisher "CFMesh-AutoGUI Project"
-#define MyAppURL "https://github.com/cfmesh-autogui"
-#define MyAppExeName "CFMesh-AutoGUI.exe"
+#define MyAppPublisher "PolyFoamMesh Project"
+#define MyAppURL "https://github.com/polyfoammesh"
+#define MyAppExeName "PolyFoamMesh.exe"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -20,7 +20,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir=..\build
-OutputBaseFilename=CFMesh-AutoGUI-{#MyAppVersion}-Setup
+OutputBaseFilename=PolyFoamMesh-{#MyAppVersion}-Setup
 SetupIconFile=..\build\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/max
@@ -43,7 +43,7 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "..\dist\CFMesh-AutoGUI\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\PolyFoamMesh\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\templates\*"; DestDir: "{app}\templates"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\plugins\*"; DestDir: "{app}\plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\locale\*"; DestDir: "{app}\locale"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -60,20 +60,20 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Registry]
 ; File associations
-Root: HKCR; Subkey: ".step"; ValueType: string; ValueName: ""; ValueData: "CFMesh-AutoGUI.STEP"; Flags: uninsdeletevalue
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STEP"; ValueType: string; ValueName: ""; ValueData: "STEP Model File"
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STEP\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STEP\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKCR; Subkey: ".step"; ValueType: string; ValueName: ""; ValueData: "PolyFoamMesh.STEP"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "PolyFoamMesh.STEP"; ValueType: string; ValueName: ""; ValueData: "STEP Model File"
+Root: HKCR; Subkey: "PolyFoamMesh.STEP\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCR; Subkey: "PolyFoamMesh.STEP\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
-Root: HKCR; Subkey: ".stp"; ValueType: string; ValueName: ""; ValueData: "CFMesh-AutoGUI.STP"; Flags: uninsdeletevalue
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STP"; ValueType: string; ValueName: ""; ValueData: "STEP Model File"
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STP\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STP\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKCR; Subkey: ".stp"; ValueType: string; ValueName: ""; ValueData: "PolyFoamMesh.STP"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "PolyFoamMesh.STP"; ValueType: string; ValueName: ""; ValueData: "STEP Model File"
+Root: HKCR; Subkey: "PolyFoamMesh.STP\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCR; Subkey: "PolyFoamMesh.STP\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
-Root: HKCR; Subkey: ".stl"; ValueType: string; ValueName: ""; ValueData: "CFMesh-AutoGUI.STL"; Flags: uninsdeletevalue
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STL"; ValueType: string; ValueName: ""; ValueData: "STL Mesh File"
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STL\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
-Root: HKCR; Subkey: "CFMesh-AutoGUI.STL\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKCR; Subkey: ".stl"; ValueType: string; ValueName: ""; ValueData: "PolyFoamMesh.STL"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "PolyFoamMesh.STL"; ValueType: string; ValueName: ""; ValueData: "STL Mesh File"
+Root: HKCR; Subkey: "PolyFoamMesh.STL\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCR; Subkey: "PolyFoamMesh.STL\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Run]
 ; Check WSL2 availability (non-blocking)

@@ -120,7 +120,7 @@ def test_remap_internal_field_uses_cell_map():
     """After refineMesh -overwrite, field files still have the OLD cell
     count — this must remap each new cell to its parent old cell's value
     using refineMesh's own cellMap output, not leave stale data in place."""
-    from cfmesh_autogui.commercial.amr import _remap_internal_field
+    from polyfoammesh.commercial.amr import _remap_internal_field
 
     field_path = Path(_os.environ.get("TEMP", "/tmp")) / "amr_remap_p"
     field_path.write_text(

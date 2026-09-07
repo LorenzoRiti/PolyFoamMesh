@@ -14,14 +14,14 @@ try:
 except Exception:
     pass
 
-from cfmesh_autogui.config import OFConfig
-from cfmesh_autogui.core.geometry import create_test_cylinder, classify_faces, tessellate_patches
-from cfmesh_autogui.core.stl_writer import export_surface_file
-from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.openfoam_runner import MeshWorker
-from cfmesh_autogui.core.boundary_reader import parse_boundary
-from cfmesh_autogui.core.case_setup import setup_case
-from cfmesh_autogui.gui.viewer_widget import read_openfoam_mesh_patches
+from polyfoammesh.config import OFConfig
+from polyfoammesh.core.geometry import create_test_cylinder, classify_faces, tessellate_patches
+from polyfoammesh.core.stl_writer import export_surface_file
+from polyfoammesh.core.meshdict_gen import write_meshdict
+from polyfoammesh.core.openfoam_runner import MeshWorker
+from polyfoammesh.core.boundary_reader import parse_boundary
+from polyfoammesh.core.case_setup import setup_case
+from polyfoammesh.gui.viewer_widget import read_openfoam_mesh_patches
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QEventLoop, QThread, Qt, QTimer

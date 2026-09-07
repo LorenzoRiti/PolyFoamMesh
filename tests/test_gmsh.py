@@ -13,11 +13,11 @@ try:
 except Exception:
     pass
 
-from cfmesh_autogui.core.mesh_converter import (
+from polyfoammesh.core.mesh_converter import (
     _of_header, _TETRA_FACES, _HEX_FACES, _WEDGE_FACES, _PYRAMID_FACES,
     _CELL_FACE_MAP, _3D_CELL_TYPES,
 )
-from cfmesh_autogui.core.gmsh_wrapper import _GMSH_DETAIL
+from polyfoammesh.core.gmsh_wrapper import _GMSH_DETAIL
 
 
 # ------------------------------------------------------------------
@@ -157,7 +157,7 @@ def test_gmsh_thread_count_caps_cores_when_no_override():
     """Without GMSH_NUM_THREADS the default must be capped below the
     full logical core count so a long mesh run can't saturate the system
     (the "mesh di gmsh impalla il sistema" freeze)."""
-    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import polyfoammesh.core.gmsh_wrapper as gw
     import os as _os
     with mock.patch.dict(_os.environ, {}, clear=False):
         _os.environ.pop("GMSH_NUM_THREADS", None)
@@ -169,7 +169,7 @@ def test_gmsh_thread_count_caps_cores_when_no_override():
 
 def test_gmsh_thread_count_honours_explicit_override():
     """An explicit GMSH_NUM_THREADS must be respected exactly."""
-    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import polyfoammesh.core.gmsh_wrapper as gw
     import os as _os
     with mock.patch.dict(_os.environ, {"GMSH_NUM_THREADS": "2"}, clear=False):
         assert gw._gmsh_thread_count() == 2
@@ -179,7 +179,7 @@ def test_gmsh_thread_count_honours_explicit_override():
 
 def test_gmsh_thread_count_ignores_bad_override():
     """A non-numeric GMSH_NUM_THREADS must fall back to the capped default."""
-    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import polyfoammesh.core.gmsh_wrapper as gw
     import os as _os
     with mock.patch.dict(_os.environ, {"GMSH_NUM_THREADS": "abc"}, clear=False):
         n = gw._gmsh_thread_count()
@@ -193,7 +193,7 @@ def test_gmsh_thread_count_ignores_bad_override():
 # ------------------------------------------------------------------
 def test_resolve_algo3d_defaults_to_none():
     """Unset CFMESH_GMSH_ALGO3D must return None (keep current default)."""
-    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import polyfoammesh.core.gmsh_wrapper as gw
     import os as _os
     with mock.patch.dict(_os.environ, {}, clear=False):
         _os.environ.pop("CFMESH_GMSH_ALGO3D", None)
@@ -202,7 +202,7 @@ def test_resolve_algo3d_defaults_to_none():
 
 def test_resolve_algo3d_honours_override():
     """CFMESH_GMSH_ALGO3D must be parsed to an int (1/6/10)."""
-    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import polyfoammesh.core.gmsh_wrapper as gw
     import os as _os
     for val, expected in (("10", 10), ("6", 6), ("1", 1)):
         with mock.patch.dict(_os.environ, {"CFMESH_GMSH_ALGO3D": val}, clear=False):
@@ -211,7 +211,7 @@ def test_resolve_algo3d_honours_override():
 
 def test_resolve_algo3d_ignores_bad_override():
     """A non-numeric CFMESH_GMSH_ALGO3D must fall back to None (default)."""
-    import cfmesh_autogui.core.gmsh_wrapper as gw
+    import polyfoammesh.core.gmsh_wrapper as gw
     import os as _os
     with mock.patch.dict(_os.environ, {"CFMESH_GMSH_ALGO3D": "abc"}, clear=False):
         assert gw._resolve_algo3d() is None

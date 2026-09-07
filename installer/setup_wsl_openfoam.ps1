@@ -1,10 +1,10 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    One-shot setup of WSL2 + OpenFOAM v2512 (with cfMesh) for CFMesh-AutoGUI.
+    One-shot setup of WSL2 + OpenFOAM v2512 (with cfMesh) for PolyFoamMesh.
 
 .DESCRIPTION
-    Run this once on a fresh machine before launching CFMesh-AutoGUI.exe.
+    Run this once on a fresh machine before launching PolyFoamMesh.exe.
     It installs WSL2 with Ubuntu if missing, then installs OpenFOAM v2512
     inside it — cfMesh's cartesianMesh ships bundled in the
     openfoam2512-default package, so no separate cfMesh install step is
@@ -26,7 +26,7 @@ function Test-WslUbuntuPresent {
     return ($distros -split "`n") -contains "Ubuntu"
 }
 
-Write-Host "=== CFMesh-AutoGUI: WSL2 + OpenFOAM v2512 setup ===" -ForegroundColor Cyan
+Write-Host "=== PolyFoamMesh: WSL2 + OpenFOAM v2512 setup ===" -ForegroundColor Cyan
 
 if (-not (Test-WslUbuntuPresent)) {
     Write-Host "Installing WSL2 with Ubuntu (this can take several minutes)..." -ForegroundColor Yellow
@@ -60,7 +60,7 @@ wsl.exe -d Ubuntu -- bash -lc $installScript
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "OpenFOAM v2512 + cfMesh installed successfully." -ForegroundColor Green
-    Write-Host "CFMesh-AutoGUI.exe will find it automatically (uses the default WSL distro)." -ForegroundColor Green
+    Write-Host "PolyFoamMesh.exe will find it automatically (uses the default WSL distro)." -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "Something failed during the OpenFOAM install — see the output above." -ForegroundColor Red

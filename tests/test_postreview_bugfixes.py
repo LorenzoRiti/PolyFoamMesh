@@ -93,7 +93,7 @@ def test_cells_matches_adding_672_cells():
 # ------------------------------------------------------------------
 # Bug 2: BL must apply to all wall patches, not just hardcoded "wall".
 # ------------------------------------------------------------------
-from cfmesh_autogui.core.meshdict_gen import build_meshdict_lines
+from polyfoammesh.core.meshdict_gen import build_meshdict_lines
 
 
 def test_bl_block_emits_per_wall_patch():
@@ -171,7 +171,7 @@ def test_bl_block_maps_user_values_to_cfmesh_keys():
 # ------------------------------------------------------------------
 import tempfile
 import os
-from cfmesh_autogui.core.geometry import load_stl, load_geometry
+from polyfoammesh.core.geometry import load_stl, load_geometry
 
 
 def _write_ascii_stl(path: str, solids: list[tuple[str, list[tuple[float, float, float]]]]):

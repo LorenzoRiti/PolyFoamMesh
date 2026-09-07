@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from cfmesh_autogui.core.throat_detector import (
+from polyfoammesh.core.throat_detector import (
     detect_refinement_regions,
     RefinementZone,
 )
@@ -146,7 +146,7 @@ def test_d_simple_cube_no_false_zones():
 
 def test_meshdict_with_refinement_zones():
     """End-to-end: zones → meshDict with objectRefinements."""
-    from cfmesh_autogui.core.meshdict_gen import build_meshdict_lines
+    from polyfoammesh.core.meshdict_gen import build_meshdict_lines
     meshes = _build_venturi()
     zones = detect_refinement_regions(meshes, detail="fine", global_max_cell=0.05)
     if not zones:

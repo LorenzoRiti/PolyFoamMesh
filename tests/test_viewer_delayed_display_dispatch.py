@@ -26,7 +26,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from cfmesh_autogui.gui.viewer_widget import VIEW_MODES, ViewerWidget  # noqa: E402
+from polyfoammesh.gui.viewer_widget import VIEW_MODES, ViewerWidget  # noqa: E402
 
 
 def _bare_widget(current_index: int, enabled: bool = True) -> ViewerWidget:

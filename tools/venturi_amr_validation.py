@@ -1,7 +1,7 @@
 """Venturi solution-adaptive refinement validation.
 
 Runs the full solve -> indicate -> remesh loop from
-``cfmesh_autogui.core.solution_adaptive`` on a venturi (pipe that narrows to
+``polyfoammesh.core.solution_adaptive`` on a venturi (pipe that narrows to
 a throat and widens back), proving with numbers that refinement lands where
 the physics demands it:
 
@@ -23,10 +23,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 REPO = Path(r"C:\Users\Davide Valoroso\cfmesh-autogui")
@@ -70,7 +68,7 @@ def run_gmsh_volume(step_path: Path, msh_path: Path, detail: str,
     env["PYTHONPATH"] = str(REPO / "src")
     env["GMSH_SOLUTION_SIZE_FIELD"] = str(size_field) if size_field else ""
     cmd = [
-        PY, "-m", "cfmesh_autogui.core.gmsh_wrapper", "volume",
+        PY, "-m", "polyfoammesh.core.gmsh_wrapper", "volume",
         str(step_path), str(msh_path), detail,
         "0", "0", "1.2",
         repr(user_lc), repr(user_lc * 0.2), "0",
@@ -95,7 +93,7 @@ def convert_to_foam(case_dir: Path, msh_path: Path, timeout_s: int = 600) -> Non
     """Run the app's own out-of-process gmshToFoam entry point."""
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
-    cmd = [PY, "-m", "cfmesh_autogui.core.gmsh_wrapper", "convert_to_foam",
+    cmd = [PY, "-m", "polyfoammesh.core.gmsh_wrapper", "convert_to_foam",
            str(case_dir), msh_path.name]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s,
                        env=env, cwd=REPO, encoding="utf-8", errors="backslashreplace")
@@ -109,8 +107,8 @@ def convert_to_foam(case_dir: Path, msh_path: Path, timeout_s: int = 600) -> Non
 
 def setup_case_runnable(case_dir: Path) -> None:
     """Read patches, infer roles geometrically, write a runnable case."""
-    from cfmesh_autogui.core.boundary_reader import parse_boundary
-    from cfmesh_autogui.core.case_setup import setup_case, infer_patch_roles
+    from polyfoammesh.core.boundary_reader import parse_boundary
+    from polyfoammesh.core.case_setup import setup_case, infer_patch_roles
 
     patches = parse_boundary(case_dir / "constant" / "polyMesh" / "boundary")
     roles = infer_patch_roles(case_dir, patches, flow_direction=(1.0, 0.0, 0.0))
@@ -141,7 +139,7 @@ def window_counts(case_dir: Path, x_lo: float, x_hi: float) -> int:
     if vtu_dirs:
         vtu = vtu_dirs[-1]
     else:
-        from cfmesh_autogui.core.mesh_export import _build_internal_vtu
+        from polyfoammesh.core.mesh_export import _build_internal_vtu
         try:
             vtu = _build_internal_vtu(case_dir)
         except Exception as exc:  # noqa: BLE001 — reported, not swallowed
@@ -204,12 +202,12 @@ def main() -> None:
     step_path = Path(args.geom) if args.geom else work / "venturi.step"
 
     sys.path.insert(0, str(REPO / "src"))
-    from cfmesh_autogui.config import OFConfig
-    from cfmesh_autogui.core.boundary_reader import count_cells, parse_boundary
-    from cfmesh_autogui.core.case_setup import (
+    from polyfoammesh.config import OFConfig
+    from polyfoammesh.core.boundary_reader import count_cells, parse_boundary
+    from polyfoammesh.core.case_setup import (
         setup_case, infer_patch_roles, set_wall_patch_types,
     )
-    from cfmesh_autogui.core.solution_adaptive import (
+    from polyfoammesh.core.solution_adaptive import (
         AdaptiveParams, SolutionAdaptiveRefiner, AdaptiveResult,
     )
 

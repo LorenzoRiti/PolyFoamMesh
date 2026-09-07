@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 
-from cfmesh_autogui.core.boundary_reader import PatchInfo
-from cfmesh_autogui.core.case_setup import setup_case
+from polyfoammesh.core.boundary_reader import PatchInfo
+from polyfoammesh.core.case_setup import setup_case
 
 PATCHES = [
     PatchInfo("surface_1", "wall", 100, 0),

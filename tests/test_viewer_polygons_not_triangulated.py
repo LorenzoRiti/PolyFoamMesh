@@ -51,7 +51,7 @@ def test_manual_parser_emits_real_polygons(tmp_path, monkeypatch):
     """End-to-end through read_openfoam_mesh_patches with a stubbed
     polyMesh whose boundary is quads: the returned PolyData must contain
     quads, not pairs of triangles."""
-    from cfmesh_autogui.gui import viewer_widget as vw
+    from polyfoammesh.gui import viewer_widget as vw
 
     points = np.array([
         [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],

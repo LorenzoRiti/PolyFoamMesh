@@ -18,7 +18,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from cfmesh_autogui.gui.main_window import MainWindow  # noqa: E402
+from polyfoammesh.gui.main_window import MainWindow  # noqa: E402
 
 
 @pytest.fixture(scope="module")
