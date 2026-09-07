@@ -79,13 +79,17 @@ def test_tessellation():
     print("PASS: test_tessellation")
 
 
-def test_stl_multisolid_export():
+def test_stl_multisolid_export(tmp_path):
     cyl = create_test_cylinder()
     shape = cyl.val()
     patches = classify_faces(shape)
     meshes = tessellate_patches(patches)
 
-    test_stl = Path(__file__).resolve().parents[1] / "sample_cad" / "cylinder_test.stl"
+    # NEVER write into the tracked sample_cad/ directory: overwriting the
+    # shipped samples on every test run made git report spurious
+    # modifications after each local run (tessellation output is not
+    # byte-stable across runs/versions).
+    test_stl = tmp_path / "cylinder_test.stl"
     export_multisolid_stl(meshes, test_stl)
 
     assert test_stl.exists(), "STL file was not created"
@@ -103,13 +107,14 @@ def test_stl_multisolid_export():
     print("PASS: test_stl_multisolid_export")
 
 
-def test_surface_file_export():
+def test_surface_file_export(tmp_path):
     cyl = create_test_cylinder()
     shape = cyl.val()
     patches = classify_faces(shape)
     meshes = tessellate_patches(patches)
 
-    case_dir = Path(__file__).resolve().parents[1] / "sample_cad" / "test_case"
+    # Same as above: never mutate the tracked sample_cad/ tree from tests.
+    case_dir = tmp_path / "test_case"
     export_surface_file(meshes, case_dir)
 
     stl = case_dir / "constant" / "triSurface" / "surface.stl"
@@ -121,9 +126,12 @@ def test_surface_file_export():
 
 
 if __name__ == "__main__":
+    import tempfile
     test_cylinder_face_classification()
     test_tessellation()
-    test_stl_multisolid_export()
-    test_surface_file_export()
+    with tempfile.TemporaryDirectory() as _td:
+        _tp = Path(_td)
+        test_stl_multisolid_export(_tp)
+        test_surface_file_export(_tp)
     print("\nAll Fase 1 tests passed.")
 

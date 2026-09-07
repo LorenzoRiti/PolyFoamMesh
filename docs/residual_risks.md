@@ -5,6 +5,33 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## CI (2026-09-08)
+
+- The GitHub Actions CI job is green again. Root causes of the original
+  failure were NOT the package rename itself but what the rename exposed on
+  the Linux runner: `pytest-qt` was missing from the installed extras
+  (fixed in the rebrand commit), Windows-style case paths were mangled by
+  `Path.resolve()` on POSIX (`config.py`, `core/validation.py` — fixed),
+  and two trimesh optional dependencies the code paths actually use
+  (`networkx` for CAD healing, `rtree` for native-mesher spatial queries)
+  were not declared in `pyproject.toml` (fixed). The fast suite is now
+  verified green on Linux (WSL mirror of ubuntu-latest) AND Windows before
+  every push.
+- The full `master` history could not be pushed for months because a
+  278 MB installer `.exe` was committed once (blob still reachable from
+  every later commit). The pushed `master` branch history was rewritten
+  (filter-branch, `installer/output` dropped from the index across the
+  range `origin/main..master`; 297 commits preserved, trees verified
+  byte-identical). The pre-rewrite history is kept locally in the
+  `backup-master-pre-rewrite` branch. NOTE: local `master` SHAs changed —
+  references to old SHAs (e.g. in `.opencode/` notes) now point to the
+  backup branch.
+- Known limitation kept: the Linux run still cannot verify Windows-drive
+  filesystem semantics (`test_engine_set_case_dir_nonexistent` is
+  win32-only by design); the two conditional venturi-throat skips in
+  `test_throat_venturi.py` remain (documented tessellation-dependent
+  limitation of the throat detector).
+
 ## Meshing Timeouts
 
 - GMSH volume meshing uses a 3600 s wall-clock timeout in every path
@@ -187,6 +214,17 @@ source of truth.
 
 ## Sizing And Estimates
 
+- **Manual refinement zones preserve geometry sizing (2026-09-08)**: the
+  refinement-zones block used to call `setAsBackgroundMesh()` on the zone
+  fields alone, silently DISCARDING the geometry-adaptive background field
+  (curvature/small-feature/gap sizing) whenever a manual refinement box was
+  active — documented as an unfixed bug in
+  `docs/dev/solution_adaptive_handoff.md` §1.4. Zones are now MIN-combined
+  with the existing field (`_combine_zone_fields_with_bg`), so a zone can
+  only ask for smaller cells, never change sizing elsewhere. Regression
+  tests: `test_gmsh_refinement_boxes.py::test_single_zone_min_combined_with_existing_bg`
+  and friends.
+
 - The Mesh Fineness slider value is a budget/cap (10K..20M cells), not a
   guarantee. The displayed geometry estimate is derived from the tessellated
   solid volume and the derived cell sizes; when the volume cannot be trusted
@@ -207,6 +245,12 @@ source of truth.
   in cadquery millimetres (0.1 m rod = `circle(100)`, throat = `circle(30)`),
   matching the app's documented contract that tessellation converts mm→m.
   The assertions were not touched; the test passes (4/4).
+- **Closed curved bodies tessellate watertight now (2026-09-08)**: the old
+  "sphere → not watertight" finding from `docs/dev/notes/NIGHT_LOOP_PROMPT.md`
+  is fixed. OCC tessellation emits coincident duplicate vertices at the
+  seams/poles of curved faces; `tessellate_patches` now merges them and drops
+  the degenerate pole triangles, so a cadquery sphere passes
+  `check_watertight()` (regression: `test_geometry.py::test_tessellate_closed_curved_body_is_watertight`).
 - `test_watertight_meshdict.py::test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop`
   is order-sensitive (shared QApplication state); it passes in isolation.
 
