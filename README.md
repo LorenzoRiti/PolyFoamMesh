@@ -1,39 +1,67 @@
 # PolyFoamMesh
 
-**Preprocessore CFD open source per OpenFOAM** — combina GMSH + cfMesh in una
-GUI che genera mesh pronte per CFD senza scrivere dizionari OpenFOAM a mano.
+*[Versione in italiano](README.it.md)*
 
-Licenza: [GPLv3](LICENSE) · [Third-party licenses](THIRD_PARTY_LICENSES.md) · [Contributing](CONTRIBUTING.md)
+Generates polyhedral meshes for OpenFOAM from a STEP or STL file, with
+boundary layers, without hand-writing dictionaries. GMSH and cfMesh do the
+raw meshing; on top of that sits a tet→poly converter built from scratch
+(barycentric dual — the same topology that makes StarCCM+'s polyhedral
+meshes what they are) and a boundary-layer engine that runs directly on
+the polyhedral mesh, patch by patch.
 
-## A chi serve
+License: [GPLv3](LICENSE) · [Third-party licenses](THIRD_PARTY_LICENSES.md) · [Contributing](CONTRIBUTING.md)
 
-Sei un ingegnere CFD, uno studente o un ricercatore che oggi prepara mesh
-OpenFOAM scrivendo `blockMeshDict`/`snappyHexMeshDict`/`meshDict` a mano e
-scoprendo i problemi di qualità solo dopo aver lanciato `checkMesh`. Questa
-app mette GMSH e cfMesh dietro una GUI: carichi una geometria, generi una
-mesh con un click, vedi la qualità mentre viene calcolata, esporti il case
-pronto per il solver.
+## Why not just use cfMesh directly
 
-## Come si confronta
+cfMesh and GMSH produce raw meshes — hex or tet — and anyone working with
+OpenFOAM already has that. The part that was missing, and that this
+project adds, comes after:
 
-| | PolyFoamMesh | snappyHexMesh "nudo" | Ansys Meshing / ANSA / Pointwise |
-|---|---|---|---|
-| Costo | Gratis, open source (GPLv3) | Gratis (parte di OpenFOAM) | Licenze commerciali, spesso costose |
-| Automazione | 1-click + auto quality-fix | Manuale, dizionari a testo | Alta, ma workflow proprietario |
-| Maturità | Beta attiva, limiti noti e documentati | Maturo, ma nessuna GUI | Maturo |
-| Vincolo | Solo OpenFOAM | Solo OpenFOAM | Multi-solver |
+- a **tet→poly barycentric-dual converter**, written for this project (not
+  a cfMesh feature): takes GMSH's tet mesh and turns it into a fully
+  polyhedral mesh;
+- a **boundary-layer engine that runs on the polyhedral mesh itself**, also
+  built from scratch (pure numpy): it extrudes prisms on whichever patches
+  you choose, not blindly across the whole domain — I'm not aware of
+  another open-source tool in the OpenFOAM ecosystem that does this with
+  this level of control inside a GUI;
+- a quality auto-fix loop (checkMesh → fix → re-mesh, up to 3 iterations)
+  and a mechanism that switches meshing algorithm on its own if the chosen
+  one doesn't reach the required quality.
 
-Non è un sostituto di un tool commerciale maturo su geometrie molto complesse
-— è pensato per chi lavora con OpenFOAM e vuole risparmiare le ore che oggi
-si perdono a scrivere dizionari e a interpretare `checkMesh` a mano. I limiti
-noti sono documentati in [docs/residual_risks.md](docs/residual_risks.md),
-non nascosti.
+Where this pipeline works well and where it doesn't (there are concave
+geometries where the polyhedral dual doesn't close perfectly) is written
+up without spin in [docs/residual_risks.md](docs/residual_risks.md).
 
-## Documentazione utente
+## Who this is for
 
-- **[Installazione](docs/INSTALL.md)** — installer Windows o da sorgente
-- **[Guida all'uso](docs/USER_GUIDE.md)** — come funziona il workflow, tab per tab
-- **[Limiti noti](docs/residual_risks.md)** — cosa non funziona ancora e perché
+If you prepare OpenFOAM meshes by hand-writing `blockMeshDict`,
+`snappyHexMeshDict` or `meshDict`, and only find out something's wrong
+after running `checkMesh`, this app takes over most of that work: load the
+geometry, generate the mesh with one click, watch the quality get computed,
+export a case ready for the solver.
+
+## How it compares
+
+Against **plain snappyHexMesh**: same cost (free, both run on OpenFOAM),
+but here the polyhedral mesh and the boundary layer are automatic instead
+of a sequence of dictionaries you write by hand.
+
+Against **Ansys Meshing, ANSA, Pointwise**: they're still more mature and
+capable on genuinely complex geometry, and they cover more solvers — this
+project only targets OpenFOAM. In exchange it's free and open source, and
+the polyhedral mesh (usually a commercially-licensed feature) costs
+nothing here.
+
+This isn't a replacement for a mature commercial tool on hard geometry —
+it's for people working with OpenFOAM who want polyhedral meshing without
+paying for a license to get it.
+
+## User documentation
+
+- **[Installation](docs/INSTALL.md)** — Windows installer or from source
+- **[User guide](docs/USER_GUIDE.md)** — how the workflow works, tab by tab
+- **[Known limitations](docs/residual_risks.md)** — what doesn't work yet, and why
 
 ## Architecture
 
@@ -60,32 +88,29 @@ non nascosti.
 └─────────────────────────────────────────────────────┘
 ```
 
-## Key Features v2.0
+## Key features
 
-| Feature | Description | Status |
-|---------|-------------|--------|
-| **GMSH + cfMesh Hybrid** | GMSH analyzes curvature/sizing, cfMesh fills volume | P0 |
-| **GMSH Direct** | Full tetra+BL mesh on Windows, no WSL needed | P0 |
-| **Feature Detection** | Automatic sharp edges, thin gaps, curvature analysis | P0 |
-| **New Case Wizard** | 3-step guided workflow (Geometry → Mesh → Quality) | P0 |
-| **Tabbed Params Panel** | Geometry/Mesh/Advanced/Quality tabs | P0 |
-| **Quality Pipeline** | checkMesh → auto-fix → re-run (max 3 iterations) | P0 |
-| **Quick Mesh (1-Click)** | Ctrl+M for instant mesh with auto-suggested params | P0 |
-| **Export CGNS/VTU** | Export mesh in CGNS and ParaView VTU formats | P1 |
-| **Clipping Plane** | Interactive section cut in 3D viewer | P1 |
-| **Undo/Redo** | Ctrl+Z/Y with QUndoStack + ParamChangeCommand | P0 |
-| **Case Templates** | Presets for internal flow, external aero, CHT | P1 |
-| **QualityFixWorker** | Auto-fix loop — checkMesh → fix → re-run (max 3) | P0 |
-| **ParaView Integration** | Tools > Launch ParaView (subprocess.Popen) | P1 |
-| **Plugin System** | Plugin(ABC) via importlib, plugins/ directory | P2 |
-| **PDF Quality Report** | Professional mesh quality report with charts | P0 |
-| **Italian Localization** | UI + help + docs in Italiano | P1 |
+| Feature | Description |
+|---------|-------------|
+| **GMSH + cfMesh hybrid** | GMSH analyzes curvature/sizing, cfMesh fills the volume |
+| **GMSH direct** | Full tet + boundary-layer mesh on Windows, no WSL needed |
+| **Feature detection** | Automatic sharp edges, thin gaps, curvature analysis |
+| **New Case wizard** | 3-step guided workflow (Geometry → Mesh → Quality) |
+| **Quality pipeline** | checkMesh → auto-fix → re-run (up to 3 iterations) |
+| **Quick Mesh (1-click)** | `Ctrl+M` for an instant mesh with auto-suggested parameters |
+| **Export** | CGNS and VTU, for ParaView or other solvers |
+| **Section cut / measure** | Interactive tools in the 3D viewer |
+| **Undo/redo** | Full undo stack on mesh parameters |
+| **Case templates** | Presets for internal flow, external aero, CHT |
+| **PDF quality report** | Mesh quality report with charts, for documenting a case |
+| **Plugin system** | Extend the app via `plugins/`, no core changes needed |
+| **Italian localization** | UI, help and part of the docs also in Italian |
 
-## Installazione rapida
+## Quick install
 
-Requisiti: Windows 10/11, Python 3.11+ (solo per l'installazione da
-sorgente), opzionalmente OpenFOAM v2512 in WSL2. Guida completa (installer
-precompilato o da sorgente): **[docs/INSTALL.md](docs/INSTALL.md)**.
+Requirements: Windows 10/11, Python 3.11+ (source install only), optionally
+OpenFOAM v2512 in WSL2. Full guide (installer or from source):
+**[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ```bash
 pip install -e ".[test]"
@@ -93,86 +118,53 @@ pip install gmsh meshio reportlab
 polyfoammesh
 ```
 
-Workflow e scorciatoie: **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
+Workflow and shortcuts: **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 
-## Project Structure
+## Project structure
 
 ```
-cfmesh-autogui/
-├── src/cfmesh_autogui/
+PolyFoamMesh/
+├── src/cfmesh_autogui/         # Python package (rename to polyfoammesh pending)
 │   ├── app.py                  # Entry point (splash, theme, i18n)
 │   ├── config.py               # OpenFOAM/WSL configuration
-│   ├── _version.py             # Single version source (imported everywhere)
 │   ├── core/                   # Engine layer (no GUI imports)
 │   │   ├── geometry.py         # CAD import (cadquery, trimesh)
 │   │   ├── gmsh_wrapper.py     # GMSH Python API wrapper
 │   │   ├── meshdict_gen.py     # cfMesh meshDict generator
 │   │   ├── feature_detector.py # Sharp edges, gaps, curvature
-│   │   ├── stl_writer.py       # Surface STL export
-│   │   ├── boundary_reader.py  # OpenFOAM boundary parser
-│   │   ├── case_setup.py       # OpenFOAM case setup + controlDict
 │   │   ├── openfoam_runner.py  # cfMesh runner + error analysis
-│   │   ├── mesh_converter.py   # MSH → OpenFOAM conversion
 │   │   └── …                   # workflow, session, validation, …
 │   ├── commercial/             # Advanced meshing modules
 │   │   ├── mesh_engine.py      # Multi-algorithm engine + escalation
 │   │   ├── quality_engine.py   # Quality auto-fix loops
-│   │   ├── adaptive_loop.py    # OODA adaptive refinement
-│   │   ├── snappy_hex_mesh.py  # SnappyHexMesh pipeline
-│   │   ├── batch_mesh.py       # Headless batch meshing
-│   │   └── …                   # ~30 modules (BL, mosaic, amr, …)
+│   │   ├── adaptive_loop.py    # Solution-adaptive refinement
+│   │   └── …                   # ~30 modules (boundary layers, mosaic, AMR, …)
 │   ├── api/server.py           # Optional FastAPI headless server
-│   └── gui/
-│       ├── main_window.py      # Main window (menu, export, undo)
-│       ├── params_panel.py     # 4-tab parameter panel
-│       ├── viewer_widget.py    # 3D viewer (PyVistaQt)
-│       ├── new_case_wizard.py  # 3-step guided wizard
-│       ├── quality_panel.py    # checkMesh + PDF + auto-fix
-│       ├── task_runner.py      # One concurrency pattern (TaskManager)
-│       ├── pdf_report.py       # PDF quality report generator
-│       ├── log_panel.py        # Log output panel
-│       ├── about_dialog.py     # About dialog
-│       ├── branding.py         # Splash screen, app icon
-│       ├── design_tokens.py    # Design token system
-│       ├── theme.py            # Light/dark theme manager
-│       ├── style.py            # QSS style helpers
-│       └── constants.py        # App constants
-├── plugins/                    # Plugin system (Plugin ABC)
-│   └── plugin_base.py          #   Plugin(ABC) base class
+│   └── gui/                    # PySide6 GUI (tabs, viewer, wizard, reports)
+├── plugins/                    # Plugin system
 ├── templates/                  # Case presets (JSON)
-├── locale/                     # i18n translations + compile scripts
-│   ├── cfmesh_autogui.pro      #   Qt project file
-│   ├── compile_i18n.bat        #   Windows batch compiler
-│   └── compile_i18n.py         #   Python compiler script
+├── locale/                     # i18n translations
 ├── installer/                  # NSIS / Inno Setup scripts
-├── tests/                      # pytest test suite (96 files, ~1.000 tests)
-├── benchmarks/                 # Meshing benchmark scripts + results
-├── dist/                       # PyInstaller EXE output
-│   └── PolyFoamMesh.exe        #   Standalone executable
-└── docs/                       # Documentation + handoff notes
+├── tests/                      # pytest suite (~1100 tests)
+├── benchmarks/, tools/         # Benchmark and dev scripts
+└── docs/                       # User docs (root) + internal dev notes (docs/dev/)
 ```
 
 ## Testing
 
 ```bash
-# Full suite (~1.000 tests; slow tests marked, run everything)
+# Full suite
 pytest tests/ -v
 
-# Fast subset used by the pre-commit hook (pure logic, no GMSH/Qt/WSL)
-pytest tests/test_workflow.py tests/test_meshdict_gen.py tests/test_journal.py \
-       tests/test_template_engine.py tests/test_octopoda.py \
-       tests/test_settings_migration.py tests/test_config.py tests/test_validation.py -q
+# Fast subset (what CI and the pre-commit hook run — no slow/WSL tests)
+pytest tests/ -m "not slow and not wsl" -q
 ```
 
-### Pre-commit gate (local quality check)
+### Pre-commit gate
 
-The repo ships a `.pre-commit-config.yaml` that runs automatically before
-every commit:
-
-1. **ruff check** (rules E9/F/B) on staged `.py` files
-2. **fast pytest subset** (pure-logic tests, ~18 s)
-
-Install once with:
+The repo ships a `.pre-commit-config.yaml` that runs on every commit: ruff
+(rules E9/F/B) on staged files, then the fast test subset. Install once
+with:
 
 ```bash
 python -m pre_commit install
@@ -180,14 +172,23 @@ python -m pre_commit install
 
 Bypass in an emergency with `git commit --no-verify`.
 
-## Documentazione per sviluppatori/manutentori
+## For maintainers
 
-- **Rebuild exe + installer** (PyInstaller one-dir + Inno Setup):
-  [docs/dev/DISTRIBUZIONE.md](docs/dev/DISTRIBUZIONE.md)
-- **Note tecniche interne** (handoff, stato del mesher poliedrico, log di
-  sviluppo): [docs/dev/](docs/dev/) — non necessarie per usare l'app, utili
-  solo per chi tocca l'engine di meshing
+- **Rebuilding the exe/installer** (PyInstaller one-dir + Inno Setup):
+  [docs/dev/DISTRIBUZIONE.md](docs/dev/DISTRIBUZIONE.md) (Italian)
+- **Internal dev notes** (handoffs, mesher status, development log):
+  [docs/dev/](docs/dev/) — not needed to use the app, useful only if
+  you're touching the meshing engine itself
+
+## How this was built
+
+A good part of this project's code and docs were written "vibe coding" —
+with AI assistants (Claude) doing a lot of the typing, under my direction
+on technical decisions, review, and verification of the results (the test
+and mesh-quality numbers quoted above are measured, not made up). This
+isn't hand-written line by line, and I'd rather say that plainly than let
+it go unsaid.
 
 ## License
 
-GPLv3 — vedi [LICENSE](LICENSE) e [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+GPLv3 — see [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
