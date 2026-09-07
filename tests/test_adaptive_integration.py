@@ -46,6 +46,33 @@ def test_adapter_init():
     assert a._meshes is None
 
 
+def test_adapter_can_build_its_mesh_engine():
+    """Regression: the adaptive path crashed before it ever meshed.
+
+    ``OODAWorkflowAdapter._run_serial`` builds its engine with
+    ``MeshEngine(self._of_config)`` (adaptive_integration.py:141), but
+    ``MeshEngine.__init__`` accepted no argument — a hard TypeError on the
+    first adaptive run, reachable from the Solve Adaptive ribbon button.
+    The suite never caught it because these tests mock the engine away.
+
+    The adapter's own ``_of_config`` is ``None`` unless one was injected, so
+    the real call is ``MeshEngine(None)`` — it must fall back to a default
+    OFConfig rather than propagating the None into the engine.
+    """
+    from cfmesh_autogui.commercial.mesh_engine import MeshEngine
+
+    a = OODAWorkflowAdapter()
+    assert a._of_config is None
+    engine = MeshEngine(a._of_config)  # used to raise TypeError
+    assert engine._of_config is not None, "None config must fall back to a default"
+
+    from cfmesh_autogui.config import OFConfig
+
+    cfg = OFConfig()
+    b = OODAWorkflowAdapter(cfg)
+    assert MeshEngine(b._of_config)._of_config is cfg, "injected config must be used"
+
+
 def test_adapter_configure():
     a = OODAWorkflowAdapter()
     a.configure(Path("/tmp/test_case"), meshes=[], geometry_path="/tmp/test.stl")
@@ -172,6 +199,7 @@ if __name__ == "__main__":
     test_result_summary_pass()
     test_result_summary_fail()
     test_adapter_init()
+    test_adapter_can_build_its_mesh_engine()
     test_adapter_configure()
     test_adapter_run_no_case()
     test_adapter_emit()

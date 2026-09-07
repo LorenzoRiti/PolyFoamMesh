@@ -1,6 +1,7 @@
 """Tests for the one-click full auto pipeline."""
 from __future__ import annotations
 import sys
+import types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _test_helpers import load_commercial_module
@@ -83,6 +84,50 @@ def test_pipeline_result_preserves_geometry():
 def test_full_auto_result_default_quality():
     r = FullAutoResult()
     assert r.quality_target == "medium"
+
+
+# ---------------------------------------------------------------------------
+# Algorithm substitution transparency
+# ---------------------------------------------------------------------------
+def test_full_auto_result_substitution_fields():
+    r = FullAutoResult()
+    assert not r.algorithm_substituted
+    assert r.original_algorithm == ""
+    assert r.escalation_reason == ""
+
+
+def test_pipeline_records_algorithm_substitution(monkeypatch, tmp_path):
+    """Hermetic: engine escalation info must reach the FullAutoResult."""
+    p = FullAutoPipeline()
+    qm_result = types.SimpleNamespace(
+        success=True, case_dir=str(tmp_path), algorithm="Tetrahedral",
+        original_algorithm="CartesianHex", algorithm_substituted=True,
+        escalation_reason="quality below threshold",
+        cell_count=1000, quality_passed=True, warnings=[],
+    )
+    monkeypatch.setattr(
+        p, "_step_import_heal",
+        lambda geo: types.SimpleNamespace(
+            success=True, meshes=[],
+            geometry=types.SimpleNamespace(n_patches=1, bbox_max=1.0),
+        ),
+    )
+    monkeypatch.setattr(p, "_step_mesh", lambda *a, **k: qm_result)
+    monkeypatch.setattr(
+        p, "_step_quality_fix",
+        lambda cd: types.SimpleNamespace(passed=True, metrics=None),
+    )
+    monkeypatch.setattr(p, "_step_bc", lambda cd, auto_bc: [])
+    monkeypatch.setattr(p, "_step_solver", lambda cd, tpl, bbox: [])
+    monkeypatch.setattr(p, "_step_report", lambda cd, m, q: [])
+
+    result = p.run(str(tmp_path / "model.step"))
+
+    assert result.success
+    assert result.algorithm_substituted
+    assert result.original_algorithm == "CartesianHex"
+    assert result.escalation_reason == "quality below threshold"
+    assert result.algorithm_used == "Tetrahedral"
 
 
 if __name__ == "__main__":

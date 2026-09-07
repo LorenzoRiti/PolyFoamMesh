@@ -58,7 +58,7 @@ def build_snappy_hex_mesh_dict_lines(
     lines = [
         "FoamFile { version 2.0; format ascii; class dictionary; object snappyHexMeshDict; }",
         "",
-        "// CFMesh-AutoGUI Adaptive Meshing Engine",
+        "// PolyFoamMesh Adaptive Meshing Engine",
         "",
         "castellatedMesh true;",
         "snap            true;",

@@ -36,6 +36,9 @@ class FullAutoResult:
     algorithm_used: str = ""
     cell_count: int = 0
     quality_passed: bool = False
+    algorithm_substituted: bool = False
+    original_algorithm: str = ""
+    escalation_reason: str = ""
     steps_completed: list[str] = field(default_factory=list)
     n_patches: int = 0
     bc_types: list[str] = field(default_factory=list)
@@ -132,6 +135,9 @@ class FullAutoPipeline:
             self._result.cell_count = qm_result.cell_count
             self._result.algorithm_used = qm_result.algorithm
             self._result.quality_passed = qm_result.quality_passed
+            self._result.algorithm_substituted = qm_result.algorithm_substituted
+            self._result.original_algorithm = qm_result.original_algorithm
+            self._result.escalation_reason = qm_result.escalation_reason
             self._result.warnings.extend(qm_result.warnings)
             self._result.steps_completed.append(self.STEP_MESH)
 
@@ -164,6 +170,8 @@ class FullAutoPipeline:
                 "cells": self._result.cell_count,
                 "quality": self._result.quality_passed,
                 "steps": len(self._result.steps_completed),
+                "algorithm_substituted": self._result.algorithm_substituted,
+                "original_algorithm": self._result.original_algorithm,
             })
 
         except Exception as exc:
@@ -261,6 +269,9 @@ class FullAutoPipeline:
             "target": self._result.quality_target,
             "cells": mesh_result.cell_count,
             "algorithm": mesh_result.algorithm,
+            "algorithm_substituted": getattr(mesh_result, "algorithm_substituted", False),
+            "original_algorithm": getattr(mesh_result, "original_algorithm", ""),
+            "escalation_reason": getattr(mesh_result, "escalation_reason", ""),
             "quality_passed": quality_report.passed,
             "quality_metrics": {
                 "max_skewness": quality_report.metrics.max_skewness,
@@ -304,7 +315,7 @@ def main_cli() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(
-        description="CFMesh-AutoGUI Full Auto (headless): geometry file to "
+        description="PolyFoamMesh Full Auto (headless): geometry file to "
                      "complete OpenFOAM case, one command.",
     )
     parser.add_argument("geometry", help="Path to geometry file (.step/.stp/.stl)")

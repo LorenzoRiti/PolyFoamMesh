@@ -16,7 +16,7 @@ Cosa succede, cosa ti aspettavi.
 STEP/STL usato (allega se possibile, o descrivi le caratteristiche: dimensioni, watertight sì/no).
 
 **Ambiente**
-- Versione CFMesh-AutoGUI:
+- Versione PolyFoamMesh:
 - Windows:
 - WSL2 + OpenFOAM installato: sì/no
 

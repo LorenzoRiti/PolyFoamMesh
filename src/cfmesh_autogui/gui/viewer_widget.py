@@ -603,6 +603,7 @@ class ViewerWidget(QWidget):
         self._mesh_retry_count: int = 0
         self._mesh_retry_max: int = 3
         self._foam_to_vtk_attempted: bool = False
+        self._mesh_cancelled: bool = False
         self._display_timeout_timer: QTimer | None = None
         # Background tasks for heavy loads (foamToVTK, VTU reads) so the
         # UI never freezes while the mesh display pipeline runs.
@@ -1590,9 +1591,17 @@ class ViewerWidget(QWidget):
         # --- Fallback: boundary surface patches ----------------------------
         self._load_patches_async()
 
+    def cancel_mesh_display(self) -> None:
+        """Stop any pending mesh-view retry/timeout. Called from main_window
+        when the user cancels the meshing run."""
+        self._mesh_cancelled = True
+        self._cancel_display_timeout()
+
     def _handle_no_patches(self) -> None:
         """Called when the patch load came back empty: decide whether to
         trigger foamToVTK or show the 'use ParaView' message."""
+        if self._mesh_cancelled:
+            return
         if self._foam_to_vtk_attempted:
             self._foam_to_vtk_attempted = False
             self._show_mesh_too_large("foamToVTK non disponibile (usa ParaView)")
@@ -1754,6 +1763,7 @@ class ViewerWidget(QWidget):
             self._mesh_display_in_progress = False
             self._mesh_retry_count = 0
             self._foam_to_vtk_attempted = False
+            self._mesh_cancelled = False
             # Kill any foamToVTK still running from a previous display so the
             # new mesh (e.g. the poly result after tet->poly conversion) is
             # generated from scratch instead of racing the old process.

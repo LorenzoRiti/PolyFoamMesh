@@ -38,6 +38,14 @@ def load_commercial_module(module_name: str) -> types.ModuleType:
         # Single checkMesh parser — delegated to by quality_engine._parse_metrics
         # and mesh_engine/poly_aggregator (stdlib-only imports + PySide6).
         ("cfmesh_autogui.core.openfoam_runner", "cfmesh_autogui/core/openfoam_runner.py"),
+        # Canonical patch-role classifier — delegated to by bl_engine,
+        # bc_editor and watertight (stdlib-only imports).
+        ("cfmesh_autogui.core.patch_roles", "cfmesh_autogui/core/patch_roles.py"),
+        # mesh_engine imports write_control_dict from here at module scope.
+        # Without this pre-load, tests/test_mesh_engine.py only collected when
+        # some alphabetically-earlier test happened to import case_setup first
+        # — i.e. it passed in the full suite and failed in isolation.
+        ("cfmesh_autogui.core.case_setup", "cfmesh_autogui/core/case_setup.py"),
     ]:
         # Never REPLACE a module that is already in sys.modules: re-executing
         # it here creates a second instance, and any earlier importer (e.g.

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from cfmesh_autogui.core.openfoam_runner import MeshQualityReport, RetryRunner
 
 from cfmesh_autogui.config import OFConfig
+from cfmesh_autogui.core.patch_roles import split_wall_patches
 from cfmesh_autogui.core.validation import (
     validate_cell_size, validate_bl_params,
     validate_geometry_path, validate_case_dir,
@@ -376,17 +377,20 @@ class WatertightWorkflow:
             m.metadata.get("name", f"patch_{i}")
             for i, m in enumerate(self._meshes)
         ]
-        wall_patches = self._bl_params.get("wallPatches") or [
-            n for n in all_names
-            if n.lower() in ("wall", "walls") or n.lower().startswith("wall_")
-        ]
+        wall_patches = self._bl_params.get("wallPatches")
         if not wall_patches:
-            wall_patches = all_names
-            self._result.warnings.append(
-                "No wall patches found — applying BL to all patches."
-            )
-
-        self._bl_params["wallPatches"] = wall_patches
+            wall_patches, excluded = split_wall_patches(all_names)
+            if not wall_patches:
+                detail = ", ".join(f"{n} ({r})" for n, r in excluded) or "none"
+                self._result.warnings.append(
+                    "No wall patches found — boundary layers skipped. "
+                    f"Excluded: {detail}"
+                )
+                logger.warning(
+                    "Boundary layers skipped: no wall patches found. "
+                    "Excluded: %s", detail,
+                )
+                self._bl_params["wallPatches"] = []
 
         geom = _lazy_geom()
         bbox_dim = geom.compute_bbox_dim(self._meshes)
@@ -394,18 +398,22 @@ class WatertightWorkflow:
             bbox_dim, self._max_cell, self._min_cell,
         )
 
-        # meshDict's BL contract: thicknessRatio = growth ratio (>1),
-        # firstLayerThickness = absolute metres. set_boundary_layers() stores
-        # the caller's "thickness_ratio" as a first-layer FRACTION of the max
-        # cell size (its docstring/param name predates the current contract)
-        # and a separate "expansionRatio" for the real growth ratio — the
-        # opposite of what write_meshdict expects. Passed straight through, a
-        # sub-1 "growth ratio" gets clamped to a default and no absolute first
-        # layer is ever emitted, silently discarding the caller's BL settings.
-        mesh_bl_params = dict(self._bl_params)
-        first_layer_fraction = self._bl_params.get("thicknessRatio", 0.005)
-        mesh_bl_params["thicknessRatio"] = self._bl_params.get("expansionRatio", 1.2)
-        mesh_bl_params["firstLayerThickness"] = first_layer_fraction * safe_max
+        mesh_bl_params: dict | None = None
+        if wall_patches:
+            self._bl_params["wallPatches"] = wall_patches
+            # meshDict's BL contract: thicknessRatio = growth ratio (>1),
+            # firstLayerThickness = absolute metres. set_boundary_layers()
+            # stores the caller's "thickness_ratio" as a first-layer FRACTION
+            # of the max cell size (its docstring/param name predates the
+            # current contract) and a separate "expansionRatio" for the real
+            # growth ratio — the opposite of what write_meshdict expects.
+            # Passed straight through, a sub-1 "growth ratio" gets clamped to
+            # a default and no absolute first layer is ever emitted, silently
+            # discarding the caller's BL settings.
+            mesh_bl_params = dict(self._bl_params)
+            first_layer_fraction = self._bl_params.get("thicknessRatio", 0.005)
+            mesh_bl_params["thicknessRatio"] = self._bl_params.get("expansionRatio", 1.2)
+            mesh_bl_params["firstLayerThickness"] = first_layer_fraction * safe_max
 
         _lazy_meshdict().write_meshdict(
             self._case_dir, safe_max, safe_min,
@@ -415,7 +423,10 @@ class WatertightWorkflow:
             bl_params=mesh_bl_params,
             patch_names=[m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)],
         )
-        logger.info("BL applied to %d patches.", len(wall_patches))
+        if wall_patches:
+            logger.info("BL applied to %d patches.", len(wall_patches))
+        else:
+            logger.info("BL skipped: no wall patches found.")
 
     def _step_volume_mesh(self) -> None:
         """Export STL and run cartesianMesh."""

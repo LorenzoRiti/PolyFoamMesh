@@ -1,8 +1,8 @@
 {
   "$schema": "https://design-tokens.github.io/community-group/format/",
-  "name": "CFMesh-AutoGUI Design System",
+  "name": "PolyFoamMesh Design System",
   "version": "1.0.0",
-  "description": "Commercial-grade design tokens for the CFMesh-AutoGUI desktop app (PySide6 / Qt 6.7+).",
+  "description": "Commercial-grade design tokens for the PolyFoamMesh desktop app (PySide6 / Qt 6.7+).",
   "created": "2026-07-07",
   "stack": {
     "framework": "PySide6 (Qt 6.7+)",

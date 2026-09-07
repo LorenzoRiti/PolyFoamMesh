@@ -1,4 +1,4 @@
-# CFMesh-AutoGUI Design System
+# PolyFoamMesh Design System
 
 > Single source of truth for the visual language of the app.
 > **Version 1.0** — July 2026

@@ -82,7 +82,6 @@ def _checkmesh(cfg: OFConfig, case: Path) -> dict:
 def _run_bl_wall(case: Path, n_layers: int, log) -> tuple[bool, dict]:
     """BL on wall-type/wall-named patches only; returns (ok, metrics)."""
     from cfmesh_autogui.core.boundary_reader import parse_boundary
-    from cfmesh_autogui.core.meshdict_gen import infer_patch_type
 
     patches = parse_boundary(case / "constant" / "polyMesh" / "boundary")
     walls = [p.name for p in patches

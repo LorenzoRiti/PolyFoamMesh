@@ -38,6 +38,7 @@ class JobStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    NOT_SUBMITTED = "not_submitted"
 
 
 @dataclass
@@ -159,6 +160,14 @@ class CloudMesher:
                 job.error = str(exc)
                 logger.error("Job submission failed: %s", exc)
         else:
+            # No backend configured: the job was never sent anywhere.
+            # Mark it unambiguously — PENDING would imply it may still
+            # run, which is a lie for work that was never dispatched.
+            job.status = JobStatus.NOT_SUBMITTED
+            job.error = (
+                "No cloud backend configured (api_url empty) — job was "
+                "not submitted to any remote service."
+            )
             logger.info(
                 "Job %s created (offline mode). Set api_url for remote submission.",
                 job.id,
@@ -249,10 +258,18 @@ class CloudMesher:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not self._api_url or not job.result_url:
-            # Offline mode: create a placeholder result
+            # Offline mode (or a job with no result URL yet): there is no
+            # result archive to download. Write a placeholder that is
+            # unambiguous — a caller must never mistake it for a real
+            # downloaded result.
+            placeholder = job.to_dict()
+            placeholder["message"] = (
+                "No result archive was downloaded — no cloud backend is "
+                "configured (or the job has no result URL yet)."
+            )
             result_path = output_dir / f"job_{job.id}_result.json"
-            result_path.write_text(json.dumps(job.to_dict(), indent=2))
-            logger.info("Offline result written: %s", result_path)
+            result_path.write_text(json.dumps(placeholder, indent=2))
+            logger.info("Offline placeholder written (no remote result): %s", result_path)
             return result_path
 
         try:

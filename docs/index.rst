@@ -1,7 +1,7 @@
 .. PolyFoamMesh documentation master file
 
 PolyFoamMesh
-==============
+============
 
 Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh.
 

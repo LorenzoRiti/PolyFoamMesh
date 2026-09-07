@@ -282,6 +282,15 @@ class QualityEngine:
 
         octo.log_event("quality_engine", "auto_fix_start", {"iterations": max_iterations})
 
+        # Poly path: the case carries a tet backup (tet→poly pipeline output),
+        # so cfMesh re-meshing is forbidden (mesh_remeshable guard) and the
+        # meshDict-rewrite + cartesianMesh loop below can do nothing for it.
+        # Branch to the in-process poly remediation loop instead.
+        if (case_dir / "constant" / "polyMesh_tet_backup").exists():
+            if report.passed:
+                return report
+            return self._auto_fix_poly(case_dir, report, max_iterations)
+
         for i in range(max_iterations):
             if report.passed:
                 logger.info("Quality OK at iteration %d", i)
@@ -319,6 +328,48 @@ class QualityEngine:
             "fixes": len(report.fixes_applied),
         })
         return report
+
+    def _auto_fix_poly(
+        self, case_dir: Path, report: QualityReport, max_iterations: int,
+    ) -> QualityReport:
+        """Poly-path auto-fix: branch to the in-process remediation loop.
+
+        The tet→poly pipeline output cannot be re-meshed by cfMesh (the
+        ``mesh_remeshable`` guard refuses when ``polyMesh_tet_backup``
+        exists), so the meshDict-rewrite + cartesianMesh loop can do nothing
+        for it. ``remediate_poly_mesh`` smooths interior dual vertices
+        keep-best, skips the documented unfixable concave-feature defects,
+        and reports an opt-in tet fallback when repair fails.
+        """
+        from cfmesh_autogui.commercial.poly_remediation import remediate_poly_mesh
+
+        result = remediate_poly_mesh(case_dir, max_iterations=max_iterations)
+        for a in result.actions:
+            report.fixes_applied.append(AutoFixAction(
+                action=a.strategy,
+                target_metric="poly_quality",
+                current_value=float(a.defects_before),
+                detail=a.detail,
+            ))
+        report.warnings.append(
+            f"Poly remediation: defects {result.defects_before} -> "
+            f"{result.defects_after} over {result.iterations} iteration(s)"
+        )
+        if result.concave_defects_skipped:
+            report.warnings.append(
+                f"Poly remediation: {result.n_concave_defect_cells} "
+                "concave-feature defect cell(s) detected and skipped "
+                "(documented unfixable)"
+            )
+        if result.tet_fallback_available and not result.improved:
+            report.warnings.append(
+                "Poly remediation: tet fallback available at "
+                "constant/polyMesh_tet_backup (opt-in restore)"
+            )
+        fresh = self.analyse(case_dir)
+        fresh.fixes_applied = report.fixes_applied
+        fresh.warnings = report.warnings + fresh.warnings
+        return fresh
 
     def _run_cartesian_mesh(self, case_dir: Path) -> bool:
         """Run cartesianMesh synchronously so the fix loop actually re-meshes.

@@ -56,6 +56,9 @@ class QuickMeshResult:
     quality_passed: bool = False
     n_cores: int = 1
     wall_time_s: float = 0.0
+    algorithm_substituted: bool = False
+    original_algorithm: str = ""
+    escalation_reason: str = ""
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -192,6 +195,9 @@ class QuickMesh:
             result.cell_count = eng_result.cell_count
             result.max_skewness = eng_result.max_skewness
             result.quality_passed = eng_result.quality_passed
+            result.algorithm_substituted = eng_result.algorithm_substituted
+            result.original_algorithm = eng_result.original_algorithm
+            result.escalation_reason = eng_result.escalation_reason
 
             # 9. Polyhedral aggregation (Star-CCM+ style, optional)
             if poly_aggregate and eng_result.success:
@@ -237,6 +243,8 @@ class QuickMesh:
                 "quality": result.quality_passed,
                 "algorithm": result.algorithm,
                 "n_cores": result.n_cores,
+                "algorithm_substituted": result.algorithm_substituted,
+                "original_algorithm": result.original_algorithm,
             })
 
         except Exception as exc:

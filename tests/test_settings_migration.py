@@ -17,7 +17,7 @@ _saved_core = sys.modules.get("cfmesh_autogui.core")
 _saved_tokens = sys.modules.get("cfmesh_autogui.gui.design_tokens")
 _stub_pkg("cfmesh_autogui.gui")
 tokens = types.ModuleType("cfmesh_autogui.gui.design_tokens")
-tokens.APP_NAME = "CFMesh-AutoGUI"
+tokens.APP_NAME = "PolyFoamMesh"
 tokens.APP_VERSION = "2.0.1"
 sys.modules["cfmesh_autogui.gui.design_tokens"] = tokens
 

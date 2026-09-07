@@ -825,7 +825,75 @@ def _load_stl_native(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarr
 
 
 def _parse_stl_ascii(data: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    raise NotImplementedError("ASCII STL parsing incomplete; use trimesh")
+    """Parse ASCII STL format (pure numpy, no trimesh dependency).
+
+    This is the fallback used when trimesh is unavailable, so it must be
+    self-contained. Keywords are matched case-insensitively; facet normals
+    and the ``solid``/``endsolid`` wrapper are optional in the wild. Vertex
+    coordinates are deduplicated exactly like the binary parser so both
+    paths return the same (vertices, triangles, patch_ids) contract.
+    Malformed input raises ValueError — never a silently-empty mesh.
+    """
+    text = data.decode("ascii", errors="replace")
+    tokens = text.split()
+    if not tokens:
+        raise ValueError("Empty ASCII STL data")
+
+    vertices: list[list[float]] = []
+    triangles: list[tuple[int, int, int]] = []
+    v_map: dict[tuple[float, float, float], int] = {}
+
+    def _get_or_add(v: tuple[float, float, float]) -> int:
+        key = (round(v[0], 12), round(v[1], 12), round(v[2], 12))
+        if key in v_map:
+            return v_map[key]
+        idx = len(vertices)
+        vertices.append(list(v))
+        v_map[key] = idx
+        return idx
+
+    tri_verts: list[tuple[float, float, float]] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i].lower()
+        if tok == "vertex":
+            if i + 3 >= n:
+                raise ValueError("Truncated ASCII STL: vertex without coordinates")
+            try:
+                v = (float(tokens[i + 1]), float(tokens[i + 2]), float(tokens[i + 3]))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid vertex coordinates in ASCII STL: {tokens[i + 1:i + 4]}"
+                ) from exc
+            tri_verts.append(v)
+            i += 4
+        elif tok == "endfacet":
+            if len(tri_verts) != 3:
+                raise ValueError(
+                    f"ASCII STL facet has {len(tri_verts)} vertices, expected 3"
+                )
+            triangles.append((
+                _get_or_add(tri_verts[0]),
+                _get_or_add(tri_verts[1]),
+                _get_or_add(tri_verts[2]),
+            ))
+            tri_verts = []
+            i += 1
+        else:
+            # solid / endsolid / facet / normal / outer / loop / endloop
+            i += 1
+
+    if tri_verts:
+        raise ValueError("ASCII STL ended inside a facet (missing endfacet)")
+    if not triangles:
+        raise ValueError("ASCII STL contains no facets")
+
+    return (
+        np.array(vertices, dtype=np.float64),
+        np.array(triangles, dtype=np.int32),
+        np.zeros(len(triangles), dtype=np.int32),
+    )
 
 
 def _parse_stl_binary(data: bytes) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

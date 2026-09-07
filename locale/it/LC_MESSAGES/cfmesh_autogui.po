@@ -15,8 +15,8 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 
 #: app.py
-msgid "CFMesh-AutoGUI"
-msgstr "CFMesh-AutoGUI"
+msgid "PolyFoamMesh"
+msgstr "PolyFoamMesh"
 
 msgid "Ready"
 msgstr "Pronto"
@@ -138,8 +138,8 @@ msgstr "Carica geometria..."
 msgid "Exit"
 msgstr "Esci"
 
-msgid "About CFMesh-AutoGUI"
-msgstr "Informazioni su CFMesh-AutoGUI"
+msgid "About PolyFoamMesh"
+msgstr "Informazioni su PolyFoamMesh"
 
 msgid "Keyboard Shortcuts"
 msgstr "Scorciatoie da tastiera"

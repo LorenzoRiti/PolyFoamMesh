@@ -226,21 +226,39 @@ class OpenMPAccel:
                     return max(len(cores), 1)
             elif system == "Windows":
                 import subprocess
-                cmd = ["wmic", "cpu", "get", "NumberOfCores"]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-                for line in result.stdout.splitlines():
-                    cleaned = line.strip()
-                    if cleaned.isdigit():
-                        cores = int(cleaned)
-                        return max(cores, 1)
+
+                n_cores = 0
+                # wmic is deprecated and REMOVED in Windows 11 24H2+ — fall
+                # back to PowerShell CIM before giving up on detection.
+                commands = (
+                    ["wmic", "cpu", "get", "NumberOfCores"],
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-CimInstance Win32_Processor | "
+                     "Measure-Object -Property NumberOfCores -Sum).Sum"],
+                )
+                for cmd in commands:
+                    try:
+                        result = subprocess.run(
+                            cmd, capture_output=True, text=True, timeout=5,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        continue
+                    for line in result.stdout.splitlines():
+                        cleaned = line.strip()
+                        if cleaned.isdigit():
+                            n_cores = int(cleaned)
+                            break
+                    if n_cores:
+                        break
+                if n_cores:
+                    return max(n_cores, 1)
             elif system == "Darwin":
                 import subprocess
                 cmd = ["sysctl", "-n", "hw.physicalcpu"]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 val = result.stdout.strip()
                 if val.isdigit():
-                    cores = int(val)
-                    return max(cores, 1)
+                    return max(int(val), 1)
         except Exception as exc:
             logger.debug("Physical core detection failed: %s", exc)
         return max(logical // 2, 1)

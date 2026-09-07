@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Benchmark cfMesh meshing pipeline on each geometry in benchmarks/geometries/.
+"""Benchmark the meshing pipelines on each geometry in benchmarks/geometries/.
 
-For each STL:
+Two pipelines share the same geometry corpus and result format:
+
+hex (default, unchanged behaviour):
   1. Load, compute bbox, suggest cell sizes
   2. Create temp case directory under C:/cfmesh_bench/ (no spaces)
   3. Write surface.stl, meshDict, controlDict, fvSchemes, fvSolution
@@ -10,11 +12,25 @@ For each STL:
   6. Parse quality metrics
   7. Record result
 
-Output: benchmarks/results/<ISO_TIMESTAMP>.json
+poly (the app's differentiating GMSH tet -> dual poly -> BL path):
+  1. Same geometry prep as hex
+  2. GMSH tetrahedral volume mesh (in-process entry point, subprocess driver)
+  3. gmshToFoam via WSL2
+  4. tet -> poly barycentric dual (core/tet_poly_dual.py, in-process)
+  5. prismatic boundary layers (core/bl_poly.py, in-process)
+  6. checkMesh via WSL2
+  7. Record per-stage times, tet/poly counts, BL stats and the in-process
+     defect count from the dual converter's checkMesh replica
+
+Select with --pipeline {hex,poly,all} (default hex).
+
+Output: benchmarks/results/<ISO_TIMESTAMP>.json (hex) and
+        benchmarks/results/<ISO_TIMESTAMP>_poly.json (poly).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import shutil
@@ -53,6 +69,22 @@ NEGATIVE_CASES = {"non_watertight"}
 GEOMETRIES_DIR = _HERE / "geometries"
 RESULTS_DIR = _HERE / "results"
 TIMEOUT_S = 180
+
+# Poly pipeline baseline: sibling of BASELINE.json (compare.py indexes results
+# by geometry, so hex and poly entries cannot share one file without colliding).
+POLY_BASELINE = RESULTS_DIR / "BASELINE_POLY.json"
+
+# A poly case regresses only when its defect count exceeds the recorded
+# baseline allowance by more than this fraction (min 1). The dual is
+# deterministic for a given tet mesh, so the only noise source is GMSH
+# version drift; 5% absorbs that without hiding a real regression.
+DEFECT_ALLOWANCE_FRACTION = 0.05
+
+# Boundary-layer parameters for the poly pipeline (app convention:
+# firstLayerThickness = 0.005 * max_cell, see commercial/mesh_engine.py).
+POLY_BL_N_LAYERS = 5
+POLY_BL_GROWTH_RATE = 1.2
+POLY_BL_FIRST_HEIGHT_FRACTION = 0.005
 
 _KEEP_CASE = False
 
@@ -201,6 +233,7 @@ def _make_result(
     errors: list[str] | None = None,
     is_negative_case: bool = False,
     vtk_quality: dict | None = None,
+    pipeline: str = "hex",
 ) -> dict:
     now = datetime.datetime.now().isoformat(timespec="seconds")
     w = warnings or []
@@ -208,6 +241,7 @@ def _make_result(
     if is_negative_case:
         return {
             "geometry": geometry,
+            "pipeline": pipeline,
             "timestamp": now,
             "success": success,
             "negative_case": True,
@@ -229,6 +263,7 @@ def _make_result(
     overall = all(gates.values())
     return {
         "geometry": geometry,
+        "pipeline": pipeline,
         "timestamp": now,
         "success": overall,
         "wall_time_s": round(wall_time_s, 2),
@@ -247,17 +282,25 @@ def _make_result(
     }
 
 
-def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
+def _prepare_geometry(
+    stl_path: Path, pipeline: str = "hex",
+) -> tuple[dict | None, dict | None]:
+    """Shared geometry prep for both pipelines.
+
+    Returns ``(early_result, context)``. When ``early_result`` is not None the
+    caller must return it immediately (load/sizing failure or a negative case).
+    Otherwise ``context`` carries the prepared data both pipelines need.
+    """
     name = stl_path.stem
-    logger.info("=" * 60)
-    logger.info("Benchmarking: %s", name)
-    logger.info("=" * 60)
 
     try:
         meshes = load_stl(stl_path)
     except Exception as exc:
         logger.error("  FAIL load_stl: %s", exc)
-        return _make_result(name, success=False, wall_time_s=0.0, errors=[str(exc)])
+        return _make_result(
+            name, success=False, wall_time_s=0.0, errors=[str(exc)],
+            pipeline=pipeline,
+        ), None
 
     watertight = all(m.is_watertight for m in meshes)
     if name in NEGATIVE_CASES:
@@ -267,25 +310,59 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
             warnings=[f"Watertight check: {watertight}"],
             errors=[] if ok else ["Expected rejection as non-watertight"],
             is_negative_case=True,
-        )
+            pipeline=pipeline,
+        ), None
     if not watertight:
-        return _make_result(name, success=False, wall_time_s=0.0,
-                            errors=["Non-watertight geometry"])
+        return _make_result(
+            name, success=False, wall_time_s=0.0,
+            errors=["Non-watertight geometry"], pipeline=pipeline,
+        ), None
 
     try:
         bbox_dim = compute_bbox_dim(meshes)
     except Exception as exc:
         logger.error("  FAIL compute_bbox_dim: %s", exc)
-        return _make_result(name, success=False, wall_time_s=0.0, errors=[str(exc)])
+        return _make_result(
+            name, success=False, wall_time_s=0.0, errors=[str(exc)],
+            pipeline=pipeline,
+        ), None
 
     try:
         max_cell, min_cell = suggest_cell_sizes(meshes, detail="medium")
         max_cell, min_cell, size_warnings = validate_cell_sizes(bbox_dim, max_cell, min_cell)
     except Exception as exc:
         logger.error("  FAIL suggest_cell_sizes: %s", exc)
-        return _make_result(name, success=False, wall_time_s=0.0, errors=[str(exc)])
+        return _make_result(
+            name, success=False, wall_time_s=0.0, errors=[str(exc)],
+            pipeline=pipeline,
+        ), None
 
     logger.info("  bbox_dim=%.4f  max_cell=%.6f  min_cell=%.6f", bbox_dim, max_cell, min_cell)
+    return None, {
+        "name": name,
+        "meshes": meshes,
+        "bbox_dim": bbox_dim,
+        "max_cell": max_cell,
+        "min_cell": min_cell,
+        "size_warnings": size_warnings,
+    }
+
+
+def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
+    name = stl_path.stem
+    logger.info("=" * 60)
+    logger.info("Benchmarking: %s", name)
+    logger.info("=" * 60)
+
+    early, ctx = _prepare_geometry(stl_path, pipeline="hex")
+    if early is not None:
+        return early
+    assert ctx is not None  # guaranteed when early is None
+    meshes = ctx["meshes"]
+    bbox_dim = ctx["bbox_dim"]
+    max_cell = ctx["max_cell"]
+    min_cell = ctx["min_cell"]
+    size_warnings = ctx["size_warnings"]
 
     tmp_root = WORK_ROOT / f"batch_{int(time.time() * 1000)}"
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -418,28 +495,391 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
             shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def _print_summary(results: list[dict]):
+# ---------------------------------------------------------------------------
+# Poly pipeline: GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh
+# ---------------------------------------------------------------------------
+
+def _defect_tolerance(allowance: int) -> int:
+    """Tolerance above the recorded baseline defect count before a poly case
+    is judged to have regressed. The dual is deterministic for a given tet
+    mesh, so the only noise source is GMSH version drift; a small relative
+    allowance absorbs that without hiding a real regression."""
+    return max(1, int(DEFECT_ALLOWANCE_FRACTION * allowance))
+
+
+def _load_poly_allowances() -> dict[str, int]:
+    """Per-geometry defect allowances from the poly baseline, if present.
+
+    The allowance is the baseline run's own ``defect_count`` (the in-process
+    checkMesh replica count from the dual converter). A missing baseline means
+    no allowance is recorded yet — the defect gate then does not bind.
+    """
+    if not POLY_BASELINE.exists():
+        return {}
+    try:
+        data = json.loads(POLY_BASELINE.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Could not read %s — defect gate will not bind", POLY_BASELINE)
+        return {}
+    out: dict[str, int] = {}
+    for entry in data:
+        g = entry.get("geometry")
+        dc = entry.get("defect_count")
+        if g and isinstance(dc, int):
+            out[g] = dc
+    return out
+
+
+def _make_poly_result(
+    geometry: str,
+    success: bool,
+    wall_time_s: float,
+    stage_times: dict | None = None,
+    stages: dict | None = None,
+    tet_count: int = 0,
+    poly_count: int = 0,
+    bl_prism_cells: int = 0,
+    bl_thickness: float = 0.0,
+    defect_count: int = 0,
+    defect_breakdown: dict | None = None,
+    defect_allowance: int | None = None,
+    cell_count: int = 0,
+    max_non_ortho: float = 0.0,
+    avg_non_ortho: float = 0.0,
+    max_skewness: float = 0.0,
+    max_aspect_ratio: float = 0.0,
+    neg_cells: int = 0,
+    min_volume: float = 0.0,
+    warnings: list[str] | None = None,
+    errors: list[str] | None = None,
+) -> dict:
+    """Build a poly-pipeline result dict.
+
+    Gates: the same checkMesh thresholds as hex (non-ortho < 70, skew < 4,
+    no negative cells, cells produced, no fatal errors) PLUS an explicit,
+    recorded allowance for the dual's known concave-feature defect count
+    (``defects_within_allowance``) and a requirement that the boundary layer
+    was actually produced (``bl_produced``). A case regressing beyond its
+    recorded baseline allowance fails.
+    """
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    w = warnings or []
+    e = errors or []
+    reduction = (tet_count / poly_count) if poly_count else 0.0
+    defects_ok = (
+        defect_allowance is None
+        or defect_count <= defect_allowance + _defect_tolerance(defect_allowance)
+    )
+    gates = {
+        "mesh_ok": success,
+        "neg_cells_zero": neg_cells == 0,
+        "max_non_ortho_below_70": max_non_ortho < 70,
+        "max_skewness_below_4": max_skewness < 4,
+        "no_fatal_errors": len(e) == 0,
+        "cells_produced": cell_count > 0,
+        "defects_within_allowance": defects_ok,
+        "bl_produced": bl_prism_cells > 0,
+    }
+    overall = all(gates.values())
+    return {
+        "geometry": geometry,
+        "pipeline": "poly",
+        "timestamp": now,
+        "success": overall,
+        "wall_time_s": round(wall_time_s, 2),
+        "stage_times": stage_times or {},
+        "stages": stages or {},
+        "tet_count": tet_count,
+        "poly_count": poly_count,
+        "reduction_ratio": round(reduction, 3),
+        "bl_prism_cells": bl_prism_cells,
+        "bl_thickness": round(bl_thickness, 6),
+        "defect_count": defect_count,
+        "defect_breakdown": defect_breakdown or {},
+        "defect_allowance": defect_allowance,
+        "cell_count": cell_count,
+        "max_non_ortho": round(max_non_ortho, 2),
+        "avg_non_ortho": round(avg_non_ortho, 2),
+        "max_skewness": round(max_skewness, 2),
+        "max_aspect_ratio": round(max_aspect_ratio, 2),
+        "neg_cells": neg_cells,
+        "min_volume": min_volume,
+        "hard_gates": gates,
+        "failed_gates": [k for k, v in gates.items() if not v],
+        "warnings": w,
+        "errors": e,
+    }
+
+
+def _benchmark_poly_one(
+    stl_path: Path,
+    keep_case: bool = False,
+    allowances: dict[str, int] | None = None,
+) -> dict:
+    """Run the GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh pipeline.
+
+    Each stage is individually timed and its success/failure recorded, so a
+    regression can be attributed to a stage rather than to "poly is bad".
+    """
+    name = stl_path.stem
+    logger.info("=" * 60)
+    logger.info("Benchmarking (poly): %s", name)
+    logger.info("=" * 60)
+
+    early, ctx = _prepare_geometry(stl_path, pipeline="poly")
+    if early is not None:
+        return early
+    assert ctx is not None  # guaranteed when early is None
+    meshes = ctx["meshes"]
+    max_cell = ctx["max_cell"]
+    min_cell = ctx["min_cell"]
+    size_warnings = ctx["size_warnings"]
+
+    tmp_root = WORK_ROOT / f"batch_{int(time.time() * 1000)}"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    case_dir = _make_case_dir(tmp_root, name)
+    logger.info("  case_dir: %s", case_dir)
+
+    errors: list[str] = []
+    warnings: list[str] = list(size_warnings)
+    stages: dict[str, bool] = {}
+    stage_times: dict[str, float] = {}
+
+    def _fail() -> dict:
+        return _make_poly_result(
+            name, success=False, wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times, stages=stages,
+            warnings=warnings, errors=errors,
+        )
+
+    try:
+        # --- stage 1: GMSH tetrahedral volume mesh --------------------------
+        t0 = time.perf_counter()
+        msh_path = case_dir / "mesh.msh"
+        try:
+            from cfmesh_autogui.core.gmsh_subprocess import run_gmsh_volume
+            run_gmsh_volume(
+                stl_path, msh_path, detail="medium",
+                user_lc=max_cell, min_lc=min_cell,
+                on_line=lambda m: logger.info("  [gmsh] %s", m),
+                timeout_s=600,
+                # Force single-threaded GMSH: HXT's multi-threaded meshing is
+                # non-deterministic (measured: pipe 9956 vs 9976 tets, and a
+                # BL scale flip that swung thin_gap skew 3.4 -> 19.3 between
+                # identical runs). A regression benchmark must be reproducible.
+                threads=1,
+            )
+            stages["gmsh_volume"] = True
+        except Exception as exc:
+            stages["gmsh_volume"] = False
+            errors.append(f"gmsh_volume: {exc}")
+        stage_times["gmsh_volume"] = round(time.perf_counter() - t0, 2)
+        if not stages["gmsh_volume"]:
+            logger.error("  GMSH volume meshing failed")
+            return _fail()
+
+        # --- stage 2: gmshToFoam via WSL ------------------------------------
+        _write_ctrl_dict(case_dir)
+        _write_solver_dicts(case_dir)
+        t0 = time.perf_counter()
+        linux = _to_wsl_path(case_dir)
+        rc, out = _wsl_of_run(f"cd {linux} && gmshToFoam mesh.msh 2>&1", timeout=600)
+        stage_times["gmsh_to_foam"] = round(time.perf_counter() - t0, 2)
+        if rc == -1:
+            stages["gmsh_to_foam"] = False
+            errors.append("gmshToFoam timed out")
+            return _fail()
+        if rc == -2:
+            stages["gmsh_to_foam"] = False
+            errors.append("WSL not found")
+            return _fail()
+        if rc != 0:
+            stages["gmsh_to_foam"] = False
+            tail = "\n".join(out.splitlines()[-20:])
+            errors.append(f"gmshToFoam exit {rc}. Last log lines:\n{tail}")
+            return _fail()
+        stages["gmsh_to_foam"] = True
+        logger.info("  gmshToFoam OK")
+
+        # --- stage 3: tet -> poly dual (in-process) -------------------------
+        t0 = time.perf_counter()
+        try:
+            from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter
+            conv = TetPolyDualConverter(
+                case_dir,
+                log=lambda m: logger.info("  [dual] %s", m),
+                # Production settings (see openfoam_runner.PolyDualWorker):
+                # one polygonal boundary face per boundary vertex, so the BL
+                # extrudes one prism stack per boundary face.
+                collapse_smooth_edges=True,
+                boundary_feature_angle=40.0,
+                collapse_volume_tolerance=0.10,
+            )
+            dres = conv.run()
+            stage_times["dual"] = round(time.perf_counter() - t0, 2)
+            if not dres.success:
+                stages["dual"] = False
+                errors.append("dual: " + "; ".join(dres.errors))
+                return _fail()
+            stages["dual"] = True
+        except Exception as exc:
+            stages["dual"] = False
+            errors.append(f"dual: {exc}")
+            return _fail()
+
+        tet_count = dres.n_tets_before
+        poly_count = dres.n_cells_after
+        defect_count = dres.residual_defects
+        defect_breakdown = dict(dres.defect_breakdown)
+        logger.info(
+            "  dual: %d tets -> %d poly cells (ratio %.2f), defects=%d",
+            tet_count, poly_count,
+            (tet_count / poly_count) if poly_count else 0.0,
+            defect_count,
+        )
+
+        # --- stage 4: prismatic boundary layers (in-process) ----------------
+        bl_prism_cells = 0
+        bl_thickness = 0.0
+        t0 = time.perf_counter()
+        try:
+            from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine
+            bres = PolyBoundaryLayerEngine(
+                case_dir, log=lambda m: logger.info("  [bl] %s", m),
+            ).run(
+                n_layers=POLY_BL_N_LAYERS,
+                first_height=POLY_BL_FIRST_HEIGHT_FRACTION * max_cell,
+                growth_rate=POLY_BL_GROWTH_RATE,
+                apply_to_all=True,
+            )
+            stage_times["bl"] = round(time.perf_counter() - t0, 2)
+            if bres.success:
+                stages["bl"] = True
+                bl_prism_cells = bres.n_prism_cells
+                bl_thickness = bres.total_thickness
+                logger.info(
+                    "  BL: %d prism cells, total thickness %.6g m",
+                    bl_prism_cells, bl_thickness,
+                )
+            else:
+                stages["bl"] = False
+                warnings.append("BL failed: " + "; ".join(bres.errors))
+        except Exception as exc:
+            stages["bl"] = False
+            warnings.append(f"BL raised: {exc}")
+
+        # --- stage 5: checkMesh via WSL -------------------------------------
+        t0 = time.perf_counter()
+        cm_rc, cm_out, cm_time = _run_check_mesh(case_dir)
+        stage_times["check_mesh"] = round(time.perf_counter() - t0, 2)
+        logger.info("  checkMesh rc=%d  wall=%.1fs", cm_rc, cm_time)
+
+        if cm_rc == -1:
+            stages["check_mesh"] = False
+            errors.append("checkMesh timed out")
+            return _fail()
+        if cm_rc == -2:
+            stages["check_mesh"] = False
+            errors.append("WSL not found")
+            return _fail()
+        stages["check_mesh"] = True
+
+        report = parse_checkmesh_output(cm_out)
+        logger.info(
+            "  cells=%d  nonOrtho=%.1f/%.1f  skew=%.2f  aspect=%.0f  neg=%d  vol=%.2e",
+            report.cells, report.max_non_ortho, report.avg_non_ortho,
+            report.max_skewness, report.max_aspect_ratio,
+            report.neg_cells, report.min_volume,
+        )
+
+        allowance = (allowances or {}).get(name)
+        return _make_poly_result(
+            geometry=name,
+            success=report.passed,
+            wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times,
+            stages=stages,
+            tet_count=tet_count,
+            poly_count=poly_count,
+            bl_prism_cells=bl_prism_cells,
+            bl_thickness=bl_thickness,
+            defect_count=defect_count,
+            defect_breakdown=defect_breakdown,
+            defect_allowance=allowance,
+            cell_count=report.cells,
+            max_non_ortho=report.max_non_ortho,
+            avg_non_ortho=report.avg_non_ortho,
+            max_skewness=report.max_skewness,
+            max_aspect_ratio=report.max_aspect_ratio,
+            neg_cells=report.neg_cells,
+            min_volume=report.min_volume,
+            warnings=warnings,
+            errors=errors,
+        )
+
+    except Exception as exc:
+        logger.error("  UNEXPECTED ERROR: %s", exc)
+        return _make_poly_result(
+            name, success=False, wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times, stages=stages,
+            warnings=warnings, errors=[str(exc)],
+        )
+    finally:
+        if not keep_case:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _print_summary(results: list[dict], pipeline: str = "hex"):
     print()
     print("=" * 90)
-    print("BENCHMARK SUMMARY")
+    print(f"BENCHMARK SUMMARY ({pipeline.upper()} pipeline)")
     print("=" * 90)
-    header = f"{'Geometry':24s} {'Cells':>8s} {'Time(s)':>8s} {'NonOrtho':>10s} {'Skew':>8s} {'Aspect':>8s} {'Neg':>5s} {'Result':>20s}"
+    if pipeline == "poly":
+        header = (
+            f"{'Geometry':24s} {'Tet->Poly':>14s} {'Prism':>8s} {'Defects':>8s} "
+            f"{'NonOrtho':>10s} {'Skew':>8s} {'Neg':>5s} {'Time(s)':>8s} {'Result':>20s}"
+        )
+    else:
+        header = (
+            f"{'Geometry':24s} {'Cells':>8s} {'Time(s)':>8s} {'NonOrtho':>10s} "
+            f"{'Skew':>8s} {'Aspect':>8s} {'Neg':>5s} {'Result':>20s}"
+        )
     print(header)
     print("-" * 90)
     for r in results:
         geom = r["geometry"]
-        has_metrics = r["success"] and "max_non_ortho" in r and not r.get("negative_case")
-        cells = str(r.get("cell_count", 0)) if has_metrics else "—"
+        if pipeline == "poly":
+            # The poly pipeline records checkMesh metrics even when the gates
+            # fail (the mesh was produced, just not good enough) — show them.
+            has_metrics = "max_non_ortho" in r and not r.get("negative_case")
+        else:
+            has_metrics = r["success"] and "max_non_ortho" in r and not r.get("negative_case")
         t = f"{r['wall_time_s']:.1f}" if r.get("wall_time_s", 0) > 0 else "—"
         no = f"{r['max_non_ortho']:.1f}" if has_metrics else "—"
         sk = f"{r['max_skewness']:.2f}" if has_metrics else "—"
-        ar = f"{r['max_aspect_ratio']:.0f}" if has_metrics else "—"
         neg = str(r["neg_cells"]) if has_metrics else "—"
         if r.get("negative_case"):
             status = "PASS (rejected)" if r["success"] else "FAIL (not rejected)"
         else:
             status = "PASS" if r["success"] else "FAIL"
-        print(f"{geom:24s} {cells:>8s} {t:>8s} {no:>10s} {sk:>8s} {ar:>8s} {neg:>5s} {status:>20s}")
+        if pipeline == "poly":
+            if has_metrics:
+                tp = f"{r.get('tet_count', 0)}->{r.get('poly_count', 0)}"
+                pr = str(r.get("bl_prism_cells", 0))
+                df = str(r.get("defect_count", 0))
+            else:
+                tp = pr = df = "—"
+            print(
+                f"{geom:24s} {tp:>14s} {pr:>8s} {df:>8s} {no:>10s} {sk:>8s} "
+                f"{neg:>5s} {t:>8s} {status:>20s}"
+            )
+        else:
+            cells = str(r.get("cell_count", 0)) if has_metrics else "—"
+            ar = f"{r['max_aspect_ratio']:.0f}" if has_metrics else "—"
+            print(
+                f"{geom:24s} {cells:>8s} {t:>8s} {no:>10s} {sk:>8s} {ar:>8s} "
+                f"{neg:>5s} {status:>20s}"
+            )
     print("-" * 90)
     passed = sum(1 for r in results if r["success"])
     total = len(results)
@@ -449,11 +889,18 @@ def _print_summary(results: list[dict]):
             print(f"  {r['geometry']}: {'; '.join(r['errors'][:3])}")
 
 
-def main(args: list[str] | None = None) -> int:
-    import argparse
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run benchmark suite")
     parser.add_argument("--keep", action="store_true", help="Keep case dirs for inspection")
-    opts = parser.parse_args(args)
+    parser.add_argument(
+        "--pipeline", choices=["hex", "poly", "all"], default="hex",
+        help="Which meshing pipeline to benchmark (default: hex)",
+    )
+    return parser
+
+
+def main(args: list[str] | None = None) -> int:
+    opts = _build_parser().parse_args(args)
 
     if not _wsl_alive():
         logger.warning("WSL not responsive. Attempting restart...")
@@ -472,20 +919,35 @@ def main(args: list[str] | None = None) -> int:
     for s in stl_files:
         logger.info("  %s", s.name)
 
-    results: list[dict] = []
+    pipelines = ["hex", "poly"] if opts.pipeline == "all" else [opts.pipeline]
+    allowances = _load_poly_allowances() if "poly" in pipelines else {}
+
+    results_by_pipeline: dict[str, list[dict]] = {p: [] for p in pipelines}
     for stl_path in stl_files:
-        result = _benchmark_one(stl_path, keep_case=opts.keep)
-        results.append(result)
+        for p in pipelines:
+            if p == "hex":
+                result = _benchmark_one(stl_path, keep_case=opts.keep)
+            else:
+                result = _benchmark_poly_one(
+                    stl_path, keep_case=opts.keep, allowances=allowances,
+                )
+            results_by_pipeline[p].append(result)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-    out_path = RESULTS_DIR / f"{timestamp}.json"
-    out_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
-    logger.info("Results written to %s", out_path)
+    exit_code = 0
+    for p in pipelines:
+        results = results_by_pipeline[p]
+        suffix = "" if p == "hex" else "_poly"
+        out_path = RESULTS_DIR / f"{timestamp}{suffix}.json"
+        out_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+        logger.info("Results written to %s", out_path)
 
-    _print_summary(results)
+        _print_summary(results, pipeline=p)
+        if not all(r["success"] for r in results):
+            exit_code = 1
 
-    return 0 if all(r["success"] for r in results) else 1
+    return exit_code
 
 
 if __name__ == "__main__":

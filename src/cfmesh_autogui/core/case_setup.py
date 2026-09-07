@@ -5,6 +5,12 @@ import struct
 from pathlib import Path
 
 from cfmesh_autogui.core.boundary_reader import PatchInfo
+from cfmesh_autogui.core.patch_roles import (
+    ROLE_INLET,
+    ROLE_OUTLET,
+    ROLE_WALL,
+    match_role,
+)
 
 
 CONTROL_DICT = """\
@@ -156,13 +162,23 @@ FIELD_FOOTER = "}\n"
 
 
 def _patch_role(patch_name: str) -> str:
-    """Classify a patch as inlet / outlet / wall / other by name."""
-    n = patch_name.lower()
-    if "inlet" in n:
+    """Classify a patch as inlet / outlet / wall / other by name.
+
+    Delegates to ``patch_roles.match_role``, which returns ``None`` for a
+    name carrying no keyword — this caller needs that distinction, because
+    ``infer_patch_roles`` treats ``"other"`` as "let geometry decide"
+    (GMSH names every patch ``surface_N``, so a wall default here would
+    pre-empt the geometric inference that exists to answer exactly those).
+    A name that positively names a solid surface (``blade``, ``housing``,
+    ... see ``patch_roles._WALL_KEYWORDS``) is reported as a wall; every
+    other no-signal or non-inlet/outlet name is ``"other"``.
+    """
+    role = match_role(patch_name)
+    if role == ROLE_INLET:
         return "inlet"
-    if "outlet" in n:
+    if role == ROLE_OUTLET:
         return "outlet"
-    if "wall" in n:
+    if role == ROLE_WALL:
         return "wall"
     return "other"
 

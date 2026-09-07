@@ -82,6 +82,7 @@ def _combined(meshes: list[trimesh.Trimesh]) -> trimesh.Trimesh:
 
 def snap_close_gaps(
     meshes: list[trimesh.Trimesh], bbox_dim: float,
+    tolerance: float | None = None,
 ) -> tuple[list[trimesh.Trimesh], RepairReport]:
     """Round vertices to close CAD-tessellation gaps between patches.
 
@@ -90,6 +91,11 @@ def snap_close_gaps(
     absolute value, so it scales sensibly whether the model is a 10 mm
     fitting or a 10 m duct, and stays well below the size of any real
     feature (fillets, small holes) that should NOT be merged away.
+
+    *tolerance* (metres) overrides that bbox-derived default. Callers that
+    have actually measured the gaps (e.g. the fault-tolerant workflow)
+    pass a gap-derived value so tessellation seams merge while genuine
+    gaps — which are larger than the measured threshold — survive.
     """
     report = RepairReport(attempted=True)
     if not meshes or bbox_dim <= 0:
@@ -103,7 +109,8 @@ def snap_close_gaps(
         report.watertight_after = True
         return meshes, report
 
-    tolerance = bbox_dim * 1e-4
+    if tolerance is None:
+        tolerance = bbox_dim * 1e-4
     digits = max(0, int(round(-np.log10(tolerance))))
     report.snap_tolerance = tolerance
     report.method = "snap"
@@ -230,15 +237,18 @@ def repair_with_meshfix(
 
 def attempt_auto_repair(
     meshes: list[trimesh.Trimesh], bbox_dim: float,
+    tolerance: float | None = None,
 ) -> tuple[list[trimesh.Trimesh], list[RepairReport]]:
     """Run the escalating repair pipeline: snap first, MeshFix if needed.
 
     Returns the (possibly repaired) mesh list and the report(s) produced,
     in the order they were attempted, so the caller can log what actually
     happened rather than a single opaque pass/fail.
+
+    *tolerance* is forwarded to :func:`snap_close_gaps` (see there).
     """
     reports = []
-    snapped, snap_report = snap_close_gaps(meshes, bbox_dim)
+    snapped, snap_report = snap_close_gaps(meshes, bbox_dim, tolerance=tolerance)
     reports.append(snap_report)
     if snap_report.watertight_after or not snap_report.attempted:
         return snapped, reports

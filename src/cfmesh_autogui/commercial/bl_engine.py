@@ -5,7 +5,7 @@ calculation, collision detection, and quality metrics for
 prism-layer meshes in OpenFOAM.
 
 Key capabilities:
-  - Automatic wall patch detection (angle + naming heuristics)
+  - Automatic wall patch detection (naming heuristics)
   - y+ estimation from flow conditions (Re, U_ref, turbulence model)
   - First-layer height calculation from target y+
   - BL collision detection (overlap ratio per wall)
@@ -18,6 +18,7 @@ import math
 import logging
 from dataclasses import dataclass
 
+from cfmesh_autogui.core.patch_roles import split_wall_patches
 from cfmesh_autogui.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -220,25 +221,21 @@ class BLEngine:
             estimated_yplus=target_yplus,
         )
 
-    def detect_wall_patches(
-        self, patch_names: list[str],
-        angle_threshold: float = 30.0,
-    ) -> list[str]:
+    def detect_wall_patches(self, patch_names: list[str]) -> list[str]:
         """Auto-detect wall patches by name heuristics.
 
-        Returns patch names that match common wall naming conventions
-        or the provided angle threshold logic.
+        Delegates to ``patch_roles.split_wall_patches``. Returns an empty
+        list when no patch name matches a wall keyword — never falls back
+        to treating every patch as a wall (extruding prisms into an inlet
+        or outlet is physically wrong).
         """
-        wall_keywords = {"wall", "walls", "blade", "blades", "foil",
-                         "surface", "body", "hull", "wing"}
-        walls: list[str] = []
-        for name in patch_names:
-            lower = name.lower()
-            if any(kw in lower for kw in wall_keywords):
-                walls.append(name)
+        walls, excluded = split_wall_patches(patch_names)
         if not walls:
-            walls = list(patch_names)
-            logger.info("No wall patches identified by name — using all patches.")
+            detail = ", ".join(f"{name} ({role})" for name, role in excluded)
+            logger.warning(
+                "No wall patches identified by name — BL skipped. "
+                "Excluded: %s", detail or "none",
+            )
         octo.log_event("bl_engine", "detect_walls", {"count": len(walls)})
         return walls
 

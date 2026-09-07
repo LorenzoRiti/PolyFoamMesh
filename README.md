@@ -1,53 +1,33 @@
 # PolyFoamMesh
 
-**Mesh poliedrica automatica per OpenFOAM** — genera mesh 100% poliedriche
-(stile STAR-CCM+) con boundary layer, direttamente da STEP/STL, senza
-scrivere dizionari OpenFOAM a mano.
+**Preprocessore CFD open source per OpenFOAM** — combina GMSH + cfMesh in una
+GUI che genera mesh pronte per CFD senza scrivere dizionari OpenFOAM a mano.
 
 Licenza: [GPLv3](LICENSE) · [Third-party licenses](THIRD_PARTY_LICENSES.md) · [Contributing](CONTRIBUTING.md)
-
-## Perché non "è solo un wrapper di cfMesh"
-
-cfMesh e GMSH producono mesh grezze (hex/tet) — quello lo fa già chiunque usi
-OpenFOAM. Il lavoro di questo progetto comincia dopo:
-
-- **Convertitore tet→poly a dual baricentrico** (implementazione propria, non
-  di cfMesh): prende la mesh tetraedrica GMSH e produce una mesh 100%
-  poliedrica — la stessa topologia che rende celebri i mesher poliedrici
-  commerciali (STAR-CCM+), qui gratuita e open source.
-- **Motore di boundary layer su mesh poliedrica** (implementazione propria,
-  puro numpy): estrusione di prismi selettiva per patch, non un "applica a
-  tutto" — nell'ecosistema OpenFOAM open source non esiste un altro
-  strumento che lo fa con questo controllo, in una GUI.
-- **Loop di auto-fix qualità** (checkMesh → correzione → re-run, fino a 3
-  iterazioni) ed **escalation automatica tra algoritmi** quando uno non
-  raggiunge la qualità richiesta.
-
-I dettagli tecnici e i limiti misurati di questa pipeline (dove il dual
-poliedrico funziona, dove no) sono in
-[docs/residual_risks.md](docs/residual_risks.md) — non nascosti.
 
 ## A chi serve
 
 Sei un ingegnere CFD, uno studente o un ricercatore che oggi prepara mesh
 OpenFOAM scrivendo `blockMeshDict`/`snappyHexMeshDict`/`meshDict` a mano e
 scoprendo i problemi di qualità solo dopo aver lanciato `checkMesh`. Questa
-app genera la mesh (poliedrica o tetraedrica) con un click, mostra la
-qualità mentre viene calcolata, esporta il case pronto per il solver.
+app mette GMSH e cfMesh dietro una GUI: carichi una geometria, generi una
+mesh con un click, vedi la qualità mentre viene calcolata, esporti il case
+pronto per il solver.
 
 ## Come si confronta
 
 | | PolyFoamMesh | snappyHexMesh "nudo" | Ansys Meshing / ANSA / Pointwise |
 |---|---|---|---|
-| Mesh poliedrica | Sì, dual automatico + BL | No (richiede passaggi manuali) | Sì, è il loro punto di forza |
 | Costo | Gratis, open source (GPLv3) | Gratis (parte di OpenFOAM) | Licenze commerciali, spesso costose |
 | Automazione | 1-click + auto quality-fix | Manuale, dizionari a testo | Alta, ma workflow proprietario |
 | Maturità | Beta attiva, limiti noti e documentati | Maturo, ma nessuna GUI | Maturo |
 | Vincolo | Solo OpenFOAM | Solo OpenFOAM | Multi-solver |
 
 Non è un sostituto di un tool commerciale maturo su geometrie molto complesse
-— è pensato per chi lavora con OpenFOAM e vuole la mesh poliedrica senza le
-licenze commerciali che di solito servono per averla.
+— è pensato per chi lavora con OpenFOAM e vuole risparmiare le ore che oggi
+si perdono a scrivere dizionari e a interpretare `checkMesh` a mano. I limiti
+noti sono documentati in [docs/residual_risks.md](docs/residual_risks.md),
+non nascosti.
 
 ## Documentazione utente
 
@@ -110,7 +90,7 @@ precompilato o da sorgente): **[docs/INSTALL.md](docs/INSTALL.md)**.
 ```bash
 pip install -e ".[test]"
 pip install gmsh meshio reportlab
-cfmesh-autogui
+polyfoammesh
 ```
 
 Workflow e scorciatoie: **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
@@ -168,8 +148,7 @@ cfmesh-autogui/
 ├── tests/                      # pytest test suite (96 files, ~1.000 tests)
 ├── benchmarks/                 # Meshing benchmark scripts + results
 ├── dist/                       # PyInstaller EXE output
-│   └── CFMesh-AutoGUI.exe      #   Standalone executable (rename to
-│                               #   PolyFoamMesh pending in the build pipeline)
+│   └── PolyFoamMesh.exe        #   Standalone executable
 └── docs/                       # Documentation + handoff notes
 ```
 

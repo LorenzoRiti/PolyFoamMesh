@@ -120,6 +120,12 @@ class DualPolyResult:
     stage_times: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
+    # Boundary-layer outcome, attached by the poly worker after the optional
+    # BL pass. Declared here so consumers can rely on the fields existing.
+    bl_prism_cells: int = 0
+    bl_thickness: float = 0.0
+    bl_warning: str | None = None
+
     # Aliases so the GUI's existing poly-conversion result handlers, written
     # against TerminalFaceResult, work with this result type unchanged.
     @property

@@ -1516,3 +1516,124 @@ def load_geometry(filepath: Path | str) -> list[trimesh.Trimesh]:
         f"Unsupported geometry format: '{suffix}'. "
         "Supported: .step, .stp, .stl"
     )
+
+
+# ------------------------------------------------------------------
+# STL automatic patch recognition
+# ------------------------------------------------------------------
+# STL carries no metadata, so patches must be inferred from pure geometry:
+# connected components split at feature edges (dihedral angle), then flat
+# caps perpendicular to an axis at the bbox extremes become inlet/outlet —
+# the same semantics as _classify_by_axis for STEP BREP faces.
+STL_SPLIT_MAX_FACES = 2_000_000
+
+
+def _face_components(mesh: trimesh.Trimesh, max_angle_rad: float) -> np.ndarray:
+    """Label faces into feature-connected components (scipy graph)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components as _cc
+
+    n = len(mesh.faces)
+    angles = mesh.face_adjacency_angles
+    keep = angles <= max_angle_rad
+    edges = mesh.face_adjacency[keep]
+    graph = coo_matrix(
+        (np.ones(len(edges), dtype=np.int8), (edges[:, 0], edges[:, 1])),
+        shape=(n, n),
+    )
+    _, labels = _cc(graph, directed=False)
+    return labels
+
+
+def split_single_stl_patch(
+    mesh: trimesh.Trimesh,
+    angle_deg: float = 40.0,
+    axis_tol: float = 0.05,
+    pos_tol: float = 0.02,
+) -> list[trimesh.Trimesh]:
+    """Split a single-patch STL mesh into inlet/outlet/wall patches.
+
+    Mirrors the STEP auto-classification: components of faces joined by
+    dihedral angles below ``angle_deg`` are grouped; a component whose
+    area-weighted normal is (nearly) perpendicular to an axis AND whose
+    centroid sits at that axis' bbox extreme becomes a cap (inlet at the
+    min end, outlet at the max end); everything else is 'wall'.
+
+    Never raises and never renames when not confident: with fewer than
+    two detected caps the original mesh is returned unchanged.
+    """
+    name = mesh.metadata.get("name", "unnamed")
+    try:
+        work = mesh.copy()
+        work.merge_vertices()
+        if len(work.faces) < 8 or len(work.faces) > STL_SPLIT_MAX_FACES:
+            return [mesh]
+        labels = _face_components(work, np.radians(angle_deg))
+    except Exception as exc:
+        logger.debug("STL patch split skipped for '%s': %s", name, exc)
+        return [mesh]
+
+    n_comp = int(labels.max()) + 1 if len(labels) else 0
+    if n_comp <= 1:
+        return [mesh]
+
+    areas = work.area_faces
+    centers = work.triangles_center
+
+    best = None  # (n_caps, axis_idx, roles) — roles per component id
+    extents = work.extents
+    bounds_min = work.bounds[0]
+    for axis in range(3):
+        roles: dict[int, tuple[str, float]] = {}
+        n_caps = 0
+        c_min = bounds_min[axis]
+        c_max = bounds_min[axis] + extents[axis]
+        tol_pos = max(pos_tol * extents[axis], 1e-12)
+        for comp in range(n_comp):
+            idx = np.flatnonzero(labels == comp)
+            w = areas[idx]
+            w_sum = float(w.sum())
+            if w_sum <= 0.0:
+                continue
+            mean_n = (work.face_normals[idx] * w[:, None]).sum(axis=0) / w_sum
+            norm = float(np.linalg.norm(mean_n))
+            if norm < 1e-9:
+                continue
+            comp_axis = mean_n[axis] / norm
+            centroid = float((centers[idx, axis] * w).sum() / w_sum)
+            if abs(abs(comp_axis) - 1.0) < axis_tol:
+                if comp_axis < 0 and abs(centroid - c_min) < tol_pos:
+                    roles[comp] = ("inlet", w_sum)
+                    n_caps += 1
+                elif comp_axis > 0 and abs(centroid - c_max) < tol_pos:
+                    roles[comp] = ("outlet", w_sum)
+                    n_caps += 1
+        if best is None or n_caps > best[0]:
+            best = (n_caps, axis, roles)
+
+    assert best is not None
+    n_caps, _axis, roles = best
+    if n_caps < 2:
+        return [mesh]
+
+    buckets: dict[str, list[int]] = {"inlet": [], "outlet": [], "wall": []}
+    for comp in range(n_comp):
+        role = roles.get(comp, ("wall", 0.0))[0]
+        buckets[role].extend(np.flatnonzero(labels == comp).tolist())
+
+    out: list[trimesh.Trimesh] = []
+    for role in ("inlet", "outlet", "wall"):
+        idx = buckets[role]
+        if not idx:
+            continue
+        part = work.submesh([idx], append=True, repair=False)
+        part.metadata["name"] = role
+        part.metadata["auto_split"] = True
+        part.metadata["split_from"] = name
+        out.append(part)
+    logger.info(
+        "STL '%s' auto-split into %d patches: %s",
+        name, len(out),
+        ", ".join(f"{p.metadata['name']}({len(p.faces)}f)" for p in out),
+    )
+    return out

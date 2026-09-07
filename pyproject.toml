@@ -3,14 +3,14 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cfmesh-autogui"
+name = "polyfoammesh"
 version = "2.1.0"
 description = "Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh"
 authors = [{name = "Davide Valoroso"}]
 license = {text = "GPL-3.0-or-later"}
 readme = "README.md"
 requires-python = ">=3.11"
-keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2"]
+keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2", "polyfoammesh"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -50,9 +50,9 @@ api = [
 ]
 
 [project.scripts]
-cfmesh-autogui = "cfmesh_autogui.app:main"
-cfmesh-autogui-mesh = "cfmesh_autogui.commercial.one_click_run:main_cli"
-cfmesh-autogui-batch = "cfmesh_autogui.commercial.batch_mesh:main_cli"
+polyfoammesh = "cfmesh_autogui.app:main"
+polyfoammesh-mesh = "cfmesh_autogui.commercial.one_click_run:main_cli"
+polyfoammesh-batch = "cfmesh_autogui.commercial.batch_mesh:main_cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

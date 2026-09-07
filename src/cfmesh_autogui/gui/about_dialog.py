@@ -1,4 +1,4 @@
-"""Commercial-grade About dialog for CFMesh-AutoGUI.
+"""Commercial-grade About dialog for PolyFoamMesh.
 
 Shows app name, version, vendor, copyright, license, links, and a
 credits section. Uses design tokens for all colors and spacing.

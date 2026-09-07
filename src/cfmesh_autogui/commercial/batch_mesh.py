@@ -233,7 +233,7 @@ def main_cli() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="CFMesh-AutoGUI Batch Mesher (headless)",
+        description="PolyFoamMesh Batch Mesher (headless)",
     )
     parser.add_argument("--geometry-dir", required=True, help="Directory with CAD files")
     parser.add_argument("--pattern", default="*.step", help="Glob pattern (default: *.step)")

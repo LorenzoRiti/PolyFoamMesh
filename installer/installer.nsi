@@ -1,4 +1,4 @@
-; CFMesh-AutoGUI NSIS Installer
+; PolyFoamMesh NSIS Installer
 ; Enterprise-grade Windows installer with:
 ;   - Silent mode for GPO deployment
 ;   - Custom installation directory
@@ -8,11 +8,11 @@
 ;   - WSL2 + OpenFOAM dependency check
 ;   - Uninstaller with registry cleanup
 
-!define PRODUCT_NAME "CFMesh-AutoGUI"
+!define PRODUCT_NAME "PolyFoamMesh"
 !define PRODUCT_VERSION "2.0.1"
-!define PRODUCT_PUBLISHER "CFMesh-AutoGUI Project"
-!define PRODUCT_WEB_SITE "https://github.com/cfmesh-autogui"
-!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\CFMesh-AutoGUI.exe"
+!define PRODUCT_PUBLISHER "PolyFoamMesh Project"
+!define PRODUCT_WEB_SITE "https://github.com/polyfoammesh"
+!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\PolyFoamMesh.exe"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 
 SetCompressor lzma
@@ -52,12 +52,12 @@ Page custom PageWslCheck PageWslCheckLeave
 ; Installer sections
 ; =============================================================
 
-Section "CFMesh-AutoGUI Core" SEC_MAIN
+Section "PolyFoamMesh Core" SEC_MAIN
     SectionIn RO
     SetOutPath "$INSTDIR"
 
     ; Main executable and libraries
-    File /r "..\dist\CFMesh-AutoGUI\*.*"
+    File /r "..\dist\PolyFoamMesh\*.*"
 
     ; Templates
     SetOutPath "$INSTDIR\templates"
@@ -78,35 +78,35 @@ Section "CFMesh-AutoGUI Core" SEC_MAIN
 
     ; Create shortcuts
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-    CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\CFMesh-AutoGUI.lnk" "$INSTDIR\CFMesh-AutoGUI.exe" "" "$INSTDIR\CFMesh-AutoGUI.exe" 0
+    CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\PolyFoamMesh.lnk" "$INSTDIR\PolyFoamMesh.exe" "" "$INSTDIR\PolyFoamMesh.exe" 0
     CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0
 
     ; Register application paths
-    WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\CFMesh-AutoGUI.exe"
+    WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\PolyFoamMesh.exe"
     WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "Path" "$INSTDIR"
 
     ; File associations
-    WriteRegStr HKCR ".step" "" "CFMesh-AutoGUI.STEP"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STEP" "" "STEP Model File"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STEP\DefaultIcon" "" "$INSTDIR\CFMesh-AutoGUI.exe,0"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STEP\shell\open\command" "" '"$INSTDIR\CFMesh-AutoGUI.exe" "%1"'
+    WriteRegStr HKCR ".step" "" "PolyFoamMesh.STEP"
+    WriteRegStr HKCR "PolyFoamMesh.STEP" "" "STEP Model File"
+    WriteRegStr HKCR "PolyFoamMesh.STEP\DefaultIcon" "" "$INSTDIR\PolyFoamMesh.exe,0"
+    WriteRegStr HKCR "PolyFoamMesh.STEP\shell\open\command" "" '"$INSTDIR\PolyFoamMesh.exe" "%1"'
 
-    WriteRegStr HKCR ".stp" "" "CFMesh-AutoGUI.STP"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STP" "" "STEP Model File"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STP\DefaultIcon" "" "$INSTDIR\CFMesh-AutoGUI.exe,0"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STP\shell\open\command" "" '"$INSTDIR\CFMesh-AutoGUI.exe" "%1"'
+    WriteRegStr HKCR ".stp" "" "PolyFoamMesh.STP"
+    WriteRegStr HKCR "PolyFoamMesh.STP" "" "STEP Model File"
+    WriteRegStr HKCR "PolyFoamMesh.STP\DefaultIcon" "" "$INSTDIR\PolyFoamMesh.exe,0"
+    WriteRegStr HKCR "PolyFoamMesh.STP\shell\open\command" "" '"$INSTDIR\PolyFoamMesh.exe" "%1"'
 
-    WriteRegStr HKCR ".stl" "" "CFMesh-AutoGUI.STL"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STL" "" "STL Mesh File"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STL\DefaultIcon" "" "$INSTDIR\CFMesh-AutoGUI.exe,0"
-    WriteRegStr HKCR "CFMesh-AutoGUI.STL\shell\open\command" "" '"$INSTDIR\CFMesh-AutoGUI.exe" "%1"'
+    WriteRegStr HKCR ".stl" "" "PolyFoamMesh.STL"
+    WriteRegStr HKCR "PolyFoamMesh.STL" "" "STL Mesh File"
+    WriteRegStr HKCR "PolyFoamMesh.STL\DefaultIcon" "" "$INSTDIR\PolyFoamMesh.exe,0"
+    WriteRegStr HKCR "PolyFoamMesh.STL\shell\open\command" "" '"$INSTDIR\PolyFoamMesh.exe" "%1"'
 
     ; Uninstaller registry
     WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
     WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
     WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
     WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
-    WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\CFMesh-AutoGUI.exe"
+    WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\PolyFoamMesh.exe"
     WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
     WriteRegDWORD HKLM "${PRODUCT_UNINST_KEY}" "NoModify" 1
     WriteRegDWORD HKLM "${PRODUCT_UNINST_KEY}" "NoRepair" 1
@@ -121,7 +121,7 @@ Section "CFMesh-AutoGUI Core" SEC_MAIN
 SectionEnd
 
 Section "Desktop Shortcut" SEC_DESKTOP
-    CreateShortCut "$DESKTOP\CFMesh-AutoGUI.lnk" "$INSTDIR\CFMesh-AutoGUI.exe" "" "$INSTDIR\CFMesh-AutoGUI.exe" 0
+    CreateShortCut "$DESKTOP\PolyFoamMesh.lnk" "$INSTDIR\PolyFoamMesh.exe" "" "$INSTDIR\PolyFoamMesh.exe" 0
 SectionEnd
 
 Section "OpenFOAM Tutorial Cases" SEC_TUTORIALS
@@ -164,7 +164,7 @@ FunctionEnd
 Section "Uninstall"
     ; Remove shortcuts
     RmDir /r "$SMPROGRAMS\${PRODUCT_NAME}"
-    Delete "$DESKTOP\CFMesh-AutoGUI.lnk"
+    Delete "$DESKTOP\PolyFoamMesh.lnk"
 
     ; Remove application files
     RmDir /r "$INSTDIR"
@@ -173,9 +173,9 @@ Section "Uninstall"
     DeleteRegKey HKCR ".step"
     DeleteRegKey HKCR ".stp"
     DeleteRegKey HKCR ".stl"
-    DeleteRegKey HKCR "CFMesh-AutoGUI.STEP"
-    DeleteRegKey HKCR "CFMesh-AutoGUI.STP"
-    DeleteRegKey HKCR "CFMesh-AutoGUI.STL"
+    DeleteRegKey HKCR "PolyFoamMesh.STEP"
+    DeleteRegKey HKCR "PolyFoamMesh.STP"
+    DeleteRegKey HKCR "PolyFoamMesh.STL"
 
     ; Remove registry keys
     DeleteRegKey HKLM "${PRODUCT_DIR_REGKEY}"
