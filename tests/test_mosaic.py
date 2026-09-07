@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from _test_helpers import load_commercial_module
@@ -63,6 +65,10 @@ def test_engine_set_params():
     assert me._params.n_smoothing_iterations == 6
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Validates fs rejection of a nonexistent 'Z:\\' drive path — a POSIX host cannot inspect Windows drives",
+)
 def test_engine_set_case_dir_nonexistent():
     me = MosaicEngine()
     try:
