@@ -22,6 +22,7 @@ from polyfoammesh.core.openfoam_runner import MeshWorker
 from polyfoammesh.core.boundary_reader import parse_boundary
 from polyfoammesh.core.case_setup import setup_case
 from polyfoammesh.gui.viewer_widget import read_openfoam_mesh_patches
+from _test_helpers import space_free_tmp_root
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QEventLoop, QThread, Qt, QTimer
@@ -61,7 +62,7 @@ def test_full_workflow(qapp):
         print("SKIP: OpenFOAM not available")
         return
 
-    case_dir = Path("C:/cfmesh_e2e_test")
+    case_dir = space_free_tmp_root() / "cfmesh_e2e_test"
     if case_dir.exists():
         shutil.rmtree(str(case_dir), ignore_errors=True)
     case_dir.mkdir(parents=True)
@@ -189,7 +190,7 @@ if __name__ == "__main__":
     if app is None:
         app = QApplication(sys.argv)
 
-    test_full_workflow()
+    test_full_workflow(app)
 
     app.quit()
 

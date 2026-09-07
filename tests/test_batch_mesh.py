@@ -1,18 +1,27 @@
 """Tests for batch meshing engine."""
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from _test_helpers import load_commercial_module
+from _test_helpers import load_commercial_module, space_free_tmp_root
 
 _mod = load_commercial_module("batch_mesh")
 BatchEntry = _mod.BatchEntry
 BatchConfig = _mod.BatchConfig
 BatchReport = _mod.BatchReport
 BatchMesher = _mod.BatchMesher
+
+# A path that does not exist on any host and, on POSIX, cannot be created
+# by an unprivileged test process either (no 'Z:' drive semantics there).
+NONEXISTENT = (
+    "Z:\\nonexistent" if os.name == "nt"
+    else "/nonexistent_cfmesh_batch_dir"
+)
 
 
 def test_batch_entry_defaults():
@@ -71,7 +80,7 @@ def test_batch_mesher_init():
 def test_batch_mesher_add_file_invalid():
     bm = BatchMesher()
     try:
-        bm.add_file("Z:\\nonexistent.step")
+        bm.add_file(NONEXISTENT + ".step")
         assert False, "Should have raised"
     except ValueError:
         pass
@@ -80,7 +89,7 @@ def test_batch_mesher_add_file_invalid():
 def test_batch_mesher_add_directory_nonexistent():
     bm = BatchMesher()
     try:
-        bm.add_directory("Z:\\nonexistent")
+        bm.add_directory(NONEXISTENT)
         assert False, "Should have raised"
     except FileNotFoundError:
         pass
@@ -88,7 +97,7 @@ def test_batch_mesher_add_directory_nonexistent():
 
 def test_batch_mesher_add_directory_empty():
     import tempfile
-    with tempfile.TemporaryDirectory(dir="C:/") as tmp:
+    with tempfile.TemporaryDirectory(dir=str(space_free_tmp_root())) as tmp:
         bm = BatchMesher()
         count = bm.add_directory(tmp, "*.step")
         assert count == 0, "Empty dir should yield 0 files"

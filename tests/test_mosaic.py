@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from _test_helpers import load_commercial_module
+from _test_helpers import load_commercial_module, space_free_tmp_root
 
 _mod = load_commercial_module("mosaic")
 MosaicParams = _mod.MosaicParams
@@ -79,8 +79,8 @@ def test_engine_set_case_dir_nonexistent():
 
 
 def _safe_case_dir() -> Path:
-    """Create a case dir at a path without spaces."""
-    d = Path("C:/") / "tmp_mosaic_test"
+    """Create a case dir at a path without spaces (portable tmp root)."""
+    d = space_free_tmp_root() / "tmp_mosaic_test"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

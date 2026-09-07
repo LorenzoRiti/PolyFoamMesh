@@ -22,6 +22,7 @@ from PySide6.QtCore import QEventLoop, QThread, Qt, QTimer
 MESH_WORKER_TIMEOUT_SECONDS = 180
 
 from polyfoammesh.config import OFConfig
+from _test_helpers import space_free_tmp_root
 from polyfoammesh.core.geometry import create_test_cylinder, classify_faces, tessellate_patches
 from polyfoammesh.core.stl_writer import export_surface_file
 from polyfoammesh.core.meshdict_gen import write_meshdict
@@ -330,7 +331,8 @@ def test_mesh_worker_always_emits_finished_even_on_unexpected_error(monkeypatch)
     # machine contains a space, and MeshWorker legitimately refuses such a
     # case dir up front (OpenFOAM cannot handle spaces in paths). That guard
     # would short-circuit the run before the reader is ever reached.
-    case_dir = Path(tempfile.mkdtemp(prefix="cfmesh_emit_test_", dir="C:/"))
+    case_dir = Path(tempfile.mkdtemp(prefix="cfmesh_emit_test_",
+                                     dir=str(space_free_tmp_root())))
     cfg = OFConfig()
     # A command that succeeds fast and prints something to read, so the
     # patched _process_line is reached without needing WSL/OpenFOAM.
