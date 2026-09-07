@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _resolve_for_wsl(p: Path | str) -> Path:
+    raw = str(p)
+    if _WIN_DRIVE_RE.match(raw):
+        # Windows-style path: never resolve it on the host. On POSIX that
+        # would treat "C:\x" as a *relative* path and prefix the CWD,
+        # corrupting the Windows->WSL translation (tests and tools running
+        # inside WSL hit this constantly).
+        return Path(raw)
+    return Path(p).resolve()
 
 
 def extract_poly_mesh_archive(case_dir: Path | str) -> bool:
@@ -97,9 +111,17 @@ class OFConfig:
 
     @staticmethod
     def validate_case_path(case_dir: Path | str) -> tuple[bool, str]:
-        case_dir = Path(case_dir).resolve()
-        if " " in str(case_dir):
-            return False, f"OpenFOAM does not support spaces in paths.\nPath: {case_dir}\nChoose a path without spaces."
+        raw = str(case_dir)
+        if re.match(r"^[A-Za-z]:[\\/]", raw):
+            # Windows-style path: check the raw string. Resolving it on a
+            # POSIX host would prefix the CWD (possibly containing spaces
+            # that have nothing to do with the case path) and produce a
+            # false positive.
+            check = raw
+        else:
+            check = str(Path(case_dir).resolve())
+        if " " in check:
+            return False, f"OpenFOAM does not support spaces in paths.\nPath: {check}\nChoose a path without spaces."
         return True, ""
 
     def wsl_linux_case_path(self, case_dir: Path | str) -> str:
@@ -111,7 +133,16 @@ class OFConfig:
         # every OpenFOAM command came back "command not found" (rc=127).
         if raw.startswith("/"):
             return raw.replace("'", "'\\''")
-        case_dir = Path(case_dir).resolve()
+        # Windows-style paths must be detected on the raw string: on a POSIX
+        # host (tests, tools running inside WSL) Path("C:\\x").resolve()
+        # treats "C:\\x" as a *relative* path and prefixes the CWD, mangling
+        # the translation. Drive-letter detection is host-independent.
+        m = re.match(r"^([A-Za-z]):[\\/](.*)$", raw)
+        if m:
+            drive_letter = m.group(1).lower()
+            rel = m.group(2).replace("\\", "/")
+            return f"/mnt/{drive_letter}/{rel}".replace("'", "'\\''")
+        case_dir = _resolve_for_wsl(case_dir)
         drive_letter = case_dir.drive[:1].lower() if case_dir.drive else ""
         if not drive_letter or not case_dir.drive.endswith(":"):
             # UNC or relative path without drive — use full path translation
@@ -130,7 +161,7 @@ class OFConfig:
 
     def build_command(self, case_dir: Path | str, extra_args: list[str] | None = None,
                       cell_estimate: int = 0) -> list[str]:
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         bin_quoted = shlex.quote(self.cartesian_mesh_bin)
@@ -160,7 +191,7 @@ class OFConfig:
         Using a shell script avoids quoting/glob issues with inline bash
         commands passed via ``wsl.exe bash -lc "..."``.
         """
-        case_dir_resolved = Path(case_dir).resolve()
+        case_dir_resolved = _resolve_for_wsl(case_dir)
         linux_case = self.wsl_linux_case_path(case_dir_resolved)  # unquoted for script
         env_q = self.env_script
         bin_q = self.cartesian_mesh_bin
@@ -295,7 +326,7 @@ class OFConfig:
         Returns:
             The ``wsl.exe`` command list (run via subprocess).
         """
-        case_dir_resolved = Path(case_dir).resolve()
+        case_dir_resolved = _resolve_for_wsl(case_dir)
         linux_case = self.wsl_linux_case_path(case_dir_resolved)
         env_q = self.env_script
 
@@ -361,7 +392,7 @@ class OFConfig:
         /mnt/c/ (Windows filesystem), runs cartesianMesh there, then
         copies the polyMesh result back.
         """
-        case_dir_resolved = Path(case_dir).resolve()
+        case_dir_resolved = _resolve_for_wsl(case_dir)
         linux_case = self.wsl_linux_case_path(case_dir_resolved)
         env_q = self.env_script
         bin_q = self.cartesian_mesh_bin
@@ -405,7 +436,7 @@ class OFConfig:
         return self._build_wsl_cmd(cmd)
 
     def build_check_mesh_cmd(self, case_dir: Path | str) -> list[str]:
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         cmd = (
@@ -421,7 +452,7 @@ class OFConfig:
         """Build WSL command to decompose an existing mesh for parallel solving.
         Writes a temporary decomposeParDict, runs decomposePar -force, and
         cleans up — leaving the original mesh intact plus processorN/ dirs."""
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case = self._quoted_linux_path(case_dir)
         env_q = shlex.quote(self.env_script)
         cmd = (
@@ -471,7 +502,7 @@ class OFConfig:
             split_all_faces: Have multiple faces between cells
                 (increases cell count, use only for specific needs).
         """
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case_q = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         n_threads = os.cpu_count() or 4
@@ -504,7 +535,7 @@ class OFConfig:
         residual quality warning, vs. ~40% negative-volume cells from the
         custom converter on the same input).
         """
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case_q = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         msh_quoted = shlex.quote(msh_filename)
@@ -522,7 +553,7 @@ class OFConfig:
         export doesn't guarantee it. Point (0,0,0) is a placeholder — the
         real inside point is substituted by the caller.
         """
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case_q = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         stl_quoted = shlex.quote(f"constant/triSurface/{stl_filename}")
@@ -544,7 +575,7 @@ class OFConfig:
         so it's a limitation of polyDualMesh itself, not of the input
         tet mesh's quality).
         """
-        case_dir = Path(case_dir).resolve()
+        case_dir = _resolve_for_wsl(case_dir)
         linux_case_q = self._quoted_linux_path(case_dir)
         env_quoted = shlex.quote(self.env_script)
         n_threads = os.cpu_count() or 4
