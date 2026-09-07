@@ -1,0 +1,229 @@
+"""Tests for solver setup module."""
+from __future__ import annotations
+import sys, os, tempfile
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from _test_helpers import load_commercial_module
+
+_mod = load_commercial_module("solver_setup")
+SolverType = _mod.SolverType
+TurbulenceModel = _mod.TurbulenceModel
+SchemePreset = _mod.SchemePreset
+MaterialProperties = _mod.MaterialProperties
+SolverConfig = _mod.SolverConfig
+SolverSetup = _mod.SolverSetup
+
+
+def test_solver_type_enum():
+    assert SolverType.SIMPLE_FOAM.value == "simpleFoam"
+    assert SolverType.PIMPLE_FOAM.value == "pimpleFoam"
+
+
+def test_turbulence_model_values():
+    assert TurbulenceModel.K_OMEGA_SST.value == "kOmegaSST"
+    assert TurbulenceModel.K_EPSILON.value == "kEpsilon"
+
+
+def test_scheme_preset_values():
+    assert SchemePreset.ROBUSTO.value == "robusto"
+    assert SchemePreset.ACCURATO.value == "accurato"
+
+
+def test_material_properties_defaults():
+    m = MaterialProperties()
+    assert m.name == "air"
+    assert m.density == 1.225
+    assert m.viscosity == 1.5e-5
+
+
+def test_material_properties_water():
+    m = MaterialProperties(name="water", density=1000, viscosity=1e-6)
+    assert m.name == "water"
+    assert m.density == 1000
+
+
+def test_solver_config_defaults():
+    c = SolverConfig()
+    assert c.solver == SolverType.SIMPLE_FOAM
+    assert c.turbulence == TurbulenceModel.K_OMEGA_SST
+    assert c.schemes == SchemePreset.BILANCIATO
+
+
+def test_solver_config_custom():
+    c = SolverConfig(
+        solver=SolverType.PIMPLE_FOAM,
+        turbulence=TurbulenceModel.LES_WALE,
+        schemes=SchemePreset.ACCURATO,
+        end_time=500,
+    )
+    assert c.solver == SolverType.PIMPLE_FOAM
+    assert c.turbulence == TurbulenceModel.LES_WALE
+    assert c.end_time == 500
+
+
+def test_solver_setup_init():
+    ss = SolverSetup()
+    assert ss.files_written == []
+
+
+def test_solver_setup_configure():
+    ss = SolverSetup()
+    c = SolverConfig(solver=SolverType.PISO_FOAM)
+    ss.configure(c)
+    assert ss._config.solver == SolverType.PISO_FOAM
+
+
+def test_write_all_creates_files():
+    tmp = Path(tempfile.mkdtemp(dir=os.environ.get("TEMP", "/tmp")))
+    ss = SolverSetup()
+    files = ss.write_all(tmp)
+    assert len(files) > 10, f"Expected >10 files, got {len(files)}"
+    assert (tmp / "system/controlDict").exists()
+    assert (tmp / "system/fvSchemes").exists()
+    assert (tmp / "system/fvSolution").exists()
+    assert (tmp / "constant/transportProperties").exists()
+    assert (tmp / "constant/turbulenceProperties").exists()
+    assert (tmp / "0/U").exists()
+    assert (tmp / "0/p").exists()
+
+
+def test_control_dict_content():
+    ss = SolverSetup()
+    ss.configure(SolverConfig(solver=SolverType.PIMPLE_FOAM, end_time=500))
+    content = ss._control_dict()
+    assert "pimpleFoam" in content
+    assert "endTime 500" in content
+
+
+def test_turbulence_properties_laminar():
+    """"laminar" is not a registered RASModel (verified against OpenFOAM's
+    TurbulenceModels library) — `RAS { RASModel laminar; }` fails at solver
+    startup with "Unknown RASModel type". This used to fall through to the RAS
+    branch's dict .get(turb, "kOmegaSST") fallback (LAMINAR isn't a key),
+    silently writing RASModel kOmegaSST — requesting laminar flow silently
+    turned turbulence modelling ON. Must be `simulationType laminar;` with no
+    RAS/LES sub-dictionary at all."""
+    ss = SolverSetup()
+    ss.configure(SolverConfig(turbulence=TurbulenceModel.LAMINAR))
+    content = ss._turbulence_properties()
+    assert "simulationType laminar;" in content
+    assert "RAS" not in content
+    assert "kOmegaSST" not in content
+
+
+def test_turbulence_properties_les():
+    ss = SolverSetup()
+    ss.configure(SolverConfig(turbulence=TurbulenceModel.LES_WALE))
+    content = ss._turbulence_properties()
+    assert "WALE" in content
+
+
+def test_scheme_preset_robusto():
+    ss = SolverSetup()
+    ss.configure(SolverConfig(schemes=SchemePreset.ROBUSTO))
+    content = ss._fv_schemes()
+    assert "upwind" in content
+
+
+def test_scheme_preset_accurato():
+    ss = SolverSetup()
+    ss.configure(SolverConfig(schemes=SchemePreset.ACCURATO))
+    content = ss._fv_schemes()
+    assert "linearUpwind" in content
+
+
+def test_fv_solution_pimple():
+    ss = SolverSetup()
+    ss.configure(SolverConfig(solver=SolverType.PIMPLE_FOAM))
+    content = ss._fv_solution()
+    assert "PIMPLE" in content
+    assert "nOuterCorrectors 3" in content
+
+
+def test_transport_properties():
+    ss = SolverSetup()
+    ss.configure(SolverConfig(material=MaterialProperties(viscosity=1e-6)))
+    content = ss._transport_properties()
+    assert "1.000000e-06" in content
+
+
+_BOUNDARY_SINGLE_BOX_PATCH = """FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       polyBoundaryMesh;
+    location    "constant/polyMesh";
+    object      boundary;
+}
+1
+(
+    box
+    {
+        type wall;
+        nFaces 12;
+        startFace 0;
+    }
+)
+"""
+
+
+def test_write_fields_uses_real_mesh_patches_not_hardcoded_names():
+    """_write_fields() used to hardcode boundaryField blocks for exactly
+    inlet/outlet/wall/symmetry regardless of the mesh's real patch names.
+    A single auto-named patch (e.g. "box", the common case for a bare
+    STL/STEP import) got NO boundary condition at all in any field — verified
+    live via baramflow_export.validate_case(), which reported "no boundary
+    condition for patch(es) box" for every field until this fix. Confirmed
+    the exported case validates and passes end-to-end after the fix."""
+    case_dir = Path(tempfile.mkdtemp())
+    poly = case_dir / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    (poly / "boundary").write_text(_BOUNDARY_SINGLE_BOX_PATCH, encoding="ascii")
+
+    ss = SolverSetup()
+    ss.configure(SolverConfig(solver=SolverType.SIMPLE_FOAM, turbulence=TurbulenceModel.K_OMEGA_SST))
+    ss.write_all(case_dir)
+
+    for field in ("U", "p", "k", "omega", "epsilon", "nut"):
+        content = (case_dir / "0" / field).read_text()
+        assert "box" in content, f"0/{field} missing a boundaryField entry for the real patch 'box'"
+        assert "inlet" not in content and "outlet" not in content and "symmetry" not in content
+
+
+def test_write_fields_falls_back_to_legacy_patches_without_a_mesh():
+    """Writing solver config files ahead of meshing (no constant/polyMesh yet)
+    must keep working exactly as before — inlet/outlet/wall/symmetry."""
+    case_dir = Path(tempfile.mkdtemp())
+    ss = SolverSetup()
+    ss.configure(SolverConfig())
+    ss.write_all(case_dir)
+
+    content = (case_dir / "0" / "U").read_text()
+    for name in ("inlet", "outlet", "wall", "symmetry"):
+        assert name in content
+
+
+if __name__ == "__main__":
+    import shutil
+    test_solver_type_enum()
+    test_turbulence_model_values()
+    test_scheme_preset_values()
+    test_material_properties_defaults()
+    test_material_properties_water()
+    test_solver_config_defaults()
+    test_solver_config_custom()
+    test_solver_setup_init()
+    test_solver_setup_configure()
+    test_write_all_creates_files()
+    test_control_dict_content()
+    test_turbulence_properties_laminar()
+    test_turbulence_properties_les()
+    test_scheme_preset_robusto()
+    test_scheme_preset_accurato()
+    test_fv_solution_pimple()
+    test_transport_properties()
+    # Cleanup
+    tmp = Path(os.environ.get("TEMP", "/tmp"))
+    for d in tmp.glob("tmp*"):
+        if d.is_dir(): shutil.rmtree(d, ignore_errors=True)
+    print("ALL PASS")

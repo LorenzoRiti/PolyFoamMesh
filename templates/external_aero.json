@@ -1,0 +1,15 @@
+{
+    "name": "External Aero",
+    "description": "External aerodynamic flow around bodies",
+    "defaults": {
+        "detail": "fine",
+        "max_cell_ratio": 0.08,
+        "min_cell_ratio": 0.002,
+        "boundary_layers": {
+            "nLayers": 8,
+            "thicknessRatio": 0.001,
+            "expansionRatio": 1.2
+        },
+        "mesher_type": "cfmesh"
+    }
+}
