@@ -85,9 +85,31 @@ class TestFeatureDetector:
         with pytest.raises(FileNotFoundError):
             detector.analyze_step("/nonexistent/file.step")
 
-    @pytest.mark.skipif(True, reason="Requires gmsh runtime mock setup")
-    def test_analyze_step_with_mock(self):
-        pass
+    def test_analyze_step_end_to_end(self, tmp_path):
+        """analyze_step on a real (tiny) STEP file must return a usable
+        FeatureMap with sane size suggestions. Replaces the old
+        always-skip stub ("Requires gmsh runtime mock setup"): mocking the
+        GMSH session is not worth it when a real 2-minute box analysis is
+        this cheap and covers the actual integration (OCC import + cache).
+        """
+        cq = pytest.importorskip("cadquery")
+        pytest.importorskip("gmsh")
+
+        step_path = tmp_path / "box.step"
+        cq.exporters.export(cq.Workplane("XY").box(10.0, 10.0, 10.0), str(step_path))
+
+        detector = FeatureDetector()
+        try:
+            fm = detector.analyze_step(step_path)
+            assert isinstance(fm, FeatureMap)
+            assert fm.suggested_min_cell > 0
+            assert fm.suggested_max_cell > fm.suggested_min_cell
+            # Second call must hit the cache (same path/mtime/detail/scale).
+            fm2 = detector.analyze_step(step_path)
+            assert fm2.suggested_min_cell == pytest.approx(fm.suggested_min_cell)
+            assert fm2.suggested_max_cell == pytest.approx(fm.suggested_max_cell)
+        finally:
+            detector.shutdown()
 
     def test_shutdown_not_initialized(self):
         detector = FeatureDetector()
