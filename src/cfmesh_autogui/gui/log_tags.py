@@ -1,0 +1,28 @@
+"""Log tag constants. Use f-strings: f"{Tag.GEOM} Loaded: {n} faces"."""
+from __future__ import annotations
+
+
+class Tag:
+    GEOM = "[geom]"
+    CASE = "[case]"
+    BL = "[bl]"
+    EXPORT = "[export]"
+    MESHING = "[meshing]"
+    SAFEGUARD = "[safeguard]"
+    EST = "[est]"
+    DICT = "[dict]"
+    ERROR = "[ERROR]"
+    WARN = "[WARN]"
+    SUGGESTION = "[suggestion]"
+    FIX = "[fix]"
+    BOUNDARY = "[boundary]"
+    SETUP = "[setup]"
+    DONE = "[done]"
+    STALE = "[stale]"
+    RESET = "[reset]"
+    CANCELLED = "[cancelled]"
+    QUALITY = "[quality]"
+    CHECKMESH = "[checkMesh]"
+    MANUAL = "[manual]"
+    PATCH = "[patch]"
+    SCALE = "[scale]"

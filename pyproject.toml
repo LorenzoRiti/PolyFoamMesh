@@ -1,0 +1,135 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfmesh-autogui"
+version = "2.1.0"
+description = "Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh"
+authors = [{name = "Davide Valoroso"}]
+license = {text = "GPL-3.0-or-later"}
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "PySide6>=6.7.0",
+    "pyvista>=0.44.0",
+    "pyvistaqt>=0.11.0",
+    "cadquery>=2.5.0",
+    "trimesh>=4.5.0",
+    "numpy>=1.26.0",
+    "gmsh>=4.13.0",
+    "meshio>=5.3.0",
+    "reportlab>=4.2.0",
+    "pymeshfix>=0.17.0",
+    "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+    "sphinx-autodoc-typehints>=2.0",
+]
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+cfmesh-autogui = "cfmesh_autogui.app:main"
+cfmesh-autogui-mesh = "cfmesh_autogui.commercial.one_click_run:main_cli"
+cfmesh-autogui-batch = "cfmesh_autogui.commercial.batch_mesh:main_cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+markers = [
+    "slow: long-running tests (real-valve fixture etc.); skip with -m 'not slow'",
+    "wsl: requires live WSL2 + OpenFOAM (real cartesianMesh run); skip with -m 'not wsl'",
+]
+
+[tool.ruff]
+# Match the code actually in the tree rather than impose a rewrite.
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Deliberately a BUG gate, not a style gate.
+#
+# The point of this config is to be GREEN today so it can be enforced today
+# (a linter that is red on day one gets ignored, and then catches nothing).
+# It is scoped to rules that find real defects:
+#   E9  syntax / IO errors that break at runtime
+#   F   pyflakes: undefined names, unreachable imports, shadowing
+#   B   bugbear: mutable defaults, except-without-from, ...
+# It already earned its keep: F823 caught a genuine UnboundLocalError in the
+# meshing auto-recovery path (a duplicate local import shadowed a
+# module-level one, so the retry ALWAYS crashed and the surrounding
+# "except Exception" hid it).
+#
+# Style/modernisation sets (I, UP, SIM, RET, ARG) are intentionally NOT on:
+# they report 200+ findings across the tree, which is a separate, reviewable
+# refactor — not something to fold silently into unrelated commits.
+select = ["E9", "F", "B"]
+ignore = [
+    # Unused local variable. Cannot be blanket-removed here: several of the
+    # current hits are *implicit guards* whose value is discarded but whose
+    # evaluation must stay, because it raises on invalid input —
+    # e.g. list.index() / next() (raise when absent) and
+    # foam_mesh_io.read_faces() (raises on a malformed polyMesh).
+    # Deleting those assignments would silently drop a validity check.
+    # Tracked as debt: clean case by case, making each guard explicit.
+    "F841",
+    # zip() without strict=. Adding strict=True changes behaviour (raises
+    # instead of truncating) on 15 call sites in mesh code; that needs
+    # per-site verification against real meshes, not a bulk edit.
+    "B905",
+    # Loop variable used in a closure. Every current hit defines the closure
+    # and consumes it inside the SAME iteration (sorted(key=...), immediate
+    # call), so the late-binding trap does not apply — verified by reading
+    # all of them.
+    "B023",
+    # Unused loop control variable (rename to _x). Purely cosmetic: it finds
+    # no defect, and the 13 remaining hits sit in hot paths (tet_poly_dual,
+    # gmsh_wrapper, adaptive_loop) where a hand-rename is all downside and
+    # no upside. Ruff's own autofix already applied the 11 it considered
+    # safe; these are the ones it declined.
+    "B007",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately import for side effects and re-export fixtures, and
+# "assert False" is a normal pytest idiom for an unreachable branch (the
+# -O stripping B011 warns about never applies to a test run).
+"tests/**" = ["F401", "F811", "B011"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's parameter markers are *required* in argument defaults — that is
+# the framework's documented API, not the mutable-default trap B008 targets.
+extend-immutable-calls = [
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Depends",
+]

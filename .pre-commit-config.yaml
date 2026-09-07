@@ -1,0 +1,43 @@
+# Pre-commit hooks — local quality gate (ruff + fast tests).
+#
+# INSTALL (once, from the project root, inside your Python 3.11+ venv):
+#   python -m pre_commit install
+#
+# Then every "git commit" runs the hooks below automatically:
+#   - ruff check  (fast: only staged .py files, ~1-2 s)
+#   - pytest fast subset via markers: `-m "not slow and not wsl"` (~44 s)
+#
+# To bypass in an emergency:  git commit --no-verify
+#
+# SCOPE: ruff checks only src/ and tests/ (the quality gate from
+# pyproject.toml). tools/ is excluded because it holds tracked scratch
+# scripts with pre-existing lint debt — decide separately whether to
+# clean them or drop them from git.
+#
+# The test selector uses the real markers (pyproject.toml):
+#   - slow : long-running tests (real GMSH/aggregator runs)
+#   - wsl  : tests that run real cartesianMesh/OpenFOAM in WSL2
+# Excluding both leaves a green ~44 s suite that covers everything that
+# does NOT need GMSH-heavy work or a live OpenFOAM install. The full
+# suite (including slow+wsl) is run manually:
+#   python -m pytest tests -m "not slow and not wsl"   # fast gate
+#   python -m pytest tests                              # everything
+
+repos:
+  - repo: local
+    hooks:
+      # --- Fast quality gate on staged .py files (E9/F/B rules) ---
+      - id: ruff
+        name: ruff check (staged files)
+        entry: python -m ruff check
+        language: system
+        types: [python]
+        exclude: '^tools/'
+
+      # --- Fast pytest suite via markers (no slow, no wsl) ---
+      - id: pytest-fast
+        name: "pytest fast suite (markers: not slow, not wsl)"
+        entry: python -m pytest tests -m "not slow and not wsl" -q --no-header -p no:cacheprovider
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -1,0 +1,15 @@
+{
+    "name": "Conjugate Heat Transfer",
+    "description": "Solid-fluid coupled heat transfer",
+    "defaults": {
+        "detail": "medium",
+        "max_cell_ratio": 0.04,
+        "min_cell_ratio": 0.003,
+        "boundary_layers": {
+            "nLayers": 3,
+            "thicknessRatio": 0.003,
+            "expansionRatio": 1.4
+        },
+        "mesher_type": "cfmesh"
+    }
+}
