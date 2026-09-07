@@ -13,7 +13,7 @@ Due percorsi: **installer precompilato** (consigliato, non serve Python) o
 
 ### Passi
 1. Scarica `PolyFoamMesh-<versione>-Setup.exe` dalla pagina
-   [Releases](https://github.com/OWNER/cfmesh-autogui/releases) del repository.
+   [Releases](https://github.com/LorenzoRiti/PolyFoamMesh/releases) del repository.
 2. Doppio clic sull'installer.
 3. Se Windows SmartScreen avvisa ("Windows ha protetto il PC"): l'exe non è
    firmato con un certificato a pagamento — è un falso positivo comune per
@@ -59,11 +59,11 @@ PolyFoamMesh → Disinstalla. I log restano in
 ## Opzione B — Da sorgente (sviluppatori)
 
 ```bash
-git clone https://github.com/OWNER/cfmesh-autogui.git
-cd cfmesh-autogui
+git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
+cd PolyFoamMesh
 pip install -e ".[test]"
 pip install gmsh meshio reportlab
-python -m cfmesh_autogui.app
+polyfoammesh
 ```
 
 Requisiti: Python 3.11+.
