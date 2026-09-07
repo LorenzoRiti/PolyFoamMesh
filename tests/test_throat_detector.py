@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 
-from cfmesh_autogui.core.throat_detector import (
+from polyfoammesh.core.throat_detector import (
     detect_refinement_regions,
     _find_significant_minima_3d,
     _cluster_minima,
@@ -74,7 +74,7 @@ def test_cluster_minima():
 
 
 def test_object_refinements_in_meshdict():
-    from cfmesh_autogui.core.meshdict_gen import build_meshdict_lines
+    from polyfoammesh.core.meshdict_gen import build_meshdict_lines
     import tempfile
     tmpdir = tempfile.mkdtemp()
     refs = [
@@ -96,7 +96,7 @@ def test_object_refinements_in_meshdict():
 
 
 def test_manual_refinements_in_meshdict():
-    from cfmesh_autogui.core.meshdict_gen import build_meshdict_lines
+    from polyfoammesh.core.meshdict_gen import build_meshdict_lines
     refs = [
         {"centre": (0.0, 0.0, 0.5), "radius": 0.1, "cell_size": 0.01},
         {"centre": (0.3, 0.0, 0.0), "radius": 0.2, "cell_size": 0.005},

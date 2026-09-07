@@ -171,7 +171,7 @@ def test_engine_run_no_case():
 
 def _wsl_available() -> bool:
     try:
-        from cfmesh_autogui.config import OFConfig
+        from polyfoammesh.config import OFConfig
         return OFConfig().validate()
     except Exception:
         return False
@@ -231,7 +231,7 @@ def test_run_actually_meshes_in_parallel_on_real_wsl():
         encoding="ascii",
     )
 
-    from cfmesh_autogui.core.meshdict_gen import write_meshdict
+    from polyfoammesh.core.meshdict_gen import write_meshdict
     write_meshdict(case, 0.08, 0.02, patch_names=["wall"],
                    surface_file="constant/triSurface/surface.stl")
 

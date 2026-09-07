@@ -33,8 +33,8 @@ import pytest
 
 cq = pytest.importorskip("cadquery")
 
-from cfmesh_autogui.commercial.watertight import WatertightWorkflow  # noqa: E402
-from cfmesh_autogui.core.geometry import create_test_cylinder  # noqa: E402
+from polyfoammesh.commercial.watertight import WatertightWorkflow  # noqa: E402
+from polyfoammesh.core.geometry import create_test_cylinder  # noqa: E402
 
 # OpenFOAM/cfMesh reject paths with spaces (the user's home dir has one);
 # route through a space-free root like the rest of the suite/benchmarks do.
@@ -126,13 +126,13 @@ def test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop(workflow, mon
     # which injects its own module instances into sys.modules by hand.
     # When a test using the latter runs earlier in the same pytest
     # session, monkeypatch's dotted-string resolver — which walks
-    # "cfmesh_autogui.commercial.openmp_accel.OpenMPAccel...` as package
+    # "polyfoammesh.commercial.openmp_accel.OpenMPAccel...` as package
     # ATTRIBUTES, not just sys.modules lookups — gets confused by the
     # resulting package/attribute mismatch and raises AttributeError
     # (order-dependent: passes in isolation, fails as part of the full
     # suite). Importing the class directly and patching it sidesteps that
     # resolver entirely.
-    from cfmesh_autogui.commercial.openmp_accel import OpenMPAccel
+    from polyfoammesh.commercial.openmp_accel import OpenMPAccel
     monkeypatch.setattr(OpenMPAccel, "_detect_physical_cores", lambda self: 4)
 
     def fake_run(cmd, **kwargs):

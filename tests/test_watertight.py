@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -117,6 +118,45 @@ def test_workflow_requires_geometry():
     result = wf.run()
     assert not result.success
     assert len(result.errors) > 0
+
+
+def test_step_boundary_layer_no_walls_skips_bl(monkeypatch, tmp_path):
+    """No wall patches must skip BL entirely, not apply it to every patch."""
+    wf = WatertightWorkflow()
+    wf.set_boundary_layers(3, 0.005, 1.2)
+    wf._meshes = [
+        types.SimpleNamespace(metadata={"name": "inlet"}),
+        types.SimpleNamespace(metadata={"name": "outlet"}),
+        types.SimpleNamespace(metadata={"name": "symmetry"}),
+    ]
+    wf._case_dir = tmp_path
+    wf._result = WorkflowResult()
+    wf._max_cell = 0.05
+    wf._min_cell = 0.01
+
+    class _FakeGeom:
+        def compute_bbox_dim(self, meshes):
+            return (1.0, 1.0, 1.0)
+
+        def validate_cell_sizes(self, bbox_dim, max_cell, min_cell):
+            return (0.05, 0.01, None)
+
+    calls = {}
+
+    class _FakeMeshdict:
+        def write_meshdict(self, *args, **kwargs):
+            calls["bl_params"] = kwargs.get("bl_params")
+
+    monkeypatch.setattr(_mod, "_lazy_geom", lambda: _FakeGeom())
+    monkeypatch.setattr(_mod, "_lazy_meshdict", lambda: _FakeMeshdict())
+
+    wf._step_boundary_layer()
+
+    assert wf._bl_params["wallPatches"] == []
+    assert calls["bl_params"] is None, "meshDict must be written without a BL block"
+    assert any(
+        "inlet" in w and "outlet" in w for w in wf._result.warnings
+    ), "warning should name the excluded patches"
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.core import foam_mesh_io as fio  # noqa: E402
-from cfmesh_autogui.core.tet_poly_dual import (  # noqa: E402
+from polyfoammesh.core import foam_mesh_io as fio  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import (  # noqa: E402
     TetPolyDualConverter, planarity_report,
 )
 

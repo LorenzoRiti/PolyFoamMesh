@@ -17,7 +17,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from cfmesh_autogui.gui.params_panel import ParamsPanel  # noqa: E402
+from polyfoammesh.gui.params_panel import ParamsPanel  # noqa: E402
 
 
 @pytest.fixture(scope="module")

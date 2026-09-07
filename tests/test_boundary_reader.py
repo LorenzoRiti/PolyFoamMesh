@@ -12,10 +12,10 @@ try:
 except Exception:
     pass
 
-from cfmesh_autogui.core.boundary_reader import (
+from polyfoammesh.core.boundary_reader import (
     count_cells, count_faces, count_points, parse_boundary, PatchInfo,
 )
-from cfmesh_autogui.core.case_setup import setup_case
+from polyfoammesh.core.case_setup import setup_case
 
 SAMPLE_BOUNDARY = r"""/*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |

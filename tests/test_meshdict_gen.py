@@ -12,7 +12,7 @@ try:
 except Exception:
     pass
 
-from cfmesh_autogui.core.meshdict_gen import build_meshdict_lines, write_meshdict
+from polyfoammesh.core.meshdict_gen import build_meshdict_lines, write_meshdict
 
 
 def test_basic_has_robust_flags():

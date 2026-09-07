@@ -27,8 +27,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import cfmesh_autogui.core.foam_mesh_io as fio
-from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine, _cell_metrics
+import polyfoammesh.core.foam_mesh_io as fio
+from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine, _cell_metrics
 
 FIXDIR = Path(__file__).resolve().parent / "fixtures"
 WORK_ROOT = Path("C:/cfmesh_bench/bl_poly_test")

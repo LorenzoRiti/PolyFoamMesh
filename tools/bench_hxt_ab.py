@@ -34,7 +34,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.core.gmsh_wrapper import generate_volume_mesh  # noqa: E402
+from polyfoammesh.core.gmsh_wrapper import generate_volume_mesh  # noqa: E402
 
 ALGOS = {
     "frontal": {"env": "6", "label": "Frontal (6)"},

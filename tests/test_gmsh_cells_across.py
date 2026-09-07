@@ -9,7 +9,7 @@ without needing a live GMSH session.
 """
 from __future__ import annotations
 
-from cfmesh_autogui.core.gmsh_wrapper import _GMSH_DETAIL
+from polyfoammesh.core.gmsh_wrapper import _GMSH_DETAIL
 
 # Parte4.stp bounding box (metres): 3.0 x 0.255 x 0.255.
 VALVE = {"max_extent": 3.0, "cross_scale": 0.255}

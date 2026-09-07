@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 import pytest
 
-from cfmesh_autogui.core import foam_mesh_io
+from polyfoammesh.core import foam_mesh_io
 from _test_helpers import load_commercial_module
 
 _mod = load_commercial_module("quality_engine")

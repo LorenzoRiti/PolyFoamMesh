@@ -10,7 +10,7 @@ from __future__ import annotations
 import gmsh
 import pytest
 
-from cfmesh_autogui.core.gmsh_wrapper import _add_refinement_zone_fields
+from polyfoammesh.core.gmsh_wrapper import _add_refinement_zone_fields
 
 
 @pytest.fixture(scope="module")

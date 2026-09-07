@@ -64,14 +64,14 @@ def test_editor_init():
 def test_name_to_type_inlet():
     editor = BCEditor()
     assert editor._name_to_type("inlet") == "inlet"
-    assert editor._name_to_type("IN") == "inlet"
     assert editor._name_to_type("velocityInlet") == "inlet"
+    assert editor._name_to_type("inlet_02") == "inlet"
 
 
 def test_name_to_type_outlet():
     editor = BCEditor()
     assert editor._name_to_type("outlet") == "outlet"
-    assert editor._name_to_type("OUT") == "outlet"
+    assert editor._name_to_type("pressure_outlet") == "outlet"
 
 
 def test_name_to_type_wall():
@@ -88,9 +88,23 @@ def test_name_to_type_symmetry():
     assert editor._name_to_type("cyclic") == "symmetry"
 
 
-def test_name_to_type_patch():
+def test_name_to_type_unmatched_yields_no_signal():
     editor = BCEditor()
+    # A name carrying no keyword must NOT be asserted to be a wall:
+    # BCEditor._detect_type falls through to its geometric branch for these
+    # (GMSH names every patch surface_N, and geometry is the only thing that
+    # can tell an inlet from a wall there). "patch" means "name says nothing".
     assert editor._name_to_type("default") == "patch"
+    assert editor._name_to_type("surface_0") == "patch"
+    assert editor._name_to_type("random_name") == "patch"
+
+
+def test_name_to_type_wall_keywords_still_detected():
+    editor = BCEditor()
+    # Positive wall signal must survive: these name a solid surface, so the
+    # BC editor can type them without consulting geometry.
+    for name in ("blade", "body", "wing", "housing", "casing"):
+        assert editor._name_to_type(name) == "wall", name
 
 
 def test_rename_patch():
@@ -145,6 +159,9 @@ def test_auto_detect_by_name():
 
 def test_detect_unknown_becomes_patch():
     editor = BCEditor()
+    # No keyword in the name, and no geometry to fall back on (bbox and
+    # centroid are both zero): the honest answer is the generic OpenFOAM
+    # "patch", not a wall.
     p = BcPatchInfo(name="random_name")
     result = editor._detect_type(p, bbox=(0, 0, 0))
     assert result == "patch"
@@ -203,7 +220,8 @@ if __name__ == "__main__":
     test_name_to_type_outlet()
     test_name_to_type_wall()
     test_name_to_type_symmetry()
-    test_name_to_type_patch()
+    test_name_to_type_unmatched_yields_no_signal()
+    test_name_to_type_wall_keywords_still_detected()
     test_rename_patch()
     test_rename_patch_not_found()
     test_set_type()

@@ -1,21 +1,53 @@
-# CFMesh-AutoGUI
+# PolyFoamMesh
 
-**Commercial-grade cartesian mesh generator for OpenFOAM** — combina GMSH + cfMesh
-in una GUI professionale per produrre mesh pronte per CFD senza intervento manuale.
+**Preprocessore CFD open source per OpenFOAM** — combina GMSH + cfMesh in una
+GUI che genera mesh pronte per CFD senza scrivere dizionari OpenFOAM a mano.
 
-## Architecture
+Licenza: [GPLv3](LICENSE) · [Licenze di terze parti](THIRD_PARTY_LICENSES.md) · [Come contribuire](CONTRIBUTING.md)
+
+## A chi serve
+
+Sei un ingegnere CFD, uno studente o un ricercatore che oggi prepara mesh
+OpenFOAM scrivendo `blockMeshDict`/`snappyHexMeshDict`/`meshDict` a mano e
+scoprendo i problemi di qualità solo dopo aver lanciato `checkMesh`. Questa
+app mette GMSH e cfMesh dietro una GUI: carichi una geometria, generi una
+mesh con un click, vedi la qualità mentre viene calcolata, esporti il case
+pronto per il solver.
+
+## Come si confronta
+
+| | PolyFoamMesh | snappyHexMesh "nudo" | Ansys Meshing / ANSA / Pointwise |
+|---|---|---|---|
+| Costo | Gratis, open source (GPLv3) | Gratis (parte di OpenFOAM) | Licenze commerciali, spesso costose |
+| Automazione | 1-click + auto quality-fix | Manuale, dizionari a testo | Alta, ma workflow proprietario |
+| Maturità | Beta attiva, limiti noti e documentati | Maturo, ma nessuna GUI | Maturo |
+| Vincolo | Solo OpenFOAM | Solo OpenFOAM | Multi-solver |
+
+Non è un sostituto di un tool commerciale maturo su geometrie molto complesse
+— è pensato per chi lavora con OpenFOAM e vuole risparmiare le ore che oggi
+si perdono a scrivere dizionari e a interpretare `checkMesh` a mano. I limiti
+noti sono documentati in [docs/residual_risks.md](docs/residual_risks.md),
+non nascosti.
+
+## Documentazione utente
+
+- **[Installazione](docs/INSTALL.md)** — installer Windows o da sorgente
+- **[Guida all'uso](docs/USER_GUIDE.md)** — come funziona il workflow, tab per tab
+- **[Limiti noti](docs/residual_risks.md)** — cosa non funziona ancora e perché
+
+## Architettura
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   GUI (PySide6)                      │
 │  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ │
-│  │Geometry  │ │  Mesh    │ │ Advanced │ │ Quality │ │
+│  │Geometria │ │  Mesh    │ │ Avanzato │ │ Qualità │ │
 │  │   Tab    │ │   Tab    │ │   Tab    │ │   Tab   │ │
 │  └─────────┘ └──────────┘ └──────────┘ └─────────┘ │
 │        │             │              │           │    │
 │        ▼             ▼              ▼           ▼    │
 │  ┌──────────────────────────────────────────────┐   │
-│  │              Core Engine Layer                │   │
+│  │           Livello Core Engine                 │   │
 │  │  FeatureDetector  GMSH Wrapper  cfMesh Runner │   │
 │  │  meshDict Gen     Mesh Converter  Quality Fix │   │
 │  └──────────────────────────────────────────────┘   │
@@ -23,181 +55,139 @@ in una GUI professionale per produrre mesh pronte per CFD senza intervento manua
 │        ▼             ▼              ▼                │
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
 │  │  GMSH    │ │  cfMesh  │ │  OpenFOAM        │    │
-│  │ (native) │ │ (WSL2)   │ │  checkMesh/...   │    │
+│  │ (nativo) │ │ (WSL2)   │ │  checkMesh/...   │    │
 │  └──────────┘ └──────────┘ └──────────────────┘    │
 └─────────────────────────────────────────────────────┘
 ```
 
-## Key Features v2.0
+## Funzionalità principali v2.0
 
-| Feature | Description | Status |
+| Funzionalità | Descrizione | Stato |
 |---------|-------------|--------|
-| **GMSH + cfMesh Hybrid** | GMSH analyzes curvature/sizing, cfMesh fills volume | P0 |
-| **GMSH Direct** | Full tetra+BL mesh on Windows, no WSL needed | P0 |
-| **Feature Detection** | Automatic sharp edges, thin gaps, curvature analysis | P0 |
-| **New Case Wizard** | 3-step guided workflow (Geometry → Mesh → Quality) | P0 |
-| **Tabbed Params Panel** | Geometry/Mesh/Advanced/Quality tabs | P0 |
-| **Quality Pipeline** | checkMesh → auto-fix → re-run (max 3 iterations) | P0 |
-| **Quick Mesh (1-Click)** | Ctrl+M for instant mesh with auto-suggested params | P0 |
-| **Export CGNS/VTU** | Export mesh in CGNS and ParaView VTU formats | P1 |
-| **Clipping Plane** | Interactive section cut in 3D viewer | P1 |
-| **Undo/Redo** | Ctrl+Z/Y with QUndoStack + ParamChangeCommand | P0 |
-| **Case Templates** | Presets for internal flow, external aero, CHT | P1 |
-| **QualityFixWorker** | Auto-fix loop — checkMesh → fix → re-run (max 3) | P0 |
-| **ParaView Integration** | Tools > Launch ParaView (subprocess.Popen) | P1 |
-| **Plugin System** | Plugin(ABC) via importlib, plugins/ directory | P2 |
-| **PDF Quality Report** | Professional mesh quality report with charts | P0 |
-| **Italian Localization** | UI + help + docs in Italiano | P1 |
+| **GMSH + cfMesh Hybrid** | GMSH analizza curvatura/sizing, cfMesh riempie il volume | P0 |
+| **GMSH Direct** | Mesh tetra+BL completa su Windows, senza WSL | P0 |
+| **Feature Detection** | Rilevamento automatico spigoli vivi, gap sottili, curvatura | P0 |
+| **New Case Wizard** | Workflow guidato in 3 passi (Geometria → Mesh → Qualità) | P0 |
+| **Pannello parametri a tab** | Tab Geometria/Mesh/Avanzato/Qualità | P0 |
+| **Pipeline qualità** | checkMesh → auto-fix → ri-esecuzione (max 3 iterazioni) | P0 |
+| **Quick Mesh (1-Click)** | Ctrl+M per mesh istantanea con parametri auto-suggeriti | P0 |
+| **Export CGNS/VTU** | Esporta la mesh nei formati CGNS e ParaView VTU | P1 |
+| **Piano di sezione** | Sezione interattiva nel viewer 3D | P1 |
+| **Annulla/Ripeti** | Ctrl+Z/Y con QUndoStack + ParamChangeCommand | P0 |
+| **Template di case** | Preset per flusso interno, aerodinamica esterna, CHT | P1 |
+| **QualityFixWorker** | Loop di auto-fix — checkMesh → fix → ri-esecuzione (max 3) | P0 |
+| **Integrazione ParaView** | Tools > Launch ParaView (subprocess.Popen) | P1 |
+| **Sistema plugin** | Plugin(ABC) via importlib, cartella plugins/ | P2 |
+| **Report qualità PDF** | Report professionale sulla qualità della mesh con grafici | P0 |
+| **Localizzazione italiana** | UI + help + docs in italiano | P1 |
 
-## Requirements
+## Installazione rapida
 
-- **Python** 3.11+
-- **GMSH** `pip install gmsh` — runs natively on Windows
-- **OpenFOAM v2512** via WSL2 Ubuntu (for cfMesh volume fill)
-- **Windows 10/11** (WSL2 support required for cfMesh path)
-
-## Installation
+Requisiti: Windows 10/11, Python 3.11+ (solo per l'installazione da
+sorgente), opzionalmente OpenFOAM v2512 in WSL2. Guida completa (installer
+precompilato o da sorgente): **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ```bash
-# 1. Install Python package
-pip install -e .
-
-# 2. Install GMSH Python API
+pip install -e ".[test]"
 pip install gmsh meshio reportlab
-
-# 3. (Optional) OpenFOAM in WSL2
-#    wsl --install -d Ubuntu
-#    sudo apt install openfoam2516
+polyfoammesh
 ```
 
-## Usage
+Workflow e scorciatoie: **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 
-```bash
-cfmesh-autogui
-```
-
-Or directly:
-
-```bash
-python -m cfmesh_autogui.app
-```
-
-### Quick Start
-
-1. **Ctrl+O** — Load STEP/STL geometry
-2. **Ctrl+M** — Quick Mesh (one-click)
-3. Use **New Case Wizard** (File → New Case) for guided workflow
-4. View mesh quality in the **Quality** tab
-5. **Export** → CGNS/VTU for ParaView
-
-### Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| Ctrl+O | Load Geometry (STEP/STL) |
-| Ctrl+R | Generate Mesh / Cancel |
-| Ctrl+M | Quick Mesh (one-click) |
-| Ctrl+N | Reset All |
-| Ctrl+Z | Undo |
-| Ctrl+Y | Redo |
-| Ctrl+Q | Exit |
-
-## Project Structure
+## Struttura del progetto
 
 ```
-cfmesh-autogui/
-├── src/cfmesh_autogui/
+polyfoammesh/
+├── src/polyfoammesh/
 │   ├── app.py                  # Entry point (splash, theme, i18n)
-│   ├── config.py               # OpenFOAM/WSL configuration
-│   ├── _version.py             # Single version source (imported everywhere)
-│   ├── core/                   # Engine layer (no GUI imports)
-│   │   ├── geometry.py         # CAD import (cadquery, trimesh)
-│   │   ├── gmsh_wrapper.py     # GMSH Python API wrapper
-│   │   ├── meshdict_gen.py     # cfMesh meshDict generator
-│   │   ├── feature_detector.py # Sharp edges, gaps, curvature
-│   │   ├── stl_writer.py       # Surface STL export
-│   │   ├── boundary_reader.py  # OpenFOAM boundary parser
-│   │   ├── case_setup.py       # OpenFOAM case setup + controlDict
-│   │   ├── openfoam_runner.py  # cfMesh runner + error analysis
-│   │   ├── mesh_converter.py   # MSH → OpenFOAM conversion
-│   │   └── …                   # workflow, session, validation, …
-│   ├── commercial/             # Advanced meshing modules
-│   │   ├── mesh_engine.py      # Multi-algorithm engine + escalation
-│   │   ├── quality_engine.py   # Quality auto-fix loops
-│   │   ├── adaptive_loop.py    # OODA adaptive refinement
-│   │   ├── snappy_hex_mesh.py  # SnappyHexMesh pipeline
-│   │   ├── batch_mesh.py       # Headless batch meshing
-│   │   └── …                   # ~30 modules (BL, mosaic, amr, …)
-│   ├── api/server.py           # Optional FastAPI headless server
+│   ├── config.py               # Configurazione OpenFOAM/WSL
+│   ├── _version.py             # Unica fonte di verità per la versione (importata ovunque)
+│   ├── core/                   # Livello motore (nessun import GUI)
+│   │   ├── geometry.py         # Import CAD (cadquery, trimesh)
+│   │   ├── gmsh_wrapper.py     # Wrapper della API Python di GMSH
+│   │   ├── meshdict_gen.py     # Generatore meshDict per cfMesh
+│   │   ├── feature_detector.py # Spigoli vivi, gap, curvatura
+│   │   ├── stl_writer.py       # Export STL di superficie
+│   │   ├── boundary_reader.py  # Parser dei boundary OpenFOAM
+│   │   ├── case_setup.py       # Setup case OpenFOAM + controlDict
+│   │   ├── openfoam_runner.py  # Runner cfMesh + analisi errori
+│   │   ├── mesh_converter.py   # Conversione MSH → OpenFOAM
+│   │   └── …                   # workflow, session, validazione, …
+│   ├── commercial/             # Moduli di meshing avanzato
+│   │   ├── mesh_engine.py      # Motore multi-algoritmo con escalation
+│   │   ├── quality_engine.py   # Loop di auto-fix qualità
+│   │   ├── adaptive_loop.py    # Raffinamento adattivo OODA
+│   │   ├── snappy_hex_mesh.py  # Pipeline SnappyHexMesh
+│   │   ├── batch_mesh.py       # Meshing batch headless
+│   │   └── …                   # ~30 moduli (BL, mosaic, amr, …)
+│   ├── api/server.py           # Server FastAPI headless opzionale
 │   └── gui/
-│       ├── main_window.py      # Main window (menu, export, undo)
-│       ├── params_panel.py     # 4-tab parameter panel
-│       ├── viewer_widget.py    # 3D viewer (PyVistaQt)
-│       ├── new_case_wizard.py  # 3-step guided wizard
+│       ├── main_window.py      # Finestra principale (menu, export, undo)
+│       ├── params_panel.py     # Pannello parametri a 4 tab
+│       ├── viewer_widget.py    # Viewer 3D (PyVistaQt)
+│       ├── new_case_wizard.py  # Wizard guidato in 3 passi
 │       ├── quality_panel.py    # checkMesh + PDF + auto-fix
-│       ├── task_runner.py      # One concurrency pattern (TaskManager)
-│       ├── pdf_report.py       # PDF quality report generator
-│       ├── log_panel.py        # Log output panel
-│       ├── about_dialog.py     # About dialog
-│       ├── branding.py         # Splash screen, app icon
-│       ├── design_tokens.py    # Design token system
-│       ├── theme.py            # Light/dark theme manager
-│       ├── style.py            # QSS style helpers
-│       └── constants.py        # App constants
-├── plugins/                    # Plugin system (Plugin ABC)
-│   └── plugin_base.py          #   Plugin(ABC) base class
-├── templates/                  # Case presets (JSON)
-├── locale/                     # i18n translations + compile scripts
-│   ├── cfmesh_autogui.pro      #   Qt project file
-│   ├── compile_i18n.bat        #   Windows batch compiler
-│   └── compile_i18n.py         #   Python compiler script
-├── installer/                  # NSIS / Inno Setup scripts
-├── tests/                      # pytest test suite (96 files, ~1.000 tests)
-├── benchmarks/                 # Meshing benchmark scripts + results
-├── dist/                       # PyInstaller EXE output
-│   └── CFMesh-AutoGUI.exe      #   Standalone executable
-└── docs/                       # Documentation + handoff notes
+│       ├── task_runner.py      # Pattern unico di concorrenza (TaskManager)
+│       ├── pdf_report.py       # Generatore report qualità PDF
+│       ├── log_panel.py        # Pannello di output log
+│       ├── about_dialog.py     # Finestra About
+│       ├── branding.py         # Splash screen, icona app
+│       ├── design_tokens.py    # Sistema di design token
+│       ├── theme.py            # Gestore tema chiaro/scuro
+│       ├── style.py            # Helper QSS di stile
+│       └── constants.py        # Costanti dell'app
+├── plugins/                    # Sistema plugin (Plugin ABC)
+│   └── plugin_base.py          #   Classe base Plugin(ABC)
+├── templates/                  # Preset di case (JSON)
+├── locale/                     # Traduzioni i18n + script di compilazione
+│   ├── polyfoammesh.pro        #   File progetto Qt
+│   ├── compile_i18n.bat        #   Compilatore batch Windows
+│   └── compile_i18n.py         #   Compilatore Python
+├── installer/                  # Script NSIS / Inno Setup
+├── tests/                      # Suite pytest (96 file, ~1.000 test)
+├── benchmarks/                 # Script e risultati dei benchmark di meshing
+├── dist/                       # Output EXE di PyInstaller
+│   └── PolyFoamMesh.exe        #   Eseguibile standalone
+└── docs/                       # Documentazione + note di handoff
 ```
 
-## Testing
+## Test
 
 ```bash
-# Full suite (~1.000 tests; slow tests marked, run everything)
+# Suite completa (~1.000 test; i test lenti sono marcati, esegue tutto)
 pytest tests/ -v
 
-# Fast subset used by the pre-commit hook (pure logic, no GMSH/Qt/WSL)
+# Sottoinsieme veloce usato dal pre-commit hook (logica pura, no GMSH/Qt/WSL)
 pytest tests/test_workflow.py tests/test_meshdict_gen.py tests/test_journal.py \
        tests/test_template_engine.py tests/test_octopoda.py \
        tests/test_settings_migration.py tests/test_config.py tests/test_validation.py -q
 ```
 
-### Pre-commit gate (local quality check)
+### Gate pre-commit (controllo qualità locale)
 
-The repo ships a `.pre-commit-config.yaml` that runs automatically before
-every commit:
+Il repo include un `.pre-commit-config.yaml` che gira automaticamente prima
+di ogni commit:
 
-1. **ruff check** (rules E9/F/B) on staged `.py` files
-2. **fast pytest subset** (pure-logic tests, ~18 s)
+1. **ruff check** (regole E9/F/B) sui file `.py` in staging
+2. **sottoinsieme pytest veloce** (test di logica pura, ~18 s)
 
-Install once with:
+Installa una volta con:
 
 ```bash
-C:\Users\Davide Valoroso\AppData\Local\Programs\Python\Python311\python.exe -m pre_commit install
+python -m pre_commit install
 ```
 
-The `entry:` lines in the config point to that absolute Python path — update
-them if you move the project to another machine. Bypass in an emergency with
-`git commit --no-verify`.
+Bypassa in caso di emergenza con `git commit --no-verify`.
 
-## Documentazione
+## Documentazione per sviluppatori/manutentori
 
-- **Per l'amico**: `INSTALL_AMICO.md` + PDF
-  `installer/output/CFMesh-AutoGUI-2.1.0-Istruzioni.pdf`.
-- **Distribuzione/rebuild** (exe one-dir + installer Inno):
-  `DISTRIBUZIONE.md`.
-- **Stato tecnico del mesher poliedrico** (percorso CFD Poly GMSH → dual
-  stile STAR-CCM+, fix, verifiche, limiti): `docs/poly_mesher_STATO.md`.
+- **Rebuild exe + installer** (PyInstaller one-dir + Inno Setup):
+  [docs/dev/DISTRIBUZIONE.md](docs/dev/DISTRIBUZIONE.md)
+- **Note tecniche interne** (handoff, stato del mesher poliedrico, log di
+  sviluppo): [docs/dev/](docs/dev/) — non necessarie per usare l'app, utili
+  solo per chi tocca l'engine di meshing
 
-## License
+## Licenza
 
-Proprietary — All Rights Reserved. © 2026 Davide Valoroso
+GPLv3 — vedi [LICENSE](LICENSE) e [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

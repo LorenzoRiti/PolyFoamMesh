@@ -34,7 +34,7 @@ import numpy as np
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
 
 # case -> (tet backup, work dir, inlet, outlet, walls)
 CONFIGS = {
@@ -229,7 +229,7 @@ def main() -> int:
 
     # walls = every patch except inlet/outlet (computed for the valve)
     if not walls:
-        from cfmesh_autogui.core import foam_mesh_io as fio
+        from polyfoammesh.core import foam_mesh_io as fio
 
         _, _, _, _, patches = fio.read_polymesh(tet_src)
         walls = [p["name"] for p in patches
@@ -240,7 +240,7 @@ def main() -> int:
 
     tet_case = WORK / "tet"
     write_case(tet_case, tet_src, INLET, OUTLET, walls)
-    from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter
+    from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
     poly_case = WORK / "poly"
     write_case(poly_case, tet_src, INLET, OUTLET, walls)
     conv_kw = PRODUCTION_PARAMS if args.variant == "production" else {}
@@ -262,7 +262,7 @@ def main() -> int:
     print("residuals:", rp["residuals"])
 
     # full comparison of the solved fields
-    from cfmesh_autogui.core.foam_mesh_io import read_polymesh
+    from polyfoammesh.core.foam_mesh_io import read_polymesh
 
     def analyze(case: Path) -> dict:
         pts, faces, own, nei, pat = read_polymesh(case / "constant" / "polyMesh")

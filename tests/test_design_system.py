@@ -1,4 +1,4 @@
-"""Tests for the CFMesh-AutoGUI design system.
+"""Tests for the PolyFoamMesh design system.
 
 Covers: token module integrity, theme manager, branding assets (logo/splash),
 QSS file presence, hardcoded-color audit in widget code.
@@ -25,11 +25,11 @@ except Exception:
 from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication([])
 
-from cfmesh_autogui.gui import design_tokens
-from cfmesh_autogui.gui import style as legacy_style
-from cfmesh_autogui.gui import theme
-from cfmesh_autogui.gui import branding
-from cfmesh_autogui.gui import about_dialog
+from polyfoammesh.gui import design_tokens
+from polyfoammesh.gui import style as legacy_style
+from polyfoammesh.gui import theme
+from polyfoammesh.gui import branding
+from polyfoammesh.gui import about_dialog
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ def test_light_and_dark_palettes_have_same_keys():
 
 
 def test_app_metadata_present():
-    assert design_tokens.APP_NAME == "CFMesh-AutoGUI"
+    assert design_tokens.APP_NAME == "PolyFoamMesh"
     assert design_tokens.APP_VERSION  # non-empty
     assert design_tokens.APP_LICENSE
     print("PASS: app metadata complete")
@@ -236,7 +236,7 @@ def test_design_system_json_valid():
     assert json_path.is_file()
     with json_path.open(encoding="utf-8") as f:
         ds = json.load(f)
-    assert ds["name"] == "CFMesh-AutoGUI Design System"
+    assert ds["name"] == "PolyFoamMesh Design System"
     assert ds["version"] == "1.0.0"
     assert "light" in ds["semantic"] and "dark" in ds["semantic"]
     assert "primary" in ds["tokens"]["color"]

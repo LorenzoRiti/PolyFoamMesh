@@ -22,6 +22,7 @@ def test_job_status_enum():
     assert JobStatus.COMPLETED.value == "completed"
     assert JobStatus.FAILED.value == "failed"
     assert JobStatus.CANCELLED.value == "cancelled"
+    assert JobStatus.NOT_SUBMITTED.value == "not_submitted"
 
 
 def test_mesh_job_defaults():
@@ -79,7 +80,10 @@ def test_submit_offline():
     assert job.id is not None
     assert job.n_cores == 4
     assert job.description == "test"
-    assert job.status == JobStatus.PENDING
+    # Offline jobs were never dispatched — PENDING would imply they may
+    # still run, which is a lie for work that was never submitted.
+    assert job.status == JobStatus.NOT_SUBMITTED
+    assert "not submitted" in job.error
 
 
 def test_submit_offline_with_defaults():
@@ -111,12 +115,16 @@ def test_wait_offline():
 def test_download_result_offline():
     import os as _os
     cm = CloudMesher()
-    job = MeshJob(id="offline-test", status=JobStatus.COMPLETED)
+    job = MeshJob(id="offline-test", status=JobStatus.NOT_SUBMITTED)
     tmp = Path(_os.environ.get("TEMP", "/tmp"))
     result = cm.download_result(job, tmp)
     assert result.exists()
     data = json.loads(result.read_text())
     assert data["id"] == "offline-test"
+    # The placeholder must be unambiguous: it must not read as a real
+    # downloaded result archive.
+    assert data["status"] == "not_submitted"
+    assert "No result archive was downloaded" in data["message"]
     result.unlink(missing_ok=True)
 
 

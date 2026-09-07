@@ -22,7 +22,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QObject  # noqa: E402
 from unittest import mock  # noqa: E402
 
-import cfmesh_autogui.gui.main_window as mw  # noqa: E402
+import polyfoammesh.gui.main_window as mw  # noqa: E402
 
 
 _all_worker_attrs = {

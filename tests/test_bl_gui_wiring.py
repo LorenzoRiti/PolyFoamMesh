@@ -29,13 +29,13 @@ cq = pytest.importorskip("cadquery")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from cfmesh_autogui.core.geometry import (  # noqa: E402
+from polyfoammesh.core.geometry import (  # noqa: E402
     classify_faces,
     create_test_cylinder,
     tessellate_patches,
 )
-from cfmesh_autogui.core.meshdict_gen import build_meshdict_lines  # noqa: E402
-from cfmesh_autogui.gui.params_panel import ParamsPanel  # noqa: E402
+from polyfoammesh.core.meshdict_gen import build_meshdict_lines  # noqa: E402
+from polyfoammesh.gui.params_panel import ParamsPanel  # noqa: E402
 
 
 @pytest.fixture(scope="module")

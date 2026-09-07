@@ -19,7 +19,7 @@ import pytest
 gmsh = pytest.importorskip("gmsh")
 cq = pytest.importorskip("cadquery")
 
-from cfmesh_autogui.core.feature_detector import FeatureDetector  # noqa: E402
+from polyfoammesh.core.feature_detector import FeatureDetector  # noqa: E402
 
 
 def _thin_pipe_step(tmp_path: Path) -> str:

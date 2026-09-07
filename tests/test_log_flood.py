@@ -25,7 +25,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
-from cfmesh_autogui.gui.log_panel import LogPanel
+from polyfoammesh.gui.log_panel import LogPanel
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +40,7 @@ def _pump(ms: int = 20) -> None:
 
 
 def test_log_panel_flood_drops_burst_and_stays_bounded(qapp):
-    from cfmesh_autogui.gui.log_panel import _BURST_PENDING_CAP
+    from polyfoammesh.gui.log_panel import _BURST_PENDING_CAP
 
     panel = LogPanel()
 
@@ -86,7 +86,7 @@ def test_log_panel_suppression_note_is_visible_after_flood(qapp):
 
 
 def test_stream_subprocess_throttles_live_lines_but_captures_all(qapp):
-    from cfmesh_autogui.core.openfoam_runner import _stream_subprocess
+    from polyfoammesh.core.openfoam_runner import _stream_subprocess
 
     child = (
         "import sys; "

@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cfmesh_autogui import octopoda_local
-from cfmesh_autogui.octopoda_local import OctopodaRuntime
+from polyfoammesh import octopoda_local
+from polyfoammesh.octopoda_local import OctopodaRuntime
 
 
 def test_remember_and_recall():
