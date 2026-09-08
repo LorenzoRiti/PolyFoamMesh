@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QTextEdit
 
 from polyfoammesh.gui.design_tokens import (
     ERROR_LIGHT,
+    INFO_LIGHT,
     PRIMARY_500,
     SUCCESS_LIGHT,
     WARNING_LIGHT,
@@ -77,6 +78,7 @@ class LogPanel(QTextEdit):
         html = escape(str(text))
         html = html.replace("[ERROR]", f'<span style="color:{ERROR_LIGHT};font-weight:bold">[ERROR]</span>')
         html = html.replace("[WARN]", f'<span style="color:{WARNING_LIGHT};font-weight:bold">[WARN]</span>')
+        html = html.replace("[SUBSTITUTED]", f'<span style="color:{INFO_LIGHT};font-weight:bold">[SUBSTITUTED]</span>')
         html = html.replace("[DONE]", f'<span style="color:{SUCCESS_LIGHT};font-weight:bold">[DONE]</span>')
         html = html.replace("[error]", f'<span style="color:{ERROR_LIGHT}">[error]</span>')
         html = html.replace("[warn]", f'<span style="color:{WARNING_LIGHT}">[warn]</span>')

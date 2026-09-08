@@ -6,12 +6,6 @@ name: CI
 #   2. pytest — fast subset: excludes `slow` (real GMSH/aggregator runs)
 #      and `wsl` (live WSL2 + OpenFOAM). These need a Windows+WSL2+OpenFOAM
 #      environment that a Linux CI runner cannot provide.
-#
-# ubuntu-latest ships none of the shared libs PySide6/Qt6 and GMSH dlopen
-# at import time (no X server, minimal image): missing libEGL.so.1 broke
-# every test module that imports PySide6.QtWidgets, missing libGLU.so.1
-# broke every module that imports gmsh. QT_QPA_PLATFORM=offscreen avoids a
-# second failure (no display) once the libs themselves are importable.
 
 on:
   push:
@@ -24,15 +18,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    env:
+      # Headless Qt for the GUI tests (PySide6/QApplication). The offscreen
+      # platform plugin renders without a display server; without it
+      # QApplication fails to start on the runner.
+      QT_QPA_PLATFORM: offscreen
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system libs (Qt/PySide6 + GMSH need these headless)
+      - name: Install native libraries (Qt/EGL + GLU for GMSH)
+        # ubuntu-latest ships no GUI libraries. The PySide6 GUI tests dlopen
+        # libEGL/libGL/libxkbcommon and the gmsh wheel dlopens libGLU at
+        # import time. Without them pytest dies at COLLECTION with
+        # "ImportError: libEGL.so.1 / libGLU.so.1: cannot open shared object
+        # file", aborting the run with exit code 2.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libegl1 libgl1 libglu1-mesa \
-            libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libdbus-1-3 libfontconfig1
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -57,8 +63,6 @@ jobs:
         run: python tools/check_version_sync.py
 
       - name: Test (fast suite — no slow, no wsl)
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: >-
           pytest tests/ -m "not slow and not wsl" -q --no-header
           -p no:cacheprovider

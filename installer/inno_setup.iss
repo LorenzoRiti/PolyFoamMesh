@@ -11,10 +11,10 @@
 ; which this installer does NOT ship (a notice in the app explains it).
 ;
 ; Build:  ISCC.exe installer\inno_setup.iss   (from the repo root)
-; Output: installer\output\PolyFoamMesh-2.1.0-Setup.exe
+; Output: installer\output\PolyFoamMesh-2.2.0-Setup.exe
 
 #ifndef MyAppVersion
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.2.0"
 #endif
 #define MyAppName "PolyFoamMesh"
 #define MyAppPublisher "PolyFoamMesh Project"
@@ -44,7 +44,6 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 ; the whole bundle lives under {app}; the uninstaller removes it all

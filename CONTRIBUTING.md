@@ -28,7 +28,7 @@ CI: eseguili in locale se la tua modifica tocca quei percorsi.
 ## Segnalare un bug
 
 Apri una issue con: geometria di input (o una minimale che riproduce il
-problema), comando/percorso usato in GUI, log da `%APPDATA%\cfmesh-autogui\logs\app.log`.
+problema), comando/percorso usato in GUI, log da `%APPDATA%\polyfoammesh\logs\app.log`.
 
 ## Limiti noti
 

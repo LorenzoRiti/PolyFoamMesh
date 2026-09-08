@@ -13,6 +13,7 @@ class Tag:
     DICT = "[dict]"
     ERROR = "[ERROR]"
     WARN = "[WARN]"
+    SUBSTITUTED = "[SUBSTITUTED]"
     SUGGESTION = "[suggestion]"
     FIX = "[fix]"
     BOUNDARY = "[boundary]"

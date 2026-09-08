@@ -1,89 +1,102 @@
-# Installazione
+# Installation
 
-Due percorsi: **installer precompilato** (consigliato, non serve Python) o
-**da sorgente** (per sviluppatori/contributori).
+**English** | [Italiano](INSTALL.it.md)
 
-## Opzione A — Installer Windows (consigliata)
+There are two ways to get PolyFoamMesh: a **prebuilt Windows installer** (the
+recommended route — no Python involved, nothing else to set up) or **from
+source** (if you are a developer or want to contribute).
 
-### Requisiti
-- Windows 10 o 11, 64 bit
-- ~2 GB di RAM libera (consigliati 4+)
-- ~2.5 GB di spazio su disco
-- Non serve Python, non serve nient'altro
+## Option A — Windows installer (recommended)
 
-### Passi
-1. Scarica `PolyFoamMesh-<versione>-Setup.exe` dalla pagina
-   [Releases](https://github.com/LorenzoRiti/PolyFoamMesh/releases) del repository.
-2. Doppio clic sull'installer.
-3. Se Windows SmartScreen avvisa ("Windows ha protetto il PC"): l'exe non è
-   firmato con un certificato a pagamento — è un falso positivo comune per
-   software distribuito da sviluppatori indipendenti.
-   **"Ulteriori informazioni" → "Esegui comunque"**.
-4. Completa l'installazione (disponibile in italiano). Al termine l'app si
-   avvia da sola.
-5. Da quel momento: **Start → PolyFoamMesh** o l'icona sul desktop.
+### Requirements
 
-### Cosa funziona subito (senza altro da installare)
-| Percorso | Dove | Risultato |
-|---|---|---|
-| CFD Poly (GMSH, no-WSL) | Mesh tab | Tet GMSH → dual → mesh 100% poliedrica |
-| FEM Tetra (GMSH, no-WSL) | Mesh tab | Mesh tetraedrica per solver FEM |
-| Visualizzazione | Viewer 3D | Geometria e mesh |
+Windows 10 or 11, 64 bit, with roughly 2 GB of free RAM (4+ recommended) and
+about 2.5 GB of free disk space. That's it — no Python, no WSL, no OpenFOAM
+needed for the basics.
 
-### Cosa richiede un passo in più
-- **Cartesian mesh (cfMesh)** e **validazione checkMesh** richiedono
-  OpenFOAM in WSL2 (vedi Opzione C sotto). Senza, l'app mostra un avviso
-  chiaro e non procede su quei percorsi — non è un errore, è il
-  comportamento atteso finché non installi OpenFOAM.
+### Steps
 
-### Provalo in 2 minuti
-1. **File → Load Geometry...** → apri uno STL chiuso/watertight (es. un
-   modello di test incluso).
-2. Mesh tab → **"CFD Poly (GMSH, no-WSL)"**.
-3. Case directory: un percorso **senza spazi** (es. `C:\prova`).
-4. **Run** → nel log vedi GMSH generare il tet, poi il dual poliedrico.
+1. Grab `PolyFoamMesh-<version>-Setup.exe` from the
+   [Releases](https://github.com/LorenzoRiti/PolyFoamMesh/releases) page of
+   the repository. If the Releases section is still empty, the installer for
+   the current version hasn't been built yet — in that case go straight to
+   Option B below, the app works just as well from source.
+2. Double-click the installer. Windows SmartScreen may warn ("Windows
+   protected your PC"): the executable is not signed with a paid certificate,
+   which is a common false positive for software distributed by independent
+   developers. Choose **"More info" → "Run anyway"**.
+3. The installer asks a couple of simple questions and then starts the app
+   on its own. From then on you can launch it any time from
+   **Start → PolyFoamMesh** or the desktop icon.
 
-### Limiti noti (onesti)
-- STL auto-intersecanti (triangoli sovrapposti, fori non tagliati nel CAD)
-  possono far fallire GMSH con `PLC Error: two segments intersect` — usa STL
-  esportati puliti.
-- Formati consigliati: **STL chiuso** (watertight) o **STEP**.
-- Vedi [residual_risks.md](residual_risks.md) per i limiti tecnici noti
-  dell'engine di meshing.
+### What works right away (nothing else to install)
 
-### Disinstallazione
-**Start → PolyFoamMesh → Disinstalla**, o Impostazioni → App →
-PolyFoamMesh → Disinstalla. I log restano in
-`%APPDATA%\cfmesh-autogui\logs` (cancellabili a mano).
+The meshing paths that run purely on Windows need no WSL or OpenFOAM: **CFD
+Poly (GMSH, no-WSL)** generates a tetrahedral GMSH mesh and converts it to a
+100% polyhedral dual mesh, **FEM Tetra (GMSH, no-WSL)** produces a pure
+tetrahedral mesh for FEM solvers, and the **3D viewer** shows both geometry
+and mesh.
 
-## Opzione B — Da sorgente (sviluppatori)
+### What needs one extra step
+
+The **Cartesian (cfMesh)** path and the **checkMesh validation** run OpenFOAM
+inside WSL2 (see Option C below). Without OpenFOAM installed, the app shows a
+clear warning and does not proceed on those paths — that's expected behaviour,
+not an error, until you install OpenFOAM.
+
+### Try it in two minutes
+
+1. **File → Load Geometry...** and open a closed (watertight) STL — for
+   example one of the test models shipped with the app.
+2. In the Mesh tab pick **"CFD Poly (GMSH, no-WSL)"**.
+3. Choose a case directory **without spaces** (e.g. `C:\prova`).
+4. Hit **Run**: in the log you'll see GMSH generate the tetrahedra, then the
+   polyhedral dual.
+
+### Known limits (honest)
+
+Self-intersecting STLs (overlapping triangles, holes left open by the CAD
+tool) can make GMSH fail with `PLC Error: two segments intersect` — export
+clean STLs instead. The formats we recommend are **closed STL** (watertight)
+or **STEP**. See [residual_risks.md](residual_risks.md) for the full list of
+known limitations of the meshing engine.
+
+### Uninstalling
+
+**Start → PolyFoamMesh → Uninstall**, or Settings → Apps → PolyFoamMesh →
+Uninstall. Logs stay in `%APPDATA%\polyfoammesh\logs` and can be deleted by
+hand.
+
+## Option B — From source (developers)
 
 ```bash
 git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
 cd PolyFoamMesh
 pip install -e ".[test]"
-pip install gmsh meshio reportlab
 polyfoammesh
 ```
 
-Requisiti: Python 3.11+.
+You need Python 3.11+. The `.[test]` extra pulls in the test stack and the
+console scripts (`polyfoammesh` and the headless helpers). If you plan to
+touch the code, run `python -m pre_commit install` once: every commit then
+runs ruff (bug-catching rules) and the fast subset of pure-logic tests.
 
-## Opzione C — Aggiungere OpenFOAM/cfMesh (opzionale, entrambi i percorsi)
+## Option C — Adding OpenFOAM/cfMesh (optional, for both options)
 
-Serve solo per i percorsi Cartesian cfMesh e checkMesh.
+Only needed for the Cartesian cfMesh and checkMesh paths.
 
 ```powershell
 wsl --install -d Ubuntu
-# dentro Ubuntu:
+# inside Ubuntu:
 sudo apt-get update
 sudo apt-get install openfoam2512
 ```
 
-Oppure usa lo script incluso `installer/setup_wsl_openfoam.ps1` (richiede
-privilegi admin, ~1-2 GB di download). Dopo il setup, tutti i percorsi
-(cfMesh, checkMesh) funzionano senza altre modifiche.
+Alternatively use the bundled script `installer/setup_wsl_openfoam.ps1`
+(requires admin privileges, ~1–2 GB of downloads). After the setup, every
+path (cfMesh, checkMesh) works without any further changes.
 
-## Problemi?
+## Problems?
 
-Apri una issue con il contenuto di `%APPDATA%\cfmesh-autogui\logs\app.log` —
-vedi [CONTRIBUTING.md](../CONTRIBUTING.md).
+Open an issue and attach the contents of `%APPDATA%\polyfoammesh\logs\app.log`
+— see [CONTRIBUTING.md](../CONTRIBUTING.md).

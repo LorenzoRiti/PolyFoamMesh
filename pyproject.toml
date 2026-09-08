@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polyfoammesh"
-version = "2.1.0"
+version = "2.2.0"
 description = "Desktop standalone mesh generator for OpenFOAM using cfMesh/cartesianMesh"
 authors = [{name = "Davide Valoroso"}]
 license = {text = "GPL-3.0-or-later"}

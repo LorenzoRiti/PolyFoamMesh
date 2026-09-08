@@ -1747,6 +1747,13 @@ class MainWindow(QMainWindow):
             logger.debug("Automatic mesher: autopoly unavailable: %s", exc)
         return "gmsh_direct_poly"  # our Polymesh — always polyhedral
 
+    def _log_substitution(self, msg: str) -> None:
+        """Surface a clear, visible notice when the GUI silently substitutes
+        or falls back to a different meshing approach (algorithm, topology,
+        boundary layers, parallelism) — the user must never see a swap
+        happen without explanation (plan Lane C)."""
+        self._log.append_log(f"{Tag.SUBSTITUTED} {msg}")
+
     def _on_run_meshing(self):
         if not self._meshes:
             QMessageBox.warning(
@@ -2901,6 +2908,7 @@ class MainWindow(QMainWindow):
         if not ctx["bl_retried"] and ctx["bl_params"] and ctx["n_layers"] > 0:
             ctx["bl_retried"] = True
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
+            self._log_substitution("Riprovo senza boundary layer.")
             # Fase 3 P3.3: reuse the exact parameters of the first attempt
             # (snapshot in ctx) instead of re-reading the spinboxes.
             w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
@@ -2939,6 +2947,9 @@ class MainWindow(QMainWindow):
             self._log.append_log(
                 f"{Tag.WARN} GMSH volume failed — retrying at a coarser "
                 f"detail level ({next_detail})."
+            )
+            self._log_substitution(
+                "Riprovo con raffinamento ridotto (dettaglio più grossolano)."
             )
             w2 = GmshVolumeWorker(
                 ctx["step_path"], ctx["msh_path"], next_detail,
@@ -3332,6 +3343,9 @@ class MainWindow(QMainWindow):
         self._log.append_log(
             f"{Tag.WARN} Parallel meshing failed ({msg}) — "
             "falling back to single-core meshing for this run."
+        )
+        self._log_substitution(
+            "Passato a mesh seriale (single-core): risorse insufficienti per MPI."
         )
         QMessageBox.information(
             self, "Parallel Meshing Fallback",
@@ -3817,6 +3831,10 @@ class MainWindow(QMainWindow):
                 f"{Tag.FIX} Quality auto-fix #{n}: retrying GMSH at coarser detail "
                 f"({self._params.get_detail_level()})"
             )
+            self._log_substitution(
+                "Qualità insufficiente: sostituito l'algoritmo con un "
+                "passaggio più grossolano."
+            )
             self._run_id += 1
             # Confirmed live root cause of a "poly never happens on retry"
             # report: this dispatches a BRAND NEW GMSH tet mesh into a new
@@ -4197,6 +4215,10 @@ class MainWindow(QMainWindow):
             if error_info.error_type == ErrorType.BL_FAILURE:
                 self._log.append_log(
                     f"{Tag.FIX} Boundary layers failed — disabling BL and retrying."
+                )
+                self._log_substitution(
+                    "Algoritmo sostituito: boundary layer disattivato "
+                    "(fallisce su questa geometria)."
                 )
                 self._params.set_bl_enabled(False)
                 try:

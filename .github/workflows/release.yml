@@ -1,0 +1,140 @@
+name: Release
+
+# Builds a Windows installer on every pushed tag v* and attaches it to the
+# GitHub Release for that tag.
+#
+# Windows-only: PyInstaller (frozen exe) and Inno Setup (installer) are
+# Windows tools. The lint/test gate mirrors ci.yml so a broken tag never
+# ships an installer.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      # Headless Qt for the GUI tests (same as ci.yml). Harmless on Windows,
+      # keeps the gate deterministic on a headless runner session.
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Upgrade pip
+        shell: pwsh
+        run: python -m pip install --upgrade pip
+
+      - name: Install package + test deps
+        shell: pwsh
+        run: pip install -e ".[test]"
+
+      - name: Install ruff
+        shell: pwsh
+        run: pip install ruff
+
+      # ---- Gates (same as ci.yml) -------------------------------------
+      - name: Lint (ruff — E9/F/B bug rules)
+        shell: pwsh
+        run: ruff check src/ tests/
+
+      - name: Version sync (pyproject / _version / installer)
+        shell: pwsh
+        run: python tools/check_version_sync.py
+
+      - name: Test (fast suite — no slow, no wsl)
+        shell: pwsh
+        run: >-
+          pytest tests/ -m "not slow and not wsl" -q --no-header
+          -p no:cacheprovider
+
+      # ---- Build -------------------------------------------------------
+      # PolyFoamMesh.spec is a one-dir build: COLLECT name "PolyFoamMesh"
+      # (line 112) -> dist/PolyFoamMesh/PolyFoamMesh.exe. Relative paths in
+      # the spec (templates/, plugins/, rthook_casadi_dlls.py) resolve from
+      # the repo root, so run from the checkout root with default
+      # --distpath/--workpath (fresh runner, no cleanup needed).
+      - name: Build frozen exe (PyInstaller)
+        shell: pwsh
+        run: python -m PyInstaller --clean --noconfirm PolyFoamMesh.spec
+
+      - name: Verify PyInstaller output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "dist\PolyFoamMesh\PolyFoamMesh.exe")) {
+            throw "dist\PolyFoamMesh\PolyFoamMesh.exe not found — spec output path mismatch"
+          }
+          Write-Host "Bundle OK: dist\PolyFoamMesh\PolyFoamMesh.exe"
+
+      - name: Install Inno Setup 6
+        # Chocolatey is pre-installed on windows-latest runners and runs
+        # elevated, so this is the most reliable way to get ISCC.exe on PATH.
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile installer (Inno Setup)
+        # installer/inno_setup.iss resolves its relative paths from the
+        # script dir: Source ..\dist\PolyFoamMesh\* and OutputDir=output
+        # -> installer\output\PolyFoamMesh-<version>-Setup.exe
+        shell: pwsh
+        run: ISCC.exe installer\inno_setup.iss
+
+      - name: Verify installer output
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -LiteralPath "installer\output" -Filter "PolyFoamMesh-*-Setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "No Setup exe produced in installer\output" }
+          Write-Host "Installer: $($setup.FullName) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
+
+      - name: Zip dist bundle (portable, no-install)
+        # Lets users run the exe without installing; the zip contains the
+        # PolyFoamMesh/ folder at its root.
+        shell: pwsh
+        run: Compress-Archive -Path "dist\PolyFoamMesh" -DestinationPath "dist\PolyFoamMesh.zip"
+
+      - name: Extract changelog for release body
+        # Pulls the "## [<version>]" section out of CHANGELOG.md; falls back
+        # to the whole file if the section is missing.
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $lines = Get-Content -LiteralPath CHANGELOG.md
+          $start = -1
+          $header = '^## \[' + [regex]::Escape($version) + '\]'
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $header) { $start = $i; break }
+          }
+          if ($start -ge 0) {
+            $end = $lines.Count
+            for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^## \[') { $end = $i; break }
+            }
+            $body = ($lines[$start..($end - 1)] -join "`n")
+          } else {
+            $body = Get-Content -LiteralPath CHANGELOG.md -Raw
+          }
+          Set-Content -LiteralPath release_body.md -Value $body -Encoding utf8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: release_body.md
+          files: |
+            installer/output/PolyFoamMesh-*-Setup.exe
+            dist/PolyFoamMesh.zip

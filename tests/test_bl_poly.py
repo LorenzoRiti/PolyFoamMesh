@@ -252,16 +252,36 @@ def test_bl_rejects_bad_params_and_leaves_mesh_untouched():
 
 @pytest.mark.slow
 def test_valve_fixture_bl_invariants():
+    """Pins the DOCUMENTED valve behaviour (docs/residual_risks.md,
+    'Polyhedral Conversion'): the valve carries the concave-defect class,
+    so the BL engine must FAIL CLEANLY — every fallback scale attempted
+    and reported, the mesh on disk left byte-identical (never a corrupt
+    or half-written polyMesh), and no crash. The success path (volume
+    conservation, prism counts) is pinned by the cube/venturi tests above.
+    The test previously asserted r.success on the valve, i.e. the one
+    behaviour the engine documents as impossible on this fixture — it sat
+    in the slow bucket unexecuted (and, before the NpzFile hoist, would
+    not even have terminated in a suite run).
+    """
     npz = FIXDIR / "valve_dual.npz"
     if not npz.exists():
         pytest.skip("valve_dual.npz fixture not present")
     d = np.load(npz)
     points = d["points"].astype(np.float64)
     n_int = int(d["n_int"])
+    # Hoist the npz members OUT of the loop: NpzFile.__getitem__ re-opens
+    # and re-decompresses the member from the zip archive on EVERY access
+    # (~24 MB of face_verts per call). Indexing d["face_verts"] once per
+    # face turned this already-slow test into a ~4 h CPU-bound grind
+    # (1.24 M faces x full decompress) that could never finish in a suite
+    # run; captured once it runs in seconds.
+    face_verts = d["face_verts"]
+    face_sizes = d["face_sizes"].tolist()
+    face_offsets = d["face_offsets"].tolist()
     faces = []
-    for i in range(len(d["face_sizes"])):
-        s = d["face_offsets"][i]
-        faces.append(d["face_verts"][s:s + d["face_sizes"][i]].tolist())
+    for i in range(len(face_sizes)):
+        s = face_offsets[i]
+        faces.append(face_verts[s:s + face_sizes[i]].tolist())
     owner = d["owner"].astype(np.int64)
     neigh = d["neighbour"].astype(np.int64)
     patches = [{
@@ -273,16 +293,36 @@ def test_valve_fixture_bl_invariants():
     (case / "constant").mkdir(parents=True, exist_ok=True)
     poly = case / "constant" / "polyMesh"
     fio.write_polymesh(poly, points, faces, owner, neigh, patches)
+    before = {
+        p.name: p.read_bytes()
+        for p in sorted(poly.iterdir()) if p.is_file()
+    }
 
     r = PolyBoundaryLayerEngine(case).run(
         n_layers=2, first_height=1e-5, growth_rate=1.2, apply_to_all=True,
     )
-    assert r.success, r.errors
-    assert r.n_prism_cells > 0
-    vols = _mesh_ok(poly)
-    vol0 = float(_cell_metrics(points, faces, owner, neigh,
-                               int(max(owner.max(), neigh.max())) + 1, n_int)[0].sum())
-    assert abs(float(vols.sum()) - vol0) < 1e-6 * max(vol0, 1e-30)
+
+    if r.success:
+        # Healthy-geometry invariants, should the valve ever start passing.
+        assert r.n_prism_cells > 0
+        vols = _mesh_ok(poly)
+        vol0 = float(_cell_metrics(points, faces, owner, neigh,
+                                   int(max(owner.max(), neigh.max())) + 1, n_int)[0].sum())
+        assert abs(float(vols.sum()) - vol0) < 1e-6 * max(vol0, 1e-30)
+        return
+
+    # Clean-failure invariants (the documented valve path):
+    assert r.errors, "failure must be explained, not silent"
+    assert r.n_prism_cells == 0
+    # every fallback scale was attempted and its failure reported
+    assert any("scale=" in w for w in r.warnings), r.warnings
+    # the mesh on disk is byte-identical: a failed BL must never leave a
+    # corrupt polyMesh behind
+    after = {
+        p.name: p.read_bytes()
+        for p in sorted(poly.iterdir()) if p.is_file()
+    }
+    assert after == before
 
 
 def test_bl_fase2_local_termination_drops_defective_faces():
