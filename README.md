@@ -17,6 +17,22 @@ the polyhedral mesh, patch by patch.
 
 License: [GPLv3](LICENSE) · [Third-party licenses](THIRD_PARTY_LICENSES.md) · [Contributing](CONTRIBUTING.md)
 
+## Screenshots
+
+The mesher choice and the boundary-layer engine — the two things this
+project actually adds on top of raw GMSH/cfMesh — right in the main
+window:
+
+<p align="center">
+  <img src="docs/assets/mesher-selector.png" alt="Mesher selection: Cartesian cfMesh, Polymesh, or FEM Tetra" width="49%">
+  <img src="docs/assets/boundary-layers.png" alt="Boundary layer configuration panel" width="49%">
+</p>
+
+*Left: pick the meshing strategy per case — Cartesian cfMesh (WSL2),
+the native polyhedral mesher (no WSL needed), or plain tetrahedral for
+FEM. Right: boundary-layer settings, with a y+-driven first-layer
+thickness calculator.*
+
 ## Why not just use cfMesh directly
 
 cfMesh and GMSH produce raw meshes — hex or tet — and anyone working with

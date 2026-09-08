@@ -17,6 +17,22 @@ poliedrica, patch per patch.
 
 Licenza: [GPLv3](LICENSE) · [Licenze di terze parti](THIRD_PARTY_LICENSES.md) · [Come contribuire](CONTRIBUTING.md)
 
+## Screenshot
+
+La scelta del mesher e il motore di boundary layer — le due cose che
+questo progetto aggiunge davvero sopra GMSH/cfMesh grezzi — direttamente
+nella finestra principale:
+
+<p align="center">
+  <img src="docs/assets/mesher-selector.png" alt="Selezione mesher: Cartesian cfMesh, Polymesh o FEM Tetra" width="49%">
+  <img src="docs/assets/boundary-layers.png" alt="Pannello di configurazione boundary layer" width="49%">
+</p>
+
+*A sinistra: scegli la strategia di meshing per ogni case — Cartesian
+cfMesh (WSL2), il mesher poliedrico nativo (senza WSL) o tetraedrico
+puro per FEM. A destra: impostazioni boundary layer, con calcolo dello
+spessore del primo strato guidato dal y+.*
+
 ## Perché non uso semplicemente cfMesh
 
 cfMesh e GMSH producono mesh grezze — hex o tet — e questo lo fa già
