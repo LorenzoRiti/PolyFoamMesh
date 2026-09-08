@@ -224,8 +224,19 @@ def validate_case_dir(case_dir: str | Path) -> ValidationResult:
     - Path exists (or parent exists and can be created)
     - No characters that would break WSL/bash
     """
-    path = Path(case_dir).resolve()
-    path_str = str(path)
+    raw = str(case_dir)
+    # Windows-style paths (C:\... or C:/...) must be checked on the raw
+    # string: on a POSIX host Path("C:\\x").resolve() treats them as
+    # *relative* paths and prefixes the CWD, producing spurious space /
+    # backslash findings and breaking every GUI-less tool that runs inside
+    # WSL with a Windows case path.
+    windows_style = bool(re.match(r"^[A-Za-z]:[\\/]", raw))
+    if windows_style:
+        path_str = raw
+        path = Path(raw)
+    else:
+        path = Path(case_dir).resolve()
+        path_str = str(path)
 
     if " " in path_str:
         return _err(
@@ -237,7 +248,7 @@ def validate_case_dir(case_dir: str | Path) -> ValidationResult:
     # On Linux/Mac, backslash is a shell escape char and is unsafe.
     import os as _os
     unsafe_chars = r';`$()|&<>!'
-    if _os.name != "nt":
+    if _os.name != "nt" and not windows_style:
         unsafe_chars += "\\"
     dangerous = re.search(f'[{re.escape(unsafe_chars)}]', path_str)
     if dangerous:
@@ -247,11 +258,14 @@ def validate_case_dir(case_dir: str | Path) -> ValidationResult:
             "Remove the character and try again."
         )
 
-    parent = path.parent
-    if not parent.exists():
-        return _err(f"Parent directory does not exist: {parent}")
-    if parent.is_file():
-        return _err(f"Parent path is a file, not a directory: {parent}")
+    if _os.name == "nt" or not windows_style:
+        # Filesystem checks are only meaningful when the host can actually
+        # see the path: a POSIX host cannot inspect "C:\..." drives.
+        parent = path.parent
+        if not parent.exists():
+            return _err(f"Parent directory does not exist: {parent}")
+        if parent.is_file():
+            return _err(f"Parent path is a file, not a directory: {parent}")
 
     return _ok()
 

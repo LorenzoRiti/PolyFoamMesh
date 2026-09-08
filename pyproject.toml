@@ -45,6 +45,9 @@ dependencies = [
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    # qtbot fixture used by tests/test_feature_detector.py (and pytest-qt's
+    # QApplication singleton for the GUI tests)
+    "pytest-qt>=4.4",
 ]
 docs = [
     "sphinx>=7.0",
