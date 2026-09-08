@@ -1,6 +1,12 @@
 # PolyFoamMesh
 
+![AI-Assisted Development](https://img.shields.io/badge/AI--Assisted-Development-blue)
+
 *[English version](README.md)*
+
+Sviluppato con un approccio human-in-the-loop: l'architettura e le scelte
+fisiche sono dell'autore; il supporto dell'IA ha accelerato la stesura.
+Dettagli in [AI_COLLABORATION.md](AI_COLLABORATION.md).
 
 Genera mesh poliedriche per OpenFOAM partendo da uno STEP o uno STL, con
 boundary layer e senza scrivere dizionari a mano. GMSH e cfMesh fanno la
@@ -216,14 +222,18 @@ Bypass in an emergency with `git commit --no-verify`.
   sviluppo): [docs/dev/](docs/dev/) — non necessarie per usare l'app, utili
   solo per chi tocca l'engine di meshing
 
-## Come è stato scritto
+## Metodologia
 
-Buona parte del codice e della documentazione di questo progetto è stata
-scritta in "vibe coding" — con il supporto di assistenti AI (Claude), sotto
-la mia guida su decisioni tecniche, revisione e verifica dei risultati (i
-numeri sui test e sulla qualità mesh citati sopra sono misurati, non
-inventati). Non è un progetto scritto a mano riga per riga, e penso sia
-corretto dirlo apertamente invece di lasciarlo intuire.
+Lo sviluppo segue un workflow human-in-the-loop: gli algoritmi fisici, le
+tolleranze numeriche e la strategia di gestione errori sono progettati
+dall'autore; il supporto dell'IA viene usato per il boilerplate (GUI, test
+unitari, template di configurazione, parser di log) sotto quella
+direzione, con ogni riga rivista prima del merge. Ripartizione completa,
+incluso chi ha scritto cosa: [AI_COLLABORATION.md](AI_COLLABORATION.md).
+
+L'autore umano è pienamente responsabile della correttezza e della
+validità fisica di questo codice. L'IA è stata uno strumento di supporto,
+non un autore autonomo.
 
 ## License
 

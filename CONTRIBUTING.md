@@ -37,6 +37,26 @@ Prima di segnalare un comportamento come bug, controlla
 noti e documentati (timeout su mesh molto grandi, casi di geometria concava,
 ecc.).
 
+## Convenzione sui commit
+
+Per rendere tracciabile chi ha scritto cosa, i commit da qui in avanti
+usano un prefisso:
+
+- `[AI-gen]` — codice generato con assistenza IA, poi revisionato da un
+  ingegnere umano prima del commit
+- `[Human-fix]` — correzioni di logica, algoritmi o decisioni di design
+  scritte direttamente da una persona
+
+## Uso dell'IA nei contributi
+
+Il progetto stesso usa l'IA come strumento di pair-programming (vedi
+[AI_COLLABORATION.md](AI_COLLABORATION.md)) — non c'è alcun problema a
+farlo anche nella tua PR. Se usi un assistente IA per scrivere parte del
+codice, dichiaralo nella descrizione della PR: aiuta chi fa la review a
+sapere dove concentrare l'attenzione, in particolare su tolleranze
+numeriche, criteri di qualità mesh e gestione errori, dove serve verifica
+umana indipendentemente da chi ha scritto le righe.
+
 ## Licenza dei contributi
 
 Il progetto è GPLv3 ([LICENSE](LICENSE)). Contribuendo accetti che il tuo
