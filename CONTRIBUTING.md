@@ -42,8 +42,8 @@ ecc.).
 Per rendere tracciabile chi ha scritto cosa, i commit da qui in avanti
 usano un prefisso:
 
-- `[AI-gen]` — codice generato con assistenza IA, poi revisionato da un
-  ingegnere umano prima del commit
+- `[AI-gen]` — codice generato con assistenza IA, poi revisionato da una
+  persona prima del commit
 - `[Human-fix]` — correzioni di logica, algoritmi o decisioni di design
   scritte direttamente da una persona
 

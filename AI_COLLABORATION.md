@@ -1,7 +1,7 @@
 # Collaborazione con l'IA
 
 Questo progetto usa l'intelligenza artificiale come strumento di
-pair-programming, non come sostituto dell'ingegnere. Lo dichiaro qui in
+pair-programming, non come sostituto dell'autore. Lo dichiaro qui in
 modo esplicito perché credo sia più utile essere trasparenti sul workflow
 reale che lasciarlo intuire.
 
