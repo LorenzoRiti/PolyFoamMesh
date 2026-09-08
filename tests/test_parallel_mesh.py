@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest  # noqa: F401 — @pytest.mark.wsl below
@@ -15,6 +16,28 @@ DecomposeParams = _mod.DecomposeParams
 ParallelMeshResult = _mod.ParallelMeshResult
 ParallelMeshEngine = _mod.ParallelMeshEngine
 DECOMP_METHODS = _mod.DECOMP_METHODS
+
+
+def test_subprocess_with_cancel_drains_large_output():
+    """Regression: _run_subprocess_with_cancel used to poll process.poll()
+    without ever reading the stdout/stderr PIPE. A child emitting more than
+    the ~64 KB OS pipe buffer (a real parallel cartesianMesh + reconstruct
+    does) blocked on write and never exited, so wsl.exe never EOF'd and the
+    run stalled until the 4 h wall-clock timeout — even though the mesh had
+    finished in seconds (observed live). Draining threads fix it; this test
+    reproduces the >64 KB case with no WSL needed."""
+    pe = ParallelMeshEngine()
+    script = (
+        "import sys; [print(i) for i in range(40000)]; "
+        "print('DONE', file=sys.stderr)"
+    )
+    t0 = time.monotonic()
+    r = pe._run_subprocess_with_cancel([sys.executable, "-c", script], timeout=60)
+    dt = time.monotonic() - t0
+    assert r.returncode == 0
+    assert r.stdout.count("\n") >= 40000, "stdout must be fully captured"
+    assert "DONE" in r.stderr
+    assert dt < 30, f"pipe-drain took too long: {dt:.1f}s (was hanging >4h)"
 
 
 def test_decompose_params_defaults():
