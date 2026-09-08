@@ -11,12 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from _test_helpers import load_commercial_module, space_free_tmp_root
 
-_mod = load_commercial_module("parallel_mesh")
-DecomposeParams = _mod.DecomposeParams
-ParallelMeshResult = _mod.ParallelMeshResult
-ParallelMeshEngine = _mod.ParallelMeshEngine
-DECOMP_METHODS = _mod.DECOMP_METHODS
-
 
 def test_subprocess_with_cancel_drains_large_output():
     """Regression: _run_subprocess_with_cancel used to poll process.poll()
@@ -38,6 +32,13 @@ def test_subprocess_with_cancel_drains_large_output():
     assert r.stdout.count("\n") >= 40000, "stdout must be fully captured"
     assert "DONE" in r.stderr
     assert dt < 30, f"pipe-drain took too long: {dt:.1f}s (was hanging >4h)"
+
+
+_mod = load_commercial_module("parallel_mesh")
+DecomposeParams = _mod.DecomposeParams
+ParallelMeshResult = _mod.ParallelMeshResult
+ParallelMeshEngine = _mod.ParallelMeshEngine
+DECOMP_METHODS = _mod.DECOMP_METHODS
 
 
 def test_decompose_params_defaults():

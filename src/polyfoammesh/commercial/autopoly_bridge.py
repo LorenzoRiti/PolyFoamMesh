@@ -6,7 +6,7 @@ Provides a unified Python API that:
      numpy + scipy.spatial (Voronoi) when the native library is absent.
 
 This module is the integration point between the C++ autopoly library
-and the cfmesh-autogui GUI.
+and the PolyFoamMesh GUI.
 """
 
 from __future__ import annotations

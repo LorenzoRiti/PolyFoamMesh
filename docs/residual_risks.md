@@ -75,6 +75,49 @@ source of truth.
   angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
   concavità delle celle duali non è rilevabile dalle normali di parete.
    Il fallback globale su 5 scale resta il comportamento della valvola.
+- **Criterio di concavità duale (Lane B, 2026-09-08)**: nuovo parametro
+  opt-in `concavity_criterion="dual_convexity"` in `core/bl_poly.py`
+  (funzione `_dual_convexity_wall_fade`; default `"angle_fade"` invariato e
+  byte-identico). Il detector misura la convessità delle CELLE DUALI
+  direttamente: per ogni vertice di parete, frazione delle facce di parete
+  incidenti il cui owner cell è non-convesso nel senso esatto del test
+  'face pyramids' di checkMesh (centroide OpenFOAM della cella fuori da una
+  sua faccia), mappata nella stessa convenzione 0.05..1.0 di angle_fade.
+  Misurato sulla fixture valvola (1.051.199 punti, 1.241.048 facce, 152.086
+  celle): il segnale scatta ESATTAMENTE sulla classe di difetto documentata —
+  393 celle duali non-convesse (intervallo documentato 268-462), 1007 facce
+  difettose (= i 1007 difetti piramide dell'input), 1123 vertici di parete
+  con fade < 0.5 contro ZERO per angle_fade (fade >= 1.0 su tutti i 226.538
+  vertici, confermando la causa radice documentata). Esito misurato dei due
+  run completi (in-process, replica checkMesh; n_layers=2, h1=1e-5,
+  apply_to_all=True, 5 scale):
+  - `angle_fade` (baseline): chiusura fallita a ogni scala — 161 → 106 → 65
+    → 45 → 15 celle non chiuse, nessun volume negativo, 523 s, mesh invariata;
+  - `dual_convexity`: 24 → 378.605 celle a volume non positivo (flip globale
+    del winding alla scala 0.6, 99.99% della mesh) → 11 → 12 → 6 celle non
+    chiuse, 599 s, mesh invariata. Meglio della baseline su 4 scale su 5
+    (fino a 6.7x a scale=1.0: 24 vs 161), ma NESSUNA scala arriva a 0 celle
+    non chiuse: nessun BL valido nemmeno col criterio nuovo.
+  Perché non chiude G2 (misurato, non assunto): il fixpoint di consistenza
+  appiattisce il conteggio a uniforme per componente connessa — misurato
+  nv=nf=1 su TUTTE le 226.542 facce sotto ENTRAMBI i criteri (le 937 facce
+  dell'input segnalate forzano l'intera parete a 1 layer in ~100 passate di
+  fixpoint). Un detector per-vertice può quindi cambiare solo l'ALTEZZA
+  locale (max_h = fade x ...), non il conteggio: migliora la chiusura ma non
+  la porta a 0, e destabilizza la riparazione del winding a scale intermedie.
+  Raccomandazione: il segnale di convessità duale è un detector STRETTAMENTE
+  migliore del fade (393 celle vs 0) e più utile per la chiusura a 4/5 scale,
+  ma da solo non chiude la valvola; per sfruttarlo serve rilassare il
+  fixpoint (conteggi per-faccia con facce di transizione che chiudono, o
+  fixpoint limitato alla regione difettosa). Default invariato: ri-misurare
+  prima di abilitare. Gate WSL (`tools/bench_bl_valve_fase2.py`) NON eseguito:
+  nessuna scala produce una mesh valida in-process (il verdetto dell'engine
+  è deciso dal replicatore, che sulla valvola coincide con checkMesh 895/895),
+  quindi non esiste una mesh nuova da sottoporre a checkMesh — la baseline
+  pinnata resta il comportamento della valvola. Gate salute
+  (`tools/bench_bl_poly_partial.py`): PASS invariato (cilindro 72 prismi =
+  3 x 24, Mesh OK; cubo duct 81 celle, skew 2.175, NOmax 44.8, Mesh OK);
+  test veloci `tests/test_bl_poly.py`: 6/6 verdi.
 
 ## Boundary Layer Patch Selection — single source of truth
 
@@ -187,6 +230,17 @@ source of truth.
 
 ## Sizing And Estimates
 
+- **Manual refinement zones preserve geometry sizing (2026-09-08)**: the
+  refinement-zones block used to call `setAsBackgroundMesh()` on the zone
+  fields alone, silently DISCARDING the geometry-adaptive background field
+  (curvature/small-feature/gap sizing) whenever a manual refinement box was
+  active — documented as an unfixed bug in
+  `docs/dev/solution_adaptive_handoff.md` §1.4. Zones are now MIN-combined
+  with the existing field (`_combine_zone_fields_with_bg`), so a zone can
+  only ask for smaller cells, never change sizing elsewhere. Regression
+  tests: `test_gmsh_refinement_boxes.py::test_single_zone_min_combined_with_existing_bg`
+  and friends.
+
 - The Mesh Fineness slider value is a budget/cap (10K..20M cells), not a
   guarantee. The displayed geometry estimate is derived from the tessellated
   solid volume and the derived cell sizes; when the volume cannot be trusted
@@ -207,6 +261,12 @@ source of truth.
   in cadquery millimetres (0.1 m rod = `circle(100)`, throat = `circle(30)`),
   matching the app's documented contract that tessellation converts mm→m.
   The assertions were not touched; the test passes (4/4).
+- **Closed curved bodies tessellate watertight now (2026-09-08)**: the old
+  "sphere → not watertight" finding from `docs/dev/notes/NIGHT_LOOP_PROMPT.md`
+  is fixed. OCC tessellation emits coincident duplicate vertices at the
+  seams/poles of curved faces; `tessellate_patches` now merges them and drops
+  the degenerate pole triangles, so a cadquery sphere passes
+  `check_watertight()` (regression: `test_geometry.py::test_tessellate_closed_curved_body_is_watertight`).
 - `test_watertight_meshdict.py::test_volume_mesh_and_quality_steps_do_not_need_a_qt_event_loop`
   is order-sensitive (shared QApplication state); it passes in isolation.
 
