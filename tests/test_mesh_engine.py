@@ -158,7 +158,14 @@ def test_auto_select_many_patches():
 
 def test_run_no_case():
     me = MeshEngine()
-    result = me.run("Z:\\nonexistent")
+    # On POSIX there is no 'Z:' drive; use an absolute path that cannot be
+    # created by an unprivileged process either, so the run must fail
+    # without leaving junk directories behind.
+    missing = (
+        "Z:\\nonexistent" if sys.platform == "win32"
+        else "/nonexistent_cfmesh_case_dir"
+    )
+    result = me.run(missing)
     assert not result.success
     assert len(result.errors) > 0
 

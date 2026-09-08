@@ -2,8 +2,24 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 from pathlib import Path
+
+
+def space_free_tmp_root() -> Path:
+    """Scratch root for OpenFOAM case dirs, portable across hosts.
+
+    %TEMP% on Windows often contains spaces (the username), and MeshWorker /
+    validate_case_dir legitimately refuse case paths with spaces — that is
+    why several tests historically hardcoded ``C:/``. Use the OS temp dir
+    when it is space-free (Linux CI: /tmp), otherwise the drive root of the
+    temp dir (Windows: ``C:/``).
+    """
+    tmp = Path(tempfile.gettempdir()).resolve()
+    if " " not in str(tmp):
+        return tmp
+    return Path(tmp.drive + "/") if tmp.drive else Path("/")
 
 
 def _load_module_from_file(module_name: str, file_path: Path, package: str) -> types.ModuleType:

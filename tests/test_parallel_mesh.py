@@ -9,7 +9,7 @@ import pytest  # noqa: F401 — @pytest.mark.wsl below
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from _test_helpers import load_commercial_module
+from _test_helpers import load_commercial_module, space_free_tmp_root
 
 _mod = load_commercial_module("parallel_mesh")
 DecomposeParams = _mod.DecomposeParams
@@ -103,7 +103,7 @@ def test_engine_setup_case_invalid():
 
 def _tmp_case_dir() -> Path:
     """Create a temp case dir in a path without spaces."""
-    safe_dir = Path("C:/") / "tmp_parallel_test"
+    safe_dir = space_free_tmp_root() / "tmp_parallel_test"
     safe_dir.mkdir(parents=True, exist_ok=True)
     return safe_dir
 
@@ -235,7 +235,7 @@ def test_run_actually_meshes_in_parallel_on_real_wsl():
 
     import trimesh
 
-    case = Path("C:/cfmesh_bench/parallel_mesh_regression_test")
+    case = space_free_tmp_root() / "cfmesh_bench" / "parallel_mesh_regression_test"
     shutil.rmtree(case, ignore_errors=True)
     (case / "constant" / "triSurface").mkdir(parents=True)
     (case / "system").mkdir(parents=True)
@@ -299,7 +299,7 @@ def test_clamp_cores_reduces_when_memory_insufficient(monkeypatch):
     import shutil
     import subprocess as _subprocess
 
-    case = Path("C:/cfmesh_bench/parallel_clamp_test_case_1")
+    case = space_free_tmp_root() / "cfmesh_bench" / "parallel_clamp_test_case_1"
     shutil.rmtree(case, ignore_errors=True)
     (case / "system").mkdir(parents=True)
     (case / "constant" / "triSurface").mkdir(parents=True)
@@ -331,7 +331,7 @@ def test_clamp_cores_leaves_reasonable_request_untouched(monkeypatch):
     import shutil
     import subprocess as _subprocess
 
-    case = Path("C:/cfmesh_bench/parallel_clamp_test_case_2")
+    case = space_free_tmp_root() / "cfmesh_bench" / "parallel_clamp_test_case_2"
     shutil.rmtree(case, ignore_errors=True)
     (case / "system").mkdir(parents=True)
     (case / "constant" / "triSurface").mkdir(parents=True)
@@ -356,7 +356,7 @@ def test_clamp_cores_handles_query_failure_gracefully(monkeypatch):
     import shutil
     import subprocess as _subprocess
 
-    case = Path("C:/cfmesh_bench/parallel_clamp_test_case_3")
+    case = space_free_tmp_root() / "cfmesh_bench" / "parallel_clamp_test_case_3"
     shutil.rmtree(case, ignore_errors=True)
     (case / "system").mkdir(parents=True)
 

@@ -22,16 +22,20 @@ mesh valid for checkMesh / solvers):
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _test_helpers import space_free_tmp_root  # noqa: E402
+
 import polyfoammesh.core.foam_mesh_io as fio
 from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine, _cell_metrics
 
 FIXDIR = Path(__file__).resolve().parent / "fixtures"
-WORK_ROOT = Path("C:/cfmesh_bench/bl_poly_test")
+WORK_ROOT = space_free_tmp_root() / "cfmesh_bench" / "bl_poly_test"
 
 
 def _cube_points_tets() -> tuple[np.ndarray, list[list[int]]]:
