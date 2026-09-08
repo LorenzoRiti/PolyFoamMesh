@@ -208,7 +208,7 @@ def test_mesh_worker():
     _safe_tmp.mkdir(parents=True, exist_ok=True)
     case_dir = Path(tempfile.mkdtemp(prefix="cfmesh_test_", dir=str(_safe_tmp)))  # ✅ F-026
 
-    cyl = create_test_cylinder(radius=1.0, height=2.0)
+    cyl = create_test_cylinder(radius=1000.0, height=2000.0)
     patches = classify_faces(cyl.val())
     meshes = tessellate_patches(patches)
     export_surface_file(meshes, case_dir)

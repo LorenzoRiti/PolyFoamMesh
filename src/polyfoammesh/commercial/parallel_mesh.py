@@ -379,11 +379,39 @@ class ParallelMeshEngine:
     ) -> subprocess.CompletedProcess:
         """Run *cmd* as a subprocess with cancellation support.
         Polls the cancel event every 0.5s; kills the full WSL process tree on
-        cancel using both taskkill /t (Windows-side) and pkill (WSL-side)."""
+        cancel using both taskkill /t (Windows-side) and pkill (WSL-side).
+
+        The child's stdout/stderr are DRAINED by background threads while we
+        poll. Not draining them is a real hang: with stdout=stderr=PIPE and
+        nothing reading, a child that emits more than the ~64 KB OS pipe
+        buffer (a parallel cartesianMesh + reconstruct easily does) blocks on
+        write and never exits — wsl.exe then never EOFs and the run stalls
+        until the wall-clock timeout even though the mesh finished in seconds
+        (observed: mesh built in 13 s, python waited 240 min)."""
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=4096,
+            text=True, bufsize=1,
         )
+        out_lines: list[str] = []
+        err_lines: list[str] = []
+
+        def _drain(stream, sink):
+            try:
+                for line in stream:
+                    sink.append(line)
+            except Exception:
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        t_out = threading.Thread(target=_drain, args=(process.stdout, out_lines), daemon=True)
+        t_err = threading.Thread(target=_drain, args=(process.stderr, err_lines), daemon=True)
+        t_out.start()
+        t_err.start()
+
         deadline = time.monotonic() + timeout
         while process.poll() is None:
             if self._cancel_event.is_set():
@@ -394,9 +422,11 @@ class ParallelMeshEngine:
                 self._kill_process_tree(process.pid)
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
             time.sleep(0.5)
-        stdout, stderr = process.communicate()
+        t_out.join(timeout=10)
+        t_err.join(timeout=10)
         return subprocess.CompletedProcess(
-            cmd, process.returncode, stdout=stdout, stderr=stderr,
+            cmd, process.returncode,
+            stdout="".join(out_lines), stderr="".join(err_lines),
         )
 
     @staticmethod
