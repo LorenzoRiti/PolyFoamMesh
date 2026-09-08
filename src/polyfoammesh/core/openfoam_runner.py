@@ -1062,6 +1062,10 @@ class RetryRunner(QObject):
                 self._on_log(
                     "[WARN] Boundary layers failed. Retrying without BL..."
                 )
+                self._on_log(
+                    "[SUBSTITUTED] Algoritmo sostituito: boundary layer "
+                    "disattivato (fallisce su questa geometria)."
+                )
                 self._on_log("[fallback] Regenerating meshDict without boundaryLayers.")
             try:
                 self._regenerate_meshdict_without_bl()
