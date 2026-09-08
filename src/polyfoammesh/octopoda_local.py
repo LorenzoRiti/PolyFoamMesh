@@ -1,17 +1,19 @@
 """Lightweight local Octopoda runtime — zero external dependencies."""
 from __future__ import annotations
-import json, logging, os, datetime
+import json, logging, datetime
 from datetime import timezone
 from pathlib import Path
 
+from polyfoammesh._paths import app_data_dir
+
 logger = logging.getLogger(__name__)
 
-_OCTO_DIR = Path(os.environ.get("APPDATA", os.path.expanduser("~"))) / "cfmesh-autogui" / "octopoda"
+_OCTO_DIR = app_data_dir() / "octopoda"
 _MAX_EVENTS = 1000  # trim events.jsonl to this many lines after each append
 
 
 class OctopodaRuntime:
-    def __init__(self, app: str = "cfmesh-autogui"):
+    def __init__(self, app: str = "polyfoammesh"):
         self._app = app
         _OCTO_DIR.mkdir(parents=True, exist_ok=True)
 
