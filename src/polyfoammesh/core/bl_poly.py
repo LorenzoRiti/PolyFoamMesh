@@ -167,6 +167,67 @@ def _cell_centroids(points, faces, owner, neigh, n_int, n_cells):
     return C, V3 / 3.0
 
 
+def _dual_convexity_wall_fade(points, faces, owner, neigh, n_int, n_cells,
+                              wall_verts, wall_face_of):
+    """Per-wall-vertex concavity signal measured on the DUAL CELLS themselves.
+
+    The valve defect class is a dual cell that wraps a concave CAD feature
+    edge: the cell is genuinely non-convex and its OpenFOAM cell centroid
+    falls outside one of its own faces (checkMesh's 'face pyramids'
+    per-side test) while the wall-face normals stay smooth — the measured
+    root cause why ``angle_fade`` never fires on the valve (>= 0.8 on all
+    226,538 wall vertices).  This criterion replaces the normal fade with
+    the dual-cell convexity signal: per wall vertex, the fraction of its
+    incident wall faces whose OWNER cell is non-convex in that exact sense,
+    mapped into the same 0.05..1.0 convention as ``angle_fade``:
+
+        fade[w] = max(0.05, 1 - bad_owner_cells / owner_cells)
+
+    1.0 = locally convex (keep the full layer count), low = a concave
+    dual cell is underneath (the layer count fits the height budget, i.e.
+    the stack terminates there).  ``_build`` consumes it unchanged, so the
+    only difference vs ``angle_fade`` is WHERE the fade fires.
+
+    Returns (fade dict, stats dict with the raw defect counts).
+    """
+    C, _ = _cell_centroids(points, faces, owner, neigh, n_int, n_cells)
+    sf, cf = _face_geometry(points, faces)
+    bad = np.zeros(len(faces), dtype=bool)
+    bad |= (sf * (cf - C[owner])).sum(axis=1) <= 0.0
+    if n_int:
+        bad[:n_int] |= (
+            (sf[:n_int] * (cf[:n_int] - C[neigh[:n_int]])).sum(axis=1) >= 0.0
+        )
+    cell_bad = np.zeros(n_cells, dtype=bool)
+    cell_bad[owner[bad]] = True
+    if n_int:
+        cell_bad[neigh[:n_int][bad[:n_int]]] = True
+
+    fade: dict[int, float] = {}
+    n_lt_half = 0
+    for wi, w in enumerate(wall_verts):
+        _gil_yield(wi, 64)
+        wf = wall_face_of.get(w, ())
+        if not wf:
+            fade[w] = 1.0
+            continue
+        own_cells = []
+        for fi in wf:
+            c = int(owner[fi])
+            if c not in own_cells:
+                own_cells.append(c)
+        n_bad = sum(1 for c in own_cells if cell_bad[c])
+        f = max(0.05, 1.0 - n_bad / len(own_cells))
+        fade[w] = f
+        if f < 0.5:
+            n_lt_half += 1
+    return fade, {
+        "dual_bad_cells": int(cell_bad.sum()),
+        "dual_bad_faces": int(bad.sum()),
+        "dual_wall_verts_fade_lt_half": n_lt_half,
+    }
+
+
 def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
                         return_idx=False):
     """Number of faces whose normal points INTO one of its cells (checkMesh's
@@ -357,6 +418,7 @@ class PolyBoundaryLayerEngine:
         apply_to_all: bool = True,
         clamp_factor: float = 0.5,
         max_core_volume_ratio: float = 0.0,
+        concavity_criterion: str = "angle_fade",
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -377,6 +439,15 @@ class PolyBoundaryLayerEngine:
           adjacent core cell's volume (STAR-CCM+ style smooth-transition
           constraint; the fallback loop then thins the layers until it
           holds).  0 (default) = constraint disabled, historical behaviour.
+        - `concavity_criterion`: where the local layer termination fires.
+          "angle_fade" (default) = the wall-face normal angular span fade
+          (historical behaviour, byte-identical).  "dual_convexity" =
+          the dual-cell convexity signal (per wall vertex, the fraction of
+          its incident wall faces whose owner cell is non-convex in
+          checkMesh's 'face pyramids' sense) — a genuinely different
+          detector that fires on the concave-feature dual cells of the
+          valve where the normal fade is flat (measured >= 0.8 on all
+          valve wall vertices).
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -398,6 +469,13 @@ class PolyBoundaryLayerEngine:
                 f"growth_rate {res.growth_rate} clamped to 2.0"
             )
         res.growth_rate = growth
+        if concavity_criterion not in ("angle_fade", "dual_convexity"):
+            res.errors.append(
+                f"unknown concavity_criterion {concavity_criterion!r} "
+                "(expected 'angle_fade' or 'dual_convexity')"
+            )
+            return res
+        res.stats["concavity_criterion"] = concavity_criterion
 
         poly = self._case_dir / "constant" / "polyMesh"
         try:
@@ -445,7 +523,10 @@ class PolyBoundaryLayerEngine:
         # is most of the speedup.
         pre = self._build_precompute(
             points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
+            concavity_criterion=concavity_criterion,
         )
+        for k, v in pre.get("dual_stats", {}).items():
+            res.stats[k] = v
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
@@ -593,12 +674,19 @@ class PolyBoundaryLayerEngine:
     # ------------------------------------------------------------------
 
     def _build_precompute(self, points, faces, owner, neighbour, patches,
-                          n_int, sel, drop_bnd) -> dict:
+                          n_int, sel, drop_bnd,
+                          concavity_criterion: str = "angle_fade") -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
-        vertices, per-vertex normals, the feature-aware angular fade, the
-        smallest incident wall-face edge, the interior-support distance, and
-        the edge/patch maps.
+        vertices, per-vertex normals, the feature-aware angular fade (or the
+        ``dual_convexity`` dual-cell signal), the smallest incident wall-face
+        edge, the interior-support distance, and the edge/patch maps.
+
+        ``concavity_criterion`` selects the concavity detector that drives
+        the local layer termination: "angle_fade" (default, historical,
+        byte-identical behaviour) or "dual_convexity" (the dual-cell
+        convexity signal — fires on the concave-feature dual cells of the
+        valve where the normal fade is flat).
 
         The fallback loop calls ``_build`` up to 5 times (one per height
         scale); on the valve this part alone measured ~58 s per attempt, so
@@ -608,6 +696,7 @@ class PolyBoundaryLayerEngine:
         """
         pts = np.asarray(points, dtype=np.float64)
         n_pts = len(pts)
+        n_cells = int(max(owner.max(), neighbour.max())) + 1
         bnd = [n_int + bi for bi in sel]
         drop_bnd = drop_bnd or frozenset()
 
@@ -656,20 +745,38 @@ class PolyBoundaryLayerEngine:
         # "terminate the layer at the feature" treatment of production BL
         # codes — and cap by a fraction of the smallest incident wall-face
         # edge (a hard bound against twisted slivers).
+        #
+        # concavity_criterion="dual_convexity" replaces the normal fade with
+        # the dual-cell convexity signal (measured flat on the valve: the
+        # boundary quads lie on smooth surfaces, so angle_fade >= 0.8 on all
+        # wall vertices while 0.25-0.29% of the dual cells are genuinely
+        # non-convex around the concave CAD feature edges).
         angle_fade: dict[int, float] = {}
         min_edge: dict[int, float] = {}
+        dual_fade, dual_stats = None, {}
+        if concavity_criterion == "dual_convexity":
+            dual_fade, dual_stats = _dual_convexity_wall_fade(
+                pts, faces, owner, neighbour, n_int, n_cells,
+                wall_verts, wall_face_of,
+            )
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
-            f_norms = []
             f_edges = []
+            for fi in wall_face_of.get(w, ()):
+                f = faces[fi]
+                for k in range(len(f)):
+                    a, b = f[k], f[(k + 1) % len(f)]
+                    f_edges.append(float(np.linalg.norm(pts[a] - pts[b])))
+            min_edge[w] = min(f_edges) if f_edges else float("inf")
+            if dual_fade is not None:
+                angle_fade[w] = dual_fade[w]
+                continue
+            f_norms = []
             for fi in wall_face_of.get(w, ()):
                 f = faces[fi]
                 fn = _newell(pts, f)
                 fn = fn / (np.linalg.norm(fn) + 1e-300)
                 f_norms.append(fn)
-                for k in range(len(f)):
-                    a, b = f[k], f[(k + 1) % len(f)]
-                    f_edges.append(float(np.linalg.norm(pts[a] - pts[b])))
             cos_max = -2.0
             for i in range(len(f_norms)):
                 for j in range(i + 1, len(f_norms)):
@@ -679,7 +786,6 @@ class PolyBoundaryLayerEngine:
             theta = np.degrees(np.arccos(min(max(cos_max, -1.0), 1.0)))
             # theta = 0..180; fade linearly from full at <=60° to 5% at 150°+
             angle_fade[w] = max(0.05, min(1.0, (150.0 - theta) / 90.0))
-            min_edge[w] = min(f_edges) if f_edges else float("inf")
 
         # --- interior support distance (inversion clamp, scale-independent) --
         # distance from the wall vertex to the nearest NON-wall vertex of the
@@ -758,11 +864,13 @@ class PolyBoundaryLayerEngine:
             "bnd_edge_faces": bnd_edge_faces, "patch_of": patch_of,
             "n_wf": len(bnd), "n_bnd": n_bnd,
             "n_cells_old": int(max(owner.max(), neighbour.max())) + 1,
+            "dual_stats": dual_stats,
         }
 
     def _build(self, points, faces, owner, neighbour, patches, n_int,
                sel, n_layers, first_height, growth, clamp_factor,
-               pyr_before: int = 0, drop_bnd=None, pre=None) -> dict:
+               pyr_before: int = 0, drop_bnd=None, pre=None,
+               concavity_criterion: str = "angle_fade") -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -771,7 +879,8 @@ class PolyBoundaryLayerEngine:
         """
         if pre is None:
             pre = self._build_precompute(
-                points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
+                points, faces, owner, neighbour, patches, n_int, sel,
+                drop_bnd, concavity_criterion=concavity_criterion,
             )
         pts = pre["pts"]
         n_pts = pre["n_pts"]
