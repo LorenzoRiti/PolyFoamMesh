@@ -37,22 +37,22 @@ except Exception:
 
 import pytest
 
-from cfmesh_autogui.config import OFConfig
+from polyfoammesh.config import OFConfig
 
 cq = pytest.importorskip("cadquery")
 pytest.importorskip("meshio")
 pytest.importorskip("pyvista")
 
-from cfmesh_autogui.core.boundary_reader import parse_boundary  # noqa: E402
-from cfmesh_autogui.core.case_setup import setup_case  # noqa: E402
-from cfmesh_autogui.core.geometry import (  # noqa: E402
+from polyfoammesh.core.boundary_reader import parse_boundary  # noqa: E402
+from polyfoammesh.core.case_setup import setup_case  # noqa: E402
+from polyfoammesh.core.geometry import (  # noqa: E402
     classify_faces,
     create_test_cylinder,
     tessellate_patches,
 )
-from cfmesh_autogui.core.mesh_export import EXPORT_FORMATS, export_mesh  # noqa: E402
-from cfmesh_autogui.core.meshdict_gen import write_meshdict  # noqa: E402
-from cfmesh_autogui.core.stl_writer import export_surface_file  # noqa: E402
+from polyfoammesh.core.mesh_export import EXPORT_FORMATS, export_mesh  # noqa: E402
+from polyfoammesh.core.meshdict_gen import write_meshdict  # noqa: E402
+from polyfoammesh.core.stl_writer import export_surface_file  # noqa: E402
 
 WORK_ROOT = Path("C:/cfmesh_bench/export_test")
 

@@ -6,7 +6,7 @@
 This document is the bridge between the design tokens and the running
 application. For the canonical token values, see:
 
-- `src/cfmesh_autogui/gui/design_tokens.py` — Python module (used by code)
+- `src/polyfoammesh/gui/design_tokens.py` — Python module (used by code)
 - `.ui-design/design-system.json` — JSON master (used by tooling, audits)
 - `.ui-design/qss/light.qss` and `dark.qss` — Qt stylesheets
 - `.ui-design/components.md` — Per-widget usage rules
@@ -169,7 +169,7 @@ automatically when the user changes their OS theme.
 ## How to add a new token
 
 1. Add the value to **all three** places:
-   - `src/cfmesh_autogui/gui/design_tokens.py` (Python constant)
+   - `src/polyfoammesh/gui/design_tokens.py` (Python constant)
    - `.ui-design/design-system.json` (JSON, DTCG format)
    - `.ui-design/qss/light.qss` AND `dark.qss` (QSS)
 2. Add a usage example to `.ui-design/components.md`.

@@ -2,7 +2,7 @@
 
 The split pass only ever touches vertices on CONCAVE boundary feature edges
 (``_concave_boundary_vertices`` / ``_concave_edges`` in
-cfmesh_autogui.core.tet_poly_dual).  The earlier version used the UNSIGNED
+polyfoammesh.core.tet_poly_dual).  The earlier version used the UNSIGNED
 dihedral angle, so it also split harmless convex 90-degree edges and made the
 valve worse (895 -> 1,215 inverted pyramids).  The signed test must therefore
 behave like this on known geometry:
@@ -27,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from cfmesh_autogui.core.tet_poly_dual import (
+from polyfoammesh.core.tet_poly_dual import (
     DualPolyResult,
     TetPolyDualConverter,
     _concave_boundary_vertices,

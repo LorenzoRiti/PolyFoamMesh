@@ -14,7 +14,7 @@ from pathlib import Path
 
 def main():
     locale_dir = Path(__file__).resolve().parent
-    pro_file = locale_dir / "cfmesh_autogui.pro"
+    pro_file = locale_dir / "polyfoammesh.pro"
 
     if not pro_file.exists():
         print(f"[ERROR] Project file not found: {pro_file}")

@@ -49,24 +49,24 @@ pydantic_mod.Field = lambda default=None, **kw: default
 sys.modules["pydantic"] = pydantic_mod
 
 # Stub heavy packages (saved and restored so later test modules can still
-# import the real cfmesh_autogui.gui package instead of an empty stub)
-_saved_gui = sys.modules.get("cfmesh_autogui.gui")
-_stub_pkg("cfmesh_autogui.gui")
+# import the real polyfoammesh.gui package instead of an empty stub)
+_saved_gui = sys.modules.get("polyfoammesh.gui")
+_stub_pkg("polyfoammesh.gui")
 
 # Load server module directly
-src = Path(__file__).resolve().parents[1] / "src" / "cfmesh_autogui" / "api" / "server.py"
+src = Path(__file__).resolve().parents[1] / "src" / "polyfoammesh" / "api" / "server.py"
 code = src.read_text(encoding="utf-8")
-_mod = types.ModuleType("cfmesh_autogui.api.server")
+_mod = types.ModuleType("polyfoammesh.api.server")
 _mod.__file__ = str(src)
-_mod.__package__ = "cfmesh_autogui.api"
-sys.modules["cfmesh_autogui.api.server"] = _mod
+_mod.__package__ = "polyfoammesh.api"
+sys.modules["polyfoammesh.api.server"] = _mod
 try:
     exec(compile(code, str(src), "exec"), _mod.__dict__)
 finally:
     if _saved_gui is not None:
-        sys.modules["cfmesh_autogui.gui"] = _saved_gui
+        sys.modules["polyfoammesh.gui"] = _saved_gui
     else:
-        sys.modules.pop("cfmesh_autogui.gui", None)
+        sys.modules.pop("polyfoammesh.gui", None)
 
 def _get(name):
     return getattr(_mod, name)

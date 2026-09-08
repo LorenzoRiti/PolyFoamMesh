@@ -8,12 +8,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 # Direct import without triggering cadquery dependency
-src = Path(__file__).resolve().parents[1] / "src" / "cfmesh_autogui" / "core" / "validation.py"
+src = Path(__file__).resolve().parents[1] / "src" / "polyfoammesh" / "core" / "validation.py"
 code = src.read_text(encoding="utf-8")
 
 _mod = types.ModuleType("validation")
 _mod.__file__ = str(src)
-_mod.__package__ = "cfmesh_autogui.core"
+_mod.__package__ = "polyfoammesh.core"
 sys.modules["validation"] = _mod
 
 exec(compile(code, str(src), "exec"), _mod.__dict__)

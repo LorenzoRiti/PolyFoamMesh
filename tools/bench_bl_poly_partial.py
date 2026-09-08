@@ -31,10 +31,10 @@ sys.path.insert(0, str(SRC))
 
 import numpy as np  # noqa: E402
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
-from cfmesh_autogui.core import foam_mesh_io as fio  # noqa: E402
-from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
+from polyfoammesh.core import foam_mesh_io as fio  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 _WORK = Path(os.environ.get("CFMESH_WORK", "C:/polybench2"))
 CASE_A = _WORK / "bl_partial_cylinder"
@@ -81,7 +81,7 @@ def _checkmesh(cfg: OFConfig, case: Path) -> dict:
 
 def _run_bl_wall(case: Path, n_layers: int, log) -> tuple[bool, dict]:
     """BL on wall-type/wall-named patches only; returns (ok, metrics)."""
-    from cfmesh_autogui.core.boundary_reader import parse_boundary
+    from polyfoammesh.core.boundary_reader import parse_boundary
 
     patches = parse_boundary(case / "constant" / "polyMesh" / "boundary")
     walls = [p.name for p in patches
@@ -116,7 +116,7 @@ def _run_bl_wall(case: Path, n_layers: int, log) -> tuple[bool, dict]:
 def build_cylinder(cfg: OFConfig) -> Path:
     import trimesh
 
-    from cfmesh_autogui.core.gmsh_subprocess import (
+    from polyfoammesh.core.gmsh_subprocess import (
         run_gmsh_to_foam, run_gmsh_volume, write_case_skeleton,
     )
 

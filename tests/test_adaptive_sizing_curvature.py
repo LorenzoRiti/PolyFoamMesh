@@ -17,7 +17,7 @@ so it runs without GMSH installed or a CAD kernel.
 """
 from __future__ import annotations
 
-from cfmesh_autogui.core.gmsh_wrapper import (
+from polyfoammesh.core.gmsh_wrapper import (
     _configure_adaptive_sizing,
     _scan_feature_sizes,
 )

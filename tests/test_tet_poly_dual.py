@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import cfmesh_autogui.core.foam_mesh_io as fio
-from cfmesh_autogui.core.tet_poly_dual import (
+import polyfoammesh.core.foam_mesh_io as fio
+from polyfoammesh.core.tet_poly_dual import (
     DualPolyResult,
     TetPolyDualConverter,
     _cell_centres,
@@ -243,7 +243,7 @@ def test_write_failure_rollback(tmp_path):
     original = {name: (poly / name).read_bytes()
                 for name in ("points", "faces", "owner", "neighbour", "boundary")}
 
-    import cfmesh_autogui.core.foam_mesh_io as _fio
+    import polyfoammesh.core.foam_mesh_io as _fio
 
     def boom(*a, **k):
         raise RuntimeError("simulated write failure")

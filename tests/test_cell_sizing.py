@@ -21,10 +21,10 @@ except Exception:
 
 import trimesh
 
-from cfmesh_autogui.core.geometry import (
+from polyfoammesh.core.geometry import (
     suggest_cell_sizes, analyze_local_thickness, validate_cell_sizes,
 )
-from cfmesh_autogui.core.validation import validate_cell_size
+from polyfoammesh.core.validation import validate_cell_size
 
 
 def _make_tube(length: float, radius: float, n_segments: int = 64) -> trimesh.Trimesh:

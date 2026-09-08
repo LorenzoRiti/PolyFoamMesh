@@ -4,15 +4,15 @@ Commercial Modules
 .. autosummary::
    :toctree: .
 
-   cfmesh_autogui.commercial.watertight
-   cfmesh_autogui.commercial.fault_tolerant
-   cfmesh_autogui.commercial.mosaic
-   cfmesh_autogui.commercial.bl_engine
-   cfmesh_autogui.commercial.optimizer
-   cfmesh_autogui.commercial.cad_healer
-   cfmesh_autogui.commercial.parallel_mesh
-   cfmesh_autogui.commercial.batch_mesh
-   cfmesh_autogui.commercial.exporter
-   cfmesh_autogui.commercial.monitor
-   cfmesh_autogui.commercial.cloud_mesh
-   cfmesh_autogui.commercial.journal
+   polyfoammesh.commercial.watertight
+   polyfoammesh.commercial.fault_tolerant
+   polyfoammesh.commercial.mosaic
+   polyfoammesh.commercial.bl_engine
+   polyfoammesh.commercial.optimizer
+   polyfoammesh.commercial.cad_healer
+   polyfoammesh.commercial.parallel_mesh
+   polyfoammesh.commercial.batch_mesh
+   polyfoammesh.commercial.exporter
+   polyfoammesh.commercial.monitor
+   polyfoammesh.commercial.cloud_mesh
+   polyfoammesh.commercial.journal

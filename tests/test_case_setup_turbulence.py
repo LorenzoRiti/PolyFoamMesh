@@ -15,8 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cfmesh_autogui.core.boundary_reader import PatchInfo
-from cfmesh_autogui.core.case_setup import setup_case
+from polyfoammesh.core.boundary_reader import PatchInfo
+from polyfoammesh.core.case_setup import setup_case
 
 _PATCHES = [PatchInfo(name="wall", patch_type="wall", n_faces=1, start_face=0)]
 

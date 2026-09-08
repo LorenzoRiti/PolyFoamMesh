@@ -9,12 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 # Direct import without triggering cadquery dependency
-src = Path(__file__).resolve().parents[1] / "src" / "cfmesh_autogui" / "core" / "session.py"
+src = Path(__file__).resolve().parents[1] / "src" / "polyfoammesh" / "core" / "session.py"
 code = src.read_text(encoding="utf-8")
 
 _sess_mod = types.ModuleType("session")
 _sess_mod.__file__ = str(src)
-_sess_mod.__package__ = "cfmesh_autogui.core"
+_sess_mod.__package__ = "polyfoammesh.core"
 sys.modules["session"] = _sess_mod
 
 exec(compile(code, str(src), "exec"), _sess_mod.__dict__)

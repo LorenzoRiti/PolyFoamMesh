@@ -27,7 +27,7 @@ _GMSH_DLL = sorted(_gmsh_candidates)[-1]  # highest version if multiple
 # scanning — was placed). collect_all() keeps submodules/data/binaries
 # consistent as a single unit, which is the officially recommended fix
 # for exactly this "large native package, no hook" scenario. casadi is
-# a REAL dependency here despite cfmesh_autogui never importing it
+# a REAL dependency here despite polyfoammesh never importing it
 # directly: cadquery/assembly.py -> occ_impl/solver.py does
 # `import casadi as ca` unconditionally at module load time, and
 # main_window.py does `import cadquery as cq` at its own module level
@@ -36,11 +36,11 @@ _GMSH_DLL = sorted(_gmsh_candidates)[-1]  # highest version if multiple
 casadi_datas, casadi_binaries, casadi_hidden = collect_all('casadi')
 
 a = Analysis(
-    [os.path.join('src', 'cfmesh_autogui', 'app.py')],
+    [os.path.join('src', 'polyfoammesh', 'app.py')],
     pathex=[],
     binaries=casadi_binaries,
     datas=[('templates', 'templates'), ('plugins', 'plugins'),
-           (_GMSH_DLL, '.')] + casadi_datas,  # ✅ F-028: rimosso src/cfmesh_autogui (gia come scripts)
+           (_GMSH_DLL, '.')] + casadi_datas,  # ✅ F-028: rimosso src/polyfoammesh (gia come scripts)
     hiddenimports=['PySide6.QtCore', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtNetwork', 'gmsh', 'meshio', 'reportlab', 'cadquery', 'pyvista', 'pyvistaqt', 'numpy', 'trimesh', 'pymeshfix'] + casadi_hidden,
     hookspath=[],
     hooksconfig={},
@@ -54,7 +54,7 @@ a = Analysis(
     # This dev machine's global Python environment has a lot of unrelated
     # packages installed for other projects (ML/robotics/DB work), and
     # PyInstaller's static analysis pulled several of them into the build
-    # even though nothing in cfmesh_autogui imports them.
+    # even though nothing in polyfoammesh imports them.
     #
     # casadi and nlopt both turned out to be REAL dependencies, not bloat
     # — cadquery.occ_impl.sketch_solver uses both as optional constraint-

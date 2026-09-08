@@ -20,8 +20,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.openfoam_runner import RetryRunner  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.openfoam_runner import RetryRunner  # noqa: E402
 
 
 @pytest.fixture

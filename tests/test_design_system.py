@@ -25,11 +25,11 @@ except Exception:
 from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication([])
 
-from cfmesh_autogui.gui import design_tokens
-from cfmesh_autogui.gui import style as legacy_style
-from cfmesh_autogui.gui import theme
-from cfmesh_autogui.gui import branding
-from cfmesh_autogui.gui import about_dialog
+from polyfoammesh.gui import design_tokens
+from polyfoammesh.gui import style as legacy_style
+from polyfoammesh.gui import theme
+from polyfoammesh.gui import branding
+from polyfoammesh.gui import about_dialog
 
 
 # ---------------------------------------------------------------------------

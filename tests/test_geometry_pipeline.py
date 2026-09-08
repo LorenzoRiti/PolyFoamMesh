@@ -80,7 +80,7 @@ def test_pipeline_detect_unit():
 
 
 def test_unit_scales():
-    from cfmesh_autogui.commercial.geometry_pipeline import _UNIT_SCALES
+    from polyfoammesh.commercial.geometry_pipeline import _UNIT_SCALES
     assert _UNIT_SCALES["mm"] == 0.001
     assert _UNIT_SCALES["m"] == 1.0
     assert _UNIT_SCALES["inch"] == 0.0254

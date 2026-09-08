@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 import trimesh
 
-from cfmesh_autogui.core.geometry import split_single_stl_patch
+from polyfoammesh.core.geometry import split_single_stl_patch
 
 
 def _cylinder_along_z() -> trimesh.Trimesh:

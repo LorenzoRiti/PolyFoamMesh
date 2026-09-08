@@ -4,7 +4,7 @@ REM Requires: pylupdate5 (from PySide6) and lrelease (from Qt)
 setlocal
 
 set DIR=%~dp0
-set PRO=%DIR%cfmesh_autogui.pro
+set PRO=%DIR%polyfoammesh.pro
 
 echo [i18n] Running pylupdate5 on %PRO%...
 pylupdate5 "%PRO%"

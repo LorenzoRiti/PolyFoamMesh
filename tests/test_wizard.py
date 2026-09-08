@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtWidgets import QApplication, QWizard
 
-from cfmesh_autogui.gui.new_case_wizard import (
+from polyfoammesh.gui.new_case_wizard import (
     NewCaseWizard, Step1GeometryPage, Step2MeshSettingsPage,
     Step3QualityPage, DropZoneLabel,
 )

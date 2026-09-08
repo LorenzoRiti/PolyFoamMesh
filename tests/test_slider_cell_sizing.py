@@ -15,8 +15,8 @@ pytest.importorskip("PySide6")
 import trimesh  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from cfmesh_autogui.core.geometry import validate_cell_sizes  # noqa: E402
-from cfmesh_autogui.gui.params_panel import ParamsPanel  # noqa: E402
+from polyfoammesh.core.geometry import validate_cell_sizes  # noqa: E402
+from polyfoammesh.gui.params_panel import ParamsPanel  # noqa: E402
 
 
 @pytest.fixture(scope="module")

@@ -27,8 +27,8 @@ import numpy as np
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.foam_mesh_io import (  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.foam_mesh_io import (  # noqa: E402
     read_polymesh,
 )
 
@@ -38,7 +38,7 @@ WORK = Path("C:/polybench2/fixture_valve")
 
 
 def main() -> None:
-    from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter
+    from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
 
     FIXDIR.mkdir(parents=True, exist_ok=True)
     if WORK.exists():

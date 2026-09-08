@@ -24,9 +24,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import cfmesh_autogui.core.foam_mesh_io as fio
-from cfmesh_autogui.core.hex_poly_dual import HexPolyDualConverter, HexPolyDualResult
-from cfmesh_autogui.core.tet_poly_dual import _cell_centres, _face_geometry
+import polyfoammesh.core.foam_mesh_io as fio
+from polyfoammesh.core.hex_poly_dual import HexPolyDualConverter, HexPolyDualResult
+from polyfoammesh.core.tet_poly_dual import _cell_centres, _face_geometry
 
 
 # ---------------------------------------------------------------------------

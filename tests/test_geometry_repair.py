@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from cfmesh_autogui.core.geometry_repair import (
+from polyfoammesh.core.geometry_repair import (
     attempt_auto_repair, snap_close_gaps, repair_with_meshfix,
 )
 

@@ -195,7 +195,7 @@ def test_e2e_integration_result():
 
 def test_e2e_cli_help():
     """CLI should parse help without error."""
-    from cfmesh_autogui.commercial.adaptive_cli import main
+    from polyfoammesh.commercial.adaptive_cli import main
     try:
         ret = main(["--help"])
     except SystemExit as e:
@@ -205,14 +205,14 @@ def test_e2e_cli_help():
 
 def test_e2e_cli_missing_geometry():
     """CLI should fail gracefully with missing geometry."""
-    from cfmesh_autogui.commercial.adaptive_cli import main
+    from polyfoammesh.commercial.adaptive_cli import main
     ret = main(["--geometry", "/nonexistent/file.stl"])
     assert ret == 1
 
 
 def test_e2e_cli_invalid_detail():
     """CLI should validate detail level."""
-    from cfmesh_autogui.commercial.adaptive_cli import main
+    from polyfoammesh.commercial.adaptive_cli import main
     try:
         ret = main(["--geometry", "dummy.stl", "--detail", "invalid"])
     except SystemExit:

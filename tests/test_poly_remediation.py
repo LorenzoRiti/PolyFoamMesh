@@ -20,9 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from _test_helpers import load_commercial_module
-from cfmesh_autogui.core import foam_mesh_io as fio
-from cfmesh_autogui.core.poly_smoother import _boundary_vertex_mask
-from cfmesh_autogui.core.tet_poly_dual import (
+from polyfoammesh.core import foam_mesh_io as fio
+from polyfoammesh.core.poly_smoother import _boundary_vertex_mask
+from polyfoammesh.core.tet_poly_dual import (
     TetPolyDualConverter,
     _cell_centres,
     _detect_defects,
@@ -117,7 +117,7 @@ def test_rollback_when_action_does_not_help(tmp_path, monkeypatch):
     # A non-helping action: smoothing returns the input unchanged (with its
     # real defect count) — the strict rule must reject it and leave the mesh
     # byte-identical.
-    import cfmesh_autogui.core.poly_smoother as ps
+    import polyfoammesh.core.poly_smoother as ps
 
     def noop_smooth(points, faces, owner, neigh, n_int, n_cells, *a, **k):
         return points, _counts_of(points, faces, owner, neigh, n_int, n_cells)
@@ -142,7 +142,7 @@ def test_iteration_cap_respected_when_never_converges(tmp_path, monkeypatch):
 
     # Each smoothing call claims one fewer defect but never reaches zero:
     # the loop must stop at the iteration cap, not run forever.
-    import cfmesh_autogui.core.poly_smoother as ps
+    import polyfoammesh.core.poly_smoother as ps
 
     state: dict = {"cur": None}
 
@@ -168,7 +168,7 @@ def test_result_reports_accepted_and_rejected_actions(tmp_path, monkeypatch):
         case / "constant" / "polyMesh", injected, faces, owner, neigh, patches,
     )
 
-    import cfmesh_autogui.core.poly_smoother as ps
+    import polyfoammesh.core.poly_smoother as ps
 
     state: dict = {"cur": None, "n": 0}
 
@@ -258,7 +258,7 @@ def test_tet_fallback_reported_when_repair_fails(tmp_path, monkeypatch):
     backup.mkdir()
     (backup / "points").write_text("tet backup", encoding="ascii")
 
-    import cfmesh_autogui.core.poly_smoother as ps
+    import polyfoammesh.core.poly_smoother as ps
 
     def noop_smooth(points, faces, owner, neigh, n_int, n_cells, *a, **k):
         return points, _counts_of(points, faces, owner, neigh, n_int, n_cells)
@@ -335,13 +335,13 @@ def test_auto_fix_poly_branch_skipped_when_report_passes(tmp_path, monkeypatch):
 
 def test_auto_fix_poly_records_remediation_outcome(tmp_path, monkeypatch):
     mod = load_commercial_module("quality_engine")
-    # Keep the lazy `from cfmesh_autogui.commercial.poly_remediation import ...`
+    # Keep the lazy `from polyfoammesh.commercial.poly_remediation import ...`
     # inside _auto_fix_poly from triggering the heavy commercial/__init__.py:
     # the submodule is already in sys.modules (loaded above), so a stub parent
     # package is enough for the import machinery.
     monkeypatch.setitem(
-        sys.modules, "cfmesh_autogui.commercial",
-        types.ModuleType("cfmesh_autogui.commercial"),
+        sys.modules, "polyfoammesh.commercial",
+        types.ModuleType("polyfoammesh.commercial"),
     )
 
     case, points, faces, owner, neigh, patches, n_int, n_cells = _run_dual(tmp_path)

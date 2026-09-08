@@ -215,7 +215,7 @@ source of truth.
 - The frozen EXE is rebuilt on demand (`pyinstaller --clean --noconfirm
   PolyFoamMesh.spec`). The `dist/` artifact is not refreshed automatically
   and may lag the source tree.
-- The API server module (`cfmesh_autogui.api.server`) imports cleanly with
+- The API server module (`polyfoammesh.api.server`) imports cleanly with
   the installed FastAPI; it remains a CI/CD surface, not part of the GUI.
 
 ## Test Matrix

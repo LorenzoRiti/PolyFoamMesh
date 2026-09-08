@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from unittest import mock  # noqa: E402
 
-from cfmesh_autogui.core import gmsh_wrapper as gw  # noqa: E402
+from polyfoammesh.core import gmsh_wrapper as gw  # noqa: E402
 
 
 def _mock_ram(available_gb: float, total_gb: float):

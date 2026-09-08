@@ -20,9 +20,9 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 import numpy as np
 import trimesh
 
-from cfmesh_autogui.config import OFConfig
-from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.boundary_reader import count_cells, count_points, count_faces, parse_boundary
+from polyfoammesh.config import OFConfig
+from polyfoammesh.core.meshdict_gen import write_meshdict
+from polyfoammesh.core.boundary_reader import count_cells, count_points, count_faces, parse_boundary
 
 WORK = Path("C:/cfmesh_bench/large_mesh")
 

@@ -23,29 +23,29 @@ def load_commercial_module(module_name: str) -> types.ModuleType:
 
     # 1. Load lightweight dependencies directly (NOT through core/__init__)
     for mod_name, rel_path in [
-        ("cfmesh_autogui.octopoda_local", "cfmesh_autogui/octopoda_local.py"),
-        ("cfmesh_autogui.config", "cfmesh_autogui/config.py"),
-        ("cfmesh_autogui.core.quality_thresholds", "cfmesh_autogui/core/quality_thresholds.py"),
-        ("cfmesh_autogui.core.validation", "cfmesh_autogui/core/validation.py"),
-        ("cfmesh_autogui.core.session", "cfmesh_autogui/core/session.py"),
-        ("cfmesh_autogui.core.meshdict_gen", "cfmesh_autogui/core/meshdict_gen.py"),
-        ("cfmesh_autogui.core.stl_writer", "cfmesh_autogui/core/stl_writer.py"),
-        ("cfmesh_autogui.core.of_reader", "cfmesh_autogui/core/of_reader.py"),
-        ("cfmesh_autogui.core.boundary_reader", "cfmesh_autogui/core/boundary_reader.py"),
+        ("polyfoammesh.octopoda_local", "polyfoammesh/octopoda_local.py"),
+        ("polyfoammesh.config", "polyfoammesh/config.py"),
+        ("polyfoammesh.core.quality_thresholds", "polyfoammesh/core/quality_thresholds.py"),
+        ("polyfoammesh.core.validation", "polyfoammesh/core/validation.py"),
+        ("polyfoammesh.core.session", "polyfoammesh/core/session.py"),
+        ("polyfoammesh.core.meshdict_gen", "polyfoammesh/core/meshdict_gen.py"),
+        ("polyfoammesh.core.stl_writer", "polyfoammesh/core/stl_writer.py"),
+        ("polyfoammesh.core.of_reader", "polyfoammesh/core/of_reader.py"),
+        ("polyfoammesh.core.boundary_reader", "polyfoammesh/core/boundary_reader.py"),
         # Single polyMesh writer — delegated to by mesh_converter /
         # poly_aggregator._write_poly_mesh (stdlib-only imports).
-        ("cfmesh_autogui.core.foam_mesh_io", "cfmesh_autogui/core/foam_mesh_io.py"),
+        ("polyfoammesh.core.foam_mesh_io", "polyfoammesh/core/foam_mesh_io.py"),
         # Single checkMesh parser — delegated to by quality_engine._parse_metrics
         # and mesh_engine/poly_aggregator (stdlib-only imports + PySide6).
-        ("cfmesh_autogui.core.openfoam_runner", "cfmesh_autogui/core/openfoam_runner.py"),
+        ("polyfoammesh.core.openfoam_runner", "polyfoammesh/core/openfoam_runner.py"),
         # Canonical patch-role classifier — delegated to by bl_engine,
         # bc_editor and watertight (stdlib-only imports).
-        ("cfmesh_autogui.core.patch_roles", "cfmesh_autogui/core/patch_roles.py"),
+        ("polyfoammesh.core.patch_roles", "polyfoammesh/core/patch_roles.py"),
         # mesh_engine imports write_control_dict from here at module scope.
         # Without this pre-load, tests/test_mesh_engine.py only collected when
         # some alphabetically-earlier test happened to import case_setup first
         # — i.e. it passed in the full suite and failed in isolation.
-        ("cfmesh_autogui.core.case_setup", "cfmesh_autogui/core/case_setup.py"),
+        ("polyfoammesh.core.case_setup", "polyfoammesh/core/case_setup.py"),
     ]:
         # Never REPLACE a module that is already in sys.modules: re-executing
         # it here creates a second instance, and any earlier importer (e.g.
@@ -61,26 +61,26 @@ def load_commercial_module(module_name: str) -> types.ModuleType:
 
     # 1b. Pre-load commercial submodules needed by other commercial modules
     for mod_name, rel_path in [
-        ("cfmesh_autogui.commercial.solver_setup", "cfmesh_autogui/commercial/solver_setup.py"),
+        ("polyfoammesh.commercial.solver_setup", "polyfoammesh/commercial/solver_setup.py"),
     ]:
-        _load_module_from_file(mod_name, src_dir / rel_path, "cfmesh_autogui.commercial")
+        _load_module_from_file(mod_name, src_dir / rel_path, "polyfoammesh.commercial")
 
     # 2. Stub the heavy packages (saving originals so they can be restored —
-    #    otherwise later test modules that import the real cfmesh_autogui.core
-    #    / cfmesh_autogui.gui packages fail with ModuleNotFoundError, since the
+    #    otherwise later test modules that import the real polyfoammesh.core
+    #    / polyfoammesh.gui packages fail with ModuleNotFoundError, since the
     #    stub's __path__ is empty).
     saved = {}
-    for pkg_name in ("cfmesh_autogui.core", "cfmesh_autogui.gui"):
+    for pkg_name in ("polyfoammesh.core", "polyfoammesh.gui"):
         saved[pkg_name] = sys.modules.get(pkg_name)
         _stub_pkg(pkg_name)
 
     try:
         # 3. Load the commercial module
-        src_path = src_dir / "cfmesh_autogui" / "commercial" / f"{module_name}.py"
+        src_path = src_dir / "polyfoammesh" / "commercial" / f"{module_name}.py"
         return _load_module_from_file(
-            f"cfmesh_autogui.commercial.{module_name}",
+            f"polyfoammesh.commercial.{module_name}",
             src_path,
-            "cfmesh_autogui.commercial",
+            "polyfoammesh.commercial",
         )
     finally:
         for pkg_name, original in saved.items():

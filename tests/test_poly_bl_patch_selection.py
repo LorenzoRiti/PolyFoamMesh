@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from cfmesh_autogui.core import openfoam_runner as orm
-from cfmesh_autogui.core.openfoam_runner import poly_bl_patch_selection
+from polyfoammesh.core import openfoam_runner as orm
+from polyfoammesh.core.openfoam_runner import poly_bl_patch_selection
 
 _FOAM_HEADER = (
     "FoamFile\n{\n"

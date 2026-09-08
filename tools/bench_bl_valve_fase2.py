@@ -26,10 +26,10 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
-from cfmesh_autogui.core import foam_mesh_io as fio  # noqa: E402
-from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
+from polyfoammesh.core import foam_mesh_io as fio  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 CASE = Path("C:/polybench2/bl_valve_fase2")
 TET_BACKUP = Path("C:/polybench/valve1/constant/polyMesh_tet_backup")
