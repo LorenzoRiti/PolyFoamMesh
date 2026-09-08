@@ -28,10 +28,10 @@ from polyfoammesh.gui.design_tokens import (
     APP_WEBSITE,
     PRIMARY_600,
     ORANGE_500,
-    NEUTRAL_800,
-    NEUTRAL_600,
-    NEUTRAL_400,
+    LIGHT,
+    DARK,
 )
+from polyfoammesh.gui.theme import ThemeManager
 
 
 def _make_logo(size: int = 96) -> QPixmap:
@@ -70,7 +70,14 @@ def _make_logo(size: int = 96) -> QPixmap:
 
 
 class AboutDialog(QDialog):
-    """Commercial-grade About dialog — ANSYS Workbench inspired."""
+    """Commercial-grade About dialog — ANSYS Workbench inspired.
+
+    Pulls its palette from design_tokens.LIGHT/DARK (whichever the app is
+    currently resolved to) instead of hardcoding light-mode hex values —
+    it used to hardcode a light background unconditionally while individual
+    labels inherited backgrounds from the app-wide QSS, so in dark mode it
+    rendered as unreadable black bars on a white dialog.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -78,10 +85,17 @@ class AboutDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(440)
         self.setMaximumWidth(480)
-        self.setStyleSheet("""
-            QDialog { background:#f8f9fb; }
-            QLabel { color:#1e293b; }
-            QPushButton { min-width:80px; }
+
+        pal = DARK if ThemeManager.instance().resolved_mode == "dark" else LIGHT
+        bg = pal["bgElevated"]
+        fg = pal["fgDefault"]
+        fg_muted = pal["fgMuted"]
+        border = pal["border"]
+
+        self.setStyleSheet(f"""
+            QDialog {{ background:{bg}; }}
+            QLabel {{ color:{fg}; background:transparent; }}
+            QPushButton {{ min-width:80px; }}
         """)
 
         layout = QVBoxLayout(self)
@@ -120,12 +134,12 @@ class AboutDialog(QDialog):
         ver_font = QFont()
         ver_font.setPointSize(10)
         version.setFont(ver_font)
-        version.setStyleSheet(f"color: {NEUTRAL_600};")
+        version.setStyleSheet(f"color: {fg_muted};")
         title_box.addWidget(version)
 
         desc = QLabel(APP_DESCRIPTION)
         desc.setWordWrap(True)
-        desc.setStyleSheet(f"color: {NEUTRAL_800}; font-size:12px; margin-top:2px;")
+        desc.setStyleSheet(f"color: {fg}; font-size:12px; margin-top:2px;")
         title_box.addWidget(desc)
         title_box.addStretch(1)
         header.addLayout(title_box, 1)
@@ -134,22 +148,22 @@ class AboutDialog(QDialog):
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#d4d8dd;")
+        sep.setStyleSheet(f"color:{border};")
         content.addWidget(sep)
 
         # Build info grid
         info_layout = QVBoxLayout()
         info_layout.setSpacing(3)
-        info_layout.addWidget(self._kv("Vendor", APP_VENDOR))
-        info_layout.addWidget(self._kv("License", APP_LICENSE))
-        info_layout.addWidget(self._kv("Copyright", APP_COPYRIGHT))
-        info_layout.addWidget(self._kv("Website", APP_WEBSITE))
+        info_layout.addWidget(self._kv("Vendor", APP_VENDOR, fg))
+        info_layout.addWidget(self._kv("License", APP_LICENSE, fg))
+        info_layout.addWidget(self._kv("Copyright", APP_COPYRIGHT, fg))
+        info_layout.addWidget(self._kv("Website", APP_WEBSITE, fg))
         content.addLayout(info_layout)
 
         # Separator
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
-        sep2.setStyleSheet("color:#d4d8dd;")
+        sep2.setStyleSheet(f"color:{border};")
         content.addWidget(sep2)
 
         # Tech stack
@@ -158,17 +172,20 @@ class AboutDialog(QDialog):
             "trimesh · meshio · reportlab · OpenFOAM v2512"
         )
         tech.setWordWrap(True)
-        tech.setStyleSheet(f"color: {NEUTRAL_600}; font-size:11px;")
+        tech.setStyleSheet(f"color: {fg_muted}; font-size:11px;")
         content.addWidget(tech)
 
-        # System
+        # System — deliberately fg_muted, not a dimmer "subtle" tone: this
+        # line is diagnostic info someone reads when filing a bug, not a
+        # decorative hint (a previous version used fgSubtle here and it
+        # dropped under WCAG AA contrast against bgElevated).
         sys_info = QLabel(
             f"<b>Python:</b> {platform.python_version()} &nbsp;|&nbsp; "
             f"<b>Qt:</b> {self._qt_version()} &nbsp;|&nbsp; "
             f"<b>OS:</b> {platform.system()} {platform.release()}"
         )
         sys_info.setTextFormat(Qt.RichText)
-        sys_info.setStyleSheet(f"color: {NEUTRAL_400}; font-size:10px;")
+        sys_info.setStyleSheet(f"color: {fg_muted}; font-size:10px;")
         content.addWidget(sys_info)
 
         # Close button
@@ -192,8 +209,8 @@ class AboutDialog(QDialog):
             return "PySide6 (unknown)"
 
     @staticmethod
-    def _kv(key: str, value: str) -> QLabel:
+    def _kv(key: str, value: str, fg: str) -> QLabel:
         lbl = QLabel(f"<b>{key}:</b> {value}")
         lbl.setTextFormat(Qt.RichText)
-        lbl.setStyleSheet("color: #1e293b; font-size: 12px;")
+        lbl.setStyleSheet(f"color: {fg}; font-size: 12px;")
         return lbl

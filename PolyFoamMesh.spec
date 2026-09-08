@@ -74,7 +74,14 @@ a = Analysis(
         'jupyter', 'notebook', 'tensorflow', 'sklearn',
     ],
     noarchive=False,
-    optimize=2,  # ✅ F-029
+    # optimize=2 strips ALL docstrings from compiled bytecode, including
+    # numpy's own — numpy's C extension init calls add_docstring() at
+    # import time and REQUIRES a real string there, so the frozen exe
+    # crashed on first launch with "argument docstring of add_docstring
+    # should be a str" before a single line of app code ever ran. 0 keeps
+    # docstrings (and assert statements) intact; the exe is a few MB
+    # larger, that's the whole cost.
+    optimize=0,
 )
 pyz = PYZ(a.pure)
 
@@ -88,6 +95,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='PolyFoamMesh',
+    icon=os.path.join('installer', 'assets', 'icon.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
