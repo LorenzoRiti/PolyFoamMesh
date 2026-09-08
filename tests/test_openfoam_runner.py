@@ -36,6 +36,17 @@ from polyfoammesh.core.openfoam_runner import (
 )
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _qt_app():
+    # QTimer/QEventLoop hang forever when no QApplication exists (verified
+    # empirically): test_mesh_worker's watchdog timer never fired and
+    # loop.exec() blocked the whole pytest run indefinitely when this module
+    # ran standalone. In the full suite a QApplication happened to already
+    # exist from an earlier module — order-dependent. Create it deterministically.
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
 def test_poly_wall_patch_names_default_targets(tmp_path):
     """FASE 1: the default BL target set is wall-typed / wall-named patches;
     GMSH ``surface_N`` patches are excluded (they fall back to all with a
