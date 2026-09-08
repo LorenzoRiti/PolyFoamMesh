@@ -16,10 +16,7 @@ source of truth.
 
 ## Polyhedral Conversion
 
-- The barycentric dual is the only tet->poly path in use. `wedge_cells` and
-  `median_faces` are enabled by default (measured best); a post-construction
-  quality smoothing pass (`core/poly_smoother.py`, keep-best, interior
-  vertices only, boundary pinned) is enabled by default. On CAD parts with
+- The barycentric dual is the only tet->poly path in use. `wedge_cells` and `median_faces` are disabled by default. On the valve A/B measurement, `median_faces=True` produced 1,056 residual defects versus 1,027 with `median_faces=False`, so the default remains off. `wedge_cells` made no difference in the same A/B measurement and is incompatible with the collapse configuration. A post-construction quality smoothing pass (`core/poly_smoother.py`, keep-best, interior vertices only, boundary pinned) is enabled by default. On CAD parts with
   many concave re-entrant features the dual can still produce a small number
   of non-convex boundary cells (a few hundred on the reference valve),
   failing checkMesh; the poly mesh is then kept and shown with a warning
@@ -74,7 +71,7 @@ source of truth.
   63.252 nel fixpoint; il drop a 0 layer perde il volume). Causa radice:
   angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
   concavità delle celle duali non è rilevabile dalle normali di parete.
-   Il fallback globale su 5 scale resta il comportamento della valvola.
+  Il fallback globale su 5 scale resta il comportamento della valvola.
 - **Criterio di concavità duale (Lane B, 2026-09-08)**: nuovo parametro
   opt-in `concavity_criterion="dual_convexity"` in `core/bl_poly.py`
   (funzione `_dual_convexity_wall_fade`; default `"angle_fade"` invariato e
@@ -98,26 +95,26 @@ source of truth.
     chiuse, 599 s, mesh invariata. Meglio della baseline su 4 scale su 5
     (fino a 6.7x a scale=1.0: 24 vs 161), ma NESSUNA scala arriva a 0 celle
     non chiuse: nessun BL valido nemmeno col criterio nuovo.
-  Perché non chiude G2 (misurato, non assunto): il fixpoint di consistenza
-  appiattisce il conteggio a uniforme per componente connessa — misurato
-  nv=nf=1 su TUTTE le 226.542 facce sotto ENTRAMBI i criteri (le 937 facce
-  dell'input segnalate forzano l'intera parete a 1 layer in ~100 passate di
-  fixpoint). Un detector per-vertice può quindi cambiare solo l'ALTEZZA
-  locale (max_h = fade x ...), non il conteggio: migliora la chiusura ma non
-  la porta a 0, e destabilizza la riparazione del winding a scale intermedie.
-  Raccomandazione: il segnale di convessità duale è un detector STRETTAMENTE
-  migliore del fade (393 celle vs 0) e più utile per la chiusura a 4/5 scale,
-  ma da solo non chiude la valvola; per sfruttarlo serve rilassare il
-  fixpoint (conteggi per-faccia con facce di transizione che chiudono, o
-  fixpoint limitato alla regione difettosa). Default invariato: ri-misurare
-  prima di abilitare. Gate WSL (`tools/bench_bl_valve_fase2.py`) NON eseguito:
-  nessuna scala produce una mesh valida in-process (il verdetto dell'engine
-  è deciso dal replicatore, che sulla valvola coincide con checkMesh 895/895),
-  quindi non esiste una mesh nuova da sottoporre a checkMesh — la baseline
-  pinnata resta il comportamento della valvola. Gate salute
-  (`tools/bench_bl_poly_partial.py`): PASS invariato (cilindro 72 prismi =
-  3 x 24, Mesh OK; cubo duct 81 celle, skew 2.175, NOmax 44.8, Mesh OK);
-  test veloci `tests/test_bl_poly.py`: 6/6 verdi.
+    Perché non chiude G2 (misurato, non assunto): il fixpoint di consistenza
+    appiattisce il conteggio a uniforme per componente connessa — misurato
+    nv=nf=1 su TUTTE le 226.542 facce sotto ENTRAMBI i criteri (le 937 facce
+    dell'input segnalate forzano l'intera parete a 1 layer in ~100 passate di
+    fixpoint). Un detector per-vertice può quindi cambiare solo l'ALTEZZA
+    locale (max_h = fade x ...), non il conteggio: migliora la chiusura ma non
+    la porta a 0, e destabilizza la riparazione del winding a scale intermedie.
+    Raccomandazione: il segnale di convessità duale è un detector STRETTAMENTE
+    migliore del fade (393 celle vs 0) e più utile per la chiusura a 4/5 scale,
+    ma da solo non chiude la valvola; per sfruttarlo serve rilassare il
+    fixpoint (conteggi per-faccia con facce di transizione che chiudono, o
+    fixpoint limitato alla regione difettosa). Default invariato: ri-misurare
+    prima di abilitare. Gate WSL (`tools/bench_bl_valve_fase2.py`) NON eseguito:
+    nessuna scala produce una mesh valida in-process (il verdetto dell'engine
+    è deciso dal replicatore, che sulla valvola coincide con checkMesh 895/895),
+    quindi non esiste una mesh nuova da sottoporre a checkMesh — la baseline
+    pinnata resta il comportamento della valvola. Gate salute
+    (`tools/bench_bl_poly_partial.py`): PASS invariato (cilindro 72 prismi =
+    3 x 24, Mesh OK; cubo duct 81 celle, skew 2.175, NOmax 44.8, Mesh OK);
+    test veloci `tests/test_bl_poly.py`: 6/6 verdi.
 
 ## Boundary Layer Patch Selection — single source of truth
 
@@ -208,11 +205,10 @@ source of truth.
   `test_next_escalation_from_polyhedral_skips_the_no_op`.
 - **`HexCorePolyBoundary` is not a Mosaic mesher.** It was labelled "Hex Core
   + Poly Boundary (Mosaic-style)" while producing no hex core, no poly
-  transition zone and no prisms. Relabelled "Hex → Polyhedral (cfMesh
-  polyDualMesh)"; the enum value is unchanged so existing case configs still
-  load. `commercial/mosaic.py` likewise only runs whole-mesh `polyDualMesh
-  90` — its "Mosaic" name is historical and its docstrings now say so.
-  Implementing a true Mosaic topology remains out of scope.
+    transition zone and no prisms. Relabelled "Hex → Polyhedral (cfMesh
+    polyDualMesh)"; the enum value is unchanged so existing case configs still
+    load. `commercial/mosaic.py` likewise only runs whole-mesh `polyDualMesh 90` — its "Mosaic" name is historical and its docstrings now say so.
+    Implementing a true Mosaic topology remains out of scope.
 - **`polyDualMesh` increases the cell count (~15-30%)**, it does not reduce
   it. Two descriptions claimed a 40-60% reduction; corrected. The *tet→poly
   barycentric dual* is the one that reduces cells (~4-5x, measured:
@@ -240,7 +236,6 @@ source of truth.
   only ask for smaller cells, never change sizing elsewhere. Regression
   tests: `test_gmsh_refinement_boxes.py::test_single_zone_min_combined_with_existing_bg`
   and friends.
-
 - The Mesh Fineness slider value is a budget/cap (10K..20M cells), not a
   guarantee. The displayed geometry estimate is derived from the tessellated
   solid volume and the derived cell sizes; when the volume cannot be trusted
@@ -272,8 +267,7 @@ source of truth.
 
 ## Packaging And Runtime
 
-- The frozen EXE is rebuilt on demand (`pyinstaller --clean --noconfirm
-  PolyFoamMesh.spec`). The `dist/` artifact is not refreshed automatically
+- The frozen EXE is rebuilt on demand (`pyinstaller --clean --noconfirm PolyFoamMesh.spec`). The `dist/` artifact is not refreshed automatically
   and may lag the source tree.
 - The API server module (`polyfoammesh.api.server`) imports cleanly with
   the installed FastAPI; it remains a CI/CD surface, not part of the GUI.

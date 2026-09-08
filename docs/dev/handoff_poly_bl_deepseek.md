@@ -10,9 +10,11 @@
 
 - **Repo**: `C:\Users\Davide Valoroso\cfmesh-autogui`, branch `master`, Windows 11.
 - **Interprete Python con le dipendenze** (numpy, gmsh, cadquery, PySide6, pytest):
+
   ```
   C:\Users\Davide Valoroso\AppData\Local\Programs\Python\Python311\python.exe
   ```
+
   Il `python` sul PATH è un venv rotto **senza pytest**. Usa SEMPRE quello sopra.
   Nei comandi qui sotto è abbreviato `PY`.
 - **WSL2 Ubuntu + OpenFOAM v2512** in `/usr/lib/openfoam/openfoam2512`. Serve solo
@@ -64,12 +66,12 @@ STL/STEP → GMSH tet (Windows, nativo)
 
 ### Numeri misurati (checkMesh reale, da battere)
 
-| Caso | Risultato |
-|---|---|
-| `ref1` blocco+foro, 251k tet | **Mesh OK**, 100% poly, 0 facce mal orientate, skew 2.25, non-ortho 54.4, 8.8 s |
-| venturi coarse | GMSH 39.792 tet → **Mesh OK** → dual 8.074 celle poly → **Mesh OK** |
-| cilindro + BL (tools/bench_bl_poly_dual.py) | **505.950 celle prisma + 72.483 poliedri, Mesh OK** |
-| `valve1` valvola, 824k tet | **Failed 3 checks**, 852 facce mal orientate, 1027 difetti residui (replica in-process), skew 17.12, non-ortho 95.72, volume conservato ~1e-15 |
+| Caso                                        | Risultato                                                                                                                                            |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ref1` blocco+foro, 251k tet              | **Mesh OK**, 100% poly, 0 facce mal orientate, skew 2.25, non-ortho 54.4, 8.8 s                                                                |
+| venturi coarse                              | GMSH 39.792 tet →**Mesh OK** → dual 8.074 celle poly → **Mesh OK**                                                                    |
+| cilindro + BL (tools/bench_bl_poly_dual.py) | **505.950 celle prisma + 72.483 poliedri, Mesh OK**                                                                                            |
+| `valve1` valvola, 824k tet                | **Failed 3 checks**, 852 facce mal orientate, 1027 difetti residui (replica in-process), skew 17.12, non-ortho 95.72, volume conservato ~1e-15 |
 
 La baseline valvola è **pinnata** in `tools/valve_defect_baseline.py`: qualunque
 tuo cambiamento va confrontato con quei numeri, non con un ricordo.
@@ -86,13 +88,13 @@ chiuse, a volume positivo e watertight: fallisce un check che ASSUME convessità
 Riguarda 268-462 celle = **0.25-0.29% della mesh**. È una proprietà della
 geometria (89 superfici con giunzioni concave), non del tet.
 
-| Tentativo | Esito MISURATO | Stato |
-|---|---|---|
-| Agglomerazione defect-driven (fondere la cella difettosa nel vicino più sano) | Peggiora in modo monotono: 766 → 839 → 1.225 → 1.835 → 2.929 in 4 round | Codice rimosso. **NON rifare** |
-| Split della stella del vertice con angolo diedro NON segnato | 895 → 1.215 (splittava anche gli spigoli convessi sani) | **NON rifare** |
-| Split della stella del vertice con test di concavità SEGNATO (`split_rounds`) | Implementato e verificato numericamente (cubo: 0 concavi; scanalatura a L: concavi rilevati). Sulla valvola scatta su 352 vertici ma il keep-best lo scarta: non migliora | Resta nel file, `split_rounds=0` di default |
-| Wedge cells "Direction A" (una cella cuneo che POSSIEDE lo spigolo concavo, 614 spigoli) | Implementato, scatta, scartato dal keep-best | `wedge_cells=True` è attivo dal runner ma non risolve |
-| `median_faces=True` | Sposta il difetto: 852 piramidi → 766, ma skew 17 → **470**. Nessuno domina | Attivo di default, non è la leva |
+| Tentativo                                                                                | Esito MISURATO                                                                                                                                                            | Stato                                                    |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Agglomerazione defect-driven (fondere la cella difettosa nel vicino più sano)           | Peggiora in modo monotono: 766 → 839 → 1.225 → 1.835 → 2.929 in 4 round                                                                                               | Codice rimosso.**NON rifare**                      |
+| Split della stella del vertice con angolo diedro NON segnato                             | 895 → 1.215 (splittava anche gli spigoli convessi sani)                                                                                                                  | **NON rifare**                                     |
+| Split della stella del vertice con test di concavità SEGNATO (`split_rounds`)         | Implementato e verificato numericamente (cubo: 0 concavi; scanalatura a L: concavi rilevati). Sulla valvola scatta su 352 vertici ma il keep-best lo scarta: non migliora | Resta nel file,`split_rounds=0` di default             |
+| Wedge cells "Direction A" (una cella cuneo che POSSIEDE lo spigolo concavo, 614 spigoli) | Implementato, scatta, scartato dal keep-best                                                                                                                              | `wedge_cells=True` è esplicitamente attivo nel runner di produzione, ma non è il default del converter (`False`); nell'A/B della valvola non ha prodotto differenze (1.056 difetti in entrambi i casi). |
+| `median_faces=True`                                                                    | Sposta il difetto: 852 piramidi → 766, ma skew 17 →**470**. Nessuno domina                                                                                        | Non è un default del converter: `median_faces=False`. Il runner di produzione lo abilita esplicitamente (`True`), ma l'A/B più recente sulla valvola ha misurato 1.056 difetti residui con `True` contro 1.027 con `False`; il default del converter resta `False`.                         |
 
 **Idea che sembra buona e invece è morta a priori**: triangolare le facce di
 bordo difettose. Le quad di bordo sono **planari per costruzione**, quindi ogni
@@ -104,6 +106,7 @@ piramidi. Non può funzionare. Non provarci.
 ## 4. Cosa manca DAVVERO — i tre buchi, in ordine di valore/costo
 
 ### G1 — Il BL viene messo su TUTTO il boundary, inlet e outlet inclusi
+
 `core/openfoam_runner.py` riga ~1179 chiama il motore BL con `apply_to_all=True`
 **hardcoded**. Per la CFD è sbagliato: celle sottilissime addossate a una BC di
 pressione/velocità, profilo d'ingresso sballato, celle sprecate. **Colpisce ogni
@@ -115,6 +118,7 @@ attraverso gli spigoli, perché un BL parziale lascerebbe seam non-manifold, e
 È un limite dell'implementazione, non una necessità geometrica.
 
 ### G2 — Il BL si arrende GLOBALMENTE se una zona locale è brutta
+
 `bl_poly.run` prova 5 scale decrescenti `(1.0, 0.5) … (0.1, 0.05)` sull'INTERA
 mesh; se nessuna passa la validazione, **niente BL da nessuna parte**. Un pugno
 di vertici su feature concave azzera il lavoro su tutto il resto (è il motivo per
@@ -124,6 +128,7 @@ l'ALTEZZA sulle feature, ma il NUMERO di layer è uniforme, e un layer sfumato a
 di sparire.
 
 ### G3 — Il difetto concavo del dual (0.25% celle, checkMesh non-OK)
+
 Vedi §3. Tutte le strade a livello di convertitore sono chiuse con numeri.
 
 ---
@@ -131,6 +136,7 @@ Vedi §3. Tutte le strade a livello di convertitore sono chiuse con numeri.
 ## 5. IL PIANO — quattro fasi, ognuna con un gate
 
 ### FASE 0 — Decidere il criterio di accettazione (FALLA PER PRIMA)
+
 **Domanda**: quel 0.25% di celle rende la mesh inutilizzabile, o è solo un check
 che assume convessità su celle che il solver digerisce benissimo?
 
@@ -149,6 +155,7 @@ conservazione) + decisione scritta in `docs/`. **Non saltare questa fase**: può
 farti risparmiare la fase più cara del piano.
 
 ### FASE 1 — BL selettivo per patch (chiude G1)
+
 Il pezzo tecnico: sullo spigolo di confine tra zona-BL e zona-non-BL, la faccia
 laterale del prisma ha UN SOLO prisma incidente. Invece di allargare la selezione
 (cosa che fa oggi), quella faccia deve diventare una **faccia di BOUNDARY
@@ -169,6 +176,7 @@ Poi si espone il comportamento giusto: **BL di default solo sulle patch di tipo
 - **Gate**: Mesh OK + conteggio prismi corretto su 2 geometrie diverse.
 
 ### FASE 2 — Terminazione locale dei layer (chiude G2)
+
 Passare da altezza-variabile a **conteggio-variabile**: dove i layer non ci
 stanno, mettine meno localmente (n → n−1 → … → 0), non assottigliare tutto
 ovunque. È il trattamento standard dei codici BL di produzione.
@@ -184,6 +192,7 @@ assottigliare l'intero BL per colpa di una zona.
   rispetto ai 505.950 prismi / Mesh OK (regressione).
 
 ### FASE 3 — Il difetto concavo (G3) — SOLO se la Fase 0 lo giustifica
+
 Le strade a livello di convertitore sono chiuse (§3). Quella che i numeri
 lasciano aperta è **il taglio planare locale**: tagliare la cella avvolta con il
 piano bisettore dello spigolo concavo, ottenendo due metà convesse i cui
@@ -257,6 +266,7 @@ algoritmo nuovo con una campagna di regressione WSL dietro.
 ## 8. File che toccherai (e quelli che NON devi toccare)
 
 **Toccherai**:
+
 - `src/cfmesh_autogui/core/bl_poly.py` — Fasi 1 e 2 (`_select_faces` ~441,
   `_build` ~511, controllo spigoli ~675, `angle_fade` ~563, fallback scale ~383)
 - `src/cfmesh_autogui/core/openfoam_runner.py` ~1159-1199 — passaggio dei
@@ -267,12 +277,14 @@ algoritmo nuovo con una campagna di regressione WSL dietro.
 - `docs/residual_risks.md` + `docs/poly_mesher_STATO.md` — aggiornare a fine lavoro
 
 **NON toccare senza dichiararlo come cambio separato e revisionato**:
+
 - `src/cfmesh_autogui/core/gmsh_wrapper.py` (pipeline tet a monte)
 - `src/cfmesh_autogui/core/tet_poly_dual.py` (algoritmo del convertitore) —
   eccetto la Fase 3, se e solo se la Fase 0 la giustifica
 - `src/cfmesh_autogui/core/foam_mesh_io.py` (writer unico, contratto stabile)
 
 **Documenti di contesto da leggere**:
+
 - `docs/poly_mesher_megaprompt.md` — la storia completa e i numeri di ogni
   tentativo (è la fonte di §3)
 - `docs/residual_risks.md` §Polyhedral Conversion — limiti accettati
@@ -292,6 +304,7 @@ strutture della Fase 1): NON lanciare subagenti che scrivono su `bl_poly.py` in
 parallelo. Quello che si parallelizza bene:
 
 **Ondata 1 — ricognizione (parallelo, sola lettura, prima di scrivere codice)**
+
 - SA-1: mappa esatta del flusso dati BL — chi chiama `PolyBoundaryLayerEngine`,
   con quali parametri, da dove arrivano (GUI → worker → engine). Output: catena
   di chiamate con file:riga.
@@ -305,6 +318,7 @@ parallelo. Quello che si parallelizza bene:
   citato in §3 di questo documento. Output: discrepanze trovate.
 
 **Ondata 2 — Fase 0 (parallelo, indipendenti)**
+
 - SA-5: adatta `poly_solver_validation.py` alla valvola ed esegue.
 - SA-6: in parallelo esegue `valve_defect_baseline.py` per confermare che la
   baseline pinnata è ancora valida sul working tree corrente.
