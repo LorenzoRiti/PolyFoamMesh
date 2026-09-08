@@ -21,7 +21,7 @@ STEP/STL usato (allega se possibile, o descrivi le caratteristiche: dimensioni, 
 - WSL2 + OpenFOAM installato: sì/no
 
 **Log**
-Incolla `%APPDATA%\cfmesh-autogui\logs\app.log` (o la parte rilevante).
+Incolla `%APPDATA%\polyfoammesh\logs\app.log` (o la parte rilevante).
 
 **Hai controllato [docs/residual_risks.md](../../docs/residual_risks.md)?**
 sì/no — elenca i limiti già noti.
