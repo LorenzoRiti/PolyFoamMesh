@@ -102,6 +102,49 @@ source of truth.
   angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
   concavità delle celle duali non è rilevabile dalle normali di parete.
    Il fallback globale su 5 scale resta il comportamento della valvola.
+- **Criterio di concavità duale (Lane B, 2026-09-08)**: nuovo parametro
+  opt-in `concavity_criterion="dual_convexity"` in `core/bl_poly.py`
+  (funzione `_dual_convexity_wall_fade`; default `"angle_fade"` invariato e
+  byte-identico). Il detector misura la convessità delle CELLE DUALI
+  direttamente: per ogni vertice di parete, frazione delle facce di parete
+  incidenti il cui owner cell è non-convesso nel senso esatto del test
+  'face pyramids' di checkMesh (centroide OpenFOAM della cella fuori da una
+  sua faccia), mappata nella stessa convenzione 0.05..1.0 di angle_fade.
+  Misurato sulla fixture valvola (1.051.199 punti, 1.241.048 facce, 152.086
+  celle): il segnale scatta ESATTAMENTE sulla classe di difetto documentata —
+  393 celle duali non-convesse (intervallo documentato 268-462), 1007 facce
+  difettose (= i 1007 difetti piramide dell'input), 1123 vertici di parete
+  con fade < 0.5 contro ZERO per angle_fade (fade >= 1.0 su tutti i 226.538
+  vertici, confermando la causa radice documentata). Esito misurato dei due
+  run completi (in-process, replica checkMesh; n_layers=2, h1=1e-5,
+  apply_to_all=True, 5 scale):
+  - `angle_fade` (baseline): chiusura fallita a ogni scala — 161 → 106 → 65
+    → 45 → 15 celle non chiuse, nessun volume negativo, 523 s, mesh invariata;
+  - `dual_convexity`: 24 → 378.605 celle a volume non positivo (flip globale
+    del winding alla scala 0.6, 99.99% della mesh) → 11 → 12 → 6 celle non
+    chiuse, 599 s, mesh invariata. Meglio della baseline su 4 scale su 5
+    (fino a 6.7x a scale=1.0: 24 vs 161), ma NESSUNA scala arriva a 0 celle
+    non chiuse: nessun BL valido nemmeno col criterio nuovo.
+  Perché non chiude G2 (misurato, non assunto): il fixpoint di consistenza
+  appiattisce il conteggio a uniforme per componente connessa — misurato
+  nv=nf=1 su TUTTE le 226.542 facce sotto ENTRAMBI i criteri (le 937 facce
+  dell'input segnalate forzano l'intera parete a 1 layer in ~100 passate di
+  fixpoint). Un detector per-vertice può quindi cambiare solo l'ALTEZZA
+  locale (max_h = fade x ...), non il conteggio: migliora la chiusura ma non
+  la porta a 0, e destabilizza la riparazione del winding a scale intermedie.
+  Raccomandazione: il segnale di convessità duale è un detector STRETTAMENTE
+  migliore del fade (393 celle vs 0) e più utile per la chiusura a 4/5 scale,
+  ma da solo non chiude la valvola; per sfruttarlo serve rilassare il
+  fixpoint (conteggi per-faccia con facce di transizione che chiudono, o
+  fixpoint limitato alla regione difettosa). Default invariato: ri-misurare
+  prima di abilitare. Gate WSL (`tools/bench_bl_valve_fase2.py`) NON eseguito:
+  nessuna scala produce una mesh valida in-process (il verdetto dell'engine
+  è deciso dal replicatore, che sulla valvola coincide con checkMesh 895/895),
+  quindi non esiste una mesh nuova da sottoporre a checkMesh — la baseline
+  pinnata resta il comportamento della valvola. Gate salute
+  (`tools/bench_bl_poly_partial.py`): PASS invariato (cilindro 72 prismi =
+  3 x 24, Mesh OK; cubo duct 81 celle, skew 2.175, NOmax 44.8, Mesh OK);
+  test veloci `tests/test_bl_poly.py`: 6/6 verdi.
 
 ## Boundary Layer Patch Selection — single source of truth
 
