@@ -33,6 +33,14 @@ cfMesh (WSL2), il mesher poliedrico nativo (senza WSL) o tetraedrico
 puro per FEM. A destra: impostazioni boundary layer, con calcolo dello
 spessore del primo strato guidato dal y+.*
 
+E il risultato vero — una mesh poliedrica da 398K celle con 9 boundary
+layer, `checkMesh` che passa (skewness 2.86, non-ortho 79.1°):
+
+<p align="center">
+  <img src="docs/assets/poly-mesh-overview.png" alt="Mesh poliedrica generata da PolyFoamMesh, vista d'insieme" width="49%">
+  <img src="docs/assets/poly-mesh-closeup.png" alt="Dettaglio delle celle poliedriche" width="49%">
+</p>
+
 ## Perché non uso semplicemente cfMesh
 
 cfMesh e GMSH producono mesh grezze — hex o tet — e questo lo fa già
