@@ -11,17 +11,16 @@ Storage: a single JSON file in the app data directory.
 
 import json
 import logging
-import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from polyfoammesh._paths import app_data_dir
+
 logger = logging.getLogger(__name__)
 
-_SESSION_DIR = Path(
-    os.environ.get("APPDATA", os.path.expanduser("~"))
-) / "cfmesh-autogui" / "session"
+_SESSION_DIR = app_data_dir() / "session"
 _SESSION_FILE = _SESSION_DIR / "last_session.json"
 _MAX_SNAPSHOTS = 5  # Keep this many historical snapshots
 

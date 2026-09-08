@@ -33,7 +33,9 @@ logging.basicConfig(
 
 import os as _os
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
-_log_dir = _os.path.join(_os.environ.get("APPDATA", _os.path.expanduser("~")), "cfmesh-autogui", "logs")
+from polyfoammesh._paths import migrate_legacy_app_data
+_data_dir = migrate_legacy_app_data()
+_log_dir = _data_dir / "logs"
 _os.makedirs(_log_dir, exist_ok=True)
 _file_handler = _RotatingFileHandler(
     _os.path.join(_log_dir, "app.log"), maxBytes=5*1024*1024, backupCount=3,

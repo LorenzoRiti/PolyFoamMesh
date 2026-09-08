@@ -132,7 +132,7 @@ story.append(bullets([
     "<b>Start → PolyFoamMesh (cartella) → Disinstalla</b>, oppure",
     "Impostazioni → App → PolyFoamMesh → Disinstalla.",
     "Rimuove tutto (app, associazioni file, scorciatoie). I log restano in "
-    "<font face='Courier'>%APPDATA%\\cfmesh-autogui\\logs</font> "
+    "<font face='Courier'>%APPDATA%\\polyfoammesh\\logs</font> "
     "(puoi cancellare la cartella).",
 ]))
 
