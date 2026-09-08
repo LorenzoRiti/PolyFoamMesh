@@ -19,6 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from _test_helpers import space_free_tmp_root
+
 try:  # cadquery/OCP native libs need their dir on PATH on Windows
     import OCP as _ocp
 
@@ -46,7 +48,7 @@ from polyfoammesh.core.meshdict_gen import write_meshdict  # noqa: E402
 from polyfoammesh.core.stl_writer import export_surface_file  # noqa: E402
 
 # Space-free root: OpenFOAM/WSL reject paths with spaces (the user's TEMP has one).
-WORK_ROOT = Path("C:/cfmesh_bench/bf_roundtrip")
+WORK_ROOT = space_free_tmp_root() / "cfmesh_bench" / "bf_roundtrip"
 
 CONTROL_DICT = """\
 FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }
