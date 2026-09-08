@@ -96,8 +96,8 @@ def test_quick_mesh_result_substitution_fields():
 
 def test_run_records_algorithm_substitution(monkeypatch, tmp_path):
     """Hermetic: engine escalation info must reach the QuickMeshResult."""
-    import cfmesh_autogui.commercial.mesh_engine as _me_mod
-    import cfmesh_autogui.core.openfoam_runner as _ofr
+    import polyfoammesh.commercial.mesh_engine as _me_mod
+    import polyfoammesh.core.openfoam_runner as _ofr
 
     qm = QuickMesh()
     qm._of_config = types.SimpleNamespace(validate=lambda: True)

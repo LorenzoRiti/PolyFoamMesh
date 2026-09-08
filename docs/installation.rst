@@ -43,7 +43,7 @@ Developer Install
     git clone https://github.com/cfmesh-autogui/cfmesh-autogui.git
     cd cfmesh-autogui
     pip install -e ".[dev]"
-    python -m cfmesh_autogui.app
+    python -m polyfoammesh.app
 
 Configuration
 -------------

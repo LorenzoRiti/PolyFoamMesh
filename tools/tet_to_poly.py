@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
 
 
 def _write_system_files(case_dir: Path) -> None:
@@ -81,7 +81,7 @@ def run(step_path: Path, case_dir: Path, detail: str, feature_angle: float) -> i
     print(f"=== 1/5: GMSH tetrahedral volume mesh (detail={detail}) ===")
     msh_path = case_dir / "mesh.msh"
     r = subprocess.run(
-        [sys.executable, "-m", "cfmesh_autogui.core.gmsh_wrapper",
+        [sys.executable, "-m", "polyfoammesh.core.gmsh_wrapper",
          "volume", str(step_path), str(msh_path), detail, "0", "0", "1.2"],
         capture_output=True, text=True, timeout=180, cwd=str(ROOT),
     )

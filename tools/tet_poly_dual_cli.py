@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 OF_BASHRC = "/usr/lib/openfoam/openfoam2512/etc/bashrc"
 

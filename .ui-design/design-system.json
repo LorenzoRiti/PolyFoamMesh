@@ -253,7 +253,7 @@
     }
   },
   "outputFormats": [
-    "python:src/cfmesh_autogui/gui/design_tokens.py",
+    "python:src/polyfoammesh/gui/design_tokens.py",
     "json:.ui-design/tokens.json",
     "qss-light:.ui-design/qss/light.qss",
     "qss-dark:.ui-design/qss/dark.qss",

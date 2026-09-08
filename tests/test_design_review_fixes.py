@@ -12,12 +12,12 @@ try:
 except Exception:
     pass
 
-from cfmesh_autogui.gui.log_tags import Tag
-from cfmesh_autogui.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
-from cfmesh_autogui.gui.style import (
+from polyfoammesh.gui.log_tags import Tag
+from polyfoammesh.gui.constants import MAX_STEP_FILE_BYTES, MAX_RECENT_STEP_FILES
+from polyfoammesh.gui.style import (
     COLOR_PASS, COLOR_WARN, status_pill, metric_label,
 )
-from cfmesh_autogui.gui.quality_panel import _load_thresholds, DEFAULT_THRESHOLDS
+from polyfoammesh.gui.quality_panel import _load_thresholds, DEFAULT_THRESHOLDS
 
 
 def test_log_tags_have_brackets():

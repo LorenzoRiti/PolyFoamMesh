@@ -16,7 +16,7 @@ pytest.importorskip("PySide6")
 
 from unittest import mock  # noqa: E402
 
-from cfmesh_autogui.core.openfoam_runner import DualPolyWorker  # noqa: E402
+from polyfoammesh.core.openfoam_runner import DualPolyWorker  # noqa: E402
 
 
 class _Result:
@@ -48,7 +48,7 @@ def test_dual_poly_worker_passes_best_options(tmp_path):
     worker.log_line.connect(lambda m: None)
 
     with mock.patch(
-        "cfmesh_autogui.core.tet_poly_dual.TetPolyDualConverter",
+        "polyfoammesh.core.tet_poly_dual.TetPolyDualConverter",
         _RecordingConverter,
     ):
         worker.run()

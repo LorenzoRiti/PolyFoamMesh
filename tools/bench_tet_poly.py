@@ -40,7 +40,7 @@ POLYBENCH = Path("C:/polybench")
 WORK_ROOT = Path("C:/polybench2")
 VALVE_STEP = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp")
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
 
 CONTROL_DICT = (
     "FoamFile\n{\n    version     2.0;\n    format      ascii;\n"
@@ -161,7 +161,7 @@ def tet_backup_of(name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def run_dual(case_dir: Path) -> dict:
-    from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter
+    from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
 
     t0 = time.monotonic()
     r = TetPolyDualConverter(case_dir, log=lambda m: None).run()

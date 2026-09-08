@@ -14,9 +14,9 @@ sys.path.insert(0, str(SRC))
 
 import numpy as np
 import trimesh
-from cfmesh_autogui.config import OFConfig
-from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.of_reader import of_list_count
+from polyfoammesh.config import OFConfig
+from polyfoammesh.core.meshdict_gen import write_meshdict
+from polyfoammesh.core.of_reader import of_list_count
 
 
 def _wsl_ok(cfg: OFConfig) -> bool:

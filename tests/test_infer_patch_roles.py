@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from cfmesh_autogui.core.boundary_reader import PatchInfo, parse_boundary
-from cfmesh_autogui.core.case_setup import (
+from polyfoammesh.core.boundary_reader import PatchInfo, parse_boundary
+from polyfoammesh.core.case_setup import (
     infer_patch_roles,
     mesh_bounds,
     set_wall_patch_types,

@@ -46,15 +46,15 @@ _SRC = _PROJECT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from cfmesh_autogui.core.geometry import (
+from polyfoammesh.core.geometry import (
     compute_bbox_dim,
     load_stl,
     suggest_cell_sizes,
     validate_cell_sizes,
 )
-from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.openfoam_runner import parse_checkmesh_output, generate_fms
-from cfmesh_autogui.core.stl_writer import export_surface_file
+from polyfoammesh.core.meshdict_gen import write_meshdict
+from polyfoammesh.core.openfoam_runner import parse_checkmesh_output, generate_fms
+from polyfoammesh.core.stl_writer import export_surface_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -382,7 +382,7 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
 
         # Compute physics-based BL parameters via BLEngine
         try:
-            from cfmesh_autogui.commercial.bl_engine import BLEngine, FlowConditions
+            from polyfoammesh.commercial.bl_engine import BLEngine, FlowConditions
             bl_engine = BLEngine()
             flow = FlowConditions.from_velocity(
                 reference_velocity=1.0,
@@ -657,7 +657,7 @@ def _benchmark_poly_one(
         t0 = time.perf_counter()
         msh_path = case_dir / "mesh.msh"
         try:
-            from cfmesh_autogui.core.gmsh_subprocess import run_gmsh_volume
+            from polyfoammesh.core.gmsh_subprocess import run_gmsh_volume
             run_gmsh_volume(
                 stl_path, msh_path, detail="medium",
                 user_lc=max_cell, min_lc=min_cell,
@@ -704,7 +704,7 @@ def _benchmark_poly_one(
         # --- stage 3: tet -> poly dual (in-process) -------------------------
         t0 = time.perf_counter()
         try:
-            from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter
+            from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
             conv = TetPolyDualConverter(
                 case_dir,
                 log=lambda m: logger.info("  [dual] %s", m),
@@ -743,7 +743,7 @@ def _benchmark_poly_one(
         bl_thickness = 0.0
         t0 = time.perf_counter()
         try:
-            from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine
+            from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
             bres = PolyBoundaryLayerEngine(
                 case_dir, log=lambda m: logger.info("  [bl] %s", m),
             ).run(

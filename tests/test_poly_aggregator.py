@@ -336,7 +336,7 @@ def test_write_boundary_single_patch(tmp_path):
     assert patches[0]["startFace"] == 0
 
     # Round-trip through the single writer (foam_mesh_io)
-    from cfmesh_autogui.core import foam_mesh_io
+    from polyfoammesh.core import foam_mesh_io
     poly_dir = tmp_path / "constant" / "polyMesh"
     foam_mesh_io.write_polymesh(
         poly_dir,
@@ -370,7 +370,7 @@ def test_write_boundary_multi_patch(tmp_path):
     assert patches[0]["startFace"] == 0
 
     # Round-trip through the single writer (foam_mesh_io)
-    from cfmesh_autogui.core import foam_mesh_io
+    from polyfoammesh.core import foam_mesh_io
     poly_dir = tmp_path / "constant" / "polyMesh"
     foam_mesh_io.write_polymesh(
         poly_dir,
@@ -417,7 +417,7 @@ def test_fallback_tet_mesh_no_wsl(tmp_path):
 
 def test_poly_aggregated_in_mesh_engine_enum():
     """Verify POLY_AGGREGATED is registered in mesh_engine."""
-    from cfmesh_autogui.commercial.mesh_engine import (
+    from polyfoammesh.commercial.mesh_engine import (
         ALGORITHM_INFO,
         ALGORITHM_ROBUSTNESS,
         MeshingAlgorithm,
@@ -431,7 +431,7 @@ def test_poly_aggregated_in_mesh_engine_enum():
 
 def test_poly_aggregated_escalation_after_tetrahedral():
     """Verify escalation goes through POLY_AGGREGATED."""
-    from cfmesh_autogui.commercial.mesh_engine import (
+    from polyfoammesh.commercial.mesh_engine import (
         MeshEngine,
         MeshingAlgorithm,
     )
@@ -776,7 +776,7 @@ def test_run_with_generated_stl(tmp_path):
 
     May fail without GMSH — that's acceptable for unit test purposes.
     """
-    from cfmesh_autogui.commercial.verification import VerificationSuite
+    from polyfoammesh.commercial.verification import VerificationSuite
 
     class MockCfg:
         pass
@@ -861,7 +861,7 @@ def test_progress_callback(tmp_path):
 @pytest.mark.slow
 def test_progress_callback_reports_phases(tmp_path):
     """Verify progress callback reports meaningful phases during a real run."""
-    from cfmesh_autogui.commercial.verification import VerificationSuite
+    from polyfoammesh.commercial.verification import VerificationSuite
 
     class MockCfg:
         pass
@@ -895,7 +895,7 @@ def test_progress_callback_reports_phases(tmp_path):
 
 def test_exported_from_package():
     """Verify PolyAggregator is importable from the commercial package."""
-    from cfmesh_autogui.commercial import (
+    from polyfoammesh.commercial import (
         AggregationParams,
         AggregationResult,
         PolyAggregator,

@@ -59,14 +59,14 @@ def test_adapter_can_build_its_mesh_engine():
     the real call is ``MeshEngine(None)`` — it must fall back to a default
     OFConfig rather than propagating the None into the engine.
     """
-    from cfmesh_autogui.commercial.mesh_engine import MeshEngine
+    from polyfoammesh.commercial.mesh_engine import MeshEngine
 
     a = OODAWorkflowAdapter()
     assert a._of_config is None
     engine = MeshEngine(a._of_config)  # used to raise TypeError
     assert engine._of_config is not None, "None config must fall back to a default"
 
-    from cfmesh_autogui.config import OFConfig
+    from polyfoammesh.config import OFConfig
 
     cfg = OFConfig()
     b = OODAWorkflowAdapter(cfg)
@@ -130,7 +130,7 @@ def test_export_report(tmp_path):
 
 
 def test_decide_fixes_high_skewness():
-    from cfmesh_autogui.commercial.quality_engine import QualityMetrics, QualityReport
+    from polyfoammesh.commercial.quality_engine import QualityMetrics, QualityReport
     qr = QualityReport()
     qr.metrics.max_skewness = 0.95
     qr.metrics.max_non_orthogonality = 30.0
@@ -142,7 +142,7 @@ def test_decide_fixes_high_skewness():
 
 
 def test_decide_fixes_high_non_ortho():
-    from cfmesh_autogui.commercial.quality_engine import QualityMetrics, QualityReport
+    from polyfoammesh.commercial.quality_engine import QualityMetrics, QualityReport
     qr = QualityReport()
     qr.metrics.max_skewness = 0.5
     qr.metrics.max_non_orthogonality = 80.0

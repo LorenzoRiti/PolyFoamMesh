@@ -30,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 POLYBENCH = Path("C:/polybench")
 # Space-free work root: the WSL path conversion drops the space in
@@ -77,7 +77,7 @@ def convert(backup: Path, tag: str, **kw) -> tuple[Path, object, float]:
 
 
 def checkmesh_of(case: Path) -> dict:
-    from cfmesh_autogui.config import OFConfig
+    from polyfoammesh.config import OFConfig
 
     cfg = OFConfig()
     cmd = (

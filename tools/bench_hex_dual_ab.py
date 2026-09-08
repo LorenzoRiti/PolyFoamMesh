@@ -29,8 +29,8 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.hex_poly_dual import HexPolyDualConverter  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.hex_poly_dual import HexPolyDualConverter  # noqa: E402
 
 cfg = OFConfig()
 

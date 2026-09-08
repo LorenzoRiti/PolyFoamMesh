@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 trimesh = pytest.importorskip("trimesh")
 
-from cfmesh_autogui.core.geometry import sample_thickness_field  # noqa: E402
+from polyfoammesh.core.geometry import sample_thickness_field  # noqa: E402
 
 
 def _venturi_solid(r_wide=1.0, r_throat=0.15, length=6.0, n_theta=32, n_z=60):
@@ -199,7 +199,7 @@ def gmsh_box():
 
 
 def test_gmsh_boundary_extraction_matches_known_volume(gmsh_box):
-    from cfmesh_autogui.core.gmsh_wrapper import _extract_boundary_trimesh
+    from polyfoammesh.core.gmsh_wrapper import _extract_boundary_trimesh
 
     mesh = _extract_boundary_trimesh(gmsh_box)
     assert mesh is not None
@@ -218,7 +218,7 @@ def test_probe_mesh_is_discarded_so_size_fields_still_apply(gmsh_box):
 
     _sample_passage_thickness_field must therefore clear the probe mesh.
     """
-    from cfmesh_autogui.core.gmsh_wrapper import _sample_passage_thickness_field
+    from polyfoammesh.core.gmsh_wrapper import _sample_passage_thickness_field
 
     _sample_passage_thickness_field(
         gmsh_box, h_min=0.01, h_max=1.0, cells_across=8, max_samples=500,
@@ -237,7 +237,7 @@ def test_probe_mesh_is_discarded_so_size_fields_still_apply(gmsh_box):
 
 
 def test_gmsh_passage_thickness_field_end_to_end(gmsh_box):
-    from cfmesh_autogui.core.gmsh_wrapper import _sample_passage_thickness_field
+    from polyfoammesh.core.gmsh_wrapper import _sample_passage_thickness_field
 
     pts, target = _sample_passage_thickness_field(
         gmsh_box, h_min=0.01, h_max=1.0, cells_across=8, max_samples=2000,
@@ -260,7 +260,7 @@ def test_sample_thickness_field_stops_at_deadline(monkeypatch):
     expired deadline must return immediately with whatever was measured
     (nothing, in this worst case), not raise and not block.
     """
-    from cfmesh_autogui.core.geometry import sample_thickness_field
+    from polyfoammesh.core.geometry import sample_thickness_field
 
     mesh, _z_profile, _r_profile = _venturi_solid()
     # First call sets the deadline (a normal timestamp); every call after
@@ -272,6 +272,6 @@ def test_sample_thickness_field_stops_at_deadline(monkeypatch):
         calls["n"] += 1
         return 0.0 if calls["n"] == 1 else 1e15
 
-    monkeypatch.setattr("cfmesh_autogui.core.geometry.time.monotonic", _fake_monotonic)
+    monkeypatch.setattr("polyfoammesh.core.geometry.time.monotonic", _fake_monotonic)
     pts, thickness = sample_thickness_field(mesh, 500, float(max(mesh.extents)), timeout_s=1.0)
     assert len(pts) == len(thickness) == 0

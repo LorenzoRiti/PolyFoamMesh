@@ -25,13 +25,13 @@ import numpy as np
 REPO = Path(r"C:\Users\Davide Valoroso\cfmesh-autogui")
 sys.path.insert(0, str(REPO / "src"))
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.boundary_reader import parse_boundary  # noqa: E402
-from cfmesh_autogui.core.case_setup import (  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.boundary_reader import parse_boundary  # noqa: E402
+from polyfoammesh.core.case_setup import (  # noqa: E402
     infer_patch_roles, set_wall_patch_types, setup_case,
 )
-from cfmesh_autogui.core.gmsh_subprocess import run_gmsh_to_foam, run_gmsh_volume, write_case_skeleton  # noqa: E402
-from cfmesh_autogui.core.solution_adaptive import (  # noqa: E402
+from polyfoammesh.core.gmsh_subprocess import run_gmsh_to_foam, run_gmsh_volume, write_case_skeleton  # noqa: E402
+from polyfoammesh.core.solution_adaptive import (  # noqa: E402
     compute_indicator, load_solution, run_solver, set_end_time,
 )
 

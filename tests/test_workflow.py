@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cfmesh_autogui.core.workflow import MeshingWorkflow, Status, Step
+from polyfoammesh.core.workflow import MeshingWorkflow, Status, Step
 
 
 def test_fresh_workflow_points_at_loading_geometry():

@@ -44,7 +44,7 @@ class _FakeLog:
 
 def _fake_window():
     win = types.SimpleNamespace(_log=_FakeLog(), _refresh_workflow=lambda **k: None)
-    from cfmesh_autogui.gui.task_runner import FunctionWorker
+    from polyfoammesh.gui.task_runner import FunctionWorker
 
     def _submit(name, worker, on_finished=None, on_failed=None, **kw):
         # Minimal synchronous TaskManager stand-in: run the task body and
@@ -78,7 +78,7 @@ def test_a_trivially_fillable_hole_fails_watertight_before_healing():
 
 
 def test_heal_geometry_fixes_the_hole_and_logs_it(app):
-    from cfmesh_autogui.gui.main_window import MainWindow
+    from polyfoammesh.gui.main_window import MainWindow
 
     box = _box_with_one_hole()
     win = _fake_window()
@@ -92,8 +92,8 @@ def test_heal_geometry_fixes_the_hole_and_logs_it(app):
 def test_watertight_check_reports_ok_after_healing_runs_first(app):
     """The actual regression: without healing-before-checking, this mesh would
     warn "not watertight" even though the defect is trivially repairable."""
-    from cfmesh_autogui.gui.main_window import MainWindow
-    from cfmesh_autogui.gui.log_tags import Tag
+    from polyfoammesh.gui.main_window import MainWindow
+    from polyfoammesh.gui.log_tags import Tag
 
     box = _box_with_one_hole()
     win = _fake_window()
@@ -107,7 +107,7 @@ def test_watertight_check_reports_ok_after_healing_runs_first(app):
 
 def test_healing_is_a_no_op_on_already_clean_geometry(app):
     """A mesh with no defects should heal without spurious log noise."""
-    from cfmesh_autogui.gui.main_window import MainWindow
+    from polyfoammesh.gui.main_window import MainWindow
 
     box = trimesh.creation.box(extents=(1, 1, 1))
     box.metadata["name"] = "wall"

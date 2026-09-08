@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 import trimesh
 
-from cfmesh_autogui.core.geometry import (
+from polyfoammesh.core.geometry import (
     estimate_cell_count,
     estimate_cell_count_geometric,
 )

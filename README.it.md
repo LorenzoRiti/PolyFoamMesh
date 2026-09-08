@@ -150,8 +150,8 @@ Workflow e scorciatoie: **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 ## Project Structure
 
 ```
-cfmesh-autogui/
-├── src/cfmesh_autogui/
+polyfoammesh/
+├── src/polyfoammesh/
 │   ├── app.py                  # Entry point (splash, theme, i18n)
 │   ├── config.py               # OpenFOAM/WSL configuration
 │   ├── _version.py             # Single version source (imported everywhere)
@@ -193,7 +193,7 @@ cfmesh-autogui/
 │   └── plugin_base.py          #   Plugin(ABC) base class
 ├── templates/                  # Case presets (JSON)
 ├── locale/                     # i18n translations + compile scripts
-│   ├── cfmesh_autogui.pro      #   Qt project file
+│   ├── polyfoammesh.pro        #   Qt project file
 │   ├── compile_i18n.bat        #   Windows batch compiler
 │   └── compile_i18n.py         #   Python compiler script
 ├── installer/                  # NSIS / Inno Setup scripts

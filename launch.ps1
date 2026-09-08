@@ -2,7 +2,7 @@
 # Usage: .\launch.ps1
 # Auto-detects Python 3.11+ on PATH or common install locations.
 
-$AppPath = Join-Path $PSScriptRoot "src\cfmesh_autogui\app.py"
+$AppPath = Join-Path $PSScriptRoot "src\polyfoammesh\app.py"
 
 # Try PATH first, then common install locations
 $PythonPath = Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source

@@ -28,10 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import pytest
 
-from cfmesh_autogui.core import foam_mesh_io as fio
-from cfmesh_autogui.core import quality_thresholds as qt
-from cfmesh_autogui.core import tet_poly_dual as tpd
-from cfmesh_autogui.core.poly_smoother import (
+from polyfoammesh.core import foam_mesh_io as fio
+from polyfoammesh.core import quality_thresholds as qt
+from polyfoammesh.core import tet_poly_dual as tpd
+from polyfoammesh.core.poly_smoother import (
     _max_pair_volume_ratio,
     quality_objective,
 )
@@ -81,7 +81,7 @@ def test_smoothing_reduces_max_non_ortho_on_injected_defects(tmp_path):
     """The smoothing pass is the quality lever: on a clean cube dual with
     injected interior-vertex noise, smoothing must lower max non-ortho and
     never raise the defect count or create negative volumes."""
-    from cfmesh_autogui.core.poly_smoother import smooth_dual_mesh
+    from polyfoammesh.core.poly_smoother import smooth_dual_mesh
 
     tets, pts = _cube_tets_pts()
     case = build_tet_case(tmp_path / "base", pts, tets)
@@ -351,7 +351,7 @@ def test_merge_two_faces_equal_area_symmetric_split():
 def test_bl_volume_ratio_rejects_oversized_prism(tmp_path):
     """_validate with max_core_volume_ratio rejects a BL whose prism cell is
     far bigger than the adjacent core cell, and accepts a conforming one."""
-    from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine
+    from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
 
     pts = np.array([
         [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],       # core bottom

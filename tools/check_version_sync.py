@@ -4,7 +4,7 @@
 The version lives in three places that must never drift apart:
 
     pyproject.toml                      version = "X.Y.Z"
-    src/cfmesh_autogui/_version.py      __version__ = "X.Y.Z"
+    src/polyfoammesh/_version.py      __version__ = "X.Y.Z"
     installer/inno_setup.iss            #define MyAppVersion "X.Y.Z"
 
 This script reads all three and exits non-zero if any of them disagree, so
@@ -46,8 +46,8 @@ def _read_version(path: Path, pattern: re.Pattern[str]) -> str | None:
 def main() -> int:
     sources = {
         "pyproject.toml": (ROOT / "pyproject.toml", _VERSION_RE),
-        "src/cfmesh_autogui/_version.py": (
-            ROOT / "src" / "cfmesh_autogui" / "_version.py", _DUNDER_RE,
+        "src/polyfoammesh/_version.py": (
+            ROOT / "src" / "polyfoammesh" / "_version.py", _DUNDER_RE,
         ),
         "installer/inno_setup.iss": (
             ROOT / "installer" / "inno_setup.iss", _ISS_RE,

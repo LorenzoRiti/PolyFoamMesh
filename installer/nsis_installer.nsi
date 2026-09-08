@@ -16,7 +16,7 @@ RequestExecutionLevel admin
 Section "Install"
     SetOutPath "$INSTDIR"
     
-    File /r "..\src\cfmesh_autogui\*.py"
+    File /r "..\src\polyfoammesh\*.py"
     File "..\pyproject.toml"
     File "..\README.md"
     

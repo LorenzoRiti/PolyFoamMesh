@@ -114,7 +114,7 @@ def test_mesh_engine_accepts_injected_of_config():
     ribbon button — crashed the moment it ran. The injected config must win
     over a freshly constructed default.
     """
-    from cfmesh_autogui.config import OFConfig
+    from polyfoammesh.config import OFConfig
 
     cfg = OFConfig()
     me = MeshEngine(cfg)

@@ -50,9 +50,9 @@ api = [
 ]
 
 [project.scripts]
-polyfoammesh = "cfmesh_autogui.app:main"
-polyfoammesh-mesh = "cfmesh_autogui.commercial.one_click_run:main_cli"
-polyfoammesh-batch = "cfmesh_autogui.commercial.batch_mesh:main_cli"
+polyfoammesh = "polyfoammesh.app:main"
+polyfoammesh-mesh = "polyfoammesh.commercial.one_click_run:main_cli"
+polyfoammesh-batch = "polyfoammesh.commercial.batch_mesh:main_cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -194,9 +194,9 @@ def test_optimizer_actually_reruns_cartesianmesh_and_uses_real_bl_contract(monke
 
     engine._run_cartesian_mesh = fake_remesh
 
-    # load_commercial_module saves/restores sys.modules["cfmesh_autogui.core"]
+    # load_commercial_module saves/restores sys.modules["polyfoammesh.core"]
     # around the exec-load above, so the real module is import-able again here.
-    from cfmesh_autogui.core.openfoam_runner import MeshQualityReport
+    from polyfoammesh.core.openfoam_runner import MeshQualityReport
 
     # Two checkMesh calls: first fails (triggers a fix), second passes.
     reports = iter([

@@ -21,11 +21,11 @@ from PySide6.QtCore import QEventLoop, QThread, Qt, QTimer
 # hanging the entire pytest run instead of just failing this one test.
 MESH_WORKER_TIMEOUT_SECONDS = 180
 
-from cfmesh_autogui.config import OFConfig
-from cfmesh_autogui.core.geometry import create_test_cylinder, classify_faces, tessellate_patches
-from cfmesh_autogui.core.stl_writer import export_surface_file
-from cfmesh_autogui.core.meshdict_gen import write_meshdict
-from cfmesh_autogui.core.openfoam_runner import (
+from polyfoammesh.config import OFConfig
+from polyfoammesh.core.geometry import create_test_cylinder, classify_faces, tessellate_patches
+from polyfoammesh.core.stl_writer import export_surface_file
+from polyfoammesh.core.meshdict_gen import write_meshdict
+from polyfoammesh.core.openfoam_runner import (
     MeshWorker,
     analyze_error,
     ErrorType,
@@ -39,7 +39,7 @@ def test_poly_wall_patch_names_default_targets(tmp_path):
     """FASE 1: the default BL target set is wall-typed / wall-named patches;
     GMSH ``surface_N`` patches are excluded (they fall back to all with a
     warning in the worker)."""
-    import cfmesh_autogui.core.foam_mesh_io as fio
+    import polyfoammesh.core.foam_mesh_io as fio
 
     poly = tmp_path / "constant" / "polyMesh"
     poly.mkdir(parents=True)
@@ -61,7 +61,7 @@ def test_poly_wall_patch_names_default_targets(tmp_path):
 def test_poly_wall_patch_names_empty_on_raw_gmsh(tmp_path):
     """Raw gmshToFoam output (every patch type 'patch', surface_N names)
     yields an empty set — the worker then falls back to ALL patches."""
-    import cfmesh_autogui.core.foam_mesh_io as fio
+    import polyfoammesh.core.foam_mesh_io as fio
 
     poly = tmp_path / "constant" / "polyMesh"
     poly.mkdir(parents=True)
@@ -79,7 +79,7 @@ def test_poly_geo_wall_patch_names_recovers_raw_gmsh_walls(tmp_path):
     explicitly named/typed wall.  Box pipe: x in [0,1], y/z in [-0.1,0.1];
     surface_1 = 4 side walls, surface_2 = inlet cap (x=0), surface_3 =
     outlet cap (x=1)."""
-    import cfmesh_autogui.core.foam_mesh_io as fio
+    import polyfoammesh.core.foam_mesh_io as fio
 
     corners = [
         (0.0, -0.1, -0.1), (0.0, -0.1, 0.1), (0.0, 0.1, -0.1), (0.0, 0.1, 0.1),
@@ -317,7 +317,7 @@ def test_mesh_worker_always_emits_finished_even_on_unexpected_error(monkeypatch)
     import shutil
     import tempfile
 
-    import cfmesh_autogui.core.openfoam_runner as ofr
+    import polyfoammesh.core.openfoam_runner as ofr
 
     boom = RuntimeError("synthetic reader failure")
 

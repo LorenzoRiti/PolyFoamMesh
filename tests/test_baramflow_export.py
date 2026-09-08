@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
 
-from cfmesh_autogui.core.baramflow_export import (
+from polyfoammesh.core.baramflow_export import (
     export_case,
     validate_case,
 )

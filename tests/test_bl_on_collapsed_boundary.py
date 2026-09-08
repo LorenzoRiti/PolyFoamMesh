@@ -38,10 +38,10 @@ sys.path.insert(0, str(REPO / "src"))
 
 gmsh = pytest.importorskip("gmsh")
 
-from cfmesh_autogui.core import foam_mesh_io as fio  # noqa: E402
-from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
-from cfmesh_autogui.core.mesh_converter import msh_to_of_polymesh  # noqa: E402
-from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
+from polyfoammesh.core import foam_mesh_io as fio  # noqa: E402
+from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
+from polyfoammesh.core.mesh_converter import msh_to_of_polymesh  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 CONTROL_DICT = (
     "FoamFile\n{\n version 2.0;\n format ascii;\n class dictionary;\n"

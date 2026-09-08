@@ -6,7 +6,7 @@ These tests are hermetic: no WSL, no OpenFOAM, no network.
 """
 from __future__ import annotations
 
-from cfmesh_autogui.core.patch_roles import (
+from polyfoammesh.core.patch_roles import (
     NON_WALL_ROLES,
     ROLE_EMPTY,
     ROLE_INLET,

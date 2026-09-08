@@ -20,11 +20,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cfmesh_autogui.commercial.bl_engine import BLEngine
-from cfmesh_autogui.core import openfoam_runner as orm
-from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine
-from cfmesh_autogui.core.openfoam_runner import poly_bl_patch_selection
-from cfmesh_autogui.core.patch_roles import split_wall_patches
+from polyfoammesh.commercial.bl_engine import BLEngine
+from polyfoammesh.core import openfoam_runner as orm
+from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
+from polyfoammesh.core.openfoam_runner import poly_bl_patch_selection
+from polyfoammesh.core.patch_roles import split_wall_patches
 
 _FOAM_HEADER = (
     "FoamFile\n{\n"

@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from cfmesh_autogui.core.feature_detector import (
+from polyfoammesh.core.feature_detector import (
     FeatureDetector, FeatureMap, SharpEdge, GapRegion, FeatureDetectWorker,
 )
 
@@ -165,7 +165,7 @@ class TestFeatureDetectWorker:
             )
 
         monkeypatch.setattr(
-            "cfmesh_autogui.core.feature_detector.subprocess.run", _crashing_run,
+            "polyfoammesh.core.feature_detector.subprocess.run", _crashing_run,
             raising=False,
         )
         worker = FeatureDetectWorker("whatever.step", "medium")
@@ -185,7 +185,7 @@ class TestFeatureDetectWorker:
             raise _subprocess.TimeoutExpired(cmd=cmd, timeout=1)
 
         monkeypatch.setattr(
-            "cfmesh_autogui.core.feature_detector.subprocess.run", _timeout_run,
+            "polyfoammesh.core.feature_detector.subprocess.run", _timeout_run,
             raising=False,
         )
         worker = FeatureDetectWorker("whatever.step", "medium")

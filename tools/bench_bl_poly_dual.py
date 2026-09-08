@@ -27,14 +27,14 @@ sys.path.insert(0, str(SRC))
 
 import trimesh  # noqa: E402
 
-from cfmesh_autogui.config import OFConfig  # noqa: E402
-from cfmesh_autogui.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
-from cfmesh_autogui.core.gmsh_subprocess import (  # noqa: E402
+from polyfoammesh.config import OFConfig  # noqa: E402
+from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
+from polyfoammesh.core.gmsh_subprocess import (  # noqa: E402
     run_gmsh_to_foam,
     run_gmsh_volume,
     write_case_skeleton,
 )
-from cfmesh_autogui.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
+from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 CASE = Path(os.environ.get("CFMESH_WORK", "C:/cfmesh_bench")) / "bl_poly_dual_cylinder"
 

@@ -148,7 +148,7 @@ Workflow and shortcuts: **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**.
 
 ```
 PolyFoamMesh/
-├── src/cfmesh_autogui/         # Python package (rename to polyfoammesh pending)
+├── src/polyfoammesh/           # Python package
 │   ├── app.py                  # Entry point (splash, theme, i18n)
 │   ├── config.py               # OpenFOAM/WSL configuration
 │   ├── core/                   # Engine layer (no GUI imports)

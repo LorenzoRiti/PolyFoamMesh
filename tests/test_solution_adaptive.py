@@ -20,7 +20,7 @@ import pytest
 
 pv = pytest.importorskip("pyvista")
 
-from cfmesh_autogui.core.solution_adaptive import (  # noqa: E402
+from polyfoammesh.core.solution_adaptive import (  # noqa: E402
     compute_indicator,
     predict_cells_from_lattice,
     pressure_drop_qoi,
