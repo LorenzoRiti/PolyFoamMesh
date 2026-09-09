@@ -21,7 +21,7 @@ copyright = "2026, PolyFoamMesh Project"
 author = "Davide Valoroso"
 
 # The full version, including alpha/beta/rc tags
-release = "2.0.1"
+release = "2.2.0"
 
 # -- General configuration ---------------------------------------------------
 
