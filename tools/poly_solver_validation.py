@@ -14,10 +14,14 @@ conservative in practice, not just topologically valid.
 
     python tools/poly_solver_validation.py                    # ref1 (default)
     python tools/poly_solver_validation.py --case valve1      # valve
-    python tools/poly_solver_validation.py --case valve1 --variant production
-        # production = converter params used by the GUI runner
-        # (median_faces=True, wedge_cells=True); default variant uses the
-        # converter defaults that pin the valve baseline (852 pyramids)
+    python tools/poly_solver_validation.py --case valve1 --variant forced_true
+        # forced_true = median_faces=True, wedge_cells=True. NOT the current
+        # GUI runner config (that uses the converter's own False defaults,
+        # see openfoam_runner.py ~1647-1651) -- this variant is kept only to
+        # re-run the A/B that showed True is worse (1056 vs 1027 defects on
+        # valve1), in case that needs re-measuring after a converter change.
+        # default variant uses the converter defaults that pin the valve
+        # baseline (852 pyramids) -- this is also what the GUI runner uses.
 """
 from __future__ import annotations
 
@@ -57,8 +61,10 @@ CONFIGS = {
     },
 }
 
-# production converter params (GUI runner, openfoam_runner.py:1134-1140)
-PRODUCTION_PARAMS = {"median_faces": True, "wedge_cells": True}
+# NOT what the GUI runner uses today -- kept for A/B re-measurement only.
+# See openfoam_runner.py ~1647-1651 and docs/residual_risks.md
+# (Polyhedral Conversion) for the measured numbers and why this is off.
+FORCED_TRUE_PARAMS = {"median_faces": True, "wedge_cells": True}
 
 
 def _wsl(cfg: OFConfig, bash: str, timeout: int = 1800) -> subprocess.CompletedProcess:
@@ -215,7 +221,7 @@ def read_phi_flows(case: Path, inlet: str, outlet: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--case", choices=sorted(CONFIGS), default="ref1")
-    ap.add_argument("--variant", choices=["default", "production"], default="default")
+    ap.add_argument("--variant", choices=["default", "forced_true"], default="default")
     args = ap.parse_args()
 
     cfg_c = CONFIGS[args.case]
@@ -243,7 +249,7 @@ def main() -> int:
     from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
     poly_case = WORK / "poly"
     write_case(poly_case, tet_src, INLET, OUTLET, walls)
-    conv_kw = PRODUCTION_PARAMS if args.variant == "production" else {}
+    conv_kw = FORCED_TRUE_PARAMS if args.variant == "forced_true" else {}
     conv = TetPolyDualConverter(poly_case, log=lambda m: None, **conv_kw).run()
     if not conv.success:
         raise SystemExit(f"dual conversion failed: {conv.errors}")

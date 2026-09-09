@@ -64,8 +64,11 @@ inutilizzabile») è falsa.
 - Residuo/portata con un solver completo (simpleFoam/rhoSimpleFoam): fuori
   scopo della Fase 0 (potentialFoam è il più economico e sufficiente per la
   decisione). Se in futuro servisse, il tool accetta già
-  `--case valve1 --variant production` (parametri del runner GUI:
-  median_faces=True, wedge_cells=True) e andrebbe ri-eseguito con quel
-  variant — oggi il confronto è sulla variante che pinna la baseline.
+  `--case valve1 --variant forced_true` (median_faces=True, wedge_cells=True
+  — **non** i parametri del runner GUI di oggi, che usa i default `False`
+  del converter; il variant resta solo per ri-misurare quella combinazione,
+  vedi `docs/residual_risks.md` §Polyhedral Conversion) e andrebbe
+  ri-eseguito con quel variant — oggi il confronto è sulla variante che
+  pinna la baseline.
 - Phi scritto su disco (la configurazione controlDict non produce `1/`):
   il bilancio in/out si legge dal log, non da un file di campo.
