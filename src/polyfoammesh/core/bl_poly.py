@@ -424,7 +424,7 @@ class PolyBoundaryLayerEngine:
         clamp_factor: float = 0.5,
         max_core_volume_ratio: float = 0.0,
         concavity_criterion: str = "angle_fade",
-        local_termination: bool = False,
+        local_termination: bool | str = False,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -460,11 +460,22 @@ class PolyBoundaryLayerEngine:
           layered or not extruded at all) and, when validation fails, the
           faces whose prisms are geometrically invalid (non-positive
           volume or failing the face-pyramid criterion) are excluded from
-          the BL and the attempt is repeated.  Exclusions carry across the
-          fallback scales.  Measured on the valve: produced and validated
-          a BL that the standard path cannot build at any scale; the wall
-          shell under the excluded faces is given up (local domain
-          change), the healthy region keeps the full layer count.
+          the BL and the attempt is repeated.  Two modes:
+          * `True` (legacy "carry"): exclusions accumulate ACROSS the
+            fallback scales — a face excluded while trying a coarse scale
+            stays excluded on every thinner scale.  Measured on the valve:
+            produced and validated a BL that the standard path cannot
+            build at any scale; cost: 19.625 exclusions (8,7%) because the
+            coarse-scale rounds over-exclude (FASE 3 measured that starting
+            at scale 0.1 needs only 2.058).
+          * `"decoupled"`: try the REQUESTED scale first (full thickness);
+            exclusions are RESET when descending to a thinner scale, so a
+            coarse-scale failure does not poison the finer attempt.  The
+            healthy region keeps the full layer count, the wall shell
+            under the excluded faces is given up (local domain change),
+            and only a validated mesh is written (on failure the mesh on
+            disk is left byte-identical).
+          * `False` (default): disabled — historical behaviour unchanged.
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -532,10 +543,17 @@ class PolyBoundaryLayerEngine:
         res.wall_patches = used_patches
 
         if local_termination:
+            if local_termination not in (True, "decoupled"):
+                res.errors.append(
+                    f"unknown local_termination mode {local_termination!r} "
+                    "(expected True or 'decoupled')"
+                )
+                return res
             return self._run_local_termination(
                 res, points, faces, owner, neighbour, patches, n_int,
                 sel, drop_bnd, pyr_before, total_vol0,
                 max_core_volume_ratio, concavity_criterion, growth, poly,
+                decoupled=(local_termination == "decoupled"),
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
@@ -723,23 +741,31 @@ class PolyBoundaryLayerEngine:
     def _run_local_termination(self, res, points, faces, owner, neighbour,
                                patches, n_int, sel, drop_bnd, pyr_before,
                                total_vol0, max_core_volume_ratio,
-                               concavity_criterion, growth, poly):
+                               concavity_criterion, growth, poly,
+                               decoupled: bool = False):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
         or is not extruded; no intermediate counts, so the consistency
         fixpoint never floods the healthy region to one layer.  Every failed
         attempt excludes the faces whose prisms are geometrically invalid and
-        retries; exclusions carry across the fallback scales.  Only a mesh
-        that passes validation is written — on failure the mesh on disk is
-        left byte-identical, same contract as the standard path.
+        retries.  Two modes: legacy ``decoupled=False`` carries the
+        exclusions ACROSS the fallback scales (a coarse-scale failure leaves
+        faces excluded on every thinner scale); ``decoupled=True`` resets the
+        exclusion set when descending to a thinner scale, so each height
+        budget pays only for its own defects.  Only a mesh that passes
+        validation is written — on failure the mesh on disk is left
+        byte-identical, same contract as the standard path.
         """
-        excluded: set[int] = set()
+        carried: set[int] = set()
         max_per_scale = 3
+        res.stats["local_termination_mode"] = (
+            "decoupled" if decoupled else "carry")
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
         ):
+            excluded = set() if decoupled else carried
             for _round in range(max_per_scale):
                 if self._cancel():
                     res.errors.append("cancelled")
@@ -797,9 +823,13 @@ class PolyBoundaryLayerEngine:
                 if not added:
                     break
                 excluded |= added
+            # legacy carry mode: the same set flows into the next scale;
+            # decoupled mode: each scale starts from an empty set and this
+            # only records the latest count for the failure message below.
+            carried = excluded
         res.errors.append(
             "could not insert a valid boundary layer with local "
-            f"termination ({len(excluded)} faces excluded); mesh left "
+            f"termination ({len(carried)} faces excluded); mesh left "
             "unchanged"
         )
         return res

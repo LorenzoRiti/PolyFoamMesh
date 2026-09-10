@@ -323,6 +323,58 @@ source of truth.
   compare solo dove pyr_input > 0 e cresce col numero di difetti.
   Default invariato (`local_termination=False`, ordine scale invariato),
   nessun wiring GUI.
+- **FASE 5 — variante "decoupled" implementata e misurata (2026-09-09)**.
+  Sulla scorta di FASE 3/4 è stata implementata la variante proposta:
+  opt-in nel motore `run(local_termination="decoupled")` (`bl_poly.py`):
+  stesso loop (max 3 round, scale 1.0 → 0.1) ma il set di esclusioni
+  viene **azzerato al cambio di scala** — si prova prima la scala
+  RICHIESTA (1.0, spessore pieno) e solo se fallisce si scende, senza
+  far pagare alle scale sottili i difetti delle scale grosse. `True`
+  (legacy carry) e il default `False` restano invariati; test nuovi
+  `test_bl_local_termination_decoupled_mode_on_healthy_cube` e
+  `test_bl_local_termination_rejects_unknown_mode` (fast suite 1153
+  verdi). Previsione scritta prima in `notes/decoupled_reasoning.md`.
+
+  Misure (`tools/bench_bl_thinfirst.py --modes thick,thin,decoupled
+  [--valve]`, checkMesh reale):
+  - cilindro/cubo/groove1/slot1: DECOUPLED **identico a THICK** in tutto
+    — scala 1.0 (spessore pieno), stessi prismi (74.808 / 108 / 10.062 /
+    79.614), stesse esclusioni (0/0/0/132), stessi aspect max (18,3 /
+    78,7 / 15,9 / 16,7) e tempi. Il reset non entra mai in gioco quando
+    il successo arriva dentro la scala richiesta: nessuna degradazione
+    dello spessore del thin-first puro.
+  - valvola: successo a scala 0.1 con **2.058 esclusioni** (previste e
+    ottenute) e **445.716 prismi** — esattamente il risultato thin-first
+    (3.684 facce senza BL = 1,63%). checkMesh: **885 facce male orientate
+    vs 895 input**, "Failed 4" (quarto = aspect ratio), skew 47,6,
+    non-ortho 55 — identico al thin-first.
+  - **Tempo valvola: 2.215 s (37 min)** — più lento della previsione
+    (24-30 min) e più lento sia del thin (305 s) sia del thick (1.602 s):
+    prova comunque tutte le scale (15 build, 3 round per scala). Il
+    vantaggio è in esclusioni/prismi, non nel tempo.
+  - Traiettoria warning valvola: fallimenti a 1.0 (50→6→6 volumi
+    negativi), 0.6, 0.35, 0.2, poi 0.1 fresco al terzo round
+    (1.946+112) valida.
+
+  **Verdetto**: decoupled centra l'obiettivo — cattura il vantaggio
+  thin-first sulla valvola (9,5x meno esclusioni, +8,5% prismi,
+  checkMesh migliore) SENZA degradare lo spessore sui casi sani
+  (restano a scala 1.0 piena). È la candidata naturale per la semantica
+  della terminazione locale quando verrà abilitata (FASE 2 in
+  validazione utente): "spessore richiesto se possibile, solo i difetti
+  pagano". Resta il costo in tempo sulle geometrie difettose; una
+  possibile ottimizzazione (saltare scale intermedie o riusare le
+  esclusioni a firma di fallimento identica) richiede una misura
+  dedicata. Default invariato, nessun wiring GUI.
+
+  Tabella riassuntiva valvola (stesso input fixture, n_layers=2,
+  h1=1e-5, dual_convexity):
+
+  | variante | escl. iterative | facce senza BL | prismi | checkMesh | tempo |
+  |---|---|---|---|---|---|
+  | THICK (legacy) | 19.625 | 21.208 (9,36%) | 410.668 | 891 wrong | 1.602 s |
+  | THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 305 s |
+  | DECOUPLED | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 2.215 s |
 
 ## Boundary Layer Patch Selection — single source of truth
 
