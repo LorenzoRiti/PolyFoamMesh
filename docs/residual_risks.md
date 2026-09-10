@@ -436,6 +436,61 @@ source of truth.
   | THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 305 s |
   | DECOUPLED | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 2.215 s |
 
+  **CAVEAT (FASE 7, 2026-09-09)**: i numeri valvola di FASE 6 sono
+  **pinned alla fixture stale** `valve_dual.npz` (generata 2026-08-01 con
+  un converter diverso da quello attuale) e il trigger di
+  `early_exit_intermediates` è stato **corretto in FASE 7** (saltava anche
+  i round 1-2 della scala 1.0, non solo le intermedie). Su un input
+  riconvertito con il converter attuale la storia cambia: vedi §FASE 7.
+- **FASE 7 — BL sulla topologia di PRODUZIONE (collapsed) + fixture
+  stale (2026-09-09)**. Origine: `openfoam_runner.py:1652` converte il
+  poly di produzione con `collapse_smooth_edges=True,
+  boundary_feature_angle=40.0, collapse_volume_tolerance=0.10`, mentre
+  TUTTE le misure BL FASE 2-6 (fixture e bench) usano il converter con i
+  default (**collapse OFF**, tre quad per triangolo). Il dual collapsed ha
+  3-6x meno facce di bordo e `bl_poly` estrude un prisma per faccia:
+  misurato con `tools/bench_bl_production_topology.py` (nuovo).
+
+  | | exact (default) | production (collapsed) |
+  |---|---|---|
+  | cilindro, facce bordo | 24.936 (quad) | **4.412** (4-8-goni, 5,65x meno) |
+  | cilindro, drift volume | 1,4e-16 | 0,128% |
+  | cilindro, BL 3 layer | scala 1.0, 0 escl, **74.808** prismi, 13,0 s, Mesh OK | scala 1.0, 0 escl, **13.236** prismi, 5,6 s, Mesh OK |
+  | valvola, facce bordo | 226.542 (quad) | **42.130** (4-9-goni, 5,4x meno) |
+  | valvola, difetti input (checkMesh wrong) | 863 | **340** |
+  | valvola, drift volume | 3,4e-16 | 1,08% |
+  | valvola, BL | **successo scala 1.0** (2 build): 2.525 escl, 444.924 prismi, 217 s; checkMesh 836 wrong (< 863 input), skew 38,1 (vs 14,6 input), aspect 1.543, Failed 4 | **FALLISCE**: `decoupled` 15 build in 892,7 s, 2.189 escl, stallo 375-444 piramidi vs 370 input; mesh invariata |
+
+  - **La fixture valvola è STALE**: `tests/fixtures/valve_dual.npz`
+    (2026-08-01) registra 895 wrong / 55 errori non-ortho / skew 44,3;
+    una conversione fresca dello STESSO tet backup oggi dà 863 wrong / 9
+    errori / skew 14,6. Tutti i numeri valvola di FASE 2-6 sono quindi
+    rappresentativi solo di quello snapshot: sulla conversione attuale lo
+    stesso pipeline si comporta diversamente (esempio: il successo a 0.1
+    con 2.058 escl non si riproduce; il nuovo input valida a **scala 1.0
+    round 1** con 2.525 escl e spessore pieno).
+  - **Bug dell'early-exit FASE 6 trovato e corretto**: il trigger
+    scattava a 1.0 round 0 e saltava anche i round 1-2 della scala
+    richiesta (non solo le intermedie). Mascherato dalla fixture stale
+    (dove 1.0 era comunque senza speranza) e causa reale della
+    "degenerazione" su slot1. Ora il trigger scatta solo quando la scala
+    1.0 ha esaurito i suoi round: su cylinder/cubo/groove1 resta no-op;
+    sulla valvola exact ri-misurata dà successo a 1.0 round 1 in 217 s
+    (identico al legacy). Test fast 12/12 verdi.
+  - **Previsione vs misura**: avevo previsto (70%) che il BL chiudesse
+    anche sulla topologia di produzione; **misura: fallisce** (30%
+    previsto). Sui casi sani la previsione era corretta (successo, 5,65x
+    meno prismi, Mesh OK).
+  - **Implicazioni (nessun default cambiato)**: (1) la fixture va
+    rigenerata e i numeri pinnati aggiornati prima di qualunque altra
+    misura valvola; (2) il percorso BL di produzione su geometria concava
+    **non è oggi supportato** (il collapsed è ottimo per conteggio celle e
+    sui casi sani, ma la mappatura esclusioni→poligoni non chiude la
+    valvola): da affrontare come lane dedicata (es. esclusione per-vertice
+    o granularità mista), non in questa sessione; (3) i bench BL esistenti
+    usano ancora il dual exact: dichiararlo in questo documento evita di
+    confondere i due mondi.
+
 ## Boundary Layer Patch Selection — single source of truth
 
 - `core/patch_roles.py` is now the **only** place that answers "is this
