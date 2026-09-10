@@ -201,6 +201,77 @@ source of truth.
   polyMesh corrotto (neighbour=0). Risolto con il test "tutti i byte sono
   testo ASCII" al posto dell'euristica `')' in probe`, più regression test
   `test_local_refinement_boxes.py::test_read_label_list_binary_payload_with_0x29_byte`.
+- **FASE 3 — la terminazione locale generalizza? (2026-09-09)**.
+  Protocollo: `local_termination=True` su geometrie diverse dalla valvola,
+  checkMesh REALE prima/dopo, stesse metriche (celle non chiuse, % escluse,
+  tempo). Ragionamento e previsioni scritti PRIMA dei test in
+  `notes/fase3_reasoning.md` (untracked). Nessun default cambiato; nessun
+  wiring GUI (bloccato sulla validazione utente di FASE 2).
+
+  **Predittore economico (senza estrudere nulla):** contare sul dual
+  `pyr_input` (facce che violano il criterio piramide) e i vertici di
+  parete con fade duale < 0.5. Ordina la difficoltà esattamente come i
+  run: cilindro 0/0, cubo 0/0, groove1 4/2, slot1 42/17, valvola
+  1.007/1.123. Costo: 27 s sulla valvola (vs 115 s del primo build).
+
+  **Esiti (n_layers=3, h1=0.005, apply_to_all; `standard` vs
+  `local_termination` dual_convexity, checkMesh reale):**
+  - cilindro (dual 10.618 celle, 24.936 facce): standard 74.808 prismi,
+    scala 1.0, Mesh OK (skew 2.97, NOmax 81.1) — **LT identico, 0
+    escluse**, 12,6 s; anche `angle_fade` identico. Nessun peggioramento
+    dove il percorso standard già funziona.
+  - cubo duct (9 celle): identico, 108 prismi, Mesh OK.
+  - groove1 (682 celle, 3.372 facce; predittore 4/2): standard
+    "success=True" a scala 0.1 ma con TUTTO a 1 layer e checkMesh
+    **Failed 2** (2 errori non-ortho, skew 46,2) — una mesh che checkMesh
+    boccia. LT dual: **10.062 prismi (3 layer), scala 1.0, Mesh OK**
+    (skew 3,29, NOmax 89,1), 18 facce scartate dal criterio binario (0
+    esclusioni iterative), 1,4 s. LT angle: 10.032 prismi, 28 scartate,
+    Mesh OK. LT triplica i layer E rende la mesh valida.
+  - slot1 (9.372 celle, 26.754 facce; predittore 42/17): standard
+    **FALLISCE** a tutte le scale (mesh invariata, 34,5 s). LT dual:
+    **79.614 prismi, scala 1.0, Mesh OK** (skew 2,89, NOmax 87,0), 216
+    facce senza BL = 0,8%, 27,1 s; LT angle: 79.593 prismi, 190 scartate,
+    Mesh OK. Seconda geometria concava dove LT sblocca il BL.
+  - valvola: seed predicibile 2.737 facce (1,21%): 937 difettose input +
+    1.800 con un vertice a fade<0.5 (0 solo-drop). Run a 0.1 con la
+    logica di esclusione di produzione: 3 round (114,8/90,7/99,4 s),
+    2.058 esclusioni iterative, di cui **1.828 (88,8%) nel seed** e solo
+    230 (0,10% del totale) cascata pura; 91,5% delle escluse entro 2
+    anelli di adiacenza da una faccia difettosa (ring 0/1/2 =
+    803/651/429). checkMesh: 885 facce male orientate vs 895 input,
+    "Failed 4" (quarto = aspect ratio), 597.802 celle.
+    Contabilità: `local_excluded_faces` conta solo l'iterativo; il totale
+    senza BL è 3.684 facce (**1,63%**) perché i drop binari si rivalutano
+    a ogni round (un vertice può scendere sotto 0,5 perdendo una faccia
+    incidente).
+  - **Finding principale — l'ordine delle scale è il vero costo:**
+    l'engine thick-first (1.0 → 0.1) accumula TUTTE le 19.625 esclusioni
+    iterative prima di arrivare a 0.1 (i warning mostrano fallimenti solo
+    a 1.0/0.6/0.35/0.2; a 0.1 valida con il set portato). Lo stesso 0.1
+    thin-first ne richiede 2.058: **9,5x in meno**, 8,5% di prismi in più
+    (445.716 vs 410.668) e checkMesh marginalmente migliore (885 vs 891).
+    Raccomandazione per un lavoro futuro: invertire l'ordine delle scale
+    (o azzerare le esclusioni scendendo di scala) con test dedicati —
+    NON implementato qui: nessun default cambiato.
+  - **Winding globale vs terminazione binaria:** il solver di winding è
+    un risolutore esatto (nessun conflitto/edge non-manifold su nessuna
+    geometria; 0 celle non chiuse ovunque). Col solo winding il percorso
+    standard della valvola resta invalido per volumi negativi (22-44 per
+    scala, stage1c): il residuo è geometrico, non di orientamento. La
+    terminazione binaria è l'unico pezzo che scala con la difficoltà:
+    no-op su cilindro/cubo, 0,5-0,8% di scarto su groove/slot, 0,9-1,6%
+    sulla valvola (thin-first).
+  - **Previsioni vs misure:** seed, thin-first e anelli confermati. Una
+    previsione sbagliata dichiarata: per groove1 avevo previsto "decine/
+    centinaia" di vertici a fade basso, misurati 2 — il predittore ordina
+    correttamente ma la soglia facile/difficile va tarata. Nessun
+    fallimento di LT nel set; l'unico fallimento misurato è il percorso
+    STANDARD su slot1.
+  - **Tempo:** ~lineare nella dimensione con overhead fisso (cubo 0,03 s;
+    groove 1,4-3,2 s; cilindro 12,6-13,5 s; slot1 27,1 s; valvola ~100
+    s/tentativo). Il totale = tentativi × dimensione; il thin-first
+    valvola costa ~305 s di build contro i 1.602 s del thick-first.
 
 ## Boundary Layer Patch Selection — single source of truth
 
