@@ -1,7 +1,8 @@
+# -*- coding: utf-8 -*-
 """Boundary layers for the barycentric-dual polyhedral mesh.
 
 Adds an anisotropic prism layer stack to the wall of an EXISTING polyhedral
-mesh produced by the tet->poly dual converter (`core/tet_poly_dual.py`) —
+mesh produced by the tet->poly dual converter (`core/tet_poly_dual.py`)  - 
 no external tool, pure Python + numpy, headless.
 
 Why this is the right construction (measured, not assumed)
@@ -17,7 +18,7 @@ wall quad into a prism stack is conforming BY CONSTRUCTION:
   that touches it, so the top surface tiles without gaps or overlaps;
 - the interior cell that owned a wall face simply swaps that face for the
   top face of the deepest prism (same vertex set, extruded), and its other
-  wall-adjacent faces swap the moved wall vertices for the extruded ones —
+  wall-adjacent faces swap the moved wall vertices for the extruded ones  - 
   the face pairs (owner/neighbour) never change, only vertex positions.
 
 The topology pattern that OpenFOAM accepts (wall-adjacent edges shared by
@@ -28,12 +29,12 @@ Algorithm (per run)
 -------------------
 
 1. select the extrusion faces (all boundary faces by default; with
-   ``patch_names`` a named subset is used as-is — at the edge between the
+   ``patch_names`` a named subset is used as-is  -  at the edge between the
    BL region and an unselected patch, each prism side face lies in the
    plane of the adjacent (unselected) wall face and becomes a BOUNDARY
    face of that patch, owned by the prism; the unselected wall faces move
    their shared wall vertices to the last layer so every cell stays
-   closed — partial-patch BL is conforming and physically correct);
+   closed  -  partial-patch BL is conforming and physically correct);
 2. per wall vertex: smoothed normal = normalised sum of incident face
    area-vectors; max height = ``clamp_factor`` times the distance to the
    nearest non-wall vertex of the incident cells (inversion guard);
@@ -41,7 +42,7 @@ Algorithm (per run)
 4. build the prism cells, move the wall vertices of the wall-adjacent
    internal faces to their last-layer positions, swap wall faces for the
    top faces, then solve the face windings EXACTLY by a global parity/BFS
-   pass over the face graph (``_solve_global_windings``) — every cell
+   pass over the face graph (``_solve_global_windings``)  -  every cell
    becomes a closed oriented surface by construction, deterministic
    O(F+E).  This replaced a per-cell greedy repair that sat in a local
    minimum on twisted concave cells (measured on the reference valve: 24
@@ -54,7 +55,7 @@ Algorithm (per run)
 
 Opt-in local termination (``run(local_termination=True)``) additionally
 uses binary layer counts (a wall face keeps the full stack or is not
-extruded — no intermediate counts, so no transition bands) and iteratively
+extruded  -  no intermediate counts, so no transition bands) and iteratively
 excludes wall faces whose prisms are geometrically invalid on concave
 inputs, carrying the exclusions across the height-fallback scales.  It is
 the only measured path that produces and validates a boundary layer on
@@ -108,7 +109,7 @@ def _gil_yield(step: int, every: int = 256) -> None:
 
 
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):
-    """(area vectors, centroids) for every face — OpenFOAM convention:
+    """(area vectors, centroids) for every face  -  OpenFOAM convention:
     centroid = arithmetic mean of the vertices.  Vectorised (padded face
     matrix) so meshes with >1M faces stay fast."""
     n_faces = len(faces)
@@ -145,7 +146,7 @@ def _face_geometry(points: np.ndarray, faces: list[list[int]]):
 
 
 def _cell_centroids(points, faces, owner, neigh, n_int, n_cells):
-    """EXACT OpenFOAM-2512 cell centres + volumes — byte-for-byte the
+    """EXACT OpenFOAM-2512 cell centres + volumes  -  byte-for-byte the
     algorithm in `primitiveMeshTools::makeCellCentresAndVols` (pyramid-volume
     weighted pyramid centres with the face-centre-average apex), so the
     in-process 'face pyramids' gate matches checkMesh's verdict exactly.
@@ -190,7 +191,7 @@ def _dual_convexity_wall_fade(points, faces, owner, neigh, n_int, n_cells,
     The valve defect class is a dual cell that wraps a concave CAD feature
     edge: the cell is genuinely non-convex and its OpenFOAM cell centroid
     falls outside one of its own faces (checkMesh's 'face pyramids'
-    per-side test) while the wall-face normals stay smooth — the measured
+    per-side test) while the wall-face normals stay smooth  -  the measured
     root cause why ``angle_fade`` never fires on the valve (>= 0.8 on all
     226,538 wall vertices).  This criterion replaces the normal fade with
     the dual-cell convexity signal: per wall vertex, the fraction of its
@@ -401,7 +402,7 @@ class PolyBoundaryLayerEngine:
     """Adds a prism boundary layer to an existing polyhedral polyMesh.
 
     Reads ``constant/polyMesh`` (ASCII or binary, ``faceList`` or
-    ``faceCompactList`` — the readers in ``foam_mesh_io`` handle all of
+    ``faceCompactList``  -  the readers in ``foam_mesh_io`` handle all of
     them), inserts the layers, validates, and writes back atomically.
     """
 
@@ -425,6 +426,7 @@ class PolyBoundaryLayerEngine:
         max_core_volume_ratio: float = 0.0,
         concavity_criterion: str = "angle_fade",
         local_termination: bool | str = False,
+        early_exit_intermediates: bool = False,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -450,7 +452,7 @@ class PolyBoundaryLayerEngine:
           (historical behaviour, byte-identical).  "dual_convexity" =
           the dual-cell convexity signal (per wall vertex, the fraction of
           its incident wall faces whose owner cell is non-convex in
-          checkMesh's 'face pyramids' sense) — a genuinely different
+          checkMesh's 'face pyramids' sense)  -  a genuinely different
           detector that fires on the concave-feature dual cells of the
           valve where the normal fade is flat (measured >= 0.8 on all
           valve wall vertices).
@@ -462,7 +464,7 @@ class PolyBoundaryLayerEngine:
           volume or failing the face-pyramid criterion) are excluded from
           the BL and the attempt is repeated.  Two modes:
           * `True` (legacy "carry"): exclusions accumulate ACROSS the
-            fallback scales — a face excluded while trying a coarse scale
+            fallback scales  -  a face excluded while trying a coarse scale
             stays excluded on every thinner scale.  Measured on the valve:
             produced and validated a BL that the standard path cannot
             build at any scale; cost: 19.625 exclusions (8,7%) because the
@@ -475,7 +477,17 @@ class PolyBoundaryLayerEngine:
             under the excluded faces is given up (local domain change),
             and only a validated mesh is written (on failure the mesh on
             disk is left byte-identical).
-          * `False` (default): disabled — historical behaviour unchanged.
+          * `False` (default): disabled  -  historical behaviour unchanged.
+        - `early_exit_intermediates`: opt-in (default off).  Only meaningful
+          together with `local_termination`.  After scale 1.0 round 0
+          fails, skip the intermediate scales (0.6, 0.35, 0.2) and go
+          directly to 0.1.  Measured on the valve (decoupled mode): drops
+          the build count from 15 to 4 and the time from 2.215 s to ~450 s
+          while keeping the same 2.058 exclusions and 445.716 prisms.  On
+          a healthy geometry the flag is a no-op (success at scale 1.0
+          round 0).  Risk: a geometry whose defects heal at an intermediate
+          scale but not at 0.1 will fail this shortcut (mesh left
+          byte-identical, same as the standard path).
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -526,7 +538,7 @@ class PolyBoundaryLayerEngine:
         )
         pyr_before = int(len(pyr_idx))
         # the wall faces whose input cells already violate the pyramid
-        # criterion (concave feature spots) are flagged — the consistency
+        # criterion (concave feature spots) are flagged  -  the consistency
         # fixpoint then flattens their connected region to ONE layer
         drop_bnd = {
             int(fi) - n_int for fi in pyr_idx
@@ -554,13 +566,14 @@ class PolyBoundaryLayerEngine:
                 sel, drop_bnd, pyr_before, total_vol0,
                 max_core_volume_ratio, concavity_criterion, growth, poly,
                 decoupled=(local_termination == "decoupled"),
+                early_exit_intermediates=early_exit_intermediates,
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
         # clamping (the pyramid criterion fails on thin twisted rim cells
         # when the extrusion exceeds a small fraction of the local sliver)
         # The scale-independent part of _build (wall verts, normals, fade,
-        # support distances, edge/patch maps) is computed ONCE — on the valve
+        # support distances, edge/patch maps) is computed ONCE  -  on the valve
         # it measured ~58 s per attempt, so reusing it across the 5 attempts
         # is most of the speedup.
         pre = self._build_precompute(
@@ -742,7 +755,8 @@ class PolyBoundaryLayerEngine:
                                patches, n_int, sel, drop_bnd, pyr_before,
                                total_vol0, max_core_volume_ratio,
                                concavity_criterion, growth, poly,
-                               decoupled: bool = False):
+                               decoupled: bool = False,
+                               early_exit_intermediates: bool = False):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
@@ -754,17 +768,31 @@ class PolyBoundaryLayerEngine:
         faces excluded on every thinner scale); ``decoupled=True`` resets the
         exclusion set when descending to a thinner scale, so each height
         budget pays only for its own defects.  Only a mesh that passes
-        validation is written — on failure the mesh on disk is left
+        validation is written  -  on failure the mesh on disk is left
         byte-identical, same contract as the standard path.
+
+        Opt-in ``early_exit_intermediates=True`` (default off): after the
+        scale 1.0 round 0 fails, skip the intermediate scales (0.6, 0.35,
+        0.2) and proceed directly to 0.1  -  the observed behaviour on the
+        reference valve is that all four coarse scales are equally
+        unproductive (pyr count ~1010-1019 vs input 1007) and only 0.1
+        validates, so 9 builds out of 15 are wasted.  Risk: a future
+        geometry whose defect heals at 0.6 but not at 0.1 will fail this
+        shortcut; on failure the mesh is left byte-identical.
         """
         carried: set[int] = set()
         max_per_scale = 3
         res.stats["local_termination_mode"] = (
             "decoupled" if decoupled else "carry")
+        res.stats["local_termination_early_exit_intermediates"] = (
+            early_exit_intermediates)
+        skip_remaining: bool = False
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
         ):
+            if skip_remaining and scale > 0.1:
+                continue
             excluded = set() if decoupled else carried
             for _round in range(max_per_scale):
                 if self._cancel():
@@ -819,6 +847,21 @@ class PolyBoundaryLayerEngine:
                     f"[bl] local validation failed at scale={scale} "
                     f"round={_round}: {msg}"
                 )
+                # early-exit-intermediates: if the requested scale round 0
+                # fails, the intermediate scales on the reference valve are
+                # equally unproductive (pyr count 1010-1019 vs input 1007);
+                # skip them and go straight to 0.1.  We do NOT collect
+                # exclusions for this failed attempt: in decoupled mode
+                # the set resets at 0.1 anyway, and in carry mode carrying
+                # 1.0's exclusions to 0.1 would prevent validation.
+                if (early_exit_intermediates and scale == 1.0
+                        and _round == 0):
+                    skip_remaining = True
+                    res.warnings.append(
+                        "early-exit-intermediates: skipping scales 0.6/"
+                        "0.35/0.2 after scale 1.0 round 0 failed"
+                    )
+                    break
                 added = self._collect_exclusions(built, sel_cur, owner, n_int)
                 if not added:
                     break
@@ -876,7 +919,7 @@ class PolyBoundaryLayerEngine:
         # a selected and an unselected boundary face (the BL/non-BL
         # boundary), ``_build`` emits the prism side faces as BOUNDARY faces
         # on the patch of the adjacent (unselected) wall face, and moves
-        # that face's shared wall vertices to the last layer — the layer
+        # that face's shared wall vertices to the last layer  -  the layer
         # terminates as a wall band, every cell stays closed.
         used_patches = sorted({patches[pi]["name"] for bi in selected
                                for pi in [int(patch_of[bi])]})
@@ -898,7 +941,7 @@ class PolyBoundaryLayerEngine:
         ``concavity_criterion`` selects the concavity detector that drives
         the local layer termination: "angle_fade" (default, historical,
         byte-identical behaviour) or "dual_convexity" (the dual-cell
-        convexity signal — fires on the concave-feature dual cells of the
+        convexity signal  -  fires on the concave-feature dual cells of the
         valve where the normal fade is flat).
 
         The fallback loop calls ``_build`` up to 5 times (one per height
@@ -954,9 +997,9 @@ class PolyBoundaryLayerEngine:
         # OPPOSITE directions (concave re-entrant slivers, e.g. the valve), so
         # their average is directionally unstable and the extruded quads can
         # self-intersect at any height.  Fade the layer height out with the
-        # maximum angular span of the incident face normals — the classic
+        # maximum angular span of the incident face normals  -  the classic
         # "terminate the layer at the feature" treatment of production BL
-        # codes — and cap by a fraction of the smallest incident wall-face
+        # codes  -  and cap by a fraction of the smallest incident wall-face
         # edge (a hard bound against twisted slivers).
         #
         # concavity_criterion="dual_convexity" replaces the normal fade with
@@ -1009,7 +1052,7 @@ class PolyBoundaryLayerEngine:
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
             # interior anchor vertices reachable from w: primal boundary
-            # vertices appear ONLY in their wall quads, so probe two hops —
+            # vertices appear ONLY in their wall quads, so probe two hops  - 
             # wall faces of w -> shared wall vertices -> their internal faces
             probe: set[int] = set()
             for fi in wall_face_of.get(w, ()):
@@ -1041,7 +1084,7 @@ class PolyBoundaryLayerEngine:
         if bad:
             raise ValueError(
                 f"{len(bad)} edge(s) with {len(edge_sides[bad[0]])} selected "
-                "faces — the boundary is not a valid 2-manifold"
+                "faces  -  the boundary is not a valid 2-manifold"
             )
 
         # ALL boundary edges -> incident boundary faces (terminator lookup).
@@ -1093,7 +1136,7 @@ class PolyBoundaryLayerEngine:
 
         ``zero_concave`` (opt-in, experiment): faces flagged as concave
         (input pyramid violations) get ZERO layers instead of being floored
-        at one — the local wall shell is given up there (moved boundary
+        at one  -  the local wall shell is given up there (moved boundary
         face) so the whole healthy region keeps its full layer count instead
         of being flooded to one layer by the consistency fixpoint.
         """
@@ -1151,12 +1194,12 @@ class PolyBoundaryLayerEngine:
             for k in range(n_layers):
                 cum[k] = h1 * (k + 1)
         h_total = float(cum[-1])
-        # FASE 2 — LOCAL TERMINATION: the layer COUNT varies per wall
+        # FASE 2  -  LOCAL TERMINATION: the layer COUNT varies per wall
         # vertex.  Where the local geometry is healthy (angle_fade >= 50%),
         # all n_layers are kept and scaled to the inversion budget (FASE 1
-        # behaviour — thin but valid).  At CONCAVE feature corners the
+        # behaviour  -  thin but valid).  At CONCAVE feature corners the
         # layers would be crushed slivers that fail the face-pyramid
-        # criterion — there the count drops locally (n -> n-1 -> ... -> 1)
+        # criterion  -  there the count drops locally (n -> n-1 -> ... -> 1)
         # at FULL layer size, instead of thinning everything everywhere.
         nv0: dict[int, int] = {}
         hw0: dict[int, float] = {}
@@ -1176,19 +1219,19 @@ class PolyBoundaryLayerEngine:
                     k = 1  # one clamped layer where even h1 does not fit
                 nv0[w] = k
                 hw0[w] = cum[k - 1] if cum[k - 1] <= mh else mh
-        # per selected face: min over its vertices — the stack top needs
+        # per selected face: min over its vertices  -  the stack top needs
         # every vertex at layer n_f; n_f == 0 -> the face is NOT extruded
         # (handled as an unselected face below)
         n_wf = len(bnd)
         nf0: dict[int, int] = {}
         for bi, fi in enumerate(bnd):
             m = min((nv0[v] for v in faces[fi]), default=0)
-            # flagged faces: ONE layer (never 0 — the shell must stay
+            # flagged faces: ONE layer (never 0  -  the shell must stay
             # covered so the volume is conserved); degenerate vertices with
             # no extrusion budget force 0 (handled as unselected below)
             nf0[bi] = min(1, m) if bi in drop_bnd else m
         if zero_concave:
-            # BINARY local termination — the building block of the opt-in
+            # BINARY local termination  -  the building block of the opt-in
             # ``run(local_termination=True)`` path: a face is either fully
             # layered (all vertices can take the full stack) or not extruded
             # at all.  No intermediate counts -> no transition faces needed
@@ -1227,7 +1270,7 @@ class PolyBoundaryLayerEngine:
             # open at a vertex whose own budget exceeds the faces around it.
             # The local termination still varies the count along the surface
             # (healthy regions keep n_layers, concave regions drop layers), at
-            # the price of flattening each connected region to its minimum — a
+            # the price of flattening each connected region to its minimum  -  a
             # documented trade-off: the n->n-1 graduation would need per-step
             # transition faces, which fail cell closure on the real valve.
             nv = dict(nv0)
@@ -1296,7 +1339,7 @@ class PolyBoundaryLayerEngine:
         # usual internal side-face pairing) or exactly ONE (the BL/non-BL
         # boundary: the prism side face becomes a boundary face assigned to
         # the adjacent unselected patch).  Zero/3+ means a non-manifold
-        # boundary — invalid input.  (edge_sides/bnd_edge_faces/patch_of are
+        # boundary  -  invalid input.  (edge_sides/bnd_edge_faces/patch_of are
         # computed once in _build_precompute, before the nv/nf flattening.)
 
         # --- face assembly ----------------------------------------------------
@@ -1317,7 +1360,7 @@ class PolyBoundaryLayerEngine:
             return [pt(v, nv[v]) if v in wall_v else v for v in f]
 
         # 1. original internal faces: move wall vertices to their last
-        #    (per-vertex) layer.  Every output face is a COPY — the repair
+        #    (per-vertex) layer.  Every output face is a COPY  -  the repair
         #    passes mutate the output lists in place, and mutating an
         #    aliased input face would corrupt the next fallback attempt.
         for fi in range(n_int):
@@ -1329,7 +1372,7 @@ class PolyBoundaryLayerEngine:
             new_own.append(int(owner[fi]))
             new_nb.append(int(neighbour[fi]))
 
-        # 2. new prism faces — geometric orientation using the prism
+        # 2. new prism faces  -  geometric orientation using the prism
         #    centroid (vertex average; reliable for the near-convex stacks,
         #    and any residual mis-orientation is repaired below)
         prism_cent = np.zeros((n_wf, n_layers, 3))
@@ -1345,7 +1388,7 @@ class PolyBoundaryLayerEngine:
         # top faces: ORIGINAL owner cell <-> prism(f, last). The original
         # cell has the lower index, so it must be the OWNER (upper-triangular
         # convention owner < neighbour); the normal then points from the
-        # interior cell toward the prism — the same direction as the wall
+        # interior cell toward the prism  -  the same direction as the wall
         # face normal, so the top face keeps the wall face's winding.
         for bi, fi in enumerate(bnd):
             if nf[bi] == 0:
@@ -1385,12 +1428,12 @@ class PolyBoundaryLayerEngine:
         # for k < min(nf_f, nf_g).  Where the two stacks differ in depth
         # (FASE 2 local termination), the DEEPER stack's extra layers become
         # internal transition faces between the deeper prism and the ORIGINAL
-        # owner cell of the shallower face — the step is closed against the
+        # owner cell of the shallower face  -  the step is closed against the
         # neighbouring interior cell, never as a spurious boundary surface.
         # Each wall-face edge is emitted ONCE (from the lower-index face side).
         # terminator (adjacent face NOT extruded, nf == 0): at the BL/non-BL
         # boundary the prism side quad lies IN THE PLANE of the adjacent wall
-        # face — it is that wall band, so it becomes a BOUNDARY face owned by
+        # face  -  it is that wall band, so it becomes a BOUNDARY face owned by
         # the prism and assigned to the patch of the adjacent face (FASE 1);
         # the band between the local strip depth and the moved depth of the
         # unselected face is an INTERNAL transition face (FASE 2 band).
@@ -1460,7 +1503,7 @@ class PolyBoundaryLayerEngine:
                 # both faces are extruded.  The consistency fixpoint makes
                 # the layer counts of adjacent faces EQUAL (nf_bi == nf_obi:
                 # every vertex of a face has nv == nf[face]), so every layer
-                # pairs prism(f,k) <-> prism(g,k) — the per-face graduation
+                # pairs prism(f,k) <-> prism(g,k)  -  the per-face graduation
                 # would need transition faces that fail closure on real
                 # concave meshes (documented in CONTRIBUTO).
                 for k in range(nf_bi):
@@ -1472,7 +1515,7 @@ class PolyBoundaryLayerEngine:
                     nb_c = prism_start + off[obi] + k
                     _emit_side(poly, own_c, nb_c, prism_cent[bi, k])
 
-        # sort internal faces by (owner, neighbour) — OpenFOAM convention
+        # sort internal faces by (owner, neighbour)  -  OpenFOAM convention
         io = np.array(new_own, dtype=np.int64)
         inb = np.array(new_nb, dtype=np.int64)
         if len(io) and np.any(io == inb):
@@ -1483,11 +1526,11 @@ class PolyBoundaryLayerEngine:
         out_nb = inb[sort_idx].tolist()
         new_n_int = len(new_faces_int)
 
-        # boundary faces: per patch, in ORIGINAL patch order — the original
+        # boundary faces: per patch, in ORIGINAL patch order  -  the original
         # faces (selected -> prism bottoms, re-owned by the first-layer
         # prism, ORIGINAL wall vertices; unselected -> wall vertices moved
         # to the LAST layer so their edges still match the moved internal
-        # faces and the top faces — otherwise the owner cell would be left
+        # faces and the top faces  -  otherwise the owner cell would be left
         # open at the BL border), then the NEW terminator strips assigned
         # to this patch (prism side faces at the BL/non-BL border, owned by
         # the prisms).  nFaces/startFace are rebuilt to cover the strips.
@@ -1506,7 +1549,7 @@ class PolyBoundaryLayerEngine:
                 if b in sel_set:
                     sbi = sel_pos[b]
                     if nf[sbi] == 0:
-                        # FASE 2: face dropped locally (0 layers) — keep it
+                        # FASE 2: face dropped locally (0 layers)  -  keep it
                         # as an unselected wall face, vertices to their own
                         # last layer
                         pf.append(_move_face_var(f))
@@ -1540,11 +1583,11 @@ class PolyBoundaryLayerEngine:
         # on the valve it left 24 cells unclosed at scale 1.0 and cascaded
         # into a catastrophic global flip at scale 0.6 with 378,605
         # non-positive volumes), solve the parity constraints over the whole
-        # face graph in one deterministic O(F+E) pass — every cell becomes a
+        # face graph in one deterministic O(F+E) pass  -  every cell becomes a
         # closed oriented surface and each component ends up with positive
         # total volume.  See _solve_global_windings.
         n_cells_new = int(max(max(out_own_all), max(out_nb_all))) + 1
-        self._log("[bl] prism faces assembled — solving global winding "
+        self._log("[bl] prism faces assembled  -  solving global winding "
                   "orientation...")
         out_faces, orient_stats = _solve_global_windings(
             new_points, out_faces, out_own_all, out_nb_all,
@@ -1610,7 +1653,7 @@ class PolyBoundaryLayerEngine:
         if owner.min() < 0 or owner.max() >= n_cells:
             return False, "owner index out of range"
         # patch accounting invariants: the boundary block starts at n_int and
-        # the patches tile every boundary face exactly (SA-2 hardening — a
+        # the patches tile every boundary face exactly (SA-2 hardening  -  a
         # silent write with a broken table would FATAL at OpenFOAM read).
         patches = built["patches"]
         if patches and patches[0]["startFace"] != n_int:
@@ -1641,7 +1684,7 @@ class PolyBoundaryLayerEngine:
         # the divergence theorem from face centroids (vertex average) and
         # Newell area vectors, and that pair is only EXACT for PLANAR faces.
         # Since the dual boundary may now be collapsed into n-gons (one
-        # polygon per boundary vertex — the topology that makes the mesh
+        # polygon per boundary vertex  -  the topology that makes the mesh
         # actually read as polyhedral), those faces are generally non-planar
         # and the measure itself carries an approximation error larger than
         # 1e-6, with no defect in the mesh.
@@ -1649,7 +1692,7 @@ class PolyBoundaryLayerEngine:
         # Measured on a cylinder with named inlet/outlet/wall patches and
         # wall-only BL on a collapsed boundary: closure, positive volumes and
         # the face-pyramid criterion ALL pass, while volume "drifts" by
-        # 1.6e-4 relative (0.276206 vs 0.276249) — so every height-scale
+        # 1.6e-4 relative (0.276206 vs 0.276249)  -  so every height-scale
         # attempt was rejected and BL failed outright, purely on this check.
         # 1e-3 still catches a real hole (which is orders of magnitude
         # bigger, and would fail closure first anyway) while tolerating the
@@ -1664,7 +1707,7 @@ class PolyBoundaryLayerEngine:
         # checkMesh's 'face pyramids' criterion: every face normal must point
         # out of its owner's centroid.  This is what makes the output pass
         # checkMesh on sharp features (twisted rim cells fail here even when
-        # closed) — the scale fallback then thins the layers until it holds.
+        # closed)  -  the scale fallback then thins the layers until it holds.
         # FASE 2: a concave-feature INPUT (valve) already violates the
         # convexity-based check; the BL is valid if it does not ADD
         # violations (the local layer termination drops the layers where
@@ -1681,7 +1724,7 @@ class PolyBoundaryLayerEngine:
         # every BL prism cell must be within max_core_volume_ratio of the
         # adjacent core cell's volume.  Prism cells are the ones appended
         # after the original cells (id >= n_cells - n_prisms), so the check
-        # only looks at internal faces crossing the prism/core boundary —
+        # only looks at internal faces crossing the prism/core boundary  - 
         # the outermost prism layer vs the core.
         if max_core_volume_ratio > 0.0:
             n_prisms = int(built.get("n_prism_cells", 0))
