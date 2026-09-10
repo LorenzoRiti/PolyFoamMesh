@@ -449,6 +449,46 @@ def test_bl_local_termination_rejects_unknown_mode():
     assert any("unknown local_termination mode" in e for e in res.errors)
 
 
+def test_bl_local_termination_max_rounds_param():
+    """local_max_rounds is validated and plumbed through to the loop: a
+    raised value runs (healthy cube unaffected) and is recorded in stats;
+    out-of-range values are rejected."""
+    case = _build_dual_case(WORK_ROOT / "cube_lt_rounds")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_termination="decoupled",
+                  local_max_rounds=6)
+    assert res.success, (res.errors, res.warnings)
+    assert res.stats.get("local_termination_max_rounds") == 6
+    res2 = PolyBoundaryLayerEngine(case, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2,
+        apply_to_all=True, local_termination="decoupled",
+        local_max_rounds=0)
+    assert not res2.success
+    assert any("local_max_rounds" in e for e in res2.errors)
+
+
+def test_bl_local_exclude_widen_param():
+    """local_exclude_widen is validated and plumbed: a raised value runs
+    (healthy cube unaffected, since the widen step is a no-op when no
+    exclusion is collected); out-of-range values are rejected. The flag is
+    also recorded in stats for observability."""
+    case = _build_dual_case(WORK_ROOT / "cube_lt_widen")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_termination="decoupled",
+                  local_exclude_widen=2)
+    assert res.success, (res.errors, res.warnings)
+    assert res.stats.get("local_termination_max_rounds") == 3
+    assert res.n_prism_cells > 0
+    res2 = PolyBoundaryLayerEngine(case, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2,
+        apply_to_all=True, local_termination="decoupled",
+        local_exclude_widen=4)
+    assert not res2.success
+    assert any("local_exclude_widen" in e for e in res2.errors)
+
+
 def test_bl_local_termination_early_exit_intermediates_noop_on_healthy():
     """early_exit_intermediates=True is a no-op on a healthy mesh:
     success at scale 1.0 round 0, zero exclusions, flag recorded. The

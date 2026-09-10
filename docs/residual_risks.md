@@ -490,6 +490,62 @@ source of truth.
     o granularità mista), non in questa sessione; (3) i bench BL esistenti
     usano ancora il dual exact: dichiararlo in questo documento evita di
     confondere i due mondi.
+- **FASE 8 — fixture rigenerata, fast test re-pinnati, BL collapsed
+  measurement (widen=0/1) (2026-09-09)**. Tre esiti consecutivi su
+  questa lane; le conclusioni oneste, **nessun default cambiato**.
+
+  1. **Fixture valvola `tests/fixtures/valve_dual.npz` rigenerata** con
+     il converter attuale (2026-09-09, dimensione 27,3 MB, identica
+     alla precedente; il file `valve_dual_checkmesh.txt` registrato
+     accanto): checkMesh riporta **863 facce male orientate, 9 errori
+     non-ortho, skew 14,58, Failed 3**, contro i vecchi pinnati
+     (895/55/44,3) — un miglioramento del converter sullo stesso tet
+     backup. L'in-process detector `_detect_defects` riporta
+     **863 / 203 / 3** (pyr / non-ortho-det / skew-det): 863 pyr coincide
+     con checkMesh; 203 = checkMesh "nonOrthoFaces" scritto sul set (la
+     863 → 9 "errors" >70° del checkMesh); 3 è la skew-det
+     (checkMesh ne scrive 98 "highly skew"). Il `tests/test_tet_poly_dual`
+     parametrize e' stato aggiornato a
+     `{"pyramid": 863, "non_ortho_det": 203, "skew_det": 3}`.
+  2. **`poly_fixture_builder.py` corretto**: il fvSchemes iniziale non
+     conteneva `divSchemes`/`laplacianSchemes`/`interpolationSchemes`/
+     `snGradSchemes` e `checkMesh` 2512 falliva con `FATAL IO ERROR:
+     Entry 'divSchemes' not found`. Aggiunto il set completo. Tutti i
+     successivi run del builder producono un checkMesh valido.
+  3. **Slow test `test_valve_fixture_bl_invariants`**: passa sul nuovo
+     fixture (373 s, clean-failure: volumi negativi per scala 1.0→0.1
+     con 104/64/48/40/16 counts; mesh invariata, polyMesh esiste). La
+     docstring "must FAIL CLEANLY" resta corretta; un FileNotFoundError
+     accidentale in una run precedente era dovuto a una **doppia
+     esecuzione concorrente** del test (il fixer ha rilanciato il
+     comando, la seconda istanza ha cancellato `valve_bl` con `rmtree`
+     mentre la prima girava) — un artefatto di concorrenza, non un bug
+     del motore. Per ridurre la finestra di race, una soluzione
+     semplice sarebbe rendere la `case` unica per run (es. tramite
+     timestamp nel nome) — non implementata qui.
+  4. **BL collapsed widening experiment (FASE 8)**: parametro engine
+     opt-in `local_exclude_widen: int = 0` (default invariato) in
+     `bl_poly.run()` (validato 0..3), con metodo `_widen_exclusions`
+     che espande l'elenco di esclusioni raccolto in ogni round di N
+     anelli di vicini di bordo (costruiti da
+     `pre["bnd_edge_faces"]`). Test:
+     `test_bl_local_exclude_widen_param` (cubo sano riusce con
+     `widen=2`; `widen=4` errore). Bench:
+     `tools/bench_bl_production_topology.py --exclude-widen N`.
+  5. **Misura collapsed valve con `local_exclude_widen=1`** (production
+     + decoupled + `max_rounds=6`): 2.064 s, 25 build, **2.207
+     esclusioni** (identico a widen=0), stallo 373-378 (0.2) / 379
+     (0.1 r3-r5), fallimento pulito. **H6 widen=1 falsificata**:
+     allargare di 1 anello non aggiunge facce al set escludibile (la
+     frontiera del rim e' gia' 1-anello in molte posizioni, o la
+     pyr-violation al rim non e' semplicemente "spostata di 1 anello").
+     `widen=2` non misurato (costo ~30 min, atteso negativo).
+  6. **H2 confermata, H3 + H6 widen=1 falsificate**: il difetto del
+     BL collapsed sulla valvola non e' chiudibile con exclusion
+     granularity (face + 1 anello). Il gap strutturale (H4, mapping
+     esclusione → per-vertice) resta la strada da percorrere per
+     supportare la BL di produzione su geometrie concave. Tutto
+     rimane opt-in: nessun default e' cambiato.
 
 ## Boundary Layer Patch Selection — single source of truth
 
