@@ -479,6 +479,15 @@ class PolyBoundaryLayerEngine:
             under the excluded faces is given up (local domain change),
             and only a validated mesh is written (on failure the mesh on
             disk is left byte-identical).
+          * `"decoupled_vertex"` (H4 structural variant): same as
+            `"decoupled"` except the iterative exclusion unit is the WALL
+            VERTEX: every vertex of a bad face is excluded, and a face is
+            extruded only if none of its vertices is excluded.  On
+            coarsely-faceted (collapsed) production duals a boundary face
+            is one vertex star, so this propagates a defective vertex to
+            all incident faces in one round.  Measured on the
+            production-collapsed valve: see docs/residual_risks.md
+            §H4/FASE 9 (result: success/failure and the exclusion count).
           * `False` (default): disabled  -  historical behaviour unchanged.
         - `early_exit_intermediates`: opt-in (default off).  Only meaningful
           together with `local_termination`.  Once the requested scale (1.0)
@@ -569,19 +578,21 @@ class PolyBoundaryLayerEngine:
         res.wall_patches = used_patches
 
         if local_termination:
-            if local_termination not in (True, "decoupled"):
+            if local_termination not in (True, "decoupled", "decoupled_vertex"):
                 res.errors.append(
                     f"unknown local_termination mode {local_termination!r} "
-                    "(expected True or 'decoupled')"
+                    "(expected True, 'decoupled' or 'decoupled_vertex')"
                 )
                 return res
             return self._run_local_termination(
                 res, points, faces, owner, neighbour, patches, n_int,
                 sel, drop_bnd, pyr_before, total_vol0,
                 max_core_volume_ratio, concavity_criterion, growth, poly,
-                decoupled=(local_termination == "decoupled"),
+                decoupled=(local_termination in ("decoupled",
+                                                 "decoupled_vertex")),
                 early_exit_intermediates=early_exit_intermediates,
                 max_per_scale=int(local_max_rounds),
+                vertex_exclusions=(local_termination == "decoupled_vertex"),
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
@@ -806,9 +817,10 @@ class PolyBoundaryLayerEngine:
                                total_vol0, max_core_volume_ratio,
                                concavity_criterion, growth, poly,
                                decoupled: bool = False,
-                                early_exit_intermediates: bool = False,
-                                max_per_scale: int = 3,
-                                local_exclude_widen: int = 0):
+                               early_exit_intermediates: bool = False,
+                               max_per_scale: int = 3,
+                               local_exclude_widen: int = 0,
+                               vertex_exclusions: bool = False):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
@@ -850,14 +862,29 @@ class PolyBoundaryLayerEngine:
         removing a larger area of wall.  No-op when ``added`` is empty
         (healthy geometry).  Only meaningful together with
         ``local_termination``.
+
+        ``vertex_exclusions`` (default False, opt-in via
+        ``run(local_termination="decoupled_vertex")``): H4 structural
+        variant — the iterative exclusion unit is the WALL VERTEX, not the
+        face.  A face is extruded only if NONE of its vertices is
+        excluded; when a bad prism/core cell is collected, every vertex of
+        its base face is marked excluded.  On collapsed duals a boundary
+        face is one vertex star, so a bad vertex propagates to all its
+        incident faces in ONE round (instead of one ring per round), and
+        the dropped set converges to the vertex-closure of the defects.
+        Mutually exclusive with ``local_exclude_widen`` (widening a
+        vertex closure is a no-op by construction); the initial
+        ``zero_concave`` drop stays face-level, unchanged.
         """
         carried: set[int] = set()
         res.stats["local_termination_mode"] = (
-            "decoupled" if decoupled else "carry")
+            "decoupled_vertex" if vertex_exclusions
+            else ("decoupled" if decoupled else "carry"))
         res.stats["local_termination_early_exit_intermediates"] = (
             early_exit_intermediates)
         res.stats["local_termination_max_rounds"] = int(max_per_scale)
         skip_remaining: bool = False
+        last_dropped = 0
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
@@ -865,15 +892,25 @@ class PolyBoundaryLayerEngine:
             if skip_remaining and scale > 0.1:
                 continue
             excluded = set() if decoupled else carried
+            excluded_verts: set[int] = set()
             for _round in range(max_per_scale):
                 if self._cancel():
                     res.errors.append("cancelled")
                     return res
-                sel_cur = [b for b in sel if b not in excluded]
+                if vertex_exclusions:
+                    sel_cur = [
+                        b for b in sel
+                        if not (set(faces[n_int + b]) & excluded_verts)
+                    ]
+                    n_dropped = len(sel) - len(sel_cur)
+                else:
+                    sel_cur = [b for b in sel if b not in excluded]
+                    n_dropped = len(excluded)
+                last_dropped = n_dropped
                 if len(sel_cur) < 16:
                     res.errors.append(
                         "local termination excluded too many faces "
-                        f"({len(excluded)} of {len(sel)})"
+                        f"({n_dropped} of {len(sel)})"
                     )
                     return res
                 pre = self._build_precompute(
@@ -898,15 +935,17 @@ class PolyBoundaryLayerEngine:
                     break
                 self._log(
                     f"[bl] local termination attempt scale={scale} "
-                    f"round={_round} excluded={len(excluded)} "
+                    f"round={_round} excluded={n_dropped} "
                     f"(checkMesh criteria)..."
                 )
                 ok, msg = self._validate(built, total_vol0,
                                          max_core_volume_ratio)
                 if ok:
-                    res.stats["local_excluded_faces"] = len(excluded)
+                    res.stats["local_excluded_faces"] = n_dropped
+                    if vertex_exclusions:
+                        res.stats["local_excluded_verts"] = len(excluded_verts)
                     res.warnings.append(
-                        f"local termination: excluded {len(excluded)} of "
+                        f"local termination: excluded {n_dropped} of "
                         f"{len(sel)} wall faces (concave/invalid prisms)"
                     )
                     return self._accept_built(res, built, scale, clamp, poly)
@@ -921,10 +960,24 @@ class PolyBoundaryLayerEngine:
                 added = self._collect_exclusions(built, sel_cur, owner, n_int)
                 if not added:
                     break
-                if local_exclude_widen > 0:
-                    added = self._widen_exclusions(added, sel_cur, pre,
-                                                   local_exclude_widen)
-                excluded |= added
+                if vertex_exclusions:
+                    # H4: the exclusion unit is the wall vertex.  Mark every
+                    # vertex of every collected face; the face-level set is
+                    # derived (a face is extruded only if none of its
+                    # vertices is excluded), so an excluded vertex drops all
+                    # its incident faces in this same round.
+                    new_verts: set[int] = set()
+                    for b in added:
+                        new_verts.update(faces[n_int + b])
+                    gained = new_verts - excluded_verts
+                    if not gained:
+                        break
+                    excluded_verts |= gained
+                else:
+                    if local_exclude_widen > 0:
+                        added = self._widen_exclusions(added, sel_cur, pre,
+                                                       local_exclude_widen)
+                    excluded |= added
             # early-exit-intermediates: only once the REQUESTED scale has
             # exhausted all its rounds without validating do the intermediate
             # scales become skippable — the requested scale's own retries
@@ -944,7 +997,7 @@ class PolyBoundaryLayerEngine:
             carried = excluded
         res.errors.append(
             "could not insert a valid boundary layer with local "
-            f"termination ({len(carried)} faces excluded); mesh left "
+            f"termination ({last_dropped} faces excluded); mesh left "
             "unchanged"
         )
         return res

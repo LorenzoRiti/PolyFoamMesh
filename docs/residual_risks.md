@@ -546,6 +546,44 @@ source of truth.
      esclusione → per-vertice) resta la strada da percorrere per
      supportare la BL di produzione su geometrie concave. Tutto
      rimane opt-in: nessun default e' cambiato.
+- **FASE 9 / H4 — esclusioni per-VERTICE: la valvola collapsed di
+  produzione CHIUDE (2026-09-09)**. Nuova modalita' opt-in
+  `local_termination="decoupled_vertex"` (default invariato):
+  identica a `"decoupled"` ma l'unita' di esclusione iterativa e' il
+  VERTICE di parete — quando un prisma/cella core e' invalido si
+  escludono TUTTI i vertici della sua faccia di base; una faccia e'
+  estrusa solo se nessuno dei suoi vertici e' escluso. Sul dual
+  collapsed (una poligonale di bordo = la stella di un vertice) una
+  vertice difettoso propaga a tutte le facce incidenti in UN round.
+  Il drop binario iniziale (`zero_concave`) resta per-faccia,
+  invariato; `local_exclude_widen` e' un no-op in questa modalita'.
+  Implementazione in `core/bl_poly.py`
+  (`_run_local_termination(..., vertex_exclusions=True)`); unit test
+  `test_bl_local_termination_decoupled_vertex_on_healthy_cube`
+  (fast suite 15/15 nel file); regressione slow
+  `tests/test_bl_collapsed_valve.py` (skip se il tet backup di
+  C:/polybench/valve1 manca).
+
+  Misura (production converter kwargs, `n_layers=2`, h1=1e-5,
+  dual_convexity, max_rounds=3; conversione collapsed ~105 s):
+  - **success=True a scala 0.6**, 5 build, ~297 s;
+  - **4.008 facce escluse su 42.130 (9,5%)**, **75.360 prismi**;
+  - traiettoria: 1.0 r0 fail (54 volumi negativi) → r1 383 vs 370 →
+    r2 373 vs 370 (fixed point del vertex-closure: il gate a 1.0 NON
+    e' raggiungibile); 0.6 r0 fail (38 neg) → r1 valida;
+    `max_rounds=6` da' lo stesso risultato (1.0 si ferma comunque);
+  - checkMesh reale: **340 facce male orientate = esattamente
+    l'input (ZERO aggiunte)**, 10 errori non-ortho (= input), NOmax
+    95,6 (= input), skew 27,5 (input 22,2), aspect 6.555 (input
+    100,8), "Failed 4" vs input "Failed 3" — l'unico check in piu'
+    e' l'aspect ratio, intrinseco ai prismi BL sottili.
+  Confronto con il modello per-faccia sullo stesso input: FASE 7/8
+  falliva a tutte le scale (stallo 373-385 vs 370, 2.189-2.207
+  esclusioni). Previsione precedente (45% di chiusura, 2.300-2.900
+  esclusioni a 0.1) era **pessimista sul successo e conservativa sul
+  conteggio**: ha chiuso con piu' facce (4.008) ma a scala piu'
+  spessa (0.6). Nessun default cambiato: la modalita' e' opt-in e
+  documentata.
 
 ## Boundary Layer Patch Selection — single source of truth
 
