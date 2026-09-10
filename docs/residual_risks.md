@@ -272,6 +272,57 @@ source of truth.
     groove 1,4-3,2 s; cilindro 12,6-13,5 s; slot1 27,1 s; valvola ~100
     s/tentativo). Il totale = tentativi × dimensione; il thin-first
     valvola costa ~305 s di build contro i 1.602 s del thick-first.
+- **FASE 4 — thin-first generalizza oltre la valvola? NO (2026-09-09)**.
+  Domanda: il vantaggio del thin-first misurato sulla valvola (9,5x meno
+  esclusioni, +8,5% prismi, ~5x più veloce) vale anche su
+  cilindro/cubo/groove1/slot1? Metodo: previsione scritta PRIMA
+  (`notes/thinfirst_reasoning.md`), due run per geometria con la stessa
+  logica interna e la sola tupla delle scale cambiata
+  (`tools/bench_bl_thinfirst.py`; il thick-first riproduce esattamente i
+  risultati LT di FASE 3, quindi il patch è fedele).
+
+  **Risultato: come inversione cieca NON generalizza — introduce un
+  effetto collaterale grave.** Su TUTTE e 4 le geometrie thin-first
+  valida al PRIMO tentativo (scala 0.1) e scrive una BL con
+  `first_height` effettivo 10x più piccolo del richiesto (5e-4 invece di
+  5e-3), in silenzio:
+  - cilindro: THICK scala 1.0 vs THIN scala 0.1; stessi prismi (74.808),
+    0 esclusioni, tempo identico (17,9 vs 17,0 s), MA aspect max 18,3 →
+    **104,3**;
+  - cubo duct: 108 prismi in entrambi, aspect 78,7 → **781,6** (~10x);
+  - groove1: 10.062 prismi in entrambi, aspect 15,9 → **90,8**;
+  - slot1: THICK 79.614 prismi con 132 esclusioni iterative (216 totali)
+    a scala 1.0 in 2 round, 36,5 s; THIN 80.004 prismi con **0 esclusioni
+    iterative** (86 totali = solo seed) a scala 0.1 in 1 round, 17,9 s —
+    qui il vantaggio valvola si rivede (meno esclusioni, +390 prismi, 2x
+    più veloce) ma di nuovo con spessore 10x ridotto (aspect 16,7 →
+    **128,5**);
+  - valvola (FASE 3): nessun conflitto di spessore possibile — la scala
+    1.0 falliva comunque, 0.1 era l'unica valida; lì thin-first resta
+    migliore e non danneggia.
+
+  **Lettura:** i due effetti sono intrecciati. Il vantaggio (meno
+  esclusioni, più prismi, più veloce) esiste solo dove una scala spessa
+  fallisce davvero, e nasce dall'evitare di accumulare esclusioni prima
+  di arrivare alla scala che valida. Ma "accetta la prima scala che
+  valida" significa accettare la 0.1 anche dove la 1.0 richiesta
+  funzionerebbe: su una mesh sana degrada l'y+ di 10x senza fallire.
+  Per questo l'inversione NON va proposta come default (né implementata).
+  La variante da misurare (lavoro futuro, esplicitamente non
+  implementato) è **decoupled**: provare la scala richiesta per prima e,
+  scendendo di scala, NON portare le esclusioni accumulate (reset al
+  cambio scala) — così la valvola otterrebbe ~2.058 esclusioni come
+  thin-first ma i casi sani manterrebbero lo spessore richiesto.
+  **Previsioni vs misure (onesto):** avevo previsto "thin-first
+  identico a thick-first" su cilindro/cubo/groove1 — SBAGLIATO nello
+  spessore/scala/aspect (la meccanica "esce al round 0" era giusta, ma
+  il round 0 di thin-first È la scala 0.1). Su slot1 avevo previsto
+  "uguale o leggermente peggiore in % esclusioni" — sbagliato in segno
+  (0 vs 132, quindi meglio), giusto nella meccanica; mancato l'effetto
+  spessore. Il predittore FASE 3 (pyr_input) resta valido: il vantaggio
+  compare solo dove pyr_input > 0 e cresce col numero di difetti.
+  Default invariato (`local_termination=False`, ordine scale invariato),
+  nessun wiring GUI.
 
 ## Boundary Layer Patch Selection — single source of truth
 
