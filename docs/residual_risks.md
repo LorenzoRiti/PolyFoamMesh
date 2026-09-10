@@ -507,12 +507,26 @@ source of truth.
   report and the `verification` A/B suite (which flags `[SUBSTITUTED]`).
   `success` still means "a mesh was produced" — `quality_passed` is the
   separate, authoritative quality flag.
-- **Known limitation:** the main GUI meshing path does not go through
-  `MeshEngine` (it uses `RetryRunner`/`cartesianMesh` directly and never
-  builds a `MeshEngineResult`), so a GUI user is not yet warned in the log.
-  The substitution is recorded in the artefacts that do flow through
-  `MeshEngine` (quick mesh, one-click, A/B verification). Wiring a GUI
-  warning is the remaining work.
+- **Verified (2026-09-09):** the main GUI meshing path does not go through
+  `MeshEngine.run` — it uses `RetryRunner`/`cartesianMesh` directly. A grep
+  in `src/polyfoammesh/gui/` for `MeshEngine().run(`, `QuickMesh().run(`
+  and `engine.run(` returns zero matches: `_on_quick_mesh` calls only
+  `engine.auto_select(...)` (algorithm choice, no escalation) and
+  `qm._auto_bl_params(...)` (BL parameter helper, no meshing); the actual
+  meshing goes through `self._params.run_meshing` → `self._on_run_meshing`
+  → `RetryRunner` (`self._runner = RetryRunner(self._of_config)`). The GUI
+  therefore never produces an `algorithm_substituted` from `MeshEngine`,
+  so there is no MeshEngine-driven substitution to surface in the GUI log.
+  The substitution is recorded in the artefacts that *do* flow through
+  `MeshEngine` (quick mesh one-click, full-auto one-click, A/B
+  verification — all headless). The 5 substitution/fallback paths the
+  GUI *can* trigger (BL off, detail reduced, Gmsh algorithm coarser,
+  parallel→serial, BL disabled) are already wired through
+  `_log_substitution` and covered by `tests/test_gui_substitution_notice.py`
+  (4 tests, all green). If a future change makes the GUI call
+  `MeshEngine.run` (so that an `algorithm_substituted` becomes possible
+  in the GUI), a wiring + test mirroring the existing pattern is the
+  minimal addition.
 - **Redundant rung removed (2026-09-02):** `HEX_CORE_POLY` and `POLYHEDRAL`
   dispatch to the identical pipeline (`_run_cartesian_hex` +
   `_run_polyhedral`), i.e. `polyDualMesh` over the whole mesh. The ladder
