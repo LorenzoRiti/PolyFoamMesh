@@ -584,6 +584,17 @@ source of truth.
   conteggio**: ha chiuso con piu' facce (4.008) ma a scala piu'
   spessa (0.6). Nessun default cambiato: la modalita' e' opt-in e
   documentata.
+  - **Interazione da NON combinare**: `early_exit_intermediates`
+    salterebbe proprio la scala 0.6 che questa modalita' usa per
+    validare (1.0 esaurisce senza chiudere → il flag va diretto a
+    0.1). La combinazione non e' stata misurata e non e'
+    raccomandata; il flag resta pensato per i casi in cui 1.0 e'
+    senza speranza e le intermedie inutili (valvola exact, fixture).
+  - **No-op sui sani, verificato**: cilindro exact con
+    `decoupled_vertex` = identico a `decoupled` (scala 1.0, 0
+    esclusioni, 74.808 prismi, `Mesh OK`, 13,6 s); cubo sano nel
+    unit test. Su mesh senza difetti il vertex-closure non raccoglie
+    nulla per costruzione (break al primo round).
 
 ## Boundary Layer Patch Selection — single source of truth
 

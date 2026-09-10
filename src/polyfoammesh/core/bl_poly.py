@@ -498,7 +498,10 @@ class PolyBoundaryLayerEngine:
           snapshot; on a healthy geometry the flag is a no-op (success at
           scale 1.0 round 0).  Risk: a geometry whose defects heal at an
           intermediate scale but not at 0.1 will fail this shortcut (mesh
-          left byte-identical, same as the standard path).
+          left byte-identical, same as the standard path).  Measured
+          counter-example: the production-collapsed valve under
+          `local_termination="decoupled_vertex"` validates at scale 0.6,
+          which this flag would skip — do not combine the two there.
         - `local_max_rounds`: opt-in (default 3).  Maximum exclusion rounds
           attempted per height scale in the local-termination loop.  The
           iterative cascade on coarsely-faceted (collapsed) duals can need
