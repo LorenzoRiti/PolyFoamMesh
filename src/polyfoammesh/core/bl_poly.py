@@ -479,15 +479,15 @@ class PolyBoundaryLayerEngine:
             disk is left byte-identical).
           * `False` (default): disabled  -  historical behaviour unchanged.
         - `early_exit_intermediates`: opt-in (default off).  Only meaningful
-          together with `local_termination`.  After scale 1.0 round 0
-          fails, skip the intermediate scales (0.6, 0.35, 0.2) and go
-          directly to 0.1.  Measured on the valve (decoupled mode): drops
-          the build count from 15 to 4 and the time from 2.215 s to ~450 s
-          while keeping the same 2.058 exclusions and 445.716 prisms.  On
-          a healthy geometry the flag is a no-op (success at scale 1.0
-          round 0).  Risk: a geometry whose defects heal at an intermediate
-          scale but not at 0.1 will fail this shortcut (mesh left
-          byte-identical, same as the standard path).
+          together with `local_termination`.  Once the requested scale (1.0)
+          has exhausted its rounds without validating, skip the
+          intermediate scales (0.6, 0.35, 0.2) and go directly to 0.1.
+          Measured on the valve (decoupled mode): drops the build count
+          from 15 to 4 and the time from 2.215 s to ~450 s on the fixture
+          snapshot; on a healthy geometry the flag is a no-op (success at
+          scale 1.0 round 0).  Risk: a geometry whose defects heal at an
+          intermediate scale but not at 0.1 will fail this shortcut (mesh
+          left byte-identical, same as the standard path).
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -771,13 +771,16 @@ class PolyBoundaryLayerEngine:
         validation is written  -  on failure the mesh on disk is left
         byte-identical, same contract as the standard path.
 
-        Opt-in ``early_exit_intermediates=True`` (default off): after the
-        scale 1.0 round 0 fails, skip the intermediate scales (0.6, 0.35,
-        0.2) and proceed directly to 0.1  -  the observed behaviour on the
-        reference valve is that all four coarse scales are equally
-        unproductive (pyr count ~1010-1019 vs input 1007) and only 0.1
-        validates, so 9 builds out of 15 are wasted.  Risk: a future
-        geometry whose defect heals at 0.6 but not at 0.1 will fail this
+        Opt-in ``early_exit_intermediates=True`` (default off): once the
+        requested scale (1.0) has exhausted all its rounds without
+        validating, skip the intermediate scales (0.6, 0.35, 0.2) and
+        proceed directly to 0.1 — on geometrically defective inputs the
+        intermediate scales are typically as unproductive as the requested
+        one, so the builds spent there are saved.  The requested scale's own
+        retry rounds always run first (measured: scale 1.0 can validate at
+        round 1 on a current converter output, and skipping that would throw
+        away a full-thickness success).  Risk: a geometry whose defect
+        heals at an intermediate scale but not at 0.1 will fail this
         shortcut; on failure the mesh is left byte-identical.
         """
         carried: set[int] = set()
@@ -847,25 +850,23 @@ class PolyBoundaryLayerEngine:
                     f"[bl] local validation failed at scale={scale} "
                     f"round={_round}: {msg}"
                 )
-                # early-exit-intermediates: if the requested scale round 0
-                # fails, the intermediate scales on the reference valve are
-                # equally unproductive (pyr count 1010-1019 vs input 1007);
-                # skip them and go straight to 0.1.  We do NOT collect
-                # exclusions for this failed attempt: in decoupled mode
-                # the set resets at 0.1 anyway, and in carry mode carrying
-                # 1.0's exclusions to 0.1 would prevent validation.
-                if (early_exit_intermediates and scale == 1.0
-                        and _round == 0):
-                    skip_remaining = True
-                    res.warnings.append(
-                        "early-exit-intermediates: skipping scales 0.6/"
-                        "0.35/0.2 after scale 1.0 round 0 failed"
-                    )
-                    break
                 added = self._collect_exclusions(built, sel_cur, owner, n_int)
                 if not added:
                     break
                 excluded |= added
+            # early-exit-intermediates: only once the REQUESTED scale has
+            # exhausted all its rounds without validating do the intermediate
+            # scales become skippable — the requested scale's own retries
+            # (rounds 1..n) must always be attempted first: measured on the
+            # current converter output, scale 1.0 validates at round 1 (the
+            # earlier round-0 trigger was masked by a stale fixture and threw
+            # that full-thickness success away).
+            if early_exit_intermediates and scale == 1.0:
+                skip_remaining = True
+                res.warnings.append(
+                    "early-exit-intermediates: scale 1.0 exhausted without "
+                    "validating; skipping scales 0.6/0.35/0.2"
+                )
             # legacy carry mode: the same set flows into the next scale;
             # decoupled mode: each scale starts from an empty set and this
             # only records the latest count for the failure message below.
