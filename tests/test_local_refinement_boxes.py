@@ -62,6 +62,23 @@ def test_read_label_list_genuine_binary_still_works(tmp_path):
     assert ids.tolist() == values.tolist()
 
 
+def test_read_label_list_binary_payload_with_0x29_byte(tmp_path):
+    """Regression: a binary payload whose first 64 bytes contain a 0x29
+    byte (cell indices like 41, 296, 10537 — measured on a real
+    gmshToFoam neighbour file) was misdetected as ASCII and returned an
+    EMPTY list, silently corrupting the mesh on the next write."""
+    values = np.array(
+        [10537, 296, 41, 52491, 0x2900, 7, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11],
+        dtype=np.int32,
+    )
+    header = HEADER_BINARY.replace("cellSet", "labelList")
+    body = f"{len(values)}\n(".encode("ascii") + values.tobytes() + b")\n"
+    p = tmp_path / "neighbour"
+    p.write_bytes(header.encode("ascii") + body)
+    ids = foam_mesh_io.read_label_list(p)
+    assert ids.tolist() == values.tolist()
+
+
 def _write_tiny_cube_polymesh(poly_dir: Path) -> None:
     """A single unit-cube cell (8 points, 6 quad faces, all boundary)."""
     pts = np.array([
