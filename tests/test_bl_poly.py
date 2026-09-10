@@ -468,6 +468,21 @@ def test_bl_local_termination_max_rounds_param():
     assert any("local_max_rounds" in e for e in res2.errors)
 
 
+def test_bl_local_termination_decoupled_vertex_on_healthy_cube():
+    """H4: the vertex-exclusion mode is a no-op on a healthy mesh —
+    success at scale 1.0 round 0, zero exclusions, mode recorded."""
+    case = _build_dual_case(WORK_ROOT / "cube_lt_vertex")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_termination="decoupled_vertex")
+    assert res.success, (res.errors, res.warnings)
+    assert res.n_prism_cells > 0
+    assert res.stats.get("local_excluded_faces") == 0
+    assert res.stats.get("scale") == 1.0
+    assert res.stats.get("local_termination_mode") == "decoupled_vertex"
+    _mesh_ok(case / "constant" / "polyMesh")
+
+
 def test_bl_local_exclude_widen_param():
     """local_exclude_widen is validated and plumbed: a raised value runs
     (healthy cube unaffected, since the widen step is a no-op when no

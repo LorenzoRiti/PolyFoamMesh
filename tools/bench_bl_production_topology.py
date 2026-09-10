@@ -233,7 +233,12 @@ def run_bl(case: Path, mode: str, n_layers: int, h1: float,
     eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
     early = mode == "early_exit"
     legacy = mode == "legacy"
-    lt: bool | str = True if legacy else "decoupled"
+    if mode == "decoupled_vertex":
+        lt: bool | str = "decoupled_vertex"
+    elif legacy:
+        lt = True
+    else:
+        lt = "decoupled"
     t0 = time.monotonic()
     res = eng.run(
         n_layers=n_layers, first_height=h1, growth_rate=1.2,
@@ -320,7 +325,8 @@ def main() -> int:
     ap.add_argument("--cases", default="valve,cylinder",
                     help="valve, cylinder (virgola)")
     ap.add_argument("--modes", default="early_exit,decoupled",
-                    help="early_exit, decoupled, legacy (virgola)")
+                    help="early_exit, decoupled, decoupled_vertex, legacy "
+                         "(virgola)")
     ap.add_argument("--variants", default="exact,production",
                     help="exact, production (virgola)")
     ap.add_argument("--max-rounds", type=int, default=3,
