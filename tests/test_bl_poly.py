@@ -447,3 +447,25 @@ def test_bl_local_termination_rejects_unknown_mode():
                   apply_to_all=True, local_termination="bogus")
     assert not res.success
     assert any("unknown local_termination mode" in e for e in res.errors)
+
+
+def test_bl_local_termination_early_exit_intermediates_noop_on_healthy():
+    """early_exit_intermediates=True is a no-op on a healthy mesh:
+    success at scale 1.0 round 0, zero exclusions, flag recorded. The
+    flag is the only difference vs. the legacy decoupled run."""
+    case = _build_dual_case(WORK_ROOT / "cube_lt_skip")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_termination="decoupled",
+                  early_exit_intermediates=True)
+    assert res.success, (res.errors, res.warnings)
+    assert res.n_prism_cells > 0
+    assert res.stats.get("local_excluded_faces") == 0
+    assert res.stats.get("scale") == 1.0, res.stats
+    assert res.stats.get("local_termination_mode") == "decoupled"
+    assert res.stats.get("local_termination_early_exit_intermediates") is True
+    # the skip flag is only announced in warnings AFTER scale 1.0 round 0
+    # has failed; on a healthy cube that never happens, so no such warning.
+    assert not any("early-exit-intermediates: skipping" in w
+                   for w in res.warnings)
+    _mesh_ok(case / "constant" / "polyMesh")

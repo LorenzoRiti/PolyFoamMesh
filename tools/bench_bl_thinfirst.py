@@ -363,10 +363,12 @@ def _make_run_with_scales(SCALES, label):
 def run_case(case: Path, mode: str, n_layers: int, h1: float) -> dict:
     """Run one local-termination mode on a case copy.
 
-    mode: "thick"     = engine legacy carry order 1.0 -> 0.1
-          "thin"      = monkey-patched reversed order 0.1 -> 1.0 (carry)
-          "decoupled" = engine mode: requested scale first, exclusions
-                        reset when descending
+    mode: "thick"        = engine legacy carry order 1.0 -> 0.1
+          "thin"         = monkey-patched reversed order 0.1 -> 1.0 (carry)
+          "decoupled"    = engine mode: requested scale first, exclusions
+                           reset when descending
+          "early_exit"   = engine mode: decoupled + early_exit_intermediates
+                           (skip 0.6/0.35/0.2 if 1.0 round 0 fails)
     """
     eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
     if mode == "thin":
@@ -377,13 +379,17 @@ def run_case(case: Path, mode: str, n_layers: int, h1: float) -> dict:
         lt = True
     elif mode == "decoupled":
         lt = "decoupled"
+    elif mode == "early_exit":
+        lt = "decoupled"
     else:
         raise ValueError(f"unknown mode {mode!r}")
+    early_exit = mode == "early_exit"
     t0 = time.monotonic()
     res = eng.run(
         n_layers=n_layers, first_height=h1, growth_rate=1.2,
         apply_to_all=True, local_termination=lt,
         concavity_criterion="dual_convexity",
+        early_exit_intermediates=early_exit,
     )
     dt = time.monotonic() - t0
     return {
@@ -393,6 +399,7 @@ def run_case(case: Path, mode: str, n_layers: int, h1: float) -> dict:
         "scale": res.stats.get("scale"),
         "mode": mode,
         "lt_mode": res.stats.get("local_termination_mode"),
+        "early_exit": res.stats.get("local_termination_early_exit_intermediates"),
         "excluded": res.stats.get("local_excluded_faces"),
         "min_cell_volume": res.stats.get("min_cell_volume"),
         "total_volume": res.stats.get("total_volume"),
@@ -410,11 +417,11 @@ def main() -> int:
                          "h1=1e-5; ~25 min per modalita')")
     ap.add_argument("--modes", default="thick,thin,decoupled",
                     help="modi da eseguire, separati da virgola "
-                         "(thick, thin, decoupled)")
+                         "(thick, thin, decoupled, early_exit)")
     args = ap.parse_args()
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     for m in modes:
-        if m not in ("thick", "thin", "decoupled"):
+        if m not in ("thick", "thin", "decoupled", "early_exit"):
             print(f"modo sconosciuto: {m!r}")
             return 2
 

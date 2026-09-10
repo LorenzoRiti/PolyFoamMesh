@@ -375,6 +375,66 @@ source of truth.
   | THICK (legacy) | 19.625 | 21.208 (9,36%) | 410.668 | 891 wrong | 1.602 s |
   | THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 305 s |
   | DECOUPLED | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 2.215 s |
+- **FASE 6 — early-exit-intermediates implementato e misurato
+  (2026-09-09)**. Per rispondere alla domanda "un early-exit (fermati
+  alla prima scala valida) riduce il tempo sulla valvola?": L'engine
+  ha GIÀ un early-exit alla prima scala valida (`if ok: return
+  self._accept_built(...)`) — la cilindro/cubo/groove1 validano a
+  scala 1.0 round 0 e fanno **1 sola build** (12,8 s, 1,4 s, 0,0 s).
+  Il tempo lungo della valvola nel decoupled (2.215 s, 15 build) non
+  è un bug di "non esce": è che solo 0.1 valida e le 4 scale grosse
+  sono tutte "ugualmente inutili" (pyr count 1010-1019 vs input 1007).
+  Per risparmiare quei 9 build è stata implementata la variante
+  opt-in `early_exit_intermediates`: se 1.0 round 0 fallisce, le scale
+  intermedie (0.6, 0.35, 0.2) vengono skippate e si va diretto a 0.1.
+  Implementazione in `bl_poly.py` (parametro engine, default off;
+  trigger dentro `_run_local_termination` dopo il fallimento di 1.0
+  round 0; statistiche in `res.stats["local_termination_early_exit_intermediates"]`).
+  Test: `test_bl_local_termination_early_exit_intermediates_noop_on_healthy`
+  (fast suite 1154 verdi). Previsione scritta prima in
+  `notes/early_exit_reasoning.md`.
+
+  Misure (`tools/bench_bl_thinfirst.py --modes early_exit [--valve]`,
+  checkMesh reale):
+
+  | Geometria | DECOUPLED | EARLY_EXIT | Δ |
+  |---|---|---|---|
+  | cilindro | scala 1.0, 74.808, 0 escl, 17,8 s, aspect 18,3 | scala 1.0, 74.808, 0 escl, 12,8 s, aspect 18,3 | identico (no-op) |
+  | cubo | scala 1.0, 108, 0 escl, 0,0 s, aspect 78,7 | scala 1.0, 108, 0 escl, 0,0 s, aspect 78,7 | identico |
+  | groove1 | scala 1.0, 10.062, 0 escl, 2,1 s, aspect 15,9 | scala 1.0, 10.062, 0 escl, 1,4 s, aspect 15,9 | identico |
+  | **slot1** | scala 1.0, 79.614, 132 escl, 36,3 s, aspect 16,7 | **scala 0.1, 80.004, 0 escl, 25,2 s, aspect 128,5** | **degenera in thin-first** |
+  | **valvola** | scala 0.1, 445.716, 2.058 escl, 2.215 s, checkMesh 885 | **scala 0.1, 445.716, 2.058 escl, 414 s, checkMesh 885** | **identico, 5,4x più veloce** |
+
+  **Verdetto**: sulla valvola centra l'obiettivo: stesso risultato del
+  decoupled (2.058 escl, 445.716 prismi, checkMesh 885) in **414 s
+  invece di 2.215 s (5,4x)** con sole 4 build (1.0 round 0 fail +
+  skip + 0.1 round 0, 1, 2) invece di 15. Traiettoria warning valvola:
+  1.0 round 0 fail (50 volumi negativi) → skip 0.6/0.35/0.2 → 0.1
+  round 0 fail (2 neg) → 0.1 round 1 fail (1012 piramidi > 1007
+  input) → 0.1 round 2 valida con 2.058 escl.
+
+  **Rischio documentato**: la euristica è sicura sulla valvola ma
+  **degenera in thin-first su slot1** (scala 0.1, aspect 128,5
+  invece di 1.0/16,7): il trigger "1.0 round 0 fallisce → skip
+  intermedie" si attiva anche quando 1.0 avrebbe validato dopo 1 round
+  di esclusioni (slot1: round 0 fallisce con 50 pyr > 42 input, ma
+  round 1 con 132 excl valida). Lo skip fa perdere quel round 1 e
+  costringe a 0.1 con set pulito (= thin-first). Quindi
+  `early_exit_intermediates` è candidato *solo* per geometrie tipo
+  valvola (dove 1.0 non ha speranza di validare a nessun round); per
+  geometrie tipo slot1 è troppo aggressivo. Una euristica più fine
+  ("skip solo se round 0 e round 1 di 1.0 falliscono entrambi") o
+  ("skip solo se pyr_round0 di 1.0 non migliora scendendo") richiede
+  una misura dedicata. Default invariato, nessun wiring GUI.
+
+  Tabella riassuntiva valvola (stesso input fixture, n_layers=2,
+  h1=1e-5, dual_convexity):
+
+  | variante | escl. iterative | facce senza BL | prismi | checkMesh | tempo |
+  |---|---|---|---|---|---|
+  | THICK (legacy) | 19.625 | 21.208 (9,36%) | 410.668 | 891 wrong | 1.602 s |
+  | THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 305 s |
+  | DECOUPLED | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 2.215 s |
 
 ## Boundary Layer Patch Selection — single source of truth
 
