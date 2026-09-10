@@ -1,21 +1,26 @@
-"""FASE 4 — thin-first vs thick-first su cilindro, cubo, groove1, slot1.
+"""FASE 4/5 — varianti dell'ordine/modo di terminazione locale del BL.
 
-Per ogni geometria: costruisce il dual, poi esegue `local_termination`
-in due modalita':
-  - THICK: ordine scale come l'engine standard (1.0 -> 0.1)
-  - THIN : ordine scale invertito (0.1 -> 1.0)
-La differenza nel motore e' solo la tupla delle scale in
-`_run_local_termination`; qui viene monkey-patchato sull'istanza con
-una variante che chiude la scala sull'inverso (la logica di
-build/validate/collect_exclusions/accept_built resta identica).
+Tre modalita' sullo stesso dual, per geometria:
+  - THICK (engine legacy, `local_termination=True`): scale 1.0 -> 0.1,
+    esclusioni TRASPORTATE tra le scale;
+  - THIN (monkey-patch): scale invertite 0.1 -> 1.0, carry — misura della
+    scoperta FASE 3/4, non e' una modalita' del motore;
+  - DECOUPLED (engine, `local_termination="decoupled"`): prova la scala
+    RICHIESTA per prima; scendendo di scala il set di esclusioni viene
+    AZZERATO cosi' una scala grossa fallita non avvelena le piu' sottili.
 
-Stesso protocollo di FASE 3: checkMesh reale prima/dopo, esiti del
-run (tempo, scale di successo, escluse iterative, prisms, warnings).
+Geometrie di default: cilindro GMSH, cubo duct, groove1, slot1 (come
+FASE 3/4). Con `--valve` aggiunge la fixture valvola
+(tests/fixtures/valve_dual.npz, protocollo n_layers=2, h1=1e-5,
+dual_convexity) — attenzione, il giro completo sulla valvola costa
+~25 min per modalita'.
 
-Nessun default del motore viene modificato; lo script fa solo misure
-sperimentali.
+Stesso protocollo di FASE 3/4: checkMesh REALE dopo ogni run riuscito.
 
-Uso:  python tools/bench_bl_thinfirst.py [--skip-wsl]
+Uso:
+  python tools/bench_bl_thinfirst.py                     # 4 geometrie, 3 modi
+  python tools/bench_bl_thinfirst.py --modes decoupled   # solo decoupled
+  python tools/bench_bl_thinfirst.py --valve --modes decoupled
 """
 from __future__ import annotations
 
@@ -241,6 +246,37 @@ def copy_dual(src_case: Path, dst_case: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Valvola: fixture dual (stesso input dei run FASE 2/3)
+# ---------------------------------------------------------------------------
+
+VALVE_FIX = SRC.parent / "tests" / "fixtures" / "valve_dual.npz"
+VALVE_N_LAYERS = 2
+VALVE_H1 = 1e-5
+
+
+def build_valve_case(case: Path) -> tuple[Path, dict]:
+    """Scrive la fixture valvola come caso polyMesh (patch unica 'wall')."""
+    d = np.load(VALVE_FIX)
+    points = d["points"].astype(np.float64)
+    n_int = int(d["n_int"])
+    fv = d["face_verts"]
+    fs = d["face_sizes"].tolist()
+    fo = d["face_offsets"].tolist()
+    faces = [fv[fo[i]:fo[i] + fs[i]].tolist() for i in range(len(fs))]
+    owner = d["owner"].astype(np.int64)
+    neigh = d["neighbour"].astype(np.int64)
+    patches = [{"name": "wall", "type": "patch",
+                "nFaces": len(faces) - n_int, "startFace": n_int}]
+    shutil.rmtree(case, ignore_errors=True)
+    (case / "constant").mkdir(parents=True)
+    fio.write_polymesh(case / "constant" / "polyMesh", points, faces,
+                       owner, neigh, patches)
+    write_skeleton(case)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    return case, {"dual_ok": True, "dual_cells": n_cells, "dual_s": 0.0}
+
+
+# ---------------------------------------------------------------------------
 # Variante thin-first di _run_local_termination
 # ---------------------------------------------------------------------------
 
@@ -252,7 +288,8 @@ def _make_run_with_scales(SCALES, label):
     def _run_local_termination(self, res, points, faces, owner, neighbour,
                                patches, n_int, sel, drop_bnd, pyr_before,
                                total_vol0, max_core_volume_ratio,
-                               concavity_criterion, growth, poly):
+                               concavity_criterion, growth, poly,
+                               decoupled: bool = False):
         excluded = set()
         max_per_scale = 3
         for scale, clamp in SCALES:
@@ -323,14 +360,29 @@ def _make_run_with_scales(SCALES, label):
     return _run_local_termination
 
 
-def run_engine(case: Path, scales, label) -> dict:
+def run_case(case: Path, mode: str, n_layers: int, h1: float) -> dict:
+    """Run one local-termination mode on a case copy.
+
+    mode: "thick"     = engine legacy carry order 1.0 -> 0.1
+          "thin"      = monkey-patched reversed order 0.1 -> 1.0 (carry)
+          "decoupled" = engine mode: requested scale first, exclusions
+                        reset when descending
+    """
     eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
-    eng._run_local_termination = types.MethodType(
-        _make_run_with_scales(scales, label), eng)
+    if mode == "thin":
+        eng._run_local_termination = types.MethodType(
+            _make_run_with_scales(SCALES_THIN, "thin"), eng)
+        lt: bool | str = True
+    elif mode == "thick":
+        lt = True
+    elif mode == "decoupled":
+        lt = "decoupled"
+    else:
+        raise ValueError(f"unknown mode {mode!r}")
     t0 = time.monotonic()
     res = eng.run(
-        n_layers=N_LAYERS, first_height=H1, growth_rate=1.2,
-        apply_to_all=True, local_termination=True,
+        n_layers=n_layers, first_height=h1, growth_rate=1.2,
+        apply_to_all=True, local_termination=lt,
         concavity_criterion="dual_convexity",
     )
     dt = time.monotonic() - t0
@@ -339,7 +391,8 @@ def run_engine(case: Path, scales, label) -> dict:
         "n_prism_cells": int(res.n_prism_cells),
         "time_s": round(dt, 1),
         "scale": res.stats.get("scale"),
-        "scale_order": res.stats.get("scale_order"),
+        "mode": mode,
+        "lt_mode": res.stats.get("local_termination_mode"),
         "excluded": res.stats.get("local_excluded_faces"),
         "min_cell_volume": res.stats.get("min_cell_volume"),
         "total_volume": res.stats.get("total_volume"),
@@ -352,7 +405,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--skip-wsl", action="store_true",
                     help="engine only, no checkMesh")
+    ap.add_argument("--valve", action="store_true",
+                    help="aggiungi la fixture valvola (protocollo n_layers=2, "
+                         "h1=1e-5; ~25 min per modalita')")
+    ap.add_argument("--modes", default="thick,thin,decoupled",
+                    help="modi da eseguire, separati da virgola "
+                         "(thick, thin, decoupled)")
     args = ap.parse_args()
+    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+    for m in modes:
+        if m not in ("thick", "thin", "decoupled"):
+            print(f"modo sconosciuto: {m!r}")
+            return 2
 
     cfg = OFConfig()
     if not cfg.validate() and not args.skip_wsl:
@@ -360,16 +424,17 @@ def main() -> int:
         return 2
     WORK.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict] = {}
+    out_name = "fase5_decoupled_result.json"
 
-    # Costruisci i dual una volta sola, riusa per thick e thin.
+    # Costruisci i dual una volta sola; ogni run parte da una copia fresca.
     print("=== costruzione dual ===")
-    cases = []
+    cases = []  # (name, build_case, dual_info, n_layers, h1)
     c = build_cylinder(WORK / "build_cyl")
     d = dual_convert(c); print(f"[cyl] dual: {d}")
-    cases.append(("cylinder", WORK / "build_cyl", d))
+    cases.append(("cylinder", c, d, N_LAYERS, H1))
     c = build_cube_duct(WORK / "build_cube")
     d = dual_convert(c); print(f"[cube] dual: {d}")
-    cases.append(("cube_duct", WORK / "build_cube", d))
+    cases.append(("cube_duct", c, d, N_LAYERS, H1))
     for name, src in (
         ("groove1", Path(r"C:/polybench/groove1/constant/polyMesh_tet_backup")),
         ("slot1", Path(r"C:/polybench/slot1/constant/polyMesh_tet_backup")),
@@ -378,41 +443,43 @@ def main() -> int:
             print(f"[{name}] backup mancante"); continue
         c = case_from_tet_backup(src, WORK / f"build_{name}")
         d = dual_convert(c); print(f"[{name}] dual: {d}")
-        cases.append((name, WORK / f"build_{name}", d))
+        cases.append((name, c, d, N_LAYERS, H1))
+    if args.valve:
+        c, d = build_valve_case(WORK / "build_valve")
+        print(f"[valve] fixture: {d}")
+        cases.append(("valve", c, d, VALVE_N_LAYERS, VALVE_H1))
 
-    for name, build_case, dual_info in cases:
+    for name, build_case, dual_info, n_layers, h1 in cases:
         print(f"\n===== {name} =====")
         entry: dict = {"dual": dual_info}
         results[name] = entry
-        for tag, scales, label in (
-            ("thick", SCALES_THICK, "thick"),
-            ("thin", SCALES_THIN, "thin"),
-        ):
-            run_case = copy_dual(build_case, WORK / f"{name}_{tag}")
-            r = run_engine(run_case, scales, label)
-            entry[tag] = r
-            print(f"  {tag}: success={r['success']} prisms={r['n_prism_cells']} "
+        for mode in modes:
+            case_dir = copy_dual(build_case, WORK / f"{name}_{mode}")
+            r = run_case(case_dir, mode, n_layers, h1)
+            entry[mode] = r
+            print(f"  {mode}: success={r['success']} prisms={r['n_prism_cells']} "
                   f"excl={r['excluded']} scale={r['scale']} {r['time_s']}s "
                   f"err={r['errors'][:1]}")
             if r["success"] and not args.skip_wsl:
-                cm = checkmesh(cfg, run_case)
-                entry[f"{tag}_checkmesh"] = cm
+                cm = checkmesh(cfg, case_dir)
+                entry[f"{mode}_checkmesh"] = cm
                 print(f"    checkMesh: {json.dumps(cm)}")
 
-    out = WORK / "fase4_thinfirst_result.json"
+    out = WORK / out_name
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"\nrisultati in {out}")
 
     print("\n=== RIEPILOGO ===")
     for name, e in results.items():
-        t = e.get("thick", {})
-        n = e.get("thin", {})
-        t_cm = e.get("thick_checkmesh", {}).get("mesh_ok")
-        n_cm = e.get("thin_checkmesh", {}).get("mesh_ok")
-        print(f"{name}: THICK ok={t.get('success')} prisms={t.get('n_prism_cells')} "
-              f"excl={t.get('excluded')} {t.get('time_s')}s meshOK={t_cm} | "
-              f"THIN ok={n.get('success')} prisms={n.get('n_prism_cells')} "
-              f"excl={n.get('excluded')} {n.get('time_s')}s meshOK={n_cm}")
+        parts = []
+        for mode in modes:
+            r = e.get(mode, {})
+            cmo = e.get(f"{mode}_checkmesh", {}).get("mesh_ok")
+            parts.append(
+                f"{mode.upper()} ok={r.get('success')} "
+                f"prisms={r.get('n_prism_cells')} scale={r.get('scale')} "
+                f"excl={r.get('excluded')} {r.get('time_s')}s meshOK={cmo}")
+        print(f"{name}: " + " | ".join(parts))
     return 0
 
 
