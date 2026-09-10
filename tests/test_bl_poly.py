@@ -349,3 +349,73 @@ def test_bl_fase2_local_termination_drops_defective_faces():
     assert b["layers_per_face_max"] == 1
     ok, msg = eng._validate(b, vol0)
     assert ok, msg
+
+
+def test_bl_global_winding_solve_is_exact_after_flip():
+    """The global parity solve (replacing the per-cell greedy repair) closes
+    EVERY cell exactly after a deliberately flipped internal face — the old
+    greedy converged to a local minimum on twisted cells (24 unclosed on the
+    valve) and could cascade into a catastrophic global flip."""
+    from polyfoammesh.core.bl_poly import _solve_global_windings
+
+    case = _build_dual_case(WORK_ROOT / "cube_winding")
+    poly = case / "constant" / "polyMesh"
+    points, faces, owner, neigh, patches = fio.read_polymesh(poly)
+    n_int = len(neigh)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    # break the winding consistency of one internal face
+    faces[0] = list(reversed(faces[0]))
+    solved, stats = _solve_global_windings(points, faces, owner, neigh,
+                                           n_int, n_cells)
+    assert stats["n_conflicts"] == 0, stats
+    assert stats["n_nonmanifold_edges"] == 0, stats
+    vols, closure, scale = _cell_metrics(points, solved, owner, neigh,
+                                         n_cells, n_int)
+    rel = np.linalg.norm(closure, axis=1) / np.maximum(scale, 1e-300)
+    assert np.all(rel < 1e-8), f"cells not closed: {int((rel >= 1e-8).sum())}"
+    assert np.all(vols > 0.0), "non-positive cell volume"
+
+
+def test_bl_zero_concave_binary_drop_keeps_full_stack_elsewhere():
+    """Binary local termination (opt-in): the flagged faces get ZERO layers
+    (no shell), every other face keeps the FULL stack — unlike the fixpoint
+    path, which floods the whole region to the minimum count.  Cells stay
+    closed and positive; the shell under the dropped faces is deliberately
+    given up (documented domain change), so volume conservation is NOT
+    asserted here."""
+    case = _build_dual_case(WORK_ROOT / "cube_zero_concave")
+    poly = case / "constant" / "polyMesh"
+    points, faces, owner, neigh, patches = fio.read_polymesh(poly)
+    n_int = len(neigh)
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    sel, used = eng._select_faces(faces, owner, patches, n_int, None, True)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    drop_bnd = {0, 1}
+    b = eng._build(points, faces, owner, neigh, patches, n_int, sel,
+                   3, 0.02, 1.2, 0.5, 0, drop_bnd, zero_concave=True)
+    assert b["layers_per_face_min"] == 0
+    assert b["layers_per_face_max"] == 3
+    assert b["n_prism_cells"] == (len(sel) - 2) * 3, b["n_prism_cells"]
+    vols, closure, scale = _cell_metrics(
+        b["points"], b["faces"], np.asarray(b["owner"]),
+        np.asarray(b["neigh"]), int(max(b["owner"].max(), b["neigh"].max())) + 1,
+        int(b["n_int"]),
+    )
+    rel = np.linalg.norm(closure, axis=1) / np.maximum(scale, 1e-300)
+    assert np.all(rel < 1e-8), f"cells not closed: {int((rel >= 1e-8).sum())}"
+    assert np.all(vols > 0.0), "non-positive cell volume"
+
+
+def test_bl_local_termination_run_succeeds_on_healthy_cube():
+    """The opt-in iterative local termination path (run(..., 
+    local_termination=True)) must succeed on a healthy mesh with no
+    exclusions, and report zero excluded faces."""
+    case = _build_dual_case(WORK_ROOT / "cube_lt")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_termination=True)
+    assert res.success, (res.errors, res.warnings)
+    assert res.n_prism_cells > 0
+    assert res.stats.get("local_excluded_faces") == 0
+    assert "local_excluded_faces" in res.stats
+    _mesh_ok(case / "constant" / "polyMesh")

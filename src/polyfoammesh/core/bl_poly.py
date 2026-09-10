@@ -40,15 +40,31 @@ Algorithm (per run)
 3. layer heights ``h_k = h1 * r^(k-1)``, cumulative, per-vertex clamped;
 4. build the prism cells, move the wall vertices of the wall-adjacent
    internal faces to their last-layer positions, swap wall faces for the
-   top faces, orient every new face geometrically (normal owner -> neighbour);
+   top faces, then solve the face windings EXACTLY by a global parity/BFS
+   pass over the face graph (``_solve_global_windings``) — every cell
+   becomes a closed oriented surface by construction, deterministic
+   O(F+E).  This replaced a per-cell greedy repair that sat in a local
+   minimum on twisted concave cells (measured on the reference valve: 24
+   cells left unclosed at scale 1.0, and a catastrophic global flip at
+   scale 0.6 with 378,605 non-positive volumes);
 5. validate (owner < neighbour, cell closure, all positive volumes,
    total volume conserved, no unused points) and write atomically via
    `foam_mesh_io`; on validation failure, retry with progressively smaller
    heights (keep-best, mesh never left half-written).
+
+Opt-in local termination (``run(local_termination=True)``) additionally
+uses binary layer counts (a wall face keeps the full stack or is not
+extruded — no intermediate counts, so no transition bands) and iteratively
+excludes wall faces whose prisms are geometrically invalid on concave
+inputs, carrying the exclusions across the height-fallback scales.  It is
+the only measured path that produces and validates a boundary layer on
+the reference valve; the wall shell under the excluded faces is given up
+(a local, documented domain change).  Defaults are unchanged.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 import itertools
 import logging
 import re
@@ -250,126 +266,115 @@ def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
     return bad
 
 
-def _fix_pyramid_faces(points, faces, owner, neigh, n_int, n_cells, rounds=4,
-                       cell_mask=None):
-    """Flip faces whose normal points INTO their owner cell — checkMesh's
-    'face pyramids' criterion (the authoritative validity test).
+def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
+    """Exact winding solve: make every cell's boundary a closed oriented
+    surface, in one deterministic pass.
 
-    Uses the same OpenFOAM-convention cell centres as checkMesh; each flipped
-    face is re-repaired for closure afterwards.  ``cell_mask`` restricts the
-    closure repair to the cells that can have been disturbed (the BL prisms
-    and the core cells whose faces were re-wired) — the untouched rest of the
-    mesh is closed by construction, so checking it only wastes time (measured
-    on the valve: tens of thousands of untouched cells scanned per round).
-    Returns the faces list.
+    The previous repair was a per-cell greedy flip, which converges to a
+    LOCAL minimum: measured on the reference valve (concave dual cells,
+    genuinely twisted prisms) it left 24 cells unclosed at scale 1.0 and
+    cascaded into a catastrophic global flip at scale 0.6 (378,605
+    non-positive volumes).  This solver is exact and needs no iteration.
+
+    Constraint (one per cell and per edge of its boundary): the two faces of
+    the cell that share an edge must traverse that edge in OPPOSITE
+    directions, so the cell's signed area-vector sum is 0 by the telescoping
+    identity.  Each face has one boolean variable (flip or keep); the
+    constraints are parity relations ``x_f * x_g = -d_f * d_g`` where ``d``
+    is the edge traversal direction *as the cell sees the face* (the stored
+    winding for the owner side, reversed for the neighbour side).  The face
+    graph is solved by BFS; a conflict means the mesh is not orientable (a
+    topological defect, reported, not silently "repaired").  The component
+    sign is chosen so every connected component has positive total volume.
+
+    Deterministic, O(F + E).  Returns (faces, stats).
     """
-    for _ in range(rounds):
-        C, _ = _cell_centroids(points, faces, owner, neigh, n_int, n_cells)
-        sf, cf = _face_geometry(points, faces)
-        bad = (sf * (cf - C[owner])).sum(axis=1) <= 0.0
-        if not bad.any():
-            break
-        for j, fi in enumerate(np.flatnonzero(bad)):
-            _gil_yield(j, 1024)
-            faces[fi].reverse()
-        faces = _repair_closures(points, faces, owner, neigh, n_int, n_cells,
-                                 cell_mask=cell_mask)
-    return faces
+    import time as _time
 
-
-def _repair_closures(points, faces, owner, neigh, n_int, n_cells,
-                     max_rounds=8, tol=1e-8, cell_mask=None):
-    """Greedy winding repair: flip individual faces until every cell's signed
-    area-vector sum (closure) is ~ 0.
-
-    The geometric orientation of the new prism faces uses the prism's
-    vertex-average centroid, which is reliable for the near-convex stacks but
-    can mis-orient a face on genuinely twisted cells (concave re-entrant
-    slivers, e.g. the reference valve).  Flipping a face only reverses its
-    winding — the owner/neighbour pair is untouched — so each flip locally
-    reduces the residual of a bad cell.  Converges quickly: the number of
-    mis-wound faces is small relative to the mesh.
-
-    Vectorised per-cell greedy: the (cell, face, sign) pairs are pre-sorted
-    into per-cell segments, so for each bad cell the best face is found with
-    one ``argmin`` over the segment instead of a per-face Python loop with a
-    ``time.sleep(0)`` GIL yield on EVERY face (the single largest cost on the
-    valve: tens of thousands of bad cells x ~15 faces x 8 rounds, each yield
-    being a ~1 ms Windows sleep).  ``cell_mask`` (when given) restricts the
-    search to the cells that can have been disturbed — see
-    ``_fix_pyramid_faces``.  Returns the (possibly re-wound) faces list.
-    """
+    t0 = _time.monotonic()
     n_faces = len(faces)
-    sf, _cf = _face_geometry(points, faces)
-    closure = np.zeros((n_cells, 3))
-    scale_m = np.zeros(n_cells)
-    mag = np.linalg.norm(sf, axis=1)
-    owner_arr = np.asarray(owner, dtype=np.int64)
-    np.add.at(closure, owner_arr, sf)
-    np.add.at(scale_m, owner_arr, mag)
-    neigh_arr = np.zeros(0, dtype=np.int64)
-    if n_int:
-        neigh_arr = np.asarray(neigh[:n_int], dtype=np.int64)
-        np.add.at(closure, neigh_arr, -sf[:n_int])
-        np.add.at(scale_m, neigh_arr, mag[:n_int])
-    scale_m = np.maximum(scale_m, 1e-300)
 
-    # (cell, face, sign) for every face side, stably sorted by cell so each
-    # cell's candidate faces are a contiguous segment.  sign = +1 for the
-    # owner side (flip: closure -= 2*sf), -1 for the neighbour side (+ 2*sf).
-    cells = np.concatenate([owner_arr, neigh_arr])
-    fids = np.concatenate([np.arange(n_faces, dtype=np.int64),
-                           np.arange(n_int, dtype=np.int64)])
-    signs = np.concatenate([np.ones(n_faces, dtype=np.float64),
-                            -np.ones(n_int, dtype=np.float64)])
-    order = np.argsort(cells, kind="stable")
-    cells_s = cells[order]
-    fids_s = fids[order]
-    signs_s = signs[order]
-    starts = np.searchsorted(cells_s, np.arange(n_cells + 1))
+    # (cell, face, direction) for every face side; the direction is the
+    # stored edge traversal for the owner, negated for the neighbour.
+    edge_occ: dict[tuple[int, int], list[tuple[int, int, int]]] = defaultdict(list)
+    for fi, f in enumerate(faces):
+        m = len(f)
+        fav = int(owner[fi])
+        nav = int(neigh[fi]) if fi < n_int else -1
+        for k in range(m):
+            a, b = f[k], f[(k + 1) % m]
+            key = (a, b) if a < b else (b, a)
+            sd = +1 if (a, b) == key else -1
+            edge_occ[key].append((fav, fi, sd))
+            if nav >= 0:
+                edge_occ[key].append((nav, fi, -sd))
 
-    rel = np.linalg.norm(closure, axis=1) / scale_m
-    for _ in range(max_rounds):
-        bad = rel > tol
-        if cell_mask is not None:
-            bad &= cell_mask
-        if not bad.any():
-            break
-        improved = False
-
-        # Per-cell greedy: for each bad cell the best single face (argmin
-        # over the cell's segment), applied SEQUENTIALLY so every flip sees
-        # the updated closure — a batched vectorised flip produced more
-        # irrecoverably-open cells on the valve (843 vs 314) because the
-        # gains were computed on a stale closure.  GIL-yield every 512 cells
-        # (the old per-FACE yield was a ~1 ms Windows sleep per candidate
-        # face: tens of thousands of bad cells x ~15 faces x 8 rounds).
-        for ci, c in enumerate(np.flatnonzero(bad)):
-            _gil_yield(ci, 512)
-            s, e = int(starts[c]), int(starts[c + 1])
-            if e <= s:
+    adj: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    n_incompat = 0
+    for key, occs in edge_occ.items():
+        by_cell: dict[int, list[tuple[int, int]]] = defaultdict(list)
+        for c, fi, d in occs:
+            by_cell[c].append((fi, d))
+        for c, lst in by_cell.items():
+            if len(lst) != 2:
+                n_incompat += 1
                 continue
-            trial = closure[c] - 2.0 * signs_s[s:e, None] * sf[fids_s[s:e]]
-            tr = np.linalg.norm(trial, axis=1) / scale_m[c]
-            k = int(np.argmin(tr))
-            if tr[k] < rel[c] - 1e-12:
-                fi = int(fids_s[s:e][k])
-                closure[owner_arr[fi]] -= 2.0 * sf[fi]
-                if fi < n_int:
-                    closure[neigh_arr[fi]] += 2.0 * sf[fi]
-                sf[fi] = -sf[fi]
-                faces[fi].reverse()
-                improved = True
-        if not improved:
-            break
-        rel = np.linalg.norm(closure, axis=1) / scale_m
+            (f1, d1), (f2, d2) = lst
+            if f1 == f2:
+                continue
+            parity = -d1 * d2
+            adj[f1].append((f2, parity))
+            adj[f2].append((f1, parity))
 
-    # global orientation: all cells must have positive volume (outward
-    # windings); a single global flip fixes the whole mesh
+    x = np.ones(n_faces, dtype=np.int8)
+    comp = -np.ones(n_faces, dtype=np.int64)
+    n_comp = 0
+    n_conflict = 0
+    for f0 in range(n_faces):
+        if comp[f0] >= 0:
+            continue
+        comp[f0] = n_comp
+        q = deque([f0])
+        while q:
+            f = q.popleft()
+            for g, p in adj[f]:
+                want = x[f] * p
+                if comp[g] < 0:
+                    x[g] = want
+                    comp[g] = n_comp
+                    q.append(g)
+                elif x[g] != want:
+                    n_conflict += 1
+        n_comp += 1
+        if n_comp % 64 == 0:
+            _gil_yield(n_comp, 64)
+
+    faces = [list(reversed(f)) if x[fi] < 0 else list(f)
+             for fi, f in enumerate(faces)]
+
+    # per-component sign: every connected component must have positive total
+    # volume (a single global flip cannot fix a mesh with several bodies).
     vols, _, _ = _cell_metrics(points, faces, owner, neigh, n_cells, n_int)
-    if np.any(vols <= 0.0):
-        faces = [list(reversed(f)) for f in faces]
-    return faces
+    owner_arr = np.asarray(owner, dtype=np.int64)
+    cell_comp = np.full(n_cells, -1, dtype=np.int64)
+    cell_comp[owner_arr] = comp
+    valid = cell_comp >= 0
+    comp_vol = np.bincount(cell_comp[valid], weights=vols[valid],
+                           minlength=n_comp)
+    neg_comp = comp_vol < 0.0
+    n_flipped_comp = int(neg_comp.sum())
+    if n_flipped_comp:
+        faces = [list(reversed(f)) if neg_comp[comp[fi]] else f
+                 for fi, f in enumerate(faces)]
+
+    return faces, {
+        "n_components": n_comp,
+        "n_flipped_faces": int((x < 0).sum()),
+        "n_flipped_components": n_flipped_comp,
+        "n_nonmanifold_edges": n_incompat,
+        "n_conflicts": n_conflict,
+        "solve_s": round(_time.monotonic() - t0, 1),
+    }
 
 
 def _cell_metrics(points, faces, owner, neighbour, n_cells, n_int):
@@ -419,6 +424,7 @@ class PolyBoundaryLayerEngine:
         clamp_factor: float = 0.5,
         max_core_volume_ratio: float = 0.0,
         concavity_criterion: str = "angle_fade",
+        local_termination: bool = False,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -448,6 +454,17 @@ class PolyBoundaryLayerEngine:
           detector that fires on the concave-feature dual cells of the
           valve where the normal fade is flat (measured >= 0.8 on all
           valve wall vertices).
+        - `local_termination`: opt-in iterative local termination for
+          geometries with concave defects (the reference valve).  Each
+          attempt uses the binary layer-count mode (a face is either fully
+          layered or not extruded at all) and, when validation fails, the
+          faces whose prisms are geometrically invalid (non-positive
+          volume or failing the face-pyramid criterion) are excluded from
+          the BL and the attempt is repeated.  Exclusions carry across the
+          fallback scales.  Measured on the valve: produced and validated
+          a BL that the standard path cannot build at any scale; the wall
+          shell under the excluded faces is given up (local domain
+          change), the healthy region keeps the full layer count.
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -509,10 +526,17 @@ class PolyBoundaryLayerEngine:
             faces, owner, patches, n_int, patch_names, apply_to_all,
         )
         if not sel:
-            res.errors.append("no boundary faces selected for BL")
+            res.errors.append("no selected faces")
             return res
         res.n_wall_faces = len(sel)
         res.wall_patches = used_patches
+
+        if local_termination:
+            return self._run_local_termination(
+                res, points, faces, owner, neighbour, patches, n_int,
+                sel, drop_bnd, pyr_before, total_vol0,
+                max_core_volume_ratio, concavity_criterion, growth, poly,
+            )
 
         # fallback: progressively thinner layers AND tighter per-vertex
         # clamping (the pyramid criterion fails on thin twisted rim cells
@@ -548,47 +572,20 @@ class PolyBoundaryLayerEngine:
                       f"clamp={clamp} (checkMesh criteria)...")
             ok, msg = self._validate(built, total_vol0, max_core_volume_ratio)
             if ok:
-                fio.write_polymesh(
-                    poly, built["points"], built["faces"],
-                    built["owner"], built["neigh"], built["patches"],
-                )
-                res.success = True
-                res.n_prism_cells = int(built["n_prism_cells"])
-                res.total_thickness = built["heights"][-1]
-                res.stats.update(
-                    scale=scale,
-                    clamp_factor=clamp,
-                    n_cells_after=int(built["owner"].max()) + 1,
-                    n_faces=len(built["faces"]),
-                    n_internal_faces=len(built["neigh"]),
-                    n_terminator_faces=int(built["n_terminator_faces"]),
-                    min_cell_volume=float(built["min_volume"]),
-                    total_volume=float(built["total_volume"]),
-                    layers_per_face_min=int(built.get("layers_per_face_min", res.n_layers)),
-                    layers_per_face_max=int(built.get("layers_per_face_max", res.n_layers)),
-                )
-                self._log(
-                    f"[bl] {built['n_prism_cells']:,} prism cells "
-                    f"({res.n_layers} layers, local "
-                    f"{built.get('layers_per_face_min', res.n_layers)}.."
-                    f"{built.get('layers_per_face_max', res.n_layers)}), "
-                    f"total thickness {res.total_thickness:.6g} m, "
-                    f"min cell volume {built['min_volume']:.3g}"
-                )
-                return res
+                return self._accept_built(res, built, scale, clamp, poly)
             res.warnings.append(
                 f"validation failed at scale={scale} clamp={clamp}: {msg}"
             )
             self._log(f"[bl] validation failed at scale={scale} clamp={clamp}: {msg}")
 
             # Early stop: a fallback attempt only helps if it eventually
-            # reaches ZERO not-closed cells.  The greedy winding repair is at
-            # a local minimum on twisted slivers (measured on the valve: 314
-            # -> 241 -> 162 -> 156 -> 119 across the five scales, never 0),
-            # so once THREE attempts have left a substantial count that is
-            # NOT halving (stagnation, not slow-but-real convergence), the
-            # remaining thinner attempts cannot close it — cut the run short
-            # instead of burning minutes discovering the same failure.
+            # reaches ZERO not-closed cells.  The winding solve is now exact
+            # (no local-minimum behaviour), so a closure failure means a
+            # genuinely broken topology (non-manifold edge, reported in
+            # ``orient_stats``) that thinner layers cannot repair.  Keep the
+            # stagnation guard for that case: once THREE attempts have left a
+            # substantial count that is NOT halving, cut the run short
+            # instead of burning minutes on the remaining scales.
             # A genuinely converging case (count dropping steeply, e.g.
             # 300 -> 150 -> 80 -> 30 -> 0) never trips this: at attempt 3 the
             # count is already below half of the first attempt.
@@ -604,20 +601,206 @@ class PolyBoundaryLayerEngine:
                     res.warnings.append(
                         "early stop: still "
                         f"{n_open} cells not closed after {attempts_done} "
-                        "attempts (winding repair at a local minimum, count "
-                        "not halving); mesh left unchanged"
+                        "attempts (topology defect, count not halving); "
+                        "mesh left unchanged"
                     )
                     self._log(
                         "[bl] early stop: still "
                         f"{n_open} cells not closed after {attempts_done} "
-                        "attempts (winding repair at a local minimum, count "
-                        "not halving); mesh left unchanged"
+                        "attempts (topology defect, count not halving); "
+                        "mesh left unchanged"
                     )
                     break
 
         res.errors.append(
             "could not insert a valid boundary layer (all height scales "
             "failed validation); mesh left unchanged"
+        )
+        return res
+
+    def _accept_built(self, res, built, scale, clamp, poly):
+        """Write the built mesh and fill the result (shared success path)."""
+        fio.write_polymesh(
+            poly, built["points"], built["faces"],
+            built["owner"], built["neigh"], built["patches"],
+        )
+        res.success = True
+        res.n_prism_cells = int(built["n_prism_cells"])
+        res.total_thickness = built["heights"][-1]
+        res.stats.update(
+            scale=scale,
+            clamp_factor=clamp,
+            n_cells_after=int(built["owner"].max()) + 1,
+            n_faces=len(built["faces"]),
+            n_internal_faces=len(built["neigh"]),
+            n_terminator_faces=int(built["n_terminator_faces"]),
+            min_cell_volume=float(built["min_volume"]),
+            total_volume=float(built["total_volume"]),
+            layers_per_face_min=int(built.get("layers_per_face_min", res.n_layers)),
+            layers_per_face_max=int(built.get("layers_per_face_max", res.n_layers)),
+        )
+        self._log(
+            f"[bl] {built['n_prism_cells']:,} prism cells "
+            f"({res.n_layers} layers, local "
+            f"{built.get('layers_per_face_min', res.n_layers)}.."
+            f"{built.get('layers_per_face_max', res.n_layers)}), "
+            f"total thickness {res.total_thickness:.6g} m, "
+            f"min cell volume {built['min_volume']:.3g}"
+        )
+        return res
+
+    def _collect_exclusions(self, built, sel, owner, n_int):
+        """Boundary faces (values in ``sel``) to remove from the BL after a
+        failed attempt: the faces whose prisms have non-positive volume or
+        violate the face-pyramid criterion, plus the wall faces of the
+        original cells whose new geometry violates it."""
+        pts2 = built["points"]
+        faces2 = built["faces"]
+        own2 = np.asarray(built["owner"])
+        nb2 = np.asarray(built["neigh"])
+        n_int2 = int(built["n_int"])
+        n_cells2 = int(max(own2.max(), nb2.max())) + 1
+        vols, _closure, _smag = _cell_metrics(pts2, faces2, own2, nb2,
+                                              n_cells2, n_int2)
+        C, _ = _cell_centroids(pts2, faces2, own2, nb2, n_int2, n_cells2)
+        sf, cf = _face_geometry(pts2, faces2)
+        bad_owner = (sf * (cf - C[own2])).sum(axis=1) <= 0.0
+        bad_neigh = np.zeros(len(faces2), dtype=bool)
+        if n_int2:
+            bad_neigh[:n_int2] = (
+                sf[:n_int2] * (cf[:n_int2] - C[nb2[:n_int2]])
+            ).sum(axis=1) >= 0.0
+        bad = bad_owner | bad_neigh
+
+        prism_start = int(built["prism_start"])
+        off = built["prism_off"]
+        nf = built["prism_nf"]
+        cell_to_bi: dict[int, int] = {}
+        for bi in range(len(sel)):
+            for k in range(nf[bi]):
+                cell_to_bi[prism_start + off[bi] + k] = bi
+
+        owner_shared = {bi: int(owner[n_int + b])
+                        for bi, b in enumerate(sel)}
+        # position in sel -> owner cell of that boundary face
+        excluded_positions: set[int] = set()
+
+        def _exclude(bi):
+            if bi is not None:
+                excluded_positions.add(bi)
+
+        for c in np.flatnonzero(vols <= 0):
+            c = int(c)
+            if c >= prism_start:
+                _exclude(cell_to_bi.get(c))
+            else:
+                for b, oc in owner_shared.items():
+                    if oc == c:
+                        excluded_positions.add(b)
+        for fi in np.flatnonzero(bad):
+            fi = int(fi)
+            o = int(own2[fi])
+            if o >= prism_start:
+                _exclude(cell_to_bi.get(o))
+            if fi < n_int2:
+                nb = int(nb2[fi])
+                if nb >= prism_start:
+                    _exclude(cell_to_bi.get(nb))
+        # original cells whose NEW faces violate the pyramid criterion
+        n_pts_old = int(built.get("n_pts_old", 0))
+        if n_pts_old:
+            face_has_new = np.array([max(f) >= n_pts_old for f in faces2])
+        else:
+            face_has_new = np.ones(len(faces2), dtype=bool)
+        core_bad = np.flatnonzero(bad_owner & (own2 < prism_start)
+                                  & face_has_new)
+        core_cells = {int(c) for c in own2[core_bad]}
+        for b, oc in owner_shared.items():
+            if oc in core_cells:
+                excluded_positions.add(b)
+        return {sel[bi] for bi in excluded_positions}
+
+    def _run_local_termination(self, res, points, faces, owner, neighbour,
+                               patches, n_int, sel, drop_bnd, pyr_before,
+                               total_vol0, max_core_volume_ratio,
+                               concavity_criterion, growth, poly):
+        """Opt-in iterative local termination (see ``run`` docstring).
+
+        Binary layer counts (``zero_concave``): a face keeps the full stack
+        or is not extruded; no intermediate counts, so the consistency
+        fixpoint never floods the healthy region to one layer.  Every failed
+        attempt excludes the faces whose prisms are geometrically invalid and
+        retries; exclusions carry across the fallback scales.  Only a mesh
+        that passes validation is written — on failure the mesh on disk is
+        left byte-identical, same contract as the standard path.
+        """
+        excluded: set[int] = set()
+        max_per_scale = 3
+        for scale, clamp in (
+            (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
+            (0.2, 0.1), (0.1, 0.05),
+        ):
+            for _round in range(max_per_scale):
+                if self._cancel():
+                    res.errors.append("cancelled")
+                    return res
+                sel_cur = [b for b in sel if b not in excluded]
+                if len(sel_cur) < 16:
+                    res.errors.append(
+                        "local termination excluded too many faces "
+                        f"({len(excluded)} of {len(sel)})"
+                    )
+                    return res
+                pre = self._build_precompute(
+                    points, faces, owner, neighbour, patches, n_int,
+                    sel_cur, drop_bnd,
+                    concavity_criterion=concavity_criterion,
+                )
+                for k, v in pre.get("dual_stats", {}).items():
+                    res.stats[k] = v
+                try:
+                    built = self._build(
+                        points, faces, owner, neighbour, patches, n_int,
+                        sel_cur, res.n_layers, res.first_height * scale,
+                        growth, clamp, pyr_before=pyr_before,
+                        drop_bnd=drop_bnd, pre=pre, zero_concave=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep-best fallback
+                    self._log(f"[bl] local attempt scale={scale}: {exc}")
+                    res.warnings.append(
+                        f"local attempt at scale={scale} failed: {exc}"
+                    )
+                    break
+                self._log(
+                    f"[bl] local termination attempt scale={scale} "
+                    f"round={_round} excluded={len(excluded)} "
+                    f"(checkMesh criteria)..."
+                )
+                ok, msg = self._validate(built, total_vol0,
+                                         max_core_volume_ratio)
+                if ok:
+                    res.stats["local_excluded_faces"] = len(excluded)
+                    res.warnings.append(
+                        f"local termination: excluded {len(excluded)} of "
+                        f"{len(sel)} wall faces (concave/invalid prisms)"
+                    )
+                    return self._accept_built(res, built, scale, clamp, poly)
+                res.warnings.append(
+                    f"local validation failed at scale={scale} "
+                    f"round={_round}: {msg}"
+                )
+                self._log(
+                    f"[bl] local validation failed at scale={scale} "
+                    f"round={_round}: {msg}"
+                )
+                added = self._collect_exclusions(built, sel_cur, owner, n_int)
+                if not added:
+                    break
+                excluded |= added
+        res.errors.append(
+            "could not insert a valid boundary layer with local "
+            f"termination ({len(excluded)} faces excluded); mesh left "
+            "unchanged"
         )
         return res
 
@@ -870,12 +1053,19 @@ class PolyBoundaryLayerEngine:
     def _build(self, points, faces, owner, neighbour, patches, n_int,
                sel, n_layers, first_height, growth, clamp_factor,
                pyr_before: int = 0, drop_bnd=None, pre=None,
-               concavity_criterion: str = "angle_fade") -> dict:
+               concavity_criterion: str = "angle_fade",
+               zero_concave: bool = False) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
         (computed once per run and reused by the fallback loop); when None it
         is computed here, so direct callers keep working.
+
+        ``zero_concave`` (opt-in, experiment): faces flagged as concave
+        (input pyramid violations) get ZERO layers instead of being floored
+        at one — the local wall shell is given up there (moved boundary
+        face) so the whole healthy region keeps its full layer count instead
+        of being flooded to one layer by the consistency fixpoint.
         """
         if pre is None:
             pre = self._build_precompute(
@@ -967,39 +1157,71 @@ class PolyBoundaryLayerEngine:
             # covered so the volume is conserved); degenerate vertices with
             # no extrusion budget force 0 (handled as unselected below)
             nf0[bi] = min(1, m) if bi in drop_bnd else m
-        # Consistency fixpoint: every wall vertex's layer count is clamped
-        # to the SHALLOWEST incident selected face's count.  This is what
-        # makes the variable-depth construction conforming: the stack top
-        # faces, the moved internal faces and the terminator strips all use
-        # the same layer points per vertex, so no transition band is left
-        # open at a vertex whose own budget exceeds the faces around it.
-        # The local termination still varies the count along the surface
-        # (healthy regions keep n_layers, concave regions drop layers), at
-        # the price of flattening each connected region to its minimum — a
-        # documented trade-off: the n->n-1 graduation would need per-step
-        # transition faces, which fail cell closure on the real valve.
-        nv = dict(nv0)
-        nf = nf0
-        changed = True
-        while changed:
-            changed = False
-            for bi, fi in enumerate(bnd):
-                nfb = nf[bi]
-                if nfb == 0:
-                    continue
-                for v in faces[fi]:
-                    if nv[v] > nfb:
-                        nv[v] = nfb
-                        changed = True
+        if zero_concave:
+            # BINARY local termination — the building block of the opt-in
+            # ``run(local_termination=True)`` path: a face is either fully
+            # layered (all vertices can take the full stack) or not extruded
+            # at all.  No intermediate counts -> no transition faces needed
+            # (equal counts pair directly, dropped faces use the FASE 1
+            # terminator machinery).  This keeps the healthy region at
+            # n_layers instead of flooding it to 1 via the consistency
+            # fixpoint, at the price of giving up the thin wall shell under
+            # the dropped faces (measured negligible on the valve).
             nf = {}
+            nv = {w: 0 for w in wall_verts}
             for bi, fi in enumerate(bnd):
-                m = min((nv[v] for v in faces[fi]), default=0)
-                nf[bi] = min(1, m) if bi in drop_bnd else m
-        hw = {
-            w: (hw0[w] if nv[w] == nv0[w] else
-                (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0))
-            for w in wall_verts
-        }
+                fdrop = bi in drop_bnd
+                if not fdrop:
+                    for v in faces[fi]:
+                        if angle_fade[v] < 0.5 or max_h[v] <= 0.0:
+                            fdrop = True
+                            break
+                if fdrop:
+                    nf[bi] = 0
+                    continue
+                nf[bi] = n_layers
+                for v in faces[fi]:
+                    nv[v] = n_layers
+            if not any(nf[bi] > 0 for bi in range(n_wf)):
+                raise ValueError("zero_concave dropped every selected face")
+            hw = {
+                w: (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0)
+                for w in wall_verts
+            }
+        else:
+            # Consistency fixpoint: every wall vertex's layer count is clamped
+            # to the SHALLOWEST incident selected face's count.  This is what
+            # makes the variable-depth construction conforming: the stack top
+            # faces, the moved internal faces and the terminator strips all use
+            # the same layer points per vertex, so no transition band is left
+            # open at a vertex whose own budget exceeds the faces around it.
+            # The local termination still varies the count along the surface
+            # (healthy regions keep n_layers, concave regions drop layers), at
+            # the price of flattening each connected region to its minimum — a
+            # documented trade-off: the n->n-1 graduation would need per-step
+            # transition faces, which fail cell closure on the real valve.
+            nv = dict(nv0)
+            nf = nf0
+            changed = True
+            while changed:
+                changed = False
+                for bi, fi in enumerate(bnd):
+                    nfb = nf[bi]
+                    if nfb == 0:
+                        continue
+                    for v in faces[fi]:
+                        if nv[v] > nfb:
+                            nv[v] = nfb
+                            changed = True
+                nf = {}
+                for bi, fi in enumerate(bnd):
+                    m = min((nv[v] for v in faces[fi]), default=0)
+                    nf[bi] = min(1, m) if bi in drop_bnd else m
+            hw = {
+                w: (hw0[w] if nv[w] == nv0[w] else
+                    (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0))
+                for w in wall_verts
+            }
         total = max((hw[w] for w in wall_verts), default=h_total)
         frac = cum / h_total  # 0..1 layer progression (reporting only)
 
@@ -1281,45 +1503,29 @@ class PolyBoundaryLayerEngine:
         out_own_all = out_own + bnd_owner
         out_nb_all = out_nb  # len == n_int_new (boundary has no neighbour)
 
-        # repair pass: for the few cells whose windings the geometric
-        # orientation got wrong (twisted slivers at concave features), flip
-        # individual faces until every cell's signed area-vector sum ~ 0,
-        # then enforce checkMesh's 'face pyramids' criterion (normal must
-        # point out of the owner's centroid)
+        # EXACT winding solve: the construction orients every new face
+        # geometrically, which is reliable on near-convex stacks but can
+        # mis-orient faces on twisted concave slivers.  Instead of the old
+        # per-cell greedy flip (which converged to a LOCAL minimum: measured
+        # on the valve it left 24 cells unclosed at scale 1.0 and cascaded
+        # into a catastrophic global flip at scale 0.6 with 378,605
+        # non-positive volumes), solve the parity constraints over the whole
+        # face graph in one deterministic O(F+E) pass — every cell becomes a
+        # closed oriented surface and each component ends up with positive
+        # total volume.  See _solve_global_windings.
         n_cells_new = int(max(max(out_own_all), max(out_nb_all))) + 1
-        # Only cells that contain at least one EXTRUDED point (id >= len(pts))
-        # can have been disturbed: the untouched core cells keep exactly the
-        # same faces and vertices as the valid input mesh, so their closure
-        # is already ~0 and scanning them is pure waste (tens of thousands of
-        # cells per round on the valve).  Prism cells contain extruded points
-        # by construction, so they are included automatically.
-        face_has_new = np.fromiter(
-            (max(f) >= n_pts for f in out_faces), dtype=bool, count=len(out_faces),
-        )
-        own_all = np.asarray(out_own_all, dtype=np.int64)
-        cell_mask = np.zeros(n_cells_new, dtype=bool)
-        cell_mask[own_all[face_has_new]] = True
-        if new_n_int:
-            nb_all = np.asarray(out_nb_all, dtype=np.int64)
-            cell_mask[nb_all[face_has_new[:new_n_int]]] = True
-            # Expand the mask by ONE ring of neighbour cells: a flip on the
-            # BL frontier can perturb a directly-adjacent core cell whose own
-            # faces carry no extruded point, and that cell must stay in the
-            # repair scope or its residual becomes irrecoverable (the old
-            # code repaired every cell).  Covers the practical disturbance
-            # radius — interior flips are inside the mask by construction.
-            owner_int = own_all[:new_n_int]
-            cell_mask[owner_int[cell_mask[nb_all]]] = True
-            cell_mask[nb_all[cell_mask[owner_int]]] = True
-        self._log("[bl] prism faces assembled — repairing windings "
-                  "(can take a minute on large meshes)...")
-        out_faces = _repair_closures(
+        self._log("[bl] prism faces assembled — solving global winding "
+                  "orientation...")
+        out_faces, orient_stats = _solve_global_windings(
             new_points, out_faces, out_own_all, out_nb_all,
-            new_n_int, n_cells_new, cell_mask=cell_mask,
+            new_n_int, n_cells_new,
         )
-        out_faces = _fix_pyramid_faces(
-            new_points, out_faces, out_own_all, out_nb_all,
-            new_n_int, n_cells_new, cell_mask=cell_mask,
+        self._log(
+            f"[bl] winding solve: {orient_stats['n_components']} components, "
+            f"{orient_stats['n_flipped_faces']} faces flipped, "
+            f"{orient_stats['n_nonmanifold_edges']} non-manifold edges, "
+            f"{orient_stats['n_conflicts']} conflicts "
+            f"({orient_stats['solve_s']}s)"
         )
 
         built_terminators = n_terminators
@@ -1340,7 +1546,17 @@ class PolyBoundaryLayerEngine:
             "n_prism_cells": n_prism_total,
             "layers_per_face_min": min(nf.values()) if nf else 0,
             "layers_per_face_max": max(nf.values()) if nf else 0,
+            "n_faces_dropped": sum(1 for v in nf.values() if v == 0),
             "pyr_before": pyr_before,
+            "orient_stats": orient_stats,
+            # diagnostic / local-termination mapping: for every selected
+            # face bi (position in the caller's ``sel``), its prism cell ids
+            # are prism_start + off[bi] + k, k = 0..nf[bi]-1 (none when
+            # nf[bi] == 0)
+            "prism_start": prism_start,
+            "prism_off": dict(off),
+            "prism_nf": dict(nf),
+            "n_pts_old": n_pts,
         }
 
     # ------------------------------------------------------------------

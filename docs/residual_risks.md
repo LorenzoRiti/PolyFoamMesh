@@ -78,11 +78,14 @@ source of truth.
   BL giacciono nel piano della parete adiacente e diventano **facce di
   boundary della patch senza BL** (possedute dai prismi); le facce di parete
   non selezionate muovono i vertici condivisi all'ultimo layer. Verifica
-  reale (`tools/bench_bl_poly_partial.py`, checkMesh WSL): cilindro con
-  patch nominate inlet/outlet/wall → BL solo su wall, 72 prismi =
-  3 layer × 24 facce, `Mesh OK`; cubo duct idem (81 celle, skew 2.18,
-  NOmax 44.8, `Mesh OK`). `n_prism_cells == n_layers × facce_di_parete`
-  derivato dal mesh di ingresso, mai hardcoded.
+  reale (`tools/bench_bl_poly_partial.py`, checkMesh WSL, ri-misurato
+  2026-09-09): A. cilindro GMSH con patch nominate inlet/outlet/wall → BL
+  solo su wall, 60.354 prismi = 3 layer x 20.118 facce (70.976 celle,
+  skew 2.264, NOmax 81.1, `Mesh OK`); B. cubo duct (in-memory) → 81 celle,
+  72 prismi = 3 x 24, skew 2.175, NOmax 44.8, `Mesh OK`. I vecchi numeri
+  "72 prismi = 3 x 24" erano il cubo, non il cilindro.
+  `n_prism_cells == n_layers × facce_di_parete` derivato dal mesh di
+  ingresso, mai hardcoded.
 - **Solver sulla valvola (FASE 0, 2026-08-10)**: vedi
   `docs/poly_solver_validation.md` — potentialFoam converge sulla poly della
   valvola (residuo finale 4.6e-6, continuity error 1.6% del flusso, volume
@@ -101,7 +104,8 @@ source of truth.
   63.252 nel fixpoint; il drop a 0 layer perde il volume). Causa radice:
   angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
   concavità delle celle duali non è rilevabile dalle normali di parete.
-   Il fallback globale su 5 scale resta il comportamento della valvola.
+   Il fallback globale su 5 scale resta il comportamento della valvola
+   finché `local_termination` resta opt-in (vedi risultato FASE 2 sotto).
 - **Criterio di concavità duale (Lane B, 2026-09-08)**: nuovo parametro
   opt-in `concavity_criterion="dual_convexity"` in `core/bl_poly.py`
   (funzione `_dual_convexity_wall_fade`; default `"angle_fade"` invariato e
@@ -144,7 +148,59 @@ source of truth.
   pinnata resta il comportamento della valvola. Gate salute
   (`tools/bench_bl_poly_partial.py`): PASS invariato (cilindro 72 prismi =
   3 x 24, Mesh OK; cubo duct 81 celle, skew 2.175, NOmax 44.8, Mesh OK);
-  test veloci `tests/test_bl_poly.py`: 6/6 verdi.
+  test veloci `tests/test_bl_poly.py`: 6/6 verdi (9/9 con i nuovi test
+  del solver globale e della terminazione binaria).
+- **Solver di winding GLOBALE (Lane B, 2026-09-08)**: la riparazione
+  greedy per-cella è stata sostituita da una soluzione ESATTA
+  (`_solve_global_windings`): vincoli di parità per ogni lato-faccia
+  (le due facce di una cella su un edge devono percorrerlo in direzioni
+  opposte), risolti con BFS sul grafo delle facce, poi segno globale per
+  componente (volume totale positivo). Deterministico, O(F+E). Misurato
+  sulla valvola a TUTTE e 5 le scale: **0 celle non chiuse** (max_rel
+  ~1e-12, era 24 alla scala 1.0), **volume conservato a 1e-16** (era
+  drift), nessun flip globale catastrofico — la vecchia greedy alla scala
+  0.6 produceva 378.605 celle a volume non positivo, ora nessuna.
+  Il solver riporta anche `n_conflicts` (mesh non orientabile) e
+  `n_nonmanifold_edges`: sulla valvola entrambi 0. Gate sano
+  (`tools/bench_bl_poly_partial.py`) invariato e PASS: cilindro 60.354
+  prismi = 3 x 20.118, `Mesh OK`; cubo duct 81 celle, 72 prismi =
+  3 x 24, skew 2.175, NOmax 44.8, `Mesh OK`. Nuovo test di regressione:
+  `tests/test_bl_poly.py::test_bl_global_winding_solve_is_exact_after_flip`
+  (una faccia ribaltata a mano viene richiusa esattamente).
+- **Chiusura BL su concava (FASE 2 completata, 2026-09-09)**: opt-in
+  `run(local_termination=True)` produce il primo BL VALIDO sulla valvola.
+  Meccanismo in due parti, entrambe opt-in:
+  1. terminazione binaria (`_build(..., zero_concave=True)`): una faccia o
+     riceve l'intero stack di layer o viene esclusa (0 layer) — niente
+     fixpoint di consistenza che appiattisce la regione sana a 1 layer;
+  2. esclusione iterativa (`_collect_exclusions`): le facce i cui prismi
+     risultano invalidi (volume non positivo, piramidi, celle core
+     spostate) vengono rimosse dalla selezione e si riprova; fino a
+     5 scale x 3 round, esclusioni portate tra le scale; la mesh viene
+     scritta SOLO se il gate di validazione passa (altrimenti resta
+     invariata, stesso contratto del percorso standard).
+  Misurato end-to-end sulla valvola (1.051.199 punti, 1.241.048 facce,
+  226.542 facce di parete; n_layers=2, h1=1e-5, `dual_convexity`):
+  successo alla scala 0.1 dopo esclusioni a 1.0/0.6/0.35/0.2 — **19.625
+  facce escluse (8.7%)**, 410.668 celle prisma, spessore 2.2e-06, volume
+  conservato (0.1218350 vs 0.1218351 d'ingresso), min volume cella
+  1.15e-14, 1602 s. checkMesh reale: **891 facce "incorrectly oriented" vs
+  895 dell'input (migliore)**, non-ortho max 123.3, max skewness 46.8 vs
+  45.0, "Failed 4" vs "Failed 3" — l'unico check in più è l'aspect ratio
+  (max 15522, 15.921 celle), intrinseco ai prismi BL sottili (h1 = 1e-6 m
+  alla scala 0.1); nessun altro check peggiora. Default invariato
+  (`local_termination=False`): il percorso standard sulla valvola fallisce
+  ancora pulito come documentato (slow test
+  `test_valve_fixture_bl_invariants`, 1 passed in 473 s). Nuovi test in
+  `tests/test_bl_poly.py` (chiusura esatta, drop binario, successo su cubo
+  sano): 9/9 fast verdi.
+  Il bench FASE 1 ha inoltre esposto un bug del reader:
+  `foam_mesh_io.read_label_list` scambiava per ASCII un payload binario il
+  cui probe da 64 byte conteneva un byte 0x29 (indici cella come 41/296/
+  10537), restituendo una lista VUOTA — e il rename patch riscriveva il
+  polyMesh corrotto (neighbour=0). Risolto con il test "tutti i byte sono
+  testo ASCII" al posto dell'euristica `')' in probe`, più regression test
+  `test_local_refinement_boxes.py::test_read_label_list_binary_payload_with_0x29_byte`.
 
 ## Boundary Layer Patch Selection — single source of truth
 
