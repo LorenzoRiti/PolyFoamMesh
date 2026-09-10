@@ -269,11 +269,14 @@ def test_write_failure_rollback(tmp_path):
 
 @pytest.mark.parametrize(
     # The in-process detector reproduces checkMesh EXACTLY on the pyramid
-    # count (895/895).  Its non-orthogonality / skew counts use a cheaper
-    # approximation of OpenFOAM's own methodology (302 vs 55, 11 vs 111 on
-    # this mesh) — they only freeze the detector's own baseline, so a change
-    # to the detector is caught without pretending it matches checkMesh.
-    "expected", [{"pyramid": 895, "non_ortho_det": 302, "skew_det": 11}]
+    # count (863/863 on the regenerated 2026-09-09 fixture).  Its
+    # non-orthogonality count matches the faces checkMesh writes to the
+    # nonOrthoFaces set (203); checkMesh's own "errors" line counts only the
+    # >70-degree faces (9).  Its skew count (3) uses a cheaper approximation
+    # of OpenFOAM's methodology (checkMesh reports 98 highly-skew faces), so
+    # it only freezes the detector's own baseline: a change to the detector
+    # is caught without pretending it matches checkMesh.
+    "expected", [{"pyramid": 863, "non_ortho_det": 203, "skew_det": 3}]
 )
 def test_detect_defects_matches_recorded_checkmesh(expected):
     npz = FIXDIR / "valve_dual.npz"
@@ -295,7 +298,7 @@ def test_detect_defects_matches_recorded_checkmesh(expected):
     ctr, vol = _cell_centres(sf, cf, owner, neigh, n_int, n_cells)
     bad, counts = _detect_defects(pts, faces, sf, cf, ctr, owner, neigh, n_int, n_cells)
 
-    # the one number that must match checkMesh exactly (docs: 895 / 895)
+    # the one number that must match checkMesh exactly (docs: 863 / 863)
     assert counts["pyramid"] == expected["pyramid"], counts
     assert counts["non_ortho"] == expected["non_ortho_det"]
     assert counts["skew"] == expected["skew_det"]

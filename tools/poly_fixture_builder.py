@@ -56,7 +56,12 @@ def main() -> None:
         encoding="ascii")
     (sysd / "fvSchemes").write_text(
         "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n"
-        "ddtSchemes { default steadyState; }\ngradSchemes { default Gauss linear; }\n",
+        "ddtSchemes { default steadyState; }\n"
+        "gradSchemes { default Gauss linear; }\n"
+        "divSchemes { default none; }\n"
+        "laplacianSchemes { default Gauss linear corrected; }\n"
+        "interpolationSchemes { default linear; }\n"
+        "snGradSchemes { default corrected; }\n",
         encoding="ascii")
     (sysd / "fvSolution").write_text(
         "FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }\n"

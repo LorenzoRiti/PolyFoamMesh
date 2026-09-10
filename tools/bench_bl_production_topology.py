@@ -39,7 +39,9 @@ import numpy as np  # noqa: E402
 
 import polyfoammesh.core.foam_mesh_io as fio  # noqa: E402
 from polyfoammesh.config import OFConfig  # noqa: E402
-from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine  # noqa: E402
+from polyfoammesh.core.bl_poly import (  # noqa: E402
+    PolyBoundaryLayerEngine, _pyramid_violations,
+)
 from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter  # noqa: E402
 
 WORK = Path("C:/polybench2/fase7_production")
@@ -225,7 +227,9 @@ def build_cylinder(case: Path) -> Path:
 
 # ---------------------------------------------------------------------------
 
-def run_bl(case: Path, mode: str, n_layers: int, h1: float) -> dict:
+def run_bl(case: Path, mode: str, n_layers: int, h1: float,
+           max_rounds: int = 3, criterion: str = "dual_convexity",
+           exclude_widen: int = 0) -> dict:
     eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
     early = mode == "early_exit"
     legacy = mode == "legacy"
@@ -234,8 +238,10 @@ def run_bl(case: Path, mode: str, n_layers: int, h1: float) -> dict:
     res = eng.run(
         n_layers=n_layers, first_height=h1, growth_rate=1.2,
         apply_to_all=True, local_termination=lt,
-        concavity_criterion="dual_convexity",
+        concavity_criterion=criterion,
         early_exit_intermediates=early,
+        local_max_rounds=max_rounds,
+        local_exclude_widen=exclude_widen,
     )
     dt = time.monotonic() - t0
     n_builds = sum(1 for w in res.warnings
@@ -255,7 +261,9 @@ def run_bl(case: Path, mode: str, n_layers: int, h1: float) -> dict:
 
 def evaluate(cfg: OFConfig, name: str, tet_case: Path, production: bool,
              modes: list[str], n_layers: int, h1: float,
-             results: dict) -> None:
+             results: dict, max_rounds: int = 3,
+             criterion: str = "dual_convexity",
+             exclude_widen: int = 0) -> None:
     variant = "production_collapsed" if production else "exact"
     print(f"\n===== {name} / {variant} =====", flush=True)
     case = prepare_tet_case(tet_case, WORK / f"{name}_{variant}")
@@ -270,13 +278,30 @@ def evaluate(cfg: OFConfig, name: str, tet_case: Path, production: bool,
     print(f"  polymesh: cells={pstats['n_cells']} "
           f"bnd={pstats['n_boundary']} "
           f"bnd_sizes={pstats['face_sizes_boundary']}", flush=True)
+    # input pyramid-defect split (boundary faces are the only ones the BL
+    # selection can ever exclude; internal ones permanently consume budget)
+    _pts, _faces, _own, _nei, _ = fio.read_polymesh(
+        case / "constant" / "polyMesh")
+    _n_int = len(_nei)
+    _n_cells = int(max(_own.max(), _nei.max())) + 1
+    pyr_t, pyr_idx = _pyramid_violations(_pts, _faces, _own, _nei, _n_int,
+                                         _n_cells, return_idx=True)
+    pyr_b = int(sum(1 for fi in pyr_idx if int(fi) >= _n_int))
+    entry["pyr_input"] = {"total": int(pyr_t), "boundary": pyr_b,
+                          "internal": int(pyr_t) - pyr_b}
+    print(f"  input pyr: {entry['pyr_input']}", flush=True)
     cm_in = checkmesh(cfg, case)
     entry["checkmesh_input"] = cm_in
     print(f"  input checkMesh: {json.dumps(cm_in)}", flush=True)
 
     for mode in modes:
         run_case = copy_case(case, WORK / f"{name}_{variant}_{mode}")
-        r = run_bl(run_case, mode, n_layers, h1)
+        r = run_bl(run_case, mode, n_layers, h1,
+                   max_rounds=max_rounds, criterion=criterion,
+                   exclude_widen=exclude_widen)
+        r["max_rounds"] = max_rounds
+        r["criterion"] = criterion
+        r["exclude_widen"] = exclude_widen
         entry[mode] = r
         print(f"  BL {mode}: success={r['success']} scale={r['scale']} "
               f"excluded={r['excluded_iterative']} prisms={r['n_prism_cells']} "
@@ -298,13 +323,24 @@ def main() -> int:
                     help="early_exit, decoupled, legacy (virgola)")
     ap.add_argument("--variants", default="exact,production",
                     help="exact, production (virgola)")
+    ap.add_argument("--max-rounds", type=int, default=3,
+                    help="local_max_rounds per scala (default 3)")
+    ap.add_argument("--criterion", default="dual_convexity",
+                    help="angle_fade | dual_convexity")
+    ap.add_argument("--exclude-widen", type=int, default=0,
+                    help="local_exclude_widen: 0..3, default 0 (off)")
     ap.add_argument("--skip-wsl", action="store_true")
+    ap.add_argument("--work-dir", type=str, default=None,
+                    help="override WORK (default C:/polybench2/fase7_production)")
     args = ap.parse_args()
 
     cfg = OFConfig()
     if not cfg.validate() and not args.skip_wsl:
         print("WSL/OpenFOAM non disponibile — usa --skip-wsl")
         return 2
+    global WORK
+    if args.work_dir:
+        WORK = Path(args.work_dir)
     WORK.mkdir(parents=True, exist_ok=True)
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     want = {c.strip() for c in args.cases.split(",") if c.strip()}
@@ -319,7 +355,9 @@ def main() -> int:
             if ("production" if prod else "exact") not in want_var:
                 continue
             evaluate(cfg, "cylinder", cyl_case / "constant" / "polyMesh",
-                     prod, modes, 3, 0.005, results)
+                     prod, modes, 3, 0.005, results,
+                     max_rounds=args.max_rounds, criterion=args.criterion,
+                     exclude_widen=args.exclude_widen)
     if "valve" in want:
         if not VALVE_TET.exists():
             print(f"[valve] tet backup mancante: {VALVE_TET}")
@@ -327,9 +365,13 @@ def main() -> int:
             for prod in (False, True):
                 if ("production" if prod else "exact") not in want_var:
                     continue
-                evaluate(cfg, "valve", VALVE_TET, prod, modes, 2, 1e-5, results)
+                evaluate(cfg, "valve", VALVE_TET, prod, modes, 2, 1e-5,
+                         results, max_rounds=args.max_rounds,
+                         criterion=args.criterion,
+                         exclude_widen=args.exclude_widen)
 
-    out = WORK / "fase7_result.json"
+    out = WORK / (
+        f"fase7_result_r{args.max_rounds}_{args.criterion}.json")
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"\nrisultati in {out}")
 

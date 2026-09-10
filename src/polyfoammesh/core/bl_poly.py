@@ -427,6 +427,8 @@ class PolyBoundaryLayerEngine:
         concavity_criterion: str = "angle_fade",
         local_termination: bool | str = False,
         early_exit_intermediates: bool = False,
+        local_max_rounds: int = 3,
+        local_exclude_widen: int = 0,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -488,6 +490,12 @@ class PolyBoundaryLayerEngine:
           scale 1.0 round 0).  Risk: a geometry whose defects heal at an
           intermediate scale but not at 0.1 will fail this shortcut (mesh
           left byte-identical, same as the standard path).
+        - `local_max_rounds`: opt-in (default 3).  Maximum exclusion rounds
+          attempted per height scale in the local-termination loop.  The
+          iterative cascade on coarsely-faceted (collapsed) duals can need
+          more rounds than 3 to converge; raising this trades time for
+          convergence without changing any geometry parameter.  Only
+          meaningful together with `local_termination`; ignored otherwise.
         """
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -496,6 +504,12 @@ class PolyBoundaryLayerEngine:
         )
         if int(n_layers) < 1:
             res.errors.append("n_layers must be >= 1")
+            return res
+        if not 1 <= int(local_max_rounds) <= 10:
+            res.errors.append("local_max_rounds must be between 1 and 10")
+            return res
+        if not 0 <= int(local_exclude_widen) <= 3:
+            res.errors.append("local_exclude_widen must be between 0 and 3")
             return res
         if res.first_height <= 0:
             res.errors.append("first_height must be > 0")
@@ -567,6 +581,7 @@ class PolyBoundaryLayerEngine:
                 max_core_volume_ratio, concavity_criterion, growth, poly,
                 decoupled=(local_termination == "decoupled"),
                 early_exit_intermediates=early_exit_intermediates,
+                max_per_scale=int(local_max_rounds),
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
@@ -751,12 +766,49 @@ class PolyBoundaryLayerEngine:
                 excluded_positions.add(b)
         return {sel[bi] for bi in excluded_positions}
 
+    def _widen_exclusions(self, added: set[int], sel_cur, pre: dict,
+                           rings: int) -> set[int]:
+        """Expand ``added`` by N boundary-edge rings of neighbours.
+
+        Boundary faces share edges (``pre["bnd_edge_faces"]``: edge -> list
+        of boundary face indices); the "neighbour of f" is the other face
+        sharing the same boundary edge.  A face value is also an index
+        into the selected boundary list (the BL selection is auto-closed
+        across shared edges, so all boundary faces of the closed selection
+        appear).  No-op when ``added`` is empty.
+        """
+        if not added or rings <= 0:
+            return set(added)
+        bnd_edge_faces = pre["bnd_edge_faces"]
+        neighbours: dict[int, list[int]] = {}
+        for faces in bnd_edge_faces.values():
+            if len(faces) < 2:
+                continue
+            a, b = faces
+            neighbours.setdefault(a, []).append(b)
+            neighbours.setdefault(b, []).append(a)
+        frontier = set(added)
+        widened = set(added)
+        for _ in range(rings):
+            nxt: set[int] = set()
+            for f in frontier:
+                for nf in neighbours.get(f, ()):
+                    if nf not in widened:
+                        nxt.add(nf)
+            if not nxt:
+                break
+            widened |= nxt
+            frontier = nxt
+        return widened
+
     def _run_local_termination(self, res, points, faces, owner, neighbour,
                                patches, n_int, sel, drop_bnd, pyr_before,
                                total_vol0, max_core_volume_ratio,
                                concavity_criterion, growth, poly,
                                decoupled: bool = False,
-                               early_exit_intermediates: bool = False):
+                                early_exit_intermediates: bool = False,
+                                max_per_scale: int = 3,
+                                local_exclude_widen: int = 0):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
@@ -782,13 +834,29 @@ class PolyBoundaryLayerEngine:
         away a full-thickness success).  Risk: a geometry whose defect
         heals at an intermediate scale but not at 0.1 will fail this
         shortcut; on failure the mesh is left byte-identical.
+
+        ``max_per_scale`` (default 3, opt-in via ``run(local_max_rounds=N)``):
+        maximum exclusion rounds per scale; coarsely-faceted (collapsed)
+        duals can need more rounds for the cascade to converge.
+
+        ``local_exclude_widen`` (default 0, opt-in via
+        ``run(local_exclude_widen=N)``): after the per-round exclusion
+        collection, also exclude the N boundary-edge rings adjacent to
+        each newly-excluded face (1 = the immediate neighbours sharing a
+        boundary edge, 2 = neighbours-of-neighbours, etc.).  The
+        binary per-face granularity on coarsely-faceted (collapsed) duals
+        leaves a "rim" of new boundary-layer defects around each excluded
+        face; widening to the next ring closes the rim at the cost of
+        removing a larger area of wall.  No-op when ``added`` is empty
+        (healthy geometry).  Only meaningful together with
+        ``local_termination``.
         """
         carried: set[int] = set()
-        max_per_scale = 3
         res.stats["local_termination_mode"] = (
             "decoupled" if decoupled else "carry")
         res.stats["local_termination_early_exit_intermediates"] = (
             early_exit_intermediates)
+        res.stats["local_termination_max_rounds"] = int(max_per_scale)
         skip_remaining: bool = False
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
@@ -853,6 +921,9 @@ class PolyBoundaryLayerEngine:
                 added = self._collect_exclusions(built, sel_cur, owner, n_int)
                 if not added:
                     break
+                if local_exclude_widen > 0:
+                    added = self._widen_exclusions(added, sel_cur, pre,
+                                                   local_exclude_widen)
                 excluded |= added
             # early-exit-intermediates: only once the REQUESTED scale has
             # exhausted all its rounds without validating do the intermediate
