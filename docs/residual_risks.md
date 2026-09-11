@@ -624,6 +624,42 @@ source of truth.
       facce del face-mode pur convergendo allo stesso esito
       qualitativo (chiude, nessun difetto aggiunto). Nessun default
       cambiato; `decoupled_vertex` resta opt-in.
+  - **Diagnosi del ~3x su slot1 (2026-09-11,
+    `tools/slot1_exclusion_inspect.py`)**: l'ipotesi iniziale
+    "valenza per-vertice più alta su slot1" (più facce incidenti
+    per vertice → propagazione per-vertice più ampia) è
+    **smentita**. Misura della valenza dei vertici di parete sul
+    dual convertito (numero di facce di parete incidenti per vertice)
+    su ciascuna delle tre mesh:
+
+    | geometry | n wall verts | mean | max | p50 | p90 | p99 |
+    |---|---|---|---|---|---|---|
+    | cube_duct | 38 | 3.79 | 5 | 12.0 | 28.0 | 31.6 |
+    | groove1 | 3374 | 4.00 | 9 | 248.0 | 1854.6 | 2208.7 |
+    | slot1 | 26756 | 4.00 | 9 | 261.0 | 14271.2 | 17483.1 |
+
+    La valenza media (4.0 vs 4.0 vs 3.79) e massima (9 vs 9 vs 5)
+    sono simili tra slot1 e groove1 (la differenza cube-duct è
+    irrilevante per il confronto: è il caso "no-op"). Quindi la
+    causa del ~3x esclusioni su slot1 NON è la valenza locale ma
+    la **scala assoluta**: slot1 ha ~7.9x più vertici di parete
+    di groove1 (26756 vs 3374), e il cascade vertex-mode propaga
+    l'esclusione a tutti i vertici incidenti alle facce difettose
+    (chiusura 1-anello). Più vertici → più superficie nella
+    closure → più facce escluse, anche con valenza simile. Il
+    fattore osservato (~3x) è circa 38% del rapporto di vertici
+    (7.9x) perché il closure cattura solo i vertici incidenti ai
+    difetti (22 input → ~22 × valenza ≈ ~100 vertici catturati),
+    non tutti i 26756. Il rapporto 2.86x tra set esclusi (378 vs
+    132) è la proiezione locale della propagazione per-vertice
+    sulla sottoregione dei difetti, non un effetto del modello
+    vertex-mode sul resto della mesh. Conclusione: il modello vertex
+    fa il suo lavoro (chiude la mesh, Mesh OK), ma su input con
+    geometrie ad alta densità di boundary vertices (canali stretti,
+    fessure), l'amplificazione è proporzionale al numero di
+    vertici incidenti alla closure — non un bug del criterio
+    vertex, una proprietà della topologia locale. Nessun default
+    cambiato.
 
 ## Boundary Layer Patch Selection — single source of truth
 
