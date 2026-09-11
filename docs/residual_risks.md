@@ -51,8 +51,16 @@ source of truth.
   of non-convex boundary cells (a few hundred on the reference valve),
   failing checkMesh; the poly mesh is then kept and shown with a warning
   instead of silently falling back to tet.
-- `split_rounds` remains disabled: measured to add cost without reducing
-  defects on the reference part. Re-measure before enabling.
+- `split_rounds` remains disabled: re-measured on the 2026-09-09
+  regenerated valve fixture (`TetPolyDualConverter(case,
+  split_rounds=0|1)`; `tools/split_rounds_rebench.py`). Both runs
+  produce **identical defect counts** (pyramid 863, non_ortho 203,
+  skew 3, total 1069, volume drift 3.4e-16) — the converter's
+  keep-best in `_run` selects round 0 and discards later rounds.
+  `split_rounds=1` adds ~28 s wall time (138.1 s → 166.4 s, +20%)
+  for zero defect improvement. Default unchanged (`split_rounds=0`
+  off). A second re-measure on the next converter change is enough
+  to update this note.
 - `TerminalFaceWorker` was removed as dead code; `terminal_face.py` remains
   only for the historical benchmark harness (`tests/bench_tet_poly.py`).
 - **BL + poly path (P3a validated)**: `tools/bench_bl_poly.py` runs
