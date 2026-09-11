@@ -745,6 +745,27 @@ source of truth.
   solid volume and the derived cell sizes; when the volume cannot be trusted
   (open/non-watertight tessellation) the estimate is omitted rather than
   invented.
+- **Sizing estimate rebench (2026-09-09)**: measured the predicted
+  vs actual cell count for a cylinder GMSH build at the production
+  pipeline (medium fineness, `tools/sizing_estimate_rebench.py`).
+  Actual = 52,459 cells. Predicted by
+  `estimate_cell_count_geometric(meshes, volume, core_cell,
+  patch_sizes)` across a sweep of `max_cell_size` (the slider):
+  - max_cell = 0.10: predicted 7,251 (ratio 0.14x)
+  - max_cell = 0.05: predicted 58,011 (ratio **1.11x**) ← near budget
+  - max_cell = 0.02: predicted 906,431 (ratio 17.28x)
+  - max_cell = 0.01: predicted 7,251,455 (ratio 138.23x)
+  The "blind" formula (`estimate_cell_count`) gives 58,011 (ratio
+  1.11x). The geometric formula is accurate near the production
+  target (medium, max_cell=0.05) but diverges massively at finer
+  slider values — the slider value is indeed a budget, not a
+  guarantee, and the formula's two-zone model (bulk + near-wall
+  shell) underestimates the inflation of the boundary layer on
+  small core cells. The "omitted on non-watertight" path is enforced
+  upstream of the formula (compute_volume in main_window); the
+  formula's own fallbacks (volume=0 → floor (100,100,100);
+  patch_sizes=None → blind estimate, NOT omitted) are documented.
+  No default changed; this is a measurement-only entry.
 - The GMSH adaptive path sizes from real geometry features; the cfMesh path
   uses the derived Max/Min cell sizes. The two meshers can therefore produce
   different cell counts for the same slider position.
