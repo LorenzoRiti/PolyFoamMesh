@@ -115,6 +115,19 @@ def test_apply_all_checkbox_reaches_poly_bl_params(panel):
     assert panel.get_bl_params()["applyToAll"] is False
 
 
+def test_concave_closure_checkbox_off_by_default_and_reaches_bl_params(panel):
+    """Opt-in H4/decoupled_vertex checkbox: unchecked by default (existing
+    behaviour unchanged for anyone who doesn't touch it), and its state
+    reaches get_bl_params() under the 'concaveClosure' key that
+    openfoam_runner.py reads to set local_termination='decoupled_vertex'."""
+    panel._bl_checkbox.setChecked(True)
+    assert panel.get_bl_concave_closure() is False
+    assert panel.get_bl_params()["concaveClosure"] is False
+    panel._bl_concave_closure.setChecked(True)
+    assert panel.get_bl_concave_closure() is True
+    assert panel.get_bl_params()["concaveClosure"] is True
+
+
 def test_reports_the_reynolds_number_to_the_user(panel):
     panel._on_bl_auto_compute()
     text = panel._bl_info.text()
