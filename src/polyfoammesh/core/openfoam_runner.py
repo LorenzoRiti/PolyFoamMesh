@@ -1695,6 +1695,16 @@ class DualPolyWorker(QObject):
                     first_height=float(bl.get("firstLayerThickness", 0.0)),
                     growth_rate=float(bl.get("thicknessRatio", 1.2)),
                 )
+                if bl.get("concaveClosure"):
+                    # Opt-in (GUI checkbox, default off): per-vertex local
+                    # termination (H4). Measured no-op on simple geometries,
+                    # closes the layer on the production-collapsed valve and
+                    # on tight geometries where the default path leaves gaps
+                    # — see docs/residual_risks.md "FASE 9".
+                    kw["local_termination"] = "decoupled_vertex"
+                    self.log_line.emit(
+                        "[poly] Concave closure (decoupled_vertex) enabled"
+                    )
                 engine = PolyBoundaryLayerEngine(
                     self._case_dir,
                     log=self.log_line.emit,

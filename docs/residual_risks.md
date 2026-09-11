@@ -660,6 +660,31 @@ source of truth.
     vertici incidenti alla closure — non un bug del criterio
     vertex, una proprietà della topologia locale. Nessun default
     cambiato.
+  - **Wiring in GUI come opzione opt-in (2026-09-11)**: `decoupled_vertex`
+    è ora raggiungibile dall'utente — checkbox "Chiusura avanzata per
+    geometrie concave (sperimentale)" nel pannello Boundary Layers
+    (`gui/params_panel.py`, `get_bl_params()["concaveClosure"]`), spenta
+    di default. Quando spuntata, `core/openfoam_runner.py`
+    (`DualPolyWorker`) passa `local_termination="decoupled_vertex"` al
+    motore invece di lasciarlo invariato (`False`). Nessun altro
+    parametro è esposto (il `concavity_criterion` resta al default
+    `"angle_fade"`, non `"dual_convexity"` usato nel benchmark FASE 9).
+    **Validazione end-to-end reale** (non mock — `DualPolyWorker.run()`
+    chiamato direttamente sulla valvola di produzione, stesso percorso
+    di codice della GUI, checkMesh via WSL): 75.200 prismi (2 layer),
+    340 facce mal orientate = **esattamente il baseline pre-BL** (zero
+    aggiunte), 10 errori non-ortho (= baseline), NOmax 95,6 (= baseline),
+    "Failed 4 mesh checks" (= atteso, il difetto concavo è un limite
+    noto della conversione, non introdotto dal BL). Cioè: **anche col
+    criterio di default `angle_fade`** (non quello usato nel benchmark
+    originale) il vertex-cascade chiude comunque la mesh senza
+    aggiungere difetti — il ciclo di validazione per-round è basato su
+    controlli checkMesh diretti (volumi/piramidi), non solo sul fade
+    delle normali, quindi il criterio iniziale conta meno del previsto.
+    Copertura test: `tests/test_bl_gui_wiring.py` (checkbox
+    off-by-default, propagazione a `get_bl_params()`),
+    `tests/test_dual_poly_options.py` (propagazione end-to-end, mockata,
+    fino a `local_termination` nel motore). Nessun default cambiato.
 
 ## Boundary Layer Patch Selection — single source of truth
 
