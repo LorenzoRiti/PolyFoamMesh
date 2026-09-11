@@ -603,6 +603,27 @@ source of truth.
     esclusioni, 74.808 prismi, `Mesh OK`, 13,6 s); cubo sano nel
     unit test. Su mesh senza difetti il vertex-closure non raccoglie
     nulla per costruzione (break al primo round).
+  - **Generalizzazione a cubo/groove1/slot1 (2026-09-11,
+    `tools/h4_generalization_rebench.py`)**: previsione scritta
+    prima in `notes/h4_generalization_reasoning.md`, misura con
+    checkMesh reale via WSL, confronto diretto `decoupled` vs
+    `decoupled_vertex` sullo stesso input:
+    - **cube_duct** (9 celle, 0 difetti in input): identici in
+      tutto — 0 esclusioni, 108 prismi, scala 1.0, `Mesh OK`.
+      Previsione (no-op) **confermata**.
+    - **groove1** (682 celle, 3.372 facce): identici — 0
+      esclusioni, 10.062 prismi, scala 1.0, `Mesh OK`. Previsione
+      (equivalente a `decoupled`) **confermata**.
+    - **slot1** (9.372 celle, 26.754 facce, 22 difetti piramide in
+      input): entrambi chiudono (scala 1.0, `Mesh OK`, 0 difetti
+      aggiunti), ma **non identici**: `decoupled` esclude 132 facce
+      → 79.614 prismi; `decoupled_vertex` esclude **378** facce
+      (~3x) → **78.903** prismi (-711). La previsione (0 esclusioni
+      aggiuntive, risultato numericamente identico a `decoupled`) e'
+      **smentita**: il cascade per-vertice su slot1 propaga a piu'
+      facce del face-mode pur convergendo allo stesso esito
+      qualitativo (chiude, nessun difetto aggiunto). Nessun default
+      cambiato; `decoupled_vertex` resta opt-in.
 
 ## Boundary Layer Patch Selection — single source of truth
 
