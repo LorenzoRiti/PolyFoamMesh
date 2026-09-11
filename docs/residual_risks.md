@@ -855,6 +855,37 @@ source of truth.
 - The API server module (`polyfoammesh.api.server`) imports cleanly with
   the installed FastAPI; it remains a CI/CD surface, not part of the GUI.
 
+## Repository Hygiene (Lane F, 2026-09-11)
+
+- **`tests/fixtures/valve_dual.npz` (27 MB, tracked) stays committed —
+  regeneration measured, not assumed.** `tools/poly_fixture_builder.py`
+  rebuilds it from the real valve tet backup (824,661 tetrahedra,
+  1,687,079 faces): the barycentric dual conversion alone (round 0,
+  before any smoothing or checkMesh) took >120 s in a real run started
+  for this check (dual-cell pass at 9.2 s, quality pass at 3.4 s, then
+  multiple smoothing iterations still running when stopped). Generating
+  this fixture on every test invocation would make the "fast suite"
+  not fast. Keeping the pre-built npz committed is the correct call;
+  no change made.
+- **No other tracked file in the 5-50 MB range**: `find tests/ tools/
+  -size +5M -size -50M -type f` returns only `valve_dual.npz` and
+  `tools/innosetup/innosetup-6.7.3.exe` — the latter is **untracked**
+  (`git ls-files` confirms; removed from tracking and gitignored in
+  commit `2c87293`, "rimossi dal tracking i binari grandi"), so it does
+  not affect clone size. Nothing to change.
+- **No orphaned/broken scripts found in `tools/`** (34 files). A quick
+  `ast.parse` sweep flagged `tools/poly_fixture_builder.py` for a
+  leading UTF-8 BOM (`U+FEFF`) — a false positive of the probe method
+  (`ast.parse` on text decoded as plain `utf-8` doesn't strip the BOM
+  the way Python's own `utf-8-sig`-aware source loader does); running
+  the script directly (`python tools/poly_fixture_builder.py
+  --regression-fixture`) works and was confirmed doing real work in
+  this check. The convention already documented in
+  `.pre-commit-config.yaml` ("tools/ holds tracked scratch") means
+  one-off benchmark scripts from finished investigations are kept
+  intentionally, not deleted once their result lands here. No script
+  was found to be genuinely broken or duplicated; no cleanup performed.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
