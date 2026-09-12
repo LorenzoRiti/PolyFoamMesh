@@ -123,9 +123,23 @@ def _vertex_neighbours(points: np.ndarray, faces: list) -> list[list[int]]:
     return [sorted(s) for s in adj]
 
 
+def _flatten_adjacency(adj: list[list[int]]) -> tuple[np.ndarray, np.ndarray]:
+    """Flatten the ragged adjacency list into one (edge_v, edge_n) edge-list
+    pair, one row per (vertex, neighbour) occurrence — the representation
+    `_laplacian_relax` vectorises over. Topology-only (independent of point
+    positions), so this is computed once per smoothing run, not per step.
+    """
+    degrees = np.fromiter((len(n) for n in adj), dtype=np.int64, count=len(adj))
+    edge_v = np.repeat(np.arange(len(adj), dtype=np.int64), degrees)
+    edge_n = np.fromiter(
+        (n for nbrs in adj for n in nbrs), dtype=np.int64, count=int(degrees.sum()),
+    )
+    return edge_v, edge_n
+
+
 def _laplacian_relax(
     points: np.ndarray,
-    adj: list[list[int]],
+    adj: tuple[np.ndarray, np.ndarray],
     boundary: np.ndarray,
     relax: float,
     weighted: bool = True,
@@ -136,21 +150,30 @@ def _laplacian_relax(
     ``weighted`` uses inverse-distance weights (closer neighbours pull
     harder, preserving the local shape); otherwise it is the plain mean.
     Boundary vertices are copied unchanged.
+
+    ``adj`` is the flattened (edge_v, edge_n) pair from `_flatten_adjacency`
+    — every (vertex, neighbour) occurrence scattered-summed with
+    ``np.add.at`` in one vectorised pass, replacing what used to be an
+    explicit per-vertex Python loop (the dominant cost of poly smoothing:
+    profiled at ~50% of total conversion time on a 152K-point mesh, and the
+    main reason smoothing alone took 27+ minutes on an 11M-point production
+    mesh — see docs/residual_risks.md "Poly conversion / smoothing speed").
     """
+    edge_v, edge_n = adj
+    n = len(points)
+    diff = points[edge_n] - points[edge_v]
+    if weighted:
+        w = 1.0 / np.maximum(np.linalg.norm(diff, axis=1), 1e-300)
+    else:
+        w = np.ones(len(edge_v), dtype=np.float64)
+    wsum = np.zeros(n, dtype=np.float64)
+    np.add.at(wsum, edge_v, w)
+    wnum = np.zeros((n, 3), dtype=np.float64)
+    np.add.at(wnum, edge_v, w[:, None] * diff)
+
     out = points.copy()
-    for v in range(len(points)):
-        if boundary[v]:
-            continue
-        nbrs = adj[v]
-        if not nbrs:
-            continue
-        if weighted:
-            diff = points[nbrs] - points[v]
-            w = 1.0 / np.maximum(np.linalg.norm(diff, axis=1), 1e-300)
-            mean = points[v] + (w[:, None] * diff).sum(axis=0) / w.sum()
-        else:
-            mean = points[nbrs].mean(axis=0)
-        out[v] = points[v] + relax * (mean - points[v])
+    movable = (~boundary) & (wsum > 0.0)
+    out[movable] = points[movable] + relax * (wnum[movable] / wsum[movable, None])
     return out
 
 
@@ -199,7 +222,7 @@ def smooth_dual_mesh(
         return points, {}
 
     boundary = _boundary_vertex_mask(points, faces, n_int)
-    adj = _vertex_neighbours(points, faces)
+    adj = _flatten_adjacency(_vertex_neighbours(points, faces))
 
     best_points = points
     best_total: int | None = None
