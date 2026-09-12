@@ -919,6 +919,55 @@ source of truth.
   meshes since the fixed cost scaled with vertex count, not mesh
   complexity.
 
+### Boundary layer "silent stall" — real bug found and fixed (not just slow)
+
+- **Root cause of a real production incident**: a GUI session on the
+  10.3M-tet CAD part (`Parte4.stp`) produced zero log output for 22+
+  minutes after the poly conversion finished, until the app's own
+  liveness watchdog fired ("Task 'polydual' stalled (no liveness for
+  1362s)") and force-cancelled the task as a zombie — the user then had
+  to force-quit the app. This looked like (and functioned as) a hang,
+  even though it may not have been an infinite loop.
+- **Cause, found by reading (not guessing)**: `PolyBoundaryLayerEngine.
+  _build_precompute` runs several genuinely expensive, pure-Python,
+  per-wall-vertex loops (normals, feature-angle fade, interior-support
+  distance, boundary edge map) before the BL engine's own progress
+  logging ("building prism side faces X%...") ever starts. Its own
+  `_gil_yield` helper — whose docstring already admits *"the minutes the
+  BL step takes"* — only does `time.sleep(0)`, with **no log output at
+  all** during this phase. On a mesh with hundreds of thousands of wall
+  vertices this phase can legitimately run for many minutes with zero
+  visible sign of life, indistinguishable from a genuine deadlock to
+  both the user and the app's own watchdog.
+- **Fix (this pass)**: added periodic (~20 steps) progress logging to
+  all four precompute loops in `_build_precompute` (`bl_poly.py`),
+  matching the existing "[bl] ... X%..." style used elsewhere in this
+  file. Purely additive — no computed value changed; verified via a
+  real end-to-end run on the valve (`DualPolyWorker.run()`, GUI code
+  path, `concaveClosure=True`) producing the byte-identical result
+  measured before (75,200 prism cells, 340 wrong-oriented faces,
+  `Failed 4 mesh checks`) and the fast suite unchanged (1161 passed).
+  This does not make the phase faster — it makes a long-but-alive phase
+  distinguishable from a hang, so the watchdog stops false-firing and
+  the user sees real progress instead of an apparently frozen app.
+- **Bigger finding while profiling this (real cProfile run, valve
+  case, `PolyBoundaryLayerEngine.run()` with
+  `local_termination="decoupled_vertex"`)**: `_build_precompute` itself
+  is *not* the single largest cost — `_solve_global_windings` (the
+  exact BFS-based face-orientation solver, `bl_poly.py`) is, at 153.9s
+  tottime / 195.5s cumtime over 5 build attempts (~31–39s each),
+  slightly ahead of `_build_precompute`'s 35.5s/106.4s. It is
+  pure-Python (`defaultdict(list)` graph construction + BFS), which
+  explains the cost, but it is also the function whose docstring
+  records a documented history of catastrophic correctness bugs in a
+  previous (greedy, non-exact) implementation — see the "previous
+  repair was a per-cell greedy flip" note in its own docstring. **Not
+  touched in this pass**: optimising it safely needs the same
+  discipline as its original validation (checkMesh on multiple real
+  geometries, not just the fast unit suite) and more time than this
+  session had; flagged here as the next, larger, real lever rather than
+  attempted under time pressure.
+
 ## Repository Hygiene (Lane F, 2026-09-11)
 
 - **`tests/fixtures/valve_dual.npz` (27 MB, tracked) stays committed —
