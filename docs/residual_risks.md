@@ -967,6 +967,40 @@ source of truth.
   geometries, not just the fast unit suite) and more time than this
   session had; flagged here as the next, larger, real lever rather than
   attempted under time pressure.
+- **Mesh I/O (`foam_mesh_io.read_faces`/`read_points`) investigated,
+  no worthwhile win found** — an honest negative result, not skipped.
+  Both readers have comments admitting multi-minute cost on 12M-point
+  meshes, and the converter's own output (verified on a real 1M-face
+  `constant/polyMesh/faces` file) is written in the slow ASCII
+  `faceList` path, not the vectorisable binary/compact one (`gmshToFoam`
+  is configured to write binary via `case_setup.py`, but our own
+  `write_faces`/`write_polymesh` always write ASCII, so anything that
+  re-reads our own converter's output — the BL engine, the viewer —
+  hits this path). Tried replacing the per-line Python parse with one
+  bulk regex pass over the whole data block
+  (`re.finditer(r"\(([^()]*)\)", block)`): verified byte-for-byte
+  identical output against the original parser on that same real file,
+  but only **1.782s → 1.657s (-7%)** on 1,056,636 faces — the actual
+  cost is the per-face `int()`/`split()` conversion, which a regex
+  front-end doesn't remove. Reverted rather than keep a small win that
+  also drops the periodic `time.sleep(0)` GIL-yield (the same class of
+  "silent-freeze" risk just fixed in the BL precompute above) for a
+  gain too small to justify the added complexity and re-introduced
+  risk. A real win here would need a fundamentally different
+  representation (e.g. switching the project's own writer to the
+  compact/binary format end-to-end) — a bigger, cross-cutting change
+  than a mesh-I/O micro-optimisation, out of scope for this pass.
+- **Cartesian cfMesh and FEM Tetra (GMSH direct) paths checked for
+  Python-side overhead, none found worth chasing**: both meshers are
+  thin Python orchestration around an external binary
+  (`cartesianMesh`/`gmsh` via WSL2 or subprocess) — the actual meshing
+  time is spent inside that external process, which this codebase does
+  not control. The shared preprocessing step both paths go through
+  first, geometry tessellation (`geometry.py::tessellate_patches`), has
+  no explicit per-vertex Python loop (unlike `bl_poly.py`/
+  `poly_smoother.py` before this pass) — it already delegates to
+  OCC/cadquery's own tessellation. No further mesher-side speedup
+  identified beyond the poly-conversion/BL work above.
 
 ## Repository Hygiene (Lane F, 2026-09-11)
 
