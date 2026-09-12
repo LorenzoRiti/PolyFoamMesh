@@ -1103,9 +1103,18 @@ class PolyBoundaryLayerEngine:
                 wall_face_of.setdefault(v, []).append(fi)
 
         # --- per-vertex normals (area-weighted face normals) ----------------
+        self._log(
+            f"[bl] precompute: {len(wall_verts):,} wall vertices, "
+            f"{len(bnd):,} boundary faces"
+        )
         normals = np.zeros((n_pts, 3))
-        for fi in bnd:
-            _gil_yield(fi, 256)
+        prog_stride = max(1, len(bnd) // 20)
+        for pi, fi in enumerate(bnd):
+            _gil_yield(pi, 256)
+            if pi % prog_stride == 0:
+                self._log(
+                    f"[bl] precompute: normals {int(100 * pi / max(1, len(bnd)))}%..."
+                )
             n = _newell(pts, faces[fi])
             for v in faces[fi]:
                 normals[v] += n
@@ -1143,8 +1152,14 @@ class PolyBoundaryLayerEngine:
                 pts, faces, owner, neighbour, n_int, n_cells,
                 wall_verts, wall_face_of,
             )
+        prog_stride = max(1, len(wall_verts) // 20)
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
+            if wi % prog_stride == 0:
+                self._log(
+                    f"[bl] precompute: fade/min-edge "
+                    f"{int(100 * wi / max(1, len(wall_verts)))}%..."
+                )
             f_edges = []
             for fi in wall_face_of.get(w, ()):
                 f = faces[fi]
@@ -1179,6 +1194,11 @@ class PolyBoundaryLayerEngine:
         support_d: dict[int, float] = {}
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
+            if wi % prog_stride == 0:
+                self._log(
+                    f"[bl] precompute: interior support "
+                    f"{int(100 * wi / max(1, len(wall_verts)))}%..."
+                )
             # interior anchor vertices reachable from w: primal boundary
             # vertices appear ONLY in their wall quads, so probe two hops  - 
             # wall faces of w -> shared wall vertices -> their internal faces
@@ -1218,8 +1238,15 @@ class PolyBoundaryLayerEngine:
         # ALL boundary edges -> incident boundary faces (terminator lookup).
         # Closed 2-manifold boundary: exactly 2 incident faces per edge.
         bnd_edge_faces: dict[tuple[int, int], list[int]] = {}
-        for bi in range(len(faces) - n_int):
+        n_bnd_faces = len(faces) - n_int
+        prog_stride_bf = max(1, n_bnd_faces // 20)
+        for bi in range(n_bnd_faces):
             _gil_yield(bi, 4096)
+            if bi % prog_stride_bf == 0:
+                self._log(
+                    f"[bl] precompute: boundary edge map "
+                    f"{int(100 * bi / max(1, n_bnd_faces))}%..."
+                )
             f = faces[n_int + bi]
             for k in range(len(f)):
                 a, b = f[k], f[(k + 1) % len(f)]
