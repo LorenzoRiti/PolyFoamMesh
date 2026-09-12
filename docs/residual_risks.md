@@ -880,6 +880,45 @@ source of truth.
 - The API server module (`polyfoammesh.api.server`) imports cleanly with
   the installed FastAPI; it remains a CI/CD surface, not part of the GUI.
 
+## Performance — poly conversion / smoothing speed (2026-09-13)
+
+- **Real production run observed the problem before any synthetic
+  benchmark**: a GUI session on a real CAD part (`Parte4.stp`, 10.3M tet
+  cells after GMSH) logged the barycentric-dual conversion + quality
+  smoothing taking **~34 minutes total, of which ~27.5 minutes (80%) was
+  the smoothing pass alone**, for a marginal defect improvement (738 vs
+  750 total, ~1.6%).
+- **Root cause found by profiling (`cProfile`) the real valve case, not
+  guessing**: `poly_smoother._laplacian_relax` (one Laplacian relaxation
+  step, called once per smoothing candidate) had an explicit
+  `for v in range(len(points))` Python loop over every vertex — on the
+  152K-point valve this function alone was **~50% of total conversion
+  time** (81.7s of 165.5s); on the 11M-point production mesh from the
+  real session, the same per-vertex Python loop explains the observed
+  185–206s per smoothing step.
+- **Fix**: rewrote `_laplacian_relax` as one vectorised scatter-add
+  (`np.add.at` over a flattened (vertex, neighbour) edge list built once
+  per smoothing run via the new `_flatten_adjacency`, not per step) —
+  same weighted/unweighted Laplacian formula, verified against an
+  independent reference loop written fresh in
+  `tests/test_laplacian_relax_matches_independent_reference_loop`
+  (`rtol=1e-12`). No behaviour change: the valve conversion still
+  produces the identical 526 residual defects, at less than half the
+  total conversion time.
+- **Measured (valve1, same `cProfile` run before/after, `total` stage
+  time)**: **165.5s → 100.3s (-39%)**. `_laplacian_relax` no longer
+  appears in the top-30 profiled functions at all. The remaining
+  smoothing cost is now dominated by the per-candidate quality
+  re-evaluation (`_face_geometry`/`_detect_defects`/`_face_extent`,
+  called once per accepted/rejected smoothing step over the *whole*
+  mesh) — a legitimate further optimisation (incremental/local
+  re-evaluation instead of whole-mesh), not yet attempted.
+- Not yet re-measured on the original 11M-point production case (too
+  slow to iterate on for every change); the valve number is the honest
+  basis for the -39% claim. Expect a larger relative win on bigger
+  meshes since the fixed cost scaled with vertex count, not mesh
+  complexity.
+
 ## Repository Hygiene (Lane F, 2026-09-11)
 
 - **`tests/fixtures/valve_dual.npz` (27 MB, tracked) stays committed —

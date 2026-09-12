@@ -20,6 +20,9 @@ import pytest
 from polyfoammesh.core import foam_mesh_io as fio
 from polyfoammesh.core.poly_smoother import (
     _boundary_vertex_mask,
+    _flatten_adjacency,
+    _laplacian_relax,
+    _vertex_neighbours,
     smooth_dual_mesh,
 )
 from polyfoammesh.core.tet_poly_dual import (
@@ -82,6 +85,50 @@ def test_boundary_vertices_are_identified():
     faces2 = [[0, 1, 2]]  # internal face only
     mask2 = _boundary_vertex_mask(pts, faces2, n_int=1)
     assert not mask2.any()
+
+
+def test_laplacian_relax_matches_independent_reference_loop():
+    """_laplacian_relax was rewritten from an explicit per-vertex Python loop
+    to a vectorised scatter-add (the dominant cost of poly smoothing — see
+    docs/residual_risks.md). Cross-check the vectorised result against a
+    reference implementation written independently here (a plain Python
+    loop, deliberately not reusing any smoother code), for both the
+    weighted and unweighted modes, and for a boundary vertex that must not
+    move regardless of neighbours."""
+    rng = np.random.default_rng(0)
+    points = rng.uniform(-1.0, 1.0, size=(9, 3))
+    # a small ring 0-1-2-3-0 plus a pendant vertex 4 hanging off 0, an
+    # isolated vertex 5 (no neighbours), and a boundary vertex 6 with
+    # neighbours it must still not move for.
+    faces = [[0, 1, 2, 3], [0, 4, 1], [6, 7, 8]]
+    boundary = np.zeros(len(points), dtype=bool)
+    boundary[6] = True
+    adj_list = _vertex_neighbours(points, faces)
+    adj_flat = _flatten_adjacency(adj_list)
+
+    for weighted in (True, False):
+        for relax in (1.0, 0.4):
+            got = _laplacian_relax(points, adj_flat, boundary, relax, weighted=weighted)
+
+            want = points.copy()
+            for v in range(len(points)):
+                if boundary[v] or not adj_list[v]:
+                    continue
+                nbrs = adj_list[v]
+                if weighted:
+                    diff = points[nbrs] - points[v]
+                    w = 1.0 / np.maximum(np.linalg.norm(diff, axis=1), 1e-300)
+                    mean = points[v] + (w[:, None] * diff).sum(axis=0) / w.sum()
+                else:
+                    mean = points[nbrs].mean(axis=0)
+                want[v] = points[v] + relax * (mean - points[v])
+
+            np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-12)
+
+    # vertex 5 has no neighbours and vertex 6 is boundary: both stay put.
+    got = _laplacian_relax(points, adj_flat, boundary, 1.0, weighted=True)
+    np.testing.assert_array_equal(got[5], points[5])
+    np.testing.assert_array_equal(got[6], points[6])
 
 
 def test_smoothing_keeps_boundary_fixed_and_never_regresses(tmp_path):
