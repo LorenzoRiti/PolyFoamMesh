@@ -141,28 +141,48 @@ def find_merge_candidates(points, faces, owner, neigh, n_int, n_cells):
 def repair_concave_cells_if_safe(points, faces, owner, neigh, n_int, n_cells, patches):
     """Find and apply the merge repair, but ONLY keep it if it does not
     make the mesh worse on the metrics we can check exactly like
-    checkMesh does in-process: face-pyramid violation count and total
-    volume. Otherwise returns the ORIGINAL mesh unchanged.
+    checkMesh does in-process: face-pyramid violation count, skewness
+    violation count, and total volume. Otherwise returns the ORIGINAL
+    mesh unchanged.
 
-    IMPORTANT, measured limitation (see docs/residual_risks.md): this
-    in-process gate does NOT reproduce checkMesh's own skewness metric
-    closely enough to catch every regression - on the slot1 reference
-    geometry, a merge that passed this exact gate (fewer pyramid
-    violations, volume conserved) still introduced 3 new highly-skewed
-    faces that real checkMesh flagged as a failure the un-merged mesh did
-    not have. This function is a real, useful filter (it reliably keeps
-    the merge from ever LOOKING worse by the metrics it checks), not a
-    guarantee against every possible regression - always confirm with a
-    real `checkMesh` run before trusting the result in production.
+    History (see docs/residual_risks.md): this gate originally only
+    checked pyramid violations and volume. On the slot1 reference
+    geometry, a merge that passed that narrower gate still introduced 3
+    new highly-skewed faces real checkMesh flagged as a failure the
+    un-merged mesh did not have — traced to a real bug in the skewness
+    formula itself (`tet_poly_dual._detect_defects` summed two
+    normalisation terms instead of taking OpenFOAM's own max of them,
+    see notes/skewness_formula_fix_reasoning.md), now fixed and verified
+    against real checkMesh (exact match on two independent meshes). The
+    gate now also rejects a merge that increases the skew violation
+    count. This closes the SPECIFIC gap that let the slot1 regression
+    through, but is still not a formal guarantee against every possible
+    quality regression checkMesh could find (e.g. aspect ratio is not
+    checked here at all) — always confirm with a real `checkMesh` run
+    before trusting the result in production.
 
     Returns ``(faces, owner, neigh, n_int, n_cells, patches, report)``
     where ``report`` is a dict with ``applied`` (bool) and the before/after
     counts, for logging.
     """
     from polyfoammesh.core.bl_poly import _cell_metrics, _pyramid_violations
+    from polyfoammesh.core.tet_poly_dual import (
+        _cell_centres, _detect_defects, _face_geometry,
+    )
+
+    def _skew_count(pts, fcs, own, nbr, nint, ncell):
+        sf, cf = _face_geometry(pts, fcs)
+        ctr, _ = _cell_centres(sf, cf, own, nbr, nint, ncell)
+        _, counts = _detect_defects(pts, fcs, sf, cf, ctr, own, nbr, nint, ncell)
+        return counts["skew"]
 
     bad0 = _pyramid_violations(points, faces, owner, neigh, n_int, n_cells)
     vol0 = float(_cell_metrics(points, faces, owner, neigh, n_cells, n_int)[0].sum())
+    # 2026-09-14: now that the skewness formula bug is fixed (see
+    # notes/skewness_formula_fix_reasoning.md), the guardian can finally
+    # check it too - this is the exact metric that let a real regression
+    # through on slot1 before the formula fix.
+    skew0 = _skew_count(points, faces, owner, neigh, n_int, n_cells)
 
     pairs, n_concave, n_unresolved = find_merge_candidates(
         points, faces, owner, neigh, n_int, n_cells,
@@ -185,9 +205,12 @@ def repair_concave_cells_if_safe(points, faces, owner, neigh, n_int, n_cells, pa
     bad1 = _pyramid_violations(points, faces2, owner2, neigh2, n_int2, n_cells2)
     vol1 = float(_cell_metrics(points, faces2, owner2, neigh2, n_cells2, n_int2)[0].sum())
     rel_vol_err = abs(vol1 - vol0) / max(abs(vol0), 1e-30)
+    skew1 = _skew_count(points, faces2, owner2, neigh2, n_int2, n_cells2)
 
     report["pyramid_violations_after"] = bad1
     report["volume_rel_err"] = rel_vol_err
+    report["skew_violations_before"] = skew0
+    report["skew_violations_after"] = skew1
 
     if bad1 > bad0:
         report["reason"] = f"rejected: pyramid violations increased ({bad0} -> {bad1})"
@@ -195,9 +218,14 @@ def repair_concave_cells_if_safe(points, faces, owner, neigh, n_int, n_cells, pa
     if rel_vol_err > 1e-6:
         report["reason"] = f"rejected: volume not conserved (rel err {rel_vol_err:.2e})"
         return faces, owner, neigh, n_int, n_cells, patches, report
+    if skew1 > skew0:
+        report["reason"] = f"rejected: skewness violations increased ({skew0} -> {skew1})"
+        return faces, owner, neigh, n_int, n_cells, patches, report
 
     report["applied"] = True
-    report["reason"] = f"accepted: pyramid violations {bad0} -> {bad1}"
+    report["reason"] = (
+        f"accepted: pyramid violations {bad0} -> {bad1}, skew {skew0} -> {skew1}"
+    )
     return faces2, owner2, neigh2, n_int2, n_cells2, patches2, report
 
 
