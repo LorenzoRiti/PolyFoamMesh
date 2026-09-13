@@ -1104,6 +1104,104 @@ source of truth.
   intentionally, not deleted once their result lands here. No script
   was found to be genuinely broken or duplicated; no cleanup performed.
 
+## Non-star-shaped ("face pyramid") cell repair via merge (2026-09-13)
+
+Separate investigation from the speed work above, triggered by a
+literature check on the H4/decoupled_vertex boundary-layer closure
+(FASE 9): none of the individual techniques used there turned out to be
+novel (barycentric dual-mesh conversion, per-vertex local BL
+termination, and BFS-based consistent face orientation are all
+established techniques — see the literature citations in the session
+transcript), but the specific combination for a no-WSL Python pipeline
+wasn't found published anywhere searched.
+
+**Root cause measured**: on the production-collapsed valve dual
+(152,086 cells, 42,130 wall faces), 348 cells (0.23%) fail checkMesh's
+"face pyramids" test (a cell must be star-shaped w.r.t. the exact
+centroid OpenFOAM's own `primitiveMeshTools::makeCellCentresAndVols`
+computes — not a formula we can change, it IS checkMesh's ground
+truth). These 348 cells are the root cause of the H4 boundary layer's
+own exclusion cascade (the BL validation gate is "don't add MORE
+pyramid violations than the input already had" — `bl_poly.py` line
+~1922 — so fewer input violations tightens that budget, an important
+and initially counter-intuitive mechanism: reducing violations doesn't
+automatically reduce BL exclusions one-for-one).
+
+**Rejected approach**: Lee (2015)'s literature method for concave dual
+cells ("cut-along-concave-edge") assumes the concavity is a dihedral
+fold between TWO faces meeting at a known model edge. Measured: 345 of
+358 concave cells here (96%) fail on exactly ONE face with no natural
+"concave edge" partner — a structurally different defect (a collapsed,
+irregular polygon's plane not containing the cell centroid), not the
+one that method fixes. Splitting the one offending face doesn't help
+either (a planar face split into pieces keeps the same orientation
+problem against the centroid).
+
+**Working approach**: merge the offending cell with an interior
+neighbour (removing the shared face), conceptually the same operation
+as OpenFOAM's own cell agglomeration. Implemented in
+`core/poly_cell_merge.py` (`merge_cell_groups`, `find_merge_candidates`,
+`repair_concave_cells_if_safe`), see
+`notes/poly_cell_merge_reasoning.md`. Measured on the valve: 302/348
+(86.8%) concave cells fixed by merging with the first interior
+neighbour whose virtual merge passes the pyramid test.
+
+**A real bug was found and fixed during this work**: the merge
+renumbers cells, which can silently break OpenFOAM's "upper triangular
+face order" requirement (owner non-decreasing across the whole internal
+face list) even though every individual face still has owner <
+neighbour — checkMesh reported it separately as "Faces not in upper
+triangular order" on a real 227k-cell mesh. Fixed by sorting internal
+faces by `(owner, neighbour)` after renumbering; covered by
+`test_poly_cell_merge.py::_assert_upper_triangular_order`, invoked by
+every mesh-validity test in that file.
+
+**Timing matters, measured**: merging BEFORE building the boundary
+layer works but has a real cost — on the valve, real checkMesh: wrong-
+oriented faces 340 → 61 (-82%), but max cell aspect ratio nearly
+TRIPLED (6,555 → 19,665) and severely non-orthogonal faces rose
+859 → 1,320. Merging AFTER the boundary layer is built (so the merge
+selection sees the actual prism geometry it sits next to) avoids that
+regression entirely on the valve: 340 → 58 wrong-oriented (-83%),
+aspect ratio UNCHANGED (6,555, identical), non-orthogonality slightly
+BETTER (839 severe vs 859, 4 errors vs 10). Two follow-up hypotheses to
+explain/fix the pre-BL regression were tested and both falsified:
+compactness-based neighbour selection (no different result — usually
+only one viable candidate exists per cell, not a real choice) and
+volume-ratio-based selection (merged-pair volume ratio, median 2.3x,
+is not an outlier vs the mesh-wide median of 1.6x). The actual
+mechanism is the interaction between the merged cell and the already-
+built anisotropic BL prisms sitting on it, not the neighbour choice.
+
+**Not a universal win — measured on slot1 too**: the same post-BL
+merge technique, applied to the slot1 reference geometry (already
+`Mesh OK` at baseline), introduced 3 new highly-skewed faces (max
+skewness 2.93 → 4.55) that checkMesh flags as a failure the baseline
+did not have — even though the in-process replica showed a real
+pyramid-violation improvement (15 → 1) and exact volume conservation.
+Attempted fix: re-running this project's own already-validated
+`poly_smoother.smooth_dual_mesh` (keep-best Laplacian relax) as a post-
+merge quality pass — did NOT help, because its in-process skew detector
+reported 0 both before and after while real checkMesh still found 3
+skewed faces: the in-process skew metric does not match checkMesh's own
+skewness formula closely enough to see this specific regression.
+
+**Final design — a guardian, not a blanket fix**:
+`repair_concave_cells_if_safe` applies the merge only if it does not
+increase the in-process pyramid-violation count and conserves volume
+(both metrics ARE exact matches to checkMesh, unlike skew) — otherwise
+it returns the mesh completely unchanged. This makes the repair safe by
+construction for the metrics it can check exactly, but it is explicitly
+NOT a guarantee against every possible regression (the slot1 skewness
+case would still pass this in-process gate, since the gate cannot see
+it) — the module docstring and this section both say so. **Not wired
+into the GUI or any default path.** Any real use of this repair on a
+specific production case should be confirmed with a real `checkMesh`
+run before trusting it, exactly like every other opt-in feature in this
+project. Tests: `tests/test_poly_cell_merge.py` (7 tests, including one
+on the real valve fixture and a healthy-geometry no-op check). Fast
+suite green throughout.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
