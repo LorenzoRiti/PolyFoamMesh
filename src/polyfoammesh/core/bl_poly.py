@@ -267,6 +267,88 @@ def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
     return bad
 
 
+def _build_face_parity_graph(faces, owner, neigh, n_int):
+    """Build the face-adjacency parity graph consumed by the BFS winding
+    solve: for every (edge, cell) with exactly two face-sides, an edge
+    ``adj[f1] += [(f2, parity)]`` (symmetric) where ``parity = -d1*d2``.
+
+    Vectorized (numpy) data restructuring only - no decision-making, just
+    re-arranges the known face/owner/neighbour input into a different
+    lookup shape. This used to be two nested Python loops over ragged face
+    data (one dict-append per face-edge-side); see
+    notes/global_windings_speed_reasoning.md for the equivalence argument
+    and tests/test_bl_poly.py for the byte-for-byte check against an
+    independently-written reference loop.
+
+    Returns ``(adj, n_incompat)`` where ``n_incompat`` counts (edge, cell)
+    groups that did NOT have exactly two occurrences (non-manifold).
+    """
+    n_faces = len(faces)
+    degrees = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n_faces)
+    n_sides = int(degrees.sum())
+    flat_v = np.fromiter(
+        (v for f in faces for v in f), dtype=np.int64, count=n_sides,
+    )
+    face_start = np.concatenate(([0], np.cumsum(degrees)[:-1]))
+    fi_flat = np.repeat(np.arange(n_faces, dtype=np.int64), degrees)
+    pos = np.arange(n_sides, dtype=np.int64) - np.repeat(face_start, degrees)
+    deg_flat = np.repeat(degrees, degrees)
+    next_idx = np.repeat(face_start, degrees) + (pos + 1) % deg_flat
+    a_flat = flat_v
+    b_flat = flat_v[next_idx]
+    key_lo = np.minimum(a_flat, b_flat)
+    key_hi = np.maximum(a_flat, b_flat)
+    sd_flat = np.where(a_flat < b_flat, 1, -1).astype(np.int8)
+
+    owner_arr = np.asarray(owner, dtype=np.int64)
+    neigh_arr = np.asarray(neigh, dtype=np.int64)
+    fav_flat = owner_arr[fi_flat]
+    has_neigh = fi_flat < n_int
+    nav_flat = np.where(has_neigh, neigh_arr[np.clip(fi_flat, 0, len(neigh_arr) - 1)], -1)
+
+    # occurrence rows: (key_lo, key_hi, cell, face, direction), owner side
+    # for every face-edge, plus neighbour side where it exists.
+    okey_lo = np.concatenate([key_lo, key_lo[has_neigh]])
+    okey_hi = np.concatenate([key_hi, key_hi[has_neigh]])
+    ocell = np.concatenate([fav_flat, nav_flat[has_neigh]])
+    oface = np.concatenate([fi_flat, fi_flat[has_neigh]])
+    odir = np.concatenate([sd_flat, -sd_flat[has_neigh]])
+
+    # group by (edge key, cell): exactly 2 occurrences -> a valid pairing.
+    order = np.lexsort((oface, ocell, okey_hi, okey_lo))
+    okey_lo, okey_hi, ocell, oface, odir = (
+        okey_lo[order], okey_hi[order], ocell[order], oface[order], odir[order],
+    )
+    group_key = np.stack([okey_lo, okey_hi, ocell], axis=1)
+    is_new = np.empty(len(okey_lo), dtype=bool)
+    is_new[0] = True
+    is_new[1:] = np.any(group_key[1:] != group_key[:-1], axis=1)
+    group_id = np.cumsum(is_new) - 1
+    n_groups = int(group_id[-1]) + 1 if len(group_id) else 0
+    group_size = np.bincount(group_id, minlength=n_groups)
+    n_incompat = int((group_size != 2).sum())
+
+    pair_mask = group_size[group_id] == 2
+    pf = oface[pair_mask]
+    pd = odir[pair_mask]
+    # within each size-2 group, the two rows are adjacent after the sort
+    # above (stable lexsort keeps ties in original relative order, and each
+    # group's own two rows are contiguous once sorted by group key).
+    f1 = pf[0::2]
+    d1 = pd[0::2]
+    f2 = pf[1::2]
+    d2 = pd[1::2]
+    same_face = f1 == f2
+    f1, d1, f2, d2 = f1[~same_face], d1[~same_face], f2[~same_face], d2[~same_face]
+    parity = (-d1 * d2).astype(np.int8)
+
+    adj: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for a_, b_, p_ in zip(f1.tolist(), f2.tolist(), parity.tolist()):
+        adj[a_].append((b_, p_))
+        adj[b_].append((a_, p_))
+    return adj, n_incompat
+
+
 def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
     """Exact winding solve: make every cell's boundary a closed oriented
     surface, in one deterministic pass.
@@ -295,37 +377,7 @@ def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
     t0 = _time.monotonic()
     n_faces = len(faces)
 
-    # (cell, face, direction) for every face side; the direction is the
-    # stored edge traversal for the owner, negated for the neighbour.
-    edge_occ: dict[tuple[int, int], list[tuple[int, int, int]]] = defaultdict(list)
-    for fi, f in enumerate(faces):
-        m = len(f)
-        fav = int(owner[fi])
-        nav = int(neigh[fi]) if fi < n_int else -1
-        for k in range(m):
-            a, b = f[k], f[(k + 1) % m]
-            key = (a, b) if a < b else (b, a)
-            sd = +1 if (a, b) == key else -1
-            edge_occ[key].append((fav, fi, sd))
-            if nav >= 0:
-                edge_occ[key].append((nav, fi, -sd))
-
-    adj: dict[int, list[tuple[int, int]]] = defaultdict(list)
-    n_incompat = 0
-    for key, occs in edge_occ.items():
-        by_cell: dict[int, list[tuple[int, int]]] = defaultdict(list)
-        for c, fi, d in occs:
-            by_cell[c].append((fi, d))
-        for c, lst in by_cell.items():
-            if len(lst) != 2:
-                n_incompat += 1
-                continue
-            (f1, d1), (f2, d2) = lst
-            if f1 == f2:
-                continue
-            parity = -d1 * d2
-            adj[f1].append((f2, parity))
-            adj[f2].append((f1, parity))
+    adj, n_incompat = _build_face_parity_graph(faces, owner, neigh, n_int)
 
     x = np.ones(n_faces, dtype=np.int8)
     comp = -np.ones(n_faces, dtype=np.int64)

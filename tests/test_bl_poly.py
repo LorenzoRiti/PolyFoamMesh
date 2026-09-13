@@ -376,6 +376,134 @@ def test_bl_global_winding_solve_is_exact_after_flip():
     assert np.all(vols > 0.0), "non-positive cell volume"
 
 
+def _reference_face_parity_graph(faces, owner, neigh, n_int):
+    """Independent, unvectorized re-implementation of the graph construction
+    that `_build_face_parity_graph` replaced — kept ONLY as a ground truth
+    for the equivalence test below, never imported by production code.
+    Deliberately written from the algorithm description, not copy-pasted,
+    so it doesn't just re-check itself. Returns a normalized, sorted
+    edge-list ``{(min(f1,f2), max(f1,f2)): parity}`` for easy comparison
+    (the production function's own `adj` dict form is order-dependent)."""
+    from collections import defaultdict
+
+    edge_occ: dict[tuple[int, int], list[tuple[int, int, int]]] = defaultdict(list)
+    for fi, f in enumerate(faces):
+        m = len(f)
+        fav = int(owner[fi])
+        nav = int(neigh[fi]) if fi < n_int else -1
+        for k in range(m):
+            a, b = f[k], f[(k + 1) % m]
+            key = (a, b) if a < b else (b, a)
+            sd = +1 if (a, b) == key else -1
+            edge_occ[key].append((fav, fi, sd))
+            if nav >= 0:
+                edge_occ[key].append((nav, fi, -sd))
+
+    pairs = {}
+    n_incompat = 0
+    for _key, occs in edge_occ.items():
+        by_cell: dict[int, list[tuple[int, int]]] = defaultdict(list)
+        for c, fi, d in occs:
+            by_cell[c].append((fi, d))
+        for _c, lst in by_cell.items():
+            if len(lst) != 2:
+                n_incompat += 1
+                continue
+            (f1, d1), (f2, d2) = lst
+            if f1 == f2:
+                continue
+            parity = -d1 * d2
+            pairs[(min(f1, f2), max(f1, f2))] = parity
+    return pairs, n_incompat
+
+
+def _adj_to_pairs(adj):
+    """Normalize `_build_face_parity_graph`'s symmetric adjacency dict into
+    the same `{(min,max): parity}` shape the reference function returns."""
+    pairs = {}
+    for f1, nbrs in adj.items():
+        for f2, parity in nbrs:
+            key = (min(f1, f2), max(f1, f2))
+            if key in pairs:
+                assert pairs[key] == parity, f"asymmetric parity for {key}"
+            else:
+                pairs[key] = parity
+    return pairs
+
+
+def _make_ragged_synthetic_mesh():
+    """A tiny hand-built mesh with mixed face degrees (tri + quad + pent),
+    an internal face and a boundary face sharing edges, and a deliberately
+    non-manifold edge (three faces sharing one edge-cell pairing) — exactly
+    the kind of irregular input the real dual mesh produces, but small
+    enough to hand-verify."""
+    owner = np.array([0, 0, 0, 1, 0], dtype=np.int64)
+    neigh = np.array([1], dtype=np.int64)  # face 0 is the only internal face
+    faces = [
+        [0, 1, 2, 3],       # face 0: internal, quad, owner=0 neigh=1
+        [0, 3, 4],          # face 1: boundary tri, owner=0, shares edge (0,3) w/ face 0
+        [4, 3, 2, 5, 6],    # face 2: boundary pentagon, owner=0
+        [1, 0, 5],          # face 3: boundary tri, owner=1
+        [0, 3, 7],          # face 4: boundary tri, owner=0, ALSO shares edge (0,3)
+    ]
+    return faces, owner, neigh
+
+
+def test_face_parity_graph_matches_reference_on_synthetic_ragged_mesh():
+    """The vectorized graph builder must match the independent reference
+    loop exactly (same pairs, same parities, same non-manifold count) on a
+    small hand-built mesh with mixed face degrees and a genuine
+    non-manifold edge — not just on "nice" quad-only input."""
+    from polyfoammesh.core.bl_poly import _build_face_parity_graph
+
+    faces, owner, neigh = _make_ragged_synthetic_mesh()
+    n_int = len(neigh)
+
+    ref_pairs, ref_incompat = _reference_face_parity_graph(faces, owner, neigh, n_int)
+    adj, n_incompat = _build_face_parity_graph(faces, owner, neigh, n_int)
+    got_pairs = _adj_to_pairs(adj)
+
+    assert n_incompat == ref_incompat
+    assert got_pairs == ref_pairs
+
+
+def test_global_windings_vectorized_graph_matches_reference_on_valve_dual():
+    """Same equivalence check as above, on the real recorded valve dual
+    fixture — irregular face degrees at real scale, not just a hand-built
+    toy — plus an end-to-end sanity check that the production solve using
+    this graph still closes every cell with zero conflicts."""
+    from polyfoammesh.core.bl_poly import (
+        _build_face_parity_graph,
+        _solve_global_windings,
+    )
+
+    npz = FIXDIR / "valve_dual.npz"
+    if not npz.exists():
+        pytest.skip("valve_dual.npz fixture not present")
+    data = np.load(npz, allow_pickle=True)
+    points = data["points"]
+    offsets = data["face_offsets"]
+    verts = data["face_verts"]
+    faces = [
+        verts[offsets[i]:offsets[i + 1]].tolist() for i in range(len(offsets) - 1)
+    ]
+    owner = data["owner"]
+    neigh = data["neighbour"]
+    n_int = len(neigh)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+
+    ref_pairs, ref_incompat = _reference_face_parity_graph(faces, owner, neigh, n_int)
+    adj, n_incompat = _build_face_parity_graph(faces, owner, neigh, n_int)
+    got_pairs = _adj_to_pairs(adj)
+
+    assert n_incompat == ref_incompat
+    assert got_pairs == ref_pairs
+
+    _solved, stats = _solve_global_windings(points, faces, owner, neigh,
+                                            n_int, n_cells)
+    assert stats["n_conflicts"] == 0, stats
+
+
 def test_bl_zero_concave_binary_drop_keeps_full_stack_elsewhere():
     """Binary local termination (opt-in): the flagged faces get ZERO layers
     (no shell), every other face keeps the FULL stack — unlike the fixpoint

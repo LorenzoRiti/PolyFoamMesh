@@ -967,6 +967,47 @@ source of truth.
   geometries, not just the fast unit suite) and more time than this
   session had; flagged here as the next, larger, real lever rather than
   attempted under time pressure.
+
+- **`_solve_global_windings` graph construction vectorized (2026-09-13)**,
+  addressing the lever flagged above — but WITHOUT touching the
+  correctness-critical part. The function has two phases: (1) build the
+  face-adjacency parity graph from the ragged face list (pure data
+  restructuring: which two face-sides share which edge, with what
+  parity), and (2) a BFS over that graph to solve for a consistent
+  winding per connected component (the part with the documented history
+  of catastrophic bugs in a prior *different, greedy* algorithm). Only
+  phase 1 was rewritten, as `_build_face_parity_graph` — from two nested
+  Python loops (one dict-append per face-edge-side) to a numpy
+  flatten + lexsort + group-by-run construction. Phase 2 (the BFS,
+  `deque`-based, one component at a time) is byte-for-byte unchanged.
+
+  Correctness: verified the new function produces an **exactly
+  identical** graph (same face pairs, same parities, same non-manifold
+  edge count) to an independently-written reference loop, on (a) a
+  hand-built synthetic mesh with mixed face degrees (tri/quad/pentagon)
+  and a deliberate non-manifold edge, and (b) the real recorded valve
+  dual fixture (1,240,048 faces, 6,193,947 face-vertex entries) — not
+  just spot-checked, the full graph compared key-for-key. See
+  `notes/global_windings_speed_reasoning.md` and the two new tests in
+  `tests/test_bl_poly.py` (`test_face_parity_graph_matches_reference_on_synthetic_ragged_mesh`,
+  `test_global_windings_vectorized_graph_matches_reference_on_valve_dual`).
+
+  Speed: measured on the valve (`local_termination="decoupled_vertex"`,
+  5 build attempts, real cProfile run) — `_solve_global_windings`
+  cumtime **195.5s → 181.3s (-7.3%)**. Honest disclosure: the BEFORE
+  number is from the original profiling session (documented above); an
+  attempt to re-measure BEFORE on the same run in this session was
+  aborted because the host was unusually loaded (a live rerun of the
+  unmodified code made too little CPU progress over 45+ minutes to be
+  practical) — the comparison is same-methodology, same-fixture,
+  cross-session rather than same-session back-to-back. The gain is real
+  but modest: most of the function's cost lives in the BFS itself
+  (untouched, and not vectorizable — it's an inherently sequential
+  graph traversal with early conflict detection) and in downstream
+  per-cell volume/closure checks, not in the graph construction that was
+  rewritten. Fast suite green (1163 passed, 2 skipped, 1 xfailed), ruff
+  clean. Not a big win, but a safe, fully-verified one with zero
+  behavioural change to the correctness-critical solve.
 - **Mesh I/O (`foam_mesh_io.read_faces`/`read_points`) investigated,
   no worthwhile win found** — an honest negative result, not skipped.
   Both readers have comments admitting multi-minute cost on 12M-point
