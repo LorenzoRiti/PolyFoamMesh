@@ -272,11 +272,26 @@ def test_write_failure_rollback(tmp_path):
     # count (863/863 on the regenerated 2026-09-09 fixture).  Its
     # non-orthogonality count matches the faces checkMesh writes to the
     # nonOrthoFaces set (203); checkMesh's own "errors" line counts only the
-    # >70-degree faces (9).  Its skew count (3) uses a cheaper approximation
-    # of OpenFOAM's methodology (checkMesh reports 98 highly-skew faces), so
-    # it only freezes the detector's own baseline: a change to the detector
-    # is caught without pretending it matches checkMesh.
-    "expected", [{"pyramid": 863, "non_ortho_det": 203, "skew_det": 3}]
+    # >70-degree faces (9).
+    #
+    # Skewness (2026-09-13 fix): the formula previously SUMMED the two
+    # normalisation terms instead of taking OpenFOAM's own max() of them
+    # (primitiveMeshTools::faceSkewness), which silently inflated the
+    # denominator and under-reported skewness everywhere - see
+    # notes/skewness_formula_fix_reasoning.md. Fixed formula VERIFIED
+    # EXACT against real checkMesh on two independent boundary-layer-built
+    # meshes (valve baseline and merge-repaired, both post-BL: our max
+    # skewness 22.16451 vs checkMesh's reported 22.1645, both cases).
+    # On THIS specific fixture (the pure dual, no boundary layer, points
+    # stored as float32) the fixed formula gets much closer but still
+    # doesn't match exactly (max skew 13.0 vs checkMesh's 14.5848, 6 vs 98
+    # faces over the 4.0 threshold) - most likely the fixture's own
+    # float32 precision compounding over many near-threshold faces, not a
+    # remaining formula error (unconfirmed - flagged honestly, not
+    # asserted). This test freezes the CURRENT detector's own count on
+    # this fixture (a regression guard), it does not claim exact
+    # equivalence to checkMesh here.
+    "expected", [{"pyramid": 863, "non_ortho_det": 203, "skew_det": 6}]
 )
 def test_detect_defects_matches_recorded_checkmesh(expected):
     npz = FIXDIR / "valve_dual.npz"

@@ -2111,7 +2111,12 @@ def _detect_defects(
     scale = (sf[:n_int] * cpf).sum(axis=1) / np.where(np.abs(denom) > 0, denom, 1e-300)
     sv = cpf - scale[:, None] * d
     svm = np.linalg.norm(sv, axis=1)
-    fd = 0.2 * dn + _face_extent(points, faces, cf, sv, n_int)
+    # OpenFOAM's own formula (primitiveMeshTools::faceSkewness) takes the
+    # MAX of the base extent and the largest vertex projection, not a SUM
+    # - see notes/skewness_formula_fix_reasoning.md. Using + here silently
+    # inflated the denominator and under-reported skewness (measured: our
+    # detector said 0 skewed faces on a mesh where real checkMesh found 3).
+    fd = np.maximum(0.2 * dn, _face_extent(points, faces, cf, sv, n_int))
     m_sk = svm / np.maximum(fd, 1e-300) > skew_limit
     n_sk = int(m_sk.sum())
     bad[owner[:n_int][m_sk]] = True
