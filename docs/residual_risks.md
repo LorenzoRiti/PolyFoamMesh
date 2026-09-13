@@ -1008,6 +1008,36 @@ source of truth.
   rewritten. Fast suite green (1163 passed, 2 skipped, 1 xfailed), ruff
   clean. Not a big win, but a safe, fully-verified one with zero
   behavioural change to the correctness-critical solve.
+
+- **`_build_precompute` normals loop — vectorized, then REVERTED (negative
+  result, 2026-09-13)**. Same session, next candidate lever: the
+  per-vertex-normals loop called `_newell` once per boundary face
+  (~40k calls per build on the valve) in a Python `for` loop. Batched all
+  boundary faces into one vectorized Newell + scatter-add pass
+  (`_batched_wall_normals`), sidestepping `_newell`'s own documented
+  per-call overhead (its docstring already says numpy is slower than pure
+  Python for a single small polygon — this was a different thing, doing
+  all faces in ONE numpy pass rather than optimizing one call). Verified
+  exactly equivalent to an independent per-face reference loop, on a
+  synthetic mixed-degree mesh and the real valve fixture's boundary faces
+  (`rtol=1e-9`). Fast suite green (1165 passed).
+
+  Measured on the valve, same profiling script: total run time **434.6s,
+  UP from 418.5s (+3.9%)**; `_build_precompute` cumtime **116.5s, up from
+  111.5s (+4.5%)**. The eliminated loop was not actually the dominant
+  cost — most `_newell` calls (and cost) come from the SEPARATE
+  angle-fade loop (per wall vertex, over its incident faces), which this
+  change did not touch, so removing ~40k of ~600k `_newell` calls bought
+  little, and the new flatten/lexsort-free bookkeeping (`np.fromiter`,
+  `np.add.at`) added enough overhead to be a net wash or slight
+  regression within measurement noise on this run.  **Reverted** — kept
+  the code at its previous (already-committed) state rather than carry
+  correctness-verified-but-unhelpful complexity. This is exactly the
+  "measure, don't assume" discipline this project runs on: a predicted
+  win that didn't pan out, written down honestly instead of merged
+  anyway. Any future attempt at this function should target the
+  angle-fade loop's `_newell` calls instead, not the boundary-normals
+  loop.
 - **Mesh I/O (`foam_mesh_io.read_faces`/`read_points`) investigated,
   no worthwhile win found** — an honest negative result, not skipped.
   Both readers have comments admitting multi-minute cost on 12M-point
