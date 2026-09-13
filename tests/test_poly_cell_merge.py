@@ -171,12 +171,17 @@ def test_repair_concave_cells_if_safe_is_noop_on_healthy_geometry():
     assert np.array_equal(neigh2, neigh)
 
 
-def test_repair_concave_cells_if_safe_accepts_real_improvement_on_valve():
-    """On the real valve dual fixture (genuine pyramid violations), the
-    guarded repair must ACCEPT the merge (report["applied"] is True),
-    strictly reduce violations, conserve volume, and keep the mesh fully
-    valid - the same real-scale check used throughout this investigation,
-    not just the small synthetic cube."""
+def test_repair_concave_cells_if_safe_rejects_when_skew_would_worsen():
+    """On the real (pure, un-collapsed) valve dual fixture, the merge
+    would cut pyramid violations dramatically (1045 -> 161) but also
+    increases the skew violation count (6 -> 8) - a real, small quality
+    trade-off, not a bug. Since the skew formula fix (2026-09-14, see
+    notes/skewness_formula_fix_reasoning.md) the guardian can finally SEE
+    this trade-off and correctly REJECTS the merge rather than silently
+    accepting a mesh that trades one defect for another. This locks in
+    that the gate is doing its job (this test used to assert acceptance,
+    before the guardian could see skewness at all - see
+    notes/overnight_plan_2026-09-14.md)."""
     npz = FIXDIR / "valve_dual.npz"
     if not npz.exists():
         pytest.skip("valve_dual.npz fixture not present")
@@ -207,9 +212,15 @@ def test_repair_concave_cells_if_safe_accepts_real_improvement_on_valve():
     faces2, owner2, neigh2, n_int2, n_cells2, patches2, report = repair_concave_cells_if_safe(
         points, faces, owner, neigh, n_int, n_cells, patches,
     )
-    assert report["applied"] is True, report
+    assert report["applied"] is False, report
+    assert "skew" in report["reason"], report
+    assert report["skew_violations_after"] > report["skew_violations_before"], report
+    # rejected -> the mesh returned must be BYTE-IDENTICAL to the input
+    assert faces2 == faces
+    assert np.array_equal(owner2, owner)
+    assert np.array_equal(neigh2, neigh)
     bad1 = _pyramid_violations(points, faces2, owner2, neigh2, n_int2, n_cells2)
-    assert bad1 < bad0, report
+    assert bad1 == bad0, "rejected merge must leave pyramid count unchanged too"
     _assert_upper_triangular_order(owner2, n_int2)
 
     vols2, closure2, scale2 = _cell_metrics(points, faces2, owner2, neigh2, n_cells2, n_int2)
