@@ -88,7 +88,9 @@ def _continuous_metrics(sf, cf, ctr, owner, neigh, n_int, points, faces):
     scale = (sf[:n_int] * cpf).sum(axis=1) / np.where(np.abs(denom) > 0, denom, 1e-300)
     sv = cpf - scale[:, None] * d
     svm = np.linalg.norm(sv, axis=1)
-    fd = 0.2 * dn + _face_extent(points, faces, cf, sv, n_int)
+    # see the matching fix/comment in tet_poly_dual._detect_defects: OpenFOAM
+    # takes MAX of the two terms, not their SUM.
+    fd = np.maximum(0.2 * dn, _face_extent(points, faces, cf, sv, n_int))
     skew = svm / np.maximum(fd, 1e-300)
     return non_ortho_deg, skew
 

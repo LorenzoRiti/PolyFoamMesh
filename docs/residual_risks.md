@@ -1202,6 +1202,42 @@ project. Tests: `tests/test_poly_cell_merge.py` (7 tests, including one
 on the real valve fixture and a healthy-geometry no-op check). Fast
 suite green throughout.
 
+## Skewness formula bug found and fixed (2026-09-13)
+
+Follow-up from the cell-merge investigation above, motivated by a
+directed literature/source search after the in-process skew detector
+missed a real regression on slot1. Fetched OpenFOAM's actual
+`primitiveMeshTools::faceSkewness` C++ source
+(cpp.openfoam.org/v11/primitiveMeshTools_8C_source.html): the skewness
+normalisation distance is `max(0.2*|d|, max-per-vertex-projection)`.
+Our `_detect_defects` (tet_poly_dual.py) and `_continuous_metrics`
+(poly_smoother.py) both computed it as a **sum** instead —
+`fd = 0.2*dn + _face_extent(...)` — which silently inflates the
+denominator and under-reports skewness everywhere, the root cause of
+the earlier finding that our detector said "0 skewed faces" on a mesh
+real checkMesh flagged with 3.
+
+Fixed both call sites to use `np.maximum(...)`. Verified against 5 real
+comparisons (see `notes/skewness_formula_fix_reasoning.md`): exact match
+(4-5 decimal places) on two independent post-boundary-layer meshes
+(valve baseline and merge-repaired, both 22.16451 vs checkMesh's
+22.1645); much closer but not exact on two others (slot1 post-BL-repair,
+and the `valve_dual.npz` fixture which stores points as float32 — a
+precision source already documented elsewhere in this file). Honest
+disclosure: the two non-exact cases are NOT fully explained (leading
+hypothesis is float32 precision / a stale regenerated file, not
+reconfirmed) — flagged rather than hand-waved. Updated the pre-existing
+`test_detect_defects_matches_recorded_checkmesh` regression test (which
+had explicitly pinned the OLD wrong count with a comment admitting the
+gap) to the new, closer count. Fast suite green (1170 passed).
+
+Practical consequence: this materially improves confidence in the
+in-process quality gates used elsewhere in this project (including
+`poly_cell_merge.repair_concave_cells_if_safe`), but does not eliminate
+the need to confirm with a real `checkMesh` run before trusting a
+production case — the residual gap on two of five comparisons is proof
+of that on its own.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
