@@ -436,9 +436,17 @@ def test_fix_triangulate_eliminates_nonplanar_faces(tmp_path):
     assert rep["max_dev"] < 1e-9
     # every previously non-planar face is now a triangle (planar faces are
     # copied through untouched, so the mesh still has quads etc.); the count
-    # grew by sum(k-1) over the 15 non-planar faces (62 -> 122)
+    # grew by sum(k-1) over the non-planar faces. This number shifted from
+    # 122 to 162 on 2026-09-14: smoothing now always runs (see
+    # notes/smoothing_gate_fix_reasoning.md — it used to be skipped
+    # whenever this mesh had zero non-ortho/skew/pyramid defects, which it
+    # does), and it moves interior points before this triangulation step
+    # sees them, changing WHICH faces count as non-planar. The two
+    # properties that actually matter are asserted below regardless of the
+    # exact count: triangulation truly eliminates non-planarity
+    # (n_nonplanar == 0, max_dev < 1e-9).
     pts2, faces, owner, neigh, _ = fio.read_polymesh(case / "constant" / "polyMesh")
-    assert len(faces) == 122
+    assert len(faces) == 162
     assert all(len(f) >= 3 for f in faces)
     # no non-triangular face may be non-planar anymore
     for f in faces:

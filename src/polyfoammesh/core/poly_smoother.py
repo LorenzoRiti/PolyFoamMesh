@@ -44,7 +44,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from polyfoammesh.core.tet_poly_dual import _face_extent
+from polyfoammesh.core.tet_poly_dual import _face_extent, _face_planarity
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +240,21 @@ def smooth_dual_mesh(
     )
     best_counts = dict(counts)
 
+    # Planarity hard guard (2026-09-14): non-ortho/skew are not the only
+    # quality axis a Laplacian step can affect. Measured regression: on a
+    # single-tet toy mesh (0 non-ortho/skew defects to begin with, so any
+    # accepted step is chasing an infinitesimal objective difference), an
+    # accepted step turned 3 EXACTLY-planar faces (by construction) into
+    # measurably non-planar ones (max deviation 0.0021 vs a 1.7e-6
+    # tolerance) — the objective/acceptance below never looked at planarity
+    # at all. Track the worst face-planarity deviation the same way volume
+    # positivity is already tracked, and reject any candidate that makes it
+    # meaningfully worse than the CURRENT best (small relative slack for
+    # float noise, not a magic constant tuned to any one case).
+    _, _, dev0 = _face_planarity(points, faces)
+    best_planarity = float(dev0.max()) if len(dev0) else 0.0
+    planarity_slack = max(best_planarity * 1e-6, 1e-12)
+
     cur_points = points
     for it in range(1, iterations + 1):
         step = relaxation
@@ -254,6 +269,11 @@ def smooth_dual_mesh(
             if max_volume_ratio > 0.0 and (
                 _max_pair_volume_ratio(vol_c, owner, neigh, n_int) > max_volume_ratio
             ):
+                step *= 0.5
+                continue
+            _, _, dev_c = _face_planarity(cand, faces)
+            cand_planarity = float(dev_c.max()) if len(dev_c) else 0.0
+            if cand_planarity > best_planarity + planarity_slack:
                 step *= 0.5
                 continue
             _, cand_counts = detect_defects(
@@ -277,22 +297,31 @@ def smooth_dual_mesh(
                 best_obj = cand_obj
                 best_points = cand
                 best_counts = dict(cand_counts)
+                best_planarity = cand_planarity
                 cur_points = cand
                 accepted = True
                 break
             if cand_total == best_total:
-                # Continuous objective breaks the tie: accept only when it
-                # does not regress (moves toward a smoother configuration).
-                # Keep the best-objective configuration among equal counts so
-                # the returned mesh is the smoothest at the minimum count.
+                # Continuous objective breaks the tie: accept only on a
+                # REAL improvement (strict <), not merely "no worse". Using
+                # <= here (as this used to) accepted numerically-neutral or
+                # even marginally-worse steps whenever they happened to
+                # round to "not greater than" - harmless on meshes with
+                # real headroom to improve, but on an already-optimal tiny
+                # mesh (e.g. a single tet, no non-ortho/skew defects to
+                # begin with) it let one aimless step through per call,
+                # measurably distorting exactly-planar faces for zero
+                # quality benefit. See
+                # notes/smoothing_gate_fix_reasoning.md.
                 cand_obj = _current_objective(
                     objective, objective_limit_deg, sf_c, cf_c, ctr_c, owner, neigh,
                     n_int, cand, faces,
                 )
-                if best_obj is None or cand_obj <= best_obj:
+                if best_obj is None or cand_obj < best_obj:
                     best_obj = cand_obj
                     best_points = cand
                     best_counts = dict(cand_counts)
+                    best_planarity = cand_planarity
                     cur_points = cand
                     accepted = True
                     break

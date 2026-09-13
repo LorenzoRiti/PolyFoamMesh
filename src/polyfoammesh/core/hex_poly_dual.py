@@ -811,8 +811,17 @@ class HexPolyDualConverter:
 
         # Fase 4a: quality-driven smoothing of interior vertices, guided by
         # the same in-process defect detector (keep-best — never regresses).
-        total_defects = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
-        if self._smooth and total_defects > 0:
+        #
+        # Runs regardless of total_defects (2026-09-14 fix, same as the
+        # matching change in tet_poly_dual.py — see
+        # notes/smoothing_gate_fix_reasoning.md): total_defects only counts
+        # THRESHOLD-crossing cells, so this used to skip smoothing on any
+        # mesh with zero threshold violations - most healthy geometries,
+        # not just perfect ones. Measured real headroom left on the table
+        # in that case (non-orthogonality -19%, skewness -16% on a plain
+        # cylinder with 0/0/0 defects). Safe unconditionally: smooth_dual_mesh
+        # is keep-best by construction.
+        if self._smooth:
             self._check_cancel()
             t = time.monotonic()
             from polyfoammesh.core.poly_smoother import smooth_dual_mesh

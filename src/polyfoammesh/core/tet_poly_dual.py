@@ -508,7 +508,22 @@ class TetPolyDualConverter:
 
         # Quality-driven smoothing of interior vertices (keep-best against
         # the in-process checkMesh replica; boundary pinned, topology fixed).
-        if self._smooth and best_defects is not None and best_defects > 0:
+        #
+        # Runs regardless of whether best_defects > 0 (2026-09-14 fix): the
+        # old `best_defects > 0` guard only checks THRESHOLD-crossing counts
+        # (pyramid<=0, non_ortho>70deg, skew>4), so it silently skipped
+        # smoothing on any mesh with zero threshold violations - which is
+        # most healthy geometries, not just already-perfect ones. Measured
+        # on a plain cylinder (0/0/0 defects, so the guard used to skip it
+        # entirely): forcing this pass anyway reduced max non-orthogonality
+        # 51.3 -> 41.7 degrees and max skewness 1.53 -> 1.28 (real checkMesh,
+        # not just the in-process replica) - both were well below their
+        # failure thresholds already, so there was real headroom the old
+        # gate left untouched. Safe to always run: smooth_dual_mesh is
+        # keep-best by construction (never accepts a worse defect count),
+        # so removing the gate can only find improvement or leave the mesh
+        # unchanged, never regress it - see notes/smoothing_gate_fix_reasoning.md.
+        if self._smooth:
             self._check_cancel()
             t = time.monotonic()
             from polyfoammesh.core.poly_smoother import smooth_dual_mesh

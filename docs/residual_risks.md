@@ -1238,6 +1238,48 @@ the need to confirm with a real `checkMesh` run before trusting a
 production case — the residual gap on two of five comparisons is proof
 of that on its own.
 
+## Smoothing silently skipped on healthy meshes — found via a snappyHexMesh comparison (2026-09-14)
+
+Triggered by a direct, measured comparison against `snappyHexMesh` on a
+plain cylinder at a comparable cell count (10,649 our poly cells vs
+11,880 snappy cells): real checkMesh showed snappy winning on every
+quality metric (aspect ratio 3.02 vs 4.43, max non-orthogonality 29.1°
+vs 51.3°, max skewness 0.86 vs 1.53).
+
+**Root cause**: `TetPolyDualConverter`/`hex_poly_dual.py` default
+`smooth=True` (the quality-driven Laplacian smoothing pass is meant to
+always run), but the call site gated it behind `best_defects > 0` —
+which only counts THRESHOLD-crossing cells (pyramid <= 0, non-ortho
+> 70°, skew > 4). Our cylinder had 0/0/0 by that count, so smoothing
+was silently skipped despite real headroom below those thresholds.
+
+**Fix**: removed the `best_defects > 0` gate in both files — the
+smoother is keep-best by construction, so this can only help or leave
+the mesh unchanged. Measured on the cylinder (real checkMesh): max
+non-orthogonality 51.3° → 41.7° (-19%), max skewness 1.53 → 1.28 (-16%).
+Aspect ratio essentially unchanged (4.43 → 4.46) — snappyHexMesh still
+wins on all three metrics, this closes PART of the gap, not all of it.
+
+**A second, real bug found while fixing the first**: removing the gate
+exposed that the tie-breaking acceptance never tracked face planarity
+as a quality axis — on tiny/degenerate synthetic test meshes (a single
+tet, a 12-tet perturbed cube) with zero real non-ortho/skew defects to
+improve, an accepted "tied" step (using `<=`, "not worse") measurably
+distorted exactly-planar faces (deviation 0.0021 vs a 1.7e-6 tolerance)
+chasing a microscopic, meaningless objective difference. Fixed with two
+changes: (1) strict `<` instead of `<=` for tie-breaking (a real
+improvement required, not merely "not worse" — alone insufficient,
+since the accepted step really was marginally "better" by an objective
+blind to planarity), and (2) a hard planarity guard in
+`poly_smoother.smooth_dual_mesh`, same pattern as the existing
+volume-positivity/volume-ratio guards: track the worst per-face
+planarity deviation and reject any candidate that makes it meaningfully
+worse than the current best. One pre-existing test's pinned exact face
+count (122 → 162) needed updating as a consequence — not a regression,
+the properties that matter (triangulation truly eliminates non-planarity)
+still hold exactly; see `notes/smoothing_gate_fix_reasoning.md` for the
+full account. Fast suite green (1170 passed).
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
