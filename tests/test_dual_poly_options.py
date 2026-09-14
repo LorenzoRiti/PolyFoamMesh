@@ -139,6 +139,63 @@ def test_concave_closure_flag_sets_decoupled_vertex_local_termination(tmp_path):
     assert captured.get("local_termination") == "decoupled_vertex"
 
 
+def test_concave_closure_triggers_post_bl_merge_repair(tmp_path):
+    """2026-09-14: concaveClosure=True must also run the post-BL cell-merge
+    repair (measured best topology - merging AFTER the BL is built avoids
+    the aspect-ratio regression merging BEFORE it causes, see
+    notes/getme_compactness_reasoning.md). Verifies the wiring calls
+    repair_concave_cells_if_safe with the mesh read from the case's
+    polyMesh, and writes the result back only when the guard applies it."""
+    import numpy as np
+
+    import polyfoammesh.core.foam_mesh_io as fio
+
+    fake_mesh = (
+        "points", ["face0", "face1"], np.array([0, 0]), np.array([0]), "patches",
+    )
+    captured_bl: dict = {}
+    calls: dict = {}
+
+    def fake_repair(points, faces, owner, neigh, n_int, n_cells, patches):
+        calls["called_with"] = (points, faces, owner, neigh, n_int, n_cells, patches)
+        return (faces, owner, neigh, n_int, n_cells, patches,
+                {"applied": True, "reason": "accepted: test"})
+
+    with mock.patch(
+        "polyfoammesh.core.foam_mesh_io.read_polymesh", return_value=fake_mesh,
+    ), mock.patch(
+        "polyfoammesh.core.foam_mesh_io.write_polymesh",
+    ) as mock_write, mock.patch(
+        "polyfoammesh.core.poly_cell_merge.repair_concave_cells_if_safe",
+        side_effect=fake_repair,
+    ):
+        _run_dual_poly_worker_with_bl(
+            tmp_path,
+            {"nLayers": 3, "firstLayerThickness": 0.001, "thicknessRatio": 1.2,
+             "applyToAll": True, "concaveClosure": True},
+            captured_bl,
+        )
+
+    assert "called_with" in calls, "repair_concave_cells_if_safe was not invoked"
+    assert mock_write.called, "applied repair must be written back to the polyMesh"
+
+
+def test_concave_closure_off_skips_post_bl_merge_repair(tmp_path):
+    """Default (unchecked) behaviour: no read/write/repair of the polyMesh
+    beyond what the BL engine itself already did."""
+    captured_bl: dict = {}
+    with mock.patch(
+        "polyfoammesh.core.poly_cell_merge.repair_concave_cells_if_safe",
+    ) as mock_repair:
+        _run_dual_poly_worker_with_bl(
+            tmp_path,
+            {"nLayers": 3, "firstLayerThickness": 0.001, "thicknessRatio": 1.2,
+             "applyToAll": True, "concaveClosure": False},
+            captured_bl,
+        )
+    mock_repair.assert_not_called()
+
+
 def test_concave_closure_off_by_default_leaves_local_termination_unset(tmp_path):
     """Default (unchecked) behaviour must be byte-identical to before this
     option existed: local_termination is never passed."""

@@ -1743,6 +1743,54 @@ class DualPolyWorker(QObject):
                 )
                 result.bl_prism_cells = bres.n_prism_cells
                 result.bl_thickness = bres.total_thickness
+                if bl.get("concaveClosure"):
+                    # Merge repair AFTER the boundary layer (not before -
+                    # measured 2026-09-14: merging concave cells BEFORE
+                    # building the BL regresses aspect ratio 3x on the
+                    # valve; merging the SAME cells AFTER the BL is built
+                    # (so the merge selection sees the real prism geometry
+                    # it sits next to) avoids that regression entirely -
+                    # 340 -> 58 wrong-oriented faces, aspect ratio and
+                    # non-orthogonality unchanged or slightly BETTER, real
+                    # checkMesh. See notes/getme_compactness_reasoning.md
+                    # and docs/residual_risks.md. Reuses the same
+                    # concaveClosure opt-in flag (off by default) rather
+                    # than adding a second checkbox for the same theme.
+                    try:
+                        import polyfoammesh.core.foam_mesh_io as fio
+                        from polyfoammesh.core.poly_cell_merge import (
+                            repair_concave_cells_if_safe,
+                        )
+
+                        poly_dir = self._case_dir / "constant" / "polyMesh"
+                        pts, fcs, own, nbr, patches = fio.read_polymesh(poly_dir)
+                        fcs = [list(f) for f in fcs]
+                        n_int_m = len(nbr)
+                        n_cells_m = int(max(own.max(), nbr.max())) + 1
+                        fcs2, own2, nbr2, n_int2, n_cells2, patches2, rep = (
+                            repair_concave_cells_if_safe(
+                                pts, fcs, own, nbr, n_int_m, n_cells_m, patches,
+                            )
+                        )
+                        if rep["applied"]:
+                            fio.write_polymesh(
+                                poly_dir, pts, fcs2, own2, nbr2, patches2,
+                            )
+                            self.log_line.emit(
+                                "[poly] Post-BL cell-merge repair applied: "
+                                f"{rep['reason']}"
+                            )
+                        else:
+                            self.log_line.emit(
+                                "[poly] Post-BL cell-merge repair skipped: "
+                                f"{rep['reason']}"
+                            )
+                    except Exception as exc:  # noqa: BLE001 - never fail the
+                        # whole mesh over this opt-in extra repair pass
+                        self.log_line.emit(
+                            f"[poly] WARN: post-BL cell-merge repair failed, "
+                            f"mesh kept as built by BL: {exc}"
+                        )
             else:
                 msg = (
                     "; ".join(bres.errors) if bres is not None

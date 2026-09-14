@@ -356,12 +356,16 @@ class ParamsPanel(QWidget):
         )
         self._bl_concave_closure.setToolTip(
             "Attiva la modalità di chiusura del boundary layer per-vertice "
-            "invece che per-faccia. Utile su geometrie con giunzioni "
-            "concave dove il layer normalmente non si chiude o lascia "
-            "buchi. Non peggiora mai le geometrie semplici (misurato: "
-            "cilindro, cubo, groove — nessuna differenza), ma è ancora "
-            "sperimentale: su alcune geometrie strette esclude più facce "
-            "del normale prima di chiudere."
+            "invece che per-faccia, e (2026-09-14) una riparazione delle "
+            "celle concave dopo la costruzione del layer (fusione con la "
+            "cella vicina, applicata solo se non peggiora orientamento o "
+            "skewness — verificato con checkMesh reale: -83% facce mal "
+            "orientate sulla valvola, aspect ratio invariato). Utile su "
+            "geometrie con giunzioni concave dove il layer normalmente "
+            "non si chiude o lascia buchi. Non peggiora mai le geometrie "
+            "semplici (misurato: cilindro, cubo, groove — nessuna "
+            "differenza), ma è ancora sperimentale: su alcune geometrie "
+            "strette esclude più facce del normale prima di chiudere."
         )
         bl_form.addRow(self._bl_concave_closure)
 
