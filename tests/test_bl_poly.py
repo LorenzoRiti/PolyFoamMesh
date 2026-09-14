@@ -841,3 +841,108 @@ def test_face_geometry_chunked_matches_unchunked():
         sf, cf = _face_geometry(pts, faces, _chunk=chunk)
         np.testing.assert_array_equal(sf, sf_ref)
         np.testing.assert_array_equal(cf, cf_ref)
+
+
+def _reference_guided_filter(fn, fc, fa, fe, neighbours,
+                             sigma_r=0.35, sigma_s_scale=1.5):
+    """Deliberately naive, independently-written joint-bilateral reference
+    for `_guided_filter_wall_normals` (direct double loop from the docstring
+    formula, no shared code path)."""
+    n = len(fn)
+    out = np.zeros_like(fn)
+    for bi in range(n):
+        ring = [bi] + [j for j in neighbours[bi] if j != bi]
+        if len(ring) == 1:
+            out[bi] = fn[bi]
+            continue
+        dots = [float(fn[bi] @ fn[j]) for j in ring]
+        order = sorted(range(len(ring)), key=lambda k: -dots[k])
+        best = (fn[bi], 3.0)
+        cands = [[bi, ring[order[1]]], ring]
+        for cand in cands:
+            m = np.mean([fn[j] for j in cand], axis=0)
+            nm = float(np.linalg.norm(m))
+            if nm <= 1e-300:
+                continue
+            m = m / nm
+            spread = 1.0 - min(float(fn[j] @ m) for j in cand)
+            if spread < best[1]:
+                best = (m, spread)
+        g_self = best[0]
+        acc = np.zeros(3)
+        for j in ring:
+            gj = g_self if j == bi else fn[j]
+            d2 = float(np.sum((fc[j] - fc[bi]) ** 2))
+            sig_s = max(sigma_s_scale * fe[bi], 1e-300)
+            gd = float(np.sum((gj - g_self) ** 2))
+            w = (fa[j] * np.exp(-d2 / (2.0 * sig_s * sig_s))
+                 * np.exp(-gd / (2.0 * sigma_r * sigma_r)))
+            acc = acc + w * fn[j]
+        nrm = float(np.linalg.norm(acc))
+        out[bi] = acc / nrm if nrm > 1e-300 else fn[bi]
+    return out
+
+
+def test_guided_filter_matches_reference_and_preserves_ridge():
+    """Lane C2: the guided filter matches an independent brute-force
+    implementation, preserves a 90-degree ridge (faces on opposite sides
+    keep ~90°-apart normals — the property Laplacian smoothing destroys)
+    and leaves flat regions near-untouched."""
+    from polyfoammesh.core.bl_poly import _guided_filter_wall_normals
+
+    # two flat quads (z=0 plane) + two quads folded up 90° (y=0 plane),
+    # sharing the x-axis ridge edge through vertices 2,3.
+    pts = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [2.0, 0.0, 1.0],
+    ])
+    flat = [[0, 1, 4, 3], [1, 2, 5, 4]]
+    wall = [[0, 6, 7, 1], [1, 7, 8, 2]]
+    faces = flat + wall
+    fn, fc, fa, fe = [], [], [], []
+    for f in faces:
+        p = pts[np.asarray(f)]
+        e1 = p[1] - p[0]
+        e2 = p[2] - p[1]
+        nv = np.cross(e1, e2)
+        nm = float(np.linalg.norm(nv))
+        fn.append(nv / nm)
+        fc.append(p.mean(axis=0))
+        fa.append(0.5 * nm)
+        fe.append(float(np.mean([np.linalg.norm(p[(k + 1) % 4] - p[k])
+                                 for k in range(4)])))
+    fn, fc, fa, fe = (np.array(fn), np.array(fc), np.array(fa),
+                      np.array(fe))
+    neighbours = [[1, 2], [0, 3], [0, 3], [1, 2]]
+    got = _guided_filter_wall_normals(fn, fc, fa, fe, neighbours)
+    ref = _reference_guided_filter(fn, fc, fa, fe, neighbours)
+    np.testing.assert_allclose(got, ref, rtol=1e-9, atol=1e-12)
+    # ridge preserved: flat face 0 vs folded face 2 stay ~90° apart
+    ang = float(np.degrees(np.arccos(
+        np.clip(got[0] @ got[2], -1.0, 1.0))))
+    assert 80.0 < ang < 100.0, ang
+    # flat region untouched: face 0 ~ face 1 still parallel
+    assert float(got[0] @ got[1]) > 0.999
+    # unit length everywhere
+    np.testing.assert_allclose(np.linalg.norm(got, axis=1),
+                               np.ones(4), atol=1e-12)
+
+
+def test_bl_normal_method_guided_succeeds_on_healthy_cube():
+    """'guided' must build a valid BL mesh on the healthy cube with the
+    same topology (prism count) as area_weighted."""
+    case_aw = _build_dual_case(WORK_ROOT / "cube_nm_gd_aw")
+    res_aw = PolyBoundaryLayerEngine(case_aw, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        normal_method="area_weighted",
+    )
+    case_gd = _build_dual_case(WORK_ROOT / "cube_nm_gd")
+    res_gd = PolyBoundaryLayerEngine(case_gd, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        normal_method="guided",
+    )
+    assert res_aw.success and res_gd.success, (res_aw.errors, res_gd.errors)
+    assert res_aw.n_prism_cells == res_gd.n_prism_cells
+    assert res_gd.stats.get("min_cell_volume", 0.0) > 0.0
+    _mesh_ok(case_gd / "constant" / "polyMesh")
