@@ -705,14 +705,22 @@ def test_bl_normal_method_most_visible_succeeds_on_healthy_cube():
     _mesh_ok(case_mv / "constant" / "polyMesh")
 
 
-def test_bl_normal_method_smoothed_rejects_dual_convexity_combo():
+def test_bl_normal_method_smoothed_accepts_dual_convexity_combo():
+    """Lane C: 'smoothed' is unlocked under concavity_criterion=
+    dual_convexity (the blend weight reads angle_fade, which carries the
+    dual signal there). Must run cleanly on the healthy cube with the same
+    topology as area_weighted; most_visible+dual stays rejected (separate
+    test above)."""
     case = _build_dual_case(WORK_ROOT / "cube_nm_smooth_combo")
     eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
     res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
                   apply_to_all=True, normal_method="smoothed",
                   concavity_criterion="dual_convexity")
-    assert not res.success
-    assert any("smoothed" in e for e in res.errors)
+    assert res.success, (res.errors, res.warnings)
+    assert res.stats.get("concavity_criterion") == "dual_convexity"
+    assert res.n_prism_cells > 0
+    assert res.stats.get("min_cell_volume", 0.0) > 0.0
+    _mesh_ok(case / "constant" / "polyMesh")
 
 
 def test_bl_normal_method_smoothed_succeeds_on_healthy_cube():

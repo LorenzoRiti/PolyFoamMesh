@@ -726,10 +726,12 @@ class PolyBoundaryLayerEngine:
           regions stay exact (Alauzet's "normal smoothing", adapted to our
           single-direction-per-vertex extrusion model since we have no
           per-layer "distance from the wall" to blend by); see
-          notes/normal_smoothing_reasoning.md. Both "most_visible" and
-          "smoothed" are only implemented for `concavity_criterion=
-          "angle_fade"` (the default); raise if combined with
-          "dual_convexity".
+          notes/normal_smoothing_reasoning.md. "most_visible" is only
+          implemented for `concavity_criterion="angle_fade"` (the default);
+          raise if combined with "dual_convexity". "smoothed" works under
+          both criteria: the blend weight is `(1 - angle_fade)`, and under
+          "dual_convexity" that array already carries the dual-cell signal,
+          so concave dual cells get the smoothed normal (Lane C).
         - `local_height_retry`: opt-in (default off), only meaningful
           together with `local_termination="decoupled_vertex"`. Before
           excluding a wall vertex whose freshly-extruded prism failed at
@@ -830,7 +832,7 @@ class PolyBoundaryLayerEngine:
                 "(expected 'area_weighted', 'most_visible' or 'smoothed')"
             )
             return res
-        if normal_method in ("most_visible", "smoothed") and concavity_criterion != "angle_fade":
+        if normal_method == "most_visible" and concavity_criterion != "angle_fade":
             res.errors.append(
                 f"normal_method={normal_method!r} is only implemented for "
                 "concavity_criterion='angle_fade'"
