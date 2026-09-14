@@ -85,11 +85,31 @@ def find_merge_candidates(points, faces, owner, neigh, n_int, n_cells):
     )
 
     sf, cf = _face_geometry(points, faces)
+    # cell_faces is only ever looked up for concave cells and their direct
+    # neighbours (a tiny fraction of n_cells on a real mesh - 0.23% on the
+    # reference valve). Building it for EVERY cell scales with the WHOLE
+    # mesh (O(n_faces) python dict-of-lists) and was the dominant memory
+    # cost that exhausted 32GB RAM on a real ~5M-cell run. Restrict it to
+    # the needed cells only, found via a vectorised numpy pass instead of
+    # a per-face python loop over the full mesh.
+    own_arr = np.asarray(owner)
+    nb_arr = np.asarray(neigh)
+    concave_arr = np.zeros(n_cells, dtype=bool)
+    if concave_cells:
+        concave_arr[np.asarray(concave_cells, dtype=np.int64)] = True
+    touch = concave_arr[own_arr[:n_int]] | concave_arr[nb_arr]
+    needed_arr = np.zeros(n_cells, dtype=bool)
+    needed_arr[own_arr[:n_int][touch]] = True
+    needed_arr[nb_arr[touch]] = True
+    needed_arr[concave_arr] = True
+
     cell_faces: dict[int, list[int]] = {}
-    for fi in range(len(faces)):
-        cell_faces.setdefault(int(owner[fi]), []).append(fi)
-        if fi < n_int:
-            cell_faces.setdefault(int(neigh[fi]), []).append(fi)
+    for fi in np.flatnonzero(needed_arr[own_arr]):
+        cell_faces.setdefault(int(own_arr[fi]), []).append(int(fi))
+    for fi in np.flatnonzero(needed_arr[nb_arr]):
+        cell_faces.setdefault(int(nb_arr[fi]), []).append(int(fi))
+    for lst in cell_faces.values():
+        lst.sort()
 
     def virtual_merge_ok(cA: int, cB: int, shared_fi: int) -> bool:
         fA = set(cell_faces[cA])
