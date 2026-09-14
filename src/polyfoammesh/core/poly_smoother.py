@@ -485,6 +485,8 @@ def smooth_dual_mesh(
     max_volume_ratio: float = 0.0,
     use_compactness: bool = False,
     use_axis_balance: bool = False,
+    worst_aspect_thr: float = 0.0,
+    zonal_aspect_lam: float = 5000.0,
 ) -> tuple[np.ndarray, dict]:
     """Smooth interior dual vertices, keep-best w.r.t. the defect detector.
 
@@ -519,7 +521,21 @@ def smooth_dual_mesh(
     `use_compactness` alone made worse. Tried as a further candidate in
     the same list, same acceptance contract. See
     notes/getme_compactness_reasoning.md.
+
+    ``worst_aspect_thr`` (default 0.0 = off, opt-in, Lane D2): Freitag-style
+    worst-element focus. When > 0, each iteration adds MASKED variants of
+    the active candidate moves (displacement zeroed outside the vertices
+    of cells currently above the threshold; boundary still pinned) plus a
+    zonal objective term ``zonal_aspect_lam * max(0, max_aspect - thr)^2``
+    (L_inf on the worst cell — a tail SUM was tried first and measurably
+    raised the max while "improving") on top of the existing global aspect
+    term. Moves the global steps cannot express (they drag 10k good
+    vertices along, vetoing zone-helping moves via offsetting penalties).
+    Default ``zonal_aspect_lam`` 5000 ≈ balance vs the base objective at
+    cylinder-class scales (measured — re-balance from a scale print when
+    applying elsewhere). See notes/zonal_aspect_relaxation_reasoning.md.
     """
+    zonal_on = float(worst_aspect_thr) > 0.0
     if iterations <= 0:
         return points, {}
 
@@ -551,6 +567,8 @@ def smooth_dual_mesh(
     best_obj = _current_objective(
         objective, objective_limit_deg, sf, cf, ctr, owner, neigh, n_int,
         points, faces, n_cells=n_cells, vol=vol, aspect_lam=aspect_lam,
+        zonal_lam=zonal_aspect_lam if zonal_on else 0.0,
+        zonal_thr=float(worst_aspect_thr),
     )
     best_counts = dict(counts)
 
@@ -586,6 +604,38 @@ def smooth_dual_mesh(
             if use_axis_balance:
                 candidate_fns.append(("axis_balance", lambda pts, st, s=sf_cur: _axis_balance_step(
                     pts, faces, owner, neigh, n_int, n_cells, boundary, s, st, adj)))
+        if zonal_on:
+            # Zone = vertices of cells currently above the threshold,
+            # recomputed every iteration (focus follows the worst as the
+            # mesh improves). Boundary stays pinned: mask forced to 0
+            # there even if a bad cell touches the wall.
+            sf_z, _cf_z = face_geometry(cur_points, faces)
+            _ctr_z, vol_z = cell_centres(
+                sf_z, _cf_z, owner, neigh, n_int, n_cells)
+            ar_z = _cell_aspect_ratio(
+                sf_z, owner, neigh, n_int, n_cells, vol_z)
+            vmask = np.zeros(len(cur_points))
+            _own_z = np.asarray(owner)
+            _nb_z = np.asarray(neigh)
+            for _fi, _f in enumerate(faces):
+                _c = int(_own_z[_fi])
+                if ar_z[_c] > worst_aspect_thr or (
+                        _fi < n_int and ar_z[int(_nb_z[_fi])] > worst_aspect_thr):
+                    for _v in _f:
+                        vmask[_v] = 1.0
+            vmask[boundary] = 0.0
+            _base_fns = list(candidate_fns)
+            _masked = [
+                ("zonal_" + _nm,
+                 lambda pts, st, f=_fn, m=vmask:
+                 pts + m[:, None] * (f(pts, st) - pts))
+                for _nm, _fn in _base_fns
+            ]
+            # Focus first: masked moves express what the global steps
+            # cannot (zone help without dragging good vertices along); the
+            # unmasked originals stay available as fallback later in the
+            # same backtracking level.
+            candidate_fns = _masked + candidate_fns
 
         step = relaxation
         accepted = False
@@ -622,6 +672,8 @@ def smooth_dual_mesh(
                         objective, objective_limit_deg, sf_c, cf_c, ctr_c, owner, neigh,
                         n_int, cand, faces, n_cells=n_cells, vol=vol_c,
                         aspect_lam=aspect_lam,
+                        zonal_lam=zonal_aspect_lam if zonal_on else 0.0,
+                        zonal_thr=float(worst_aspect_thr),
                     )
                     best_total = cand_total
                     best_obj = cand_obj
@@ -647,6 +699,8 @@ def smooth_dual_mesh(
                         objective, objective_limit_deg, sf_c, cf_c, ctr_c, owner, neigh,
                         n_int, cand, faces, n_cells=n_cells, vol=vol_c,
                         aspect_lam=aspect_lam,
+                        zonal_lam=zonal_aspect_lam if zonal_on else 0.0,
+                        zonal_thr=float(worst_aspect_thr),
                     )
                     if best_obj is None or cand_obj < best_obj:
                         best_obj = cand_obj
@@ -683,7 +737,8 @@ def smooth_dual_mesh(
         # the compactness candidate specifically only gets evaluated on
         # iterations past the first, since `accepted` breaks out of the
         # backtracking loop as soon as Laplacian's own tie-break succeeds.
-        if best_total == 0 and not (use_compactness or use_axis_balance):
+        if best_total == 0 and not (use_compactness or use_axis_balance
+                                   or zonal_on):
             break
 
     if log:
@@ -717,10 +772,11 @@ def _cell_aspect_ratio(sf, owner, neigh, n_int, n_cells, vol) -> np.ndarray:
 
 def _current_objective(objective, limit_deg, sf, cf, ctr, owner, neigh, n_int,
                        points, faces, n_cells=None, vol=None,
-                       aspect_lam: float = 0.0) -> float:
+                       aspect_lam: float = 0.0, zonal_lam: float = 0.0,
+                       zonal_thr: float = 3.5) -> float:
     non_ortho, skew = _continuous_metrics(sf, cf, ctr, owner, neigh, n_int, points, faces)
     val = objective(non_ortho, skew, limit_deg=limit_deg)
-    if aspect_lam > 0.0 and n_cells is not None and vol is not None:
+    if (aspect_lam > 0.0 or zonal_lam > 0.0) and n_cells is not None and vol is not None:
         # Additive aspect-ratio penalty, kept OUT of the public
         # quality_objective() (used directly by tests/other callers with
         # the historical (non_ortho, skew) signature) - opt-in here only,
@@ -729,5 +785,17 @@ def _current_objective(objective, limit_deg, sf, cf, ctr, owner, neigh, n_int,
         # than the raw ratio, to keep the same "squared excess" shape as
         # the non-orthogonality term.
         aspect = _cell_aspect_ratio(sf, owner, neigh, n_int, n_cells, vol)
-        val += float(aspect_lam) * float((np.maximum(aspect - 1.0, 0.0) ** 2).sum())
+        if aspect_lam > 0.0:
+            val += float(aspect_lam) * float((np.maximum(aspect - 1.0, 0.0) ** 2).sum())
+        if zonal_lam > 0.0:
+            # Lane D2 (Freitag-style worst-element focus): L_inf term on
+            # the worst cell ONLY — max(0, max_aspect - thr)^2. A SUM over
+            # the tail was tried first and failed measurably: fixing twenty
+            # 3.6-cells outweighs worsening the 4.49 max cell, so the max
+            # ROSE 4.489 -> 4.542 while the "zonal" objective improved.
+            # Minimax means minimax. Kept ALONGSIDE the global term (not
+            # instead): sub-threshold damage elsewhere must still count —
+            # the merge-trial lesson (checkMesh severity vs gate counts).
+            val += float(zonal_lam) * float(
+                max(0.0, float(aspect.max()) - zonal_thr) ** 2)
     return val
