@@ -177,6 +177,73 @@ def _laplacian_smooth_normal_field(
     return smoothed
 
 
+def _guided_filter_wall_normals(fn, fc, fa, fe, neighbours,
+                                sigma_r: float = 0.35,
+                                sigma_s_scale: float = 1.5):
+    """Guided bilateral filter on wall-FACE unit normals (Zhang et al.,
+    "Guided mesh normal filtering", Pacific Graphics 2015, adapted).
+
+    ``fn``/``fc``/``fa``/``fe`` are per-face unit normals, centroids, areas
+    and mean edge lengths over the selected wall faces; ``neighbours[bi]``
+    lists the 1-ring neighbour face positions.  Returns filtered unit
+    normals, same order.  Unlike Laplacian smoothing (which washes across
+    ridges) and unlike ``most_visible`` (per-vertex independent, neighbours
+    may disagree and twist prism sides), the range kernel keys off
+    GUIDANCE normals ``g`` — each face's locally most-consistent patch
+    average — so smoothing crosses flat regions freely but stops at real
+    ridges, keeping neighbouring extrusion directions mutually consistent.
+    Single pass (v1); iterate the caller side if ever needed.
+    """
+    n = len(fn)
+    out = np.empty_like(fn)
+    for bi in range(n):
+        nb = neighbours[bi]
+        # --- guidance: most-consistent local patch average ---
+        # candidates: best pair {i,j} (j = most-aligned neighbour) and the
+        # full 1-ring; min spread wins.  The singleton {i} is deliberately
+        # NOT a candidate (its spread is trivially 0 and would always win,
+        # collapsing guidance to self = plain bilateral).  On a ridge the
+        # best pair sits on one side, so guidance stays on-side and the
+        # range kernel stops smoothing across the feature.
+        ring_idx = [bi] + [j for j in nb if j != bi]
+        if len(ring_idx) == 1:
+            best_g = fn[bi]
+        else:
+            ring_n = fn[ring_idx]
+            dots = ring_n @ fn[bi]
+            j_best = int(np.argmax(dots[1:]) + 1)
+            best_g = fn[bi]
+            best_spread = 2.0
+            for cand in ([bi, ring_idx[j_best]], ring_idx):
+                cn = fn[cand]
+                m = cn.mean(axis=0)
+                nm = np.linalg.norm(m)
+                if nm <= 1e-300:
+                    continue
+                spread = float(1.0 - np.min(cn @ (m / nm)))
+                if spread < best_spread:
+                    best_spread = spread
+                    best_g = m / nm
+        guides = np.empty((len(ring_idx), 3))
+        # guidance of self is best_g; neighbours use their own normals as
+        # cheap guidance proxy (full per-neighbour patch search is O(k^2);
+        # the range kernel only needs them to diverge at real ridges).
+        for k, j in enumerate(ring_idx):
+            guides[k] = best_g if j == bi else fn[j]
+        # --- joint bilateral ---
+        d2 = np.sum((fc[ring_idx] - fc[bi]) ** 2, axis=1)
+        sig_s = max(sigma_s_scale * fe[bi], 1e-300)
+        gd = np.sum((guides - best_g) ** 2, axis=1)
+        w = (fa[ring_idx]
+             * np.exp(-d2 / (2.0 * sig_s * sig_s))
+             * np.exp(-gd / (2.0 * sigma_r * sigma_r)))
+        acc = (w[:, None] * fn[ring_idx]).sum(axis=0)
+        nrm = np.linalg.norm(acc)
+        out[bi] = acc / nrm if nrm > 1e-300 else fn[bi]
+    return out
+
+
+
 
 _FACE_GEOMETRY_CHUNK = 250_000
 
@@ -726,7 +793,14 @@ class PolyBoundaryLayerEngine:
           regions stay exact (Alauzet's "normal smoothing", adapted to our
           single-direction-per-vertex extrusion model since we have no
           per-layer "distance from the wall" to blend by); see
-          notes/normal_smoothing_reasoning.md. "most_visible" is only
+          notes/normal_smoothing_reasoning.md. "guided" = guided bilateral
+          filter on the wall-face normals (Zhang et al., "Guided mesh
+          normal filtering", Pacific Graphics 2015, adapted): the range
+          kernel keys off per-face guidance normals, so smoothing crosses
+          flat regions but stops at real ridges, keeping neighbouring
+          extrusion directions mutually consistent (targets the prism-side
+          twist failures `most_visible` leaves behind); see
+          notes/guided_normal_filter_reasoning.md. "most_visible" is only
           implemented for `concavity_criterion="angle_fade"` (the default);
           raise if combined with "dual_convexity". "smoothed" works under
           both criteria: the blend weight is `(1 - angle_fade)`, and under
@@ -826,10 +900,12 @@ class PolyBoundaryLayerEngine:
                 "(expected 'angle_fade' or 'dual_convexity')"
             )
             return res
-        if normal_method not in ("area_weighted", "most_visible", "smoothed"):
+        if normal_method not in ("area_weighted", "most_visible", "smoothed",
+                                   "guided"):
             res.errors.append(
                 f"unknown normal_method {normal_method!r} "
-                "(expected 'area_weighted', 'most_visible' or 'smoothed')"
+                "(expected 'area_weighted', 'most_visible', 'smoothed' or "
+                "'guided')"
             )
             return res
         if normal_method == "most_visible" and concavity_criterion != "angle_fade":
@@ -1487,15 +1563,60 @@ class PolyBoundaryLayerEngine:
         )
         normals = np.zeros((n_pts, 3))
         prog_stride = max(1, len(bnd) // 20)
-        for pi, fi in enumerate(bnd):
-            _gil_yield(pi, 256)
-            if pi % prog_stride == 0:
-                self._log(
-                    f"[bl] precompute: normals {int(100 * pi / max(1, len(bnd)))}%..."
-                )
-            n = _newell(pts, faces[fi])
-            for v in faces[fi]:
-                normals[v] += n
+        if normal_method == "guided":
+            # Guided bilateral filter on wall-face normals (Lane C2): filter
+            # first, then area-weight the FILTERED normals to vertices.
+            bnd_fn, bnd_fc, bnd_fa, bnd_fe = [], [], [], []
+            for pi, fi in enumerate(bnd):
+                _gil_yield(pi, 256)
+                if pi % prog_stride == 0:
+                    self._log(
+                        f"[bl] precompute: guided face normals "
+                        f"{int(100 * pi / max(1, len(bnd)))}%..."
+                    )
+                f = faces[fi]
+                nv = _newell(pts, f)
+                nm = float(np.linalg.norm(nv))
+                bnd_fn.append(nv / nm if nm > 1e-300 else np.zeros(3))
+                bnd_fc.append(pts[np.asarray(f)].mean(axis=0))
+                bnd_fa.append(nm)  # _newell already includes the 0.5
+                e = [float(np.linalg.norm(pts[f[k]] - pts[f[(k + 1) % len(f)]]))
+                     for k in range(len(f))]
+                bnd_fe.append(sum(e) / len(e) if e else 0.0)
+            bnd_fn = np.array(bnd_fn)
+            bnd_fc = np.array(bnd_fc)
+            bnd_fa = np.array(bnd_fa)
+            bnd_fe = np.array(bnd_fe)
+            edge_faces: dict[tuple[int, int], list[int]] = {}
+            for bi, fi in enumerate(bnd):
+                f = faces[fi]
+                for k in range(len(f)):
+                    a, b = f[k], f[(k + 1) % len(f)]
+                    key = (a, b) if a < b else (b, a)
+                    edge_faces.setdefault(key, []).append(bi)
+            neighbours: list[list[int]] = [[] for _ in bnd]
+            for lst in edge_faces.values():
+                for bi in lst:
+                    for bj in lst:
+                        if bj != bi and bj not in neighbours[bi]:
+                            neighbours[bi].append(bj)
+            del edge_faces
+            filt = _guided_filter_wall_normals(
+                bnd_fn, bnd_fc, bnd_fa, bnd_fe, neighbours)
+            for bi, fi in enumerate(bnd):
+                for v in faces[fi]:
+                    normals[v] += bnd_fa[bi] * filt[bi]
+            del bnd_fn, bnd_fc, bnd_fa, bnd_fe, filt, neighbours
+        else:
+            for pi, fi in enumerate(bnd):
+                _gil_yield(pi, 256)
+                if pi % prog_stride == 0:
+                    self._log(
+                        f"[bl] precompute: normals {int(100 * pi / max(1, len(bnd)))}%..."
+                    )
+                n = _newell(pts, faces[fi])
+                for v in faces[fi]:
+                    normals[v] += n
         mag = np.linalg.norm(normals, axis=1)
         # only WALL vertices matter: interior dual points (tet/face centroids,
         # interior edge mids) legitimately carry no wall-face normal.
