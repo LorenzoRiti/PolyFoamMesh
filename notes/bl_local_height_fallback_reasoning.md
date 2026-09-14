@@ -107,16 +107,45 @@ documented-fragile function in this codebase ("previous repair was a
 per-cell greedy flip... left 24 cells unclosed... cascaded into a
 catastrophic global flip... 378,605 non-positive volumes").
 
-**Honest decision: not attempted tonight.** Implementing this correctly
-requires surgery inside `_build`, and validating it requires a real
-checkMesh run on all 5 reference geometries — each of which has taken
-10 minutes to over an hour tonight due to genuine host contention. Given
-the stakes of this specific function (its own docstring's warning is not
-hypothetical — it already happened once), rushing this without the time
-to validate properly would repeat exactly the mistake this project's
-whole discipline exists to prevent. This is reported as the session's
-honest stopping point on this specific lever, not a completed result —
-the diagnostic (negative-volume/pyramid-violating prisms, not inherited
-core defects, are the real driver) and the literature-grounded design
-(Alauzet's discrete candidate-position search) are both real, verified
-findings ready for the next session to build on with adequate time.
+**Honest decision (original session): not attempted that night.**
+Implementing this correctly requires surgery inside `_build`, and
+validating it requires a real checkMesh run on all 5 reference
+geometries — each of which has taken 10 minutes to over an hour due to
+genuine host contention. Given the stakes of this specific function (its
+own docstring's warning is not hypothetical — it already happened once),
+rushing this without the time to validate properly would repeat exactly
+the mistake this project's whole discipline exists to prevent. This was
+reported as that session's honest stopping point on this specific lever.
+
+## Follow-up session: why a literal per-vertex serial retry is infeasible,
+## and the batched design chosen instead
+
+A true per-vertex serial retry (test vertex 1 alone, then vertex 2 alone,
+...) would need one full `_build` + `_collect_exclusions` rebuild PER
+CANDIDATE VERTEX. Measured this session: `_build_precompute` alone is
+~58s on the valve, and a full `_build` attempt is comparable or larger;
+the vertex-exclusion runs measured earlier (`most_visible_normal_
+reasoning.md`) have ~5,000-7,000 excluded faces mapping to thousands of
+candidate vertices per round. Serial one-at-a-time retries would cost
+thousands of rebuilds -- hours to days, not a session. This is the
+concrete number behind the "not attempted" decision above, now quantified.
+
+**Resolution: BATCH the retry, one extra rebuild per ROUND, not per
+vertex.** `_run_local_termination`'s loop already has a natural batch
+point: each round already collects a SET of newly-failing vertices
+(`gained`) via one rebuild. Instead of excluding all of `gained`
+immediately, try ONE extra rebuild attempt where those specific vertices
+get a SCALED-DOWN local height budget (via a new `vertex_height_scale`
+multiplier applied to `max_h[w]` inside `_build`, additive/opt-in,
+`None` default = today's exact behaviour) instead of being dropped
+entirely. Re-run `_collect_exclusions` on this retry build: any vertex
+whose faces no longer show up in the new exclusion set is RESCUED (kept
+extruded at the reduced height, its scale persisted for later rounds);
+any vertex that still fails is excluded exactly as today. This costs
+ONE extra rebuild per round (same order of magnitude as the existing
+loop, not a new order of magnitude), and is strictly additive: with the
+new opt-in `local_height_retry=False` (default), behaviour is
+byte-identical to today.
+
+See `notes/local_height_retry_reasoning.md` for the prediction,
+verification, and real-valve measurement of this batched design.

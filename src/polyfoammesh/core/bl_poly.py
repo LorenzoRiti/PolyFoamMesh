@@ -552,6 +552,7 @@ class PolyBoundaryLayerEngine:
         local_max_rounds: int = 3,
         local_exclude_widen: int = 0,
         normal_method: str = "area_weighted",
+        local_height_retry: bool = False,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -599,6 +600,17 @@ class PolyBoundaryLayerEngine:
           "smoothed" are only implemented for `concavity_criterion=
           "angle_fade"` (the default); raise if combined with
           "dual_convexity".
+        - `local_height_retry`: opt-in (default off), only meaningful
+          together with `local_termination="decoupled_vertex"`. Before
+          excluding a wall vertex whose freshly-extruded prism failed at
+          full height, try ONE extra rebuild per round with just that
+          batch of failing vertices at a much shorter local height
+          (`vertex_height_scale` on `_build`); a vertex that validates at
+          the shorter height is kept (rescued) instead of dropped. One
+          extra rebuild per exclusion round, not per vertex (a literal
+          per-vertex serial retry was measured infeasible: thousands of
+          candidate vertices x ~1 rebuild each). See
+          notes/local_height_retry_reasoning.md.
         - `local_termination`: opt-in iterative local termination for
           geometries with concave defects (the reference valve).  Each
           attempt uses the binary layer-count mode (a face is either fully
@@ -694,6 +706,12 @@ class PolyBoundaryLayerEngine:
                 "concavity_criterion='angle_fade'"
             )
             return res
+        if local_height_retry and local_termination != "decoupled_vertex":
+            res.errors.append(
+                "local_height_retry is only implemented for "
+                "local_termination='decoupled_vertex'"
+            )
+            return res
         res.stats["concavity_criterion"] = concavity_criterion
 
         poly = self._case_dir / "constant" / "polyMesh"
@@ -750,6 +768,7 @@ class PolyBoundaryLayerEngine:
                 max_per_scale=int(local_max_rounds),
                 vertex_exclusions=(local_termination == "decoupled_vertex"),
                 normal_method=normal_method,
+                height_retry=local_height_retry,
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
@@ -969,6 +988,50 @@ class PolyBoundaryLayerEngine:
             frontier = nxt
         return widened
 
+    def _retry_local_height(self, points, faces, owner, neighbour, patches,
+                            n_int, sel_cur, n_layers, height, growth, clamp,
+                            pyr_before, drop_bnd, pre, gained, height_scale):
+        """Opt-in (``run(local_height_retry=True)``): one extra rebuild PER
+        CANDIDATE SCALE (bounded to 2 here, not one per vertex  -  a literal
+        per-vertex serial retry was measured infeasible on the real valve,
+        see notes/local_height_retry_reasoning.md) trying a much shorter
+        local extrusion height for the wall vertices in ``gained`` (just
+        found to fail at full height) instead of excluding them outright.
+
+        Mutates ``height_scale`` in place for every vertex it rescues (so
+        the shorter height persists for the rest of this ``run()`` call,
+        across scales and rounds).  Returns the set of rescued vertices;
+        the caller excludes whatever remains in ``gained - rescued``.
+        """
+        rescued: set[int] = set()
+        remaining = set(gained)
+        for retry_scale in (0.2, 0.05):
+            if not remaining:
+                break
+            trial_scale = dict(height_scale)
+            for v in remaining:
+                trial_scale[v] = retry_scale
+            try:
+                built = self._build(
+                    points, faces, owner, neighbour, patches, n_int,
+                    sel_cur, n_layers, height, growth, clamp,
+                    pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
+                    zero_concave=True, vertex_height_scale=trial_scale,
+                )
+            except Exception:  # noqa: BLE001 - this scale just doesn't work
+                continue
+            added2 = self._collect_exclusions(built, sel_cur, owner, n_int)
+            still_bad: set[int] = set()
+            for b in added2:
+                still_bad.update(faces[n_int + b])
+            still_bad &= remaining
+            newly_rescued = remaining - still_bad
+            for v in newly_rescued:
+                height_scale[v] = retry_scale
+            rescued |= newly_rescued
+            remaining = still_bad
+        return rescued
+
     def _run_local_termination(self, res, points, faces, owner, neighbour,
                                patches, n_int, sel, drop_bnd, pyr_before,
                                total_vol0, max_core_volume_ratio,
@@ -978,7 +1041,8 @@ class PolyBoundaryLayerEngine:
                                max_per_scale: int = 3,
                                local_exclude_widen: int = 0,
                                vertex_exclusions: bool = False,
-                               normal_method: str = "area_weighted"):
+                               normal_method: str = "area_weighted",
+                               height_retry: bool = False):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
@@ -1043,6 +1107,10 @@ class PolyBoundaryLayerEngine:
         res.stats["local_termination_max_rounds"] = int(max_per_scale)
         skip_remaining: bool = False
         last_dropped = 0
+        # persists across every scale/round of THIS run  -  a vertex rescued
+        # at one scale keeps its shorter local height for the rest of the
+        # run instead of being retried from scratch every attempt.
+        height_scale: dict[int, float] = {}
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
@@ -1085,6 +1153,7 @@ class PolyBoundaryLayerEngine:
                         sel_cur, res.n_layers, res.first_height * scale,
                         growth, clamp, pyr_before=pyr_before,
                         drop_bnd=drop_bnd, pre=pre, zero_concave=True,
+                        vertex_height_scale=(height_scale or None),
                     )
                 except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(f"[bl] local attempt scale={scale}: {exc}")
@@ -1131,6 +1200,22 @@ class PolyBoundaryLayerEngine:
                     gained = new_verts - excluded_verts
                     if not gained:
                         break
+                    if height_retry:
+                        rescued = self._retry_local_height(
+                            points, faces, owner, neighbour, patches, n_int,
+                            sel_cur, res.n_layers, res.first_height * scale,
+                            growth, clamp, pyr_before, drop_bnd, pre,
+                            gained, height_scale,
+                        )
+                        if rescued:
+                            res.warnings.append(
+                                f"local height retry: rescued {len(rescued)} "
+                                f"of {len(gained)} newly-failing wall "
+                                f"vertices at scale={scale} round={_round}"
+                            )
+                        gained = gained - rescued
+                        if not gained:
+                            continue
                     excluded_verts |= gained
                 else:
                     if local_exclude_widen > 0:
@@ -1468,7 +1553,8 @@ class PolyBoundaryLayerEngine:
                sel, n_layers, first_height, growth, clamp_factor,
                pyr_before: int = 0, drop_bnd=None, pre=None,
                concavity_criterion: str = "angle_fade",
-               zero_concave: bool = False) -> dict:
+               zero_concave: bool = False,
+               vertex_height_scale: dict[int, float] | None = None) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -1480,6 +1566,13 @@ class PolyBoundaryLayerEngine:
         at one  -  the local wall shell is given up there (moved boundary
         face) so the whole healthy region keeps its full layer count instead
         of being flooded to one layer by the consistency fixpoint.
+
+        ``vertex_height_scale`` (opt-in, default None = no-op by
+        construction): per-vertex multiplier on the inversion-clamp height
+        budget (``max_h[w] *= vertex_height_scale.get(w, 1.0)``), used by
+        ``run(local_height_retry=True)`` to try a SHORTER stack at wall
+        vertices that fail at full height instead of excluding them
+        outright; see notes/local_height_retry_reasoning.md.
         """
         if pre is None:
             pre = self._build_precompute(
@@ -1518,6 +1611,8 @@ class PolyBoundaryLayerEngine:
             max_h[w] = angle_fade[w] * min(
                 clamp_factor * d, 0.5 * min_edge[w],
             )
+            if vertex_height_scale:
+                max_h[w] *= vertex_height_scale.get(w, 1.0)
 
         # --- layer heights --------------------------------------------------
         # cumulative: H_k = h1 * (r^k - 1)/(r - 1); H_total = H_n.

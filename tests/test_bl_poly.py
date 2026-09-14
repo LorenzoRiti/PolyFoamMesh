@@ -610,6 +610,56 @@ def test_bl_local_termination_decoupled_vertex_on_healthy_cube():
     assert res.stats.get("local_termination_mode") == "decoupled_vertex"
 
 
+def test_bl_local_height_retry_noop_on_healthy_cube():
+    """local_height_retry=True must be byte-identical to False on a
+    healthy mesh: nothing ever fails, so _retry_local_height is never
+    even called (the 'if gained:' guard skips it entirely)."""
+    case = _build_dual_case(WORK_ROOT / "cube_ht_retry")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_termination="decoupled_vertex",
+                  local_height_retry=True)
+    assert res.success, (res.errors, res.warnings)
+    assert res.stats.get("local_excluded_faces") == 0
+    assert res.stats.get("scale") == 1.0
+
+
+def test_bl_local_height_retry_rejects_without_decoupled_vertex():
+    case = _build_dual_case(WORK_ROOT / "cube_ht_retry_bad")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, local_height_retry=True)
+    assert not res.success
+    assert any("local_height_retry" in e for e in res.errors)
+
+    case2 = _build_dual_case(WORK_ROOT / "cube_ht_retry_bad2")
+    eng2 = PolyBoundaryLayerEngine(case2, log=lambda m: None)
+    res2 = eng2.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                    apply_to_all=True, local_termination="decoupled",
+                    local_height_retry=True)
+    assert not res2.success
+    assert any("local_height_retry" in e for e in res2.errors)
+
+
+def test_bl_vertex_height_scale_noop_by_default():
+    """_build's vertex_height_scale=None (default) must be byte-identical
+    to passing an empty dict or a dict of all-1.0 -- a direct regression
+    guard on the no-op contract before relying on it for the retry."""
+    case_a = _build_dual_case(WORK_ROOT / "cube_vhs_a")
+    case_b = _build_dual_case(WORK_ROOT / "cube_vhs_b")
+    eng_a = PolyBoundaryLayerEngine(case_a, log=lambda m: None)
+    eng_b = PolyBoundaryLayerEngine(case_b, log=lambda m: None)
+    pts, faces, owner, neigh, patches = fio.read_polymesh(
+        case_a / "constant" / "polyMesh")
+    n_int = len(neigh)
+    sel, _ = eng_a._select_faces(faces, owner, patches, n_int, None, True)
+    built_a = eng_a._build(pts, faces, owner, neigh, patches, n_int, sel,
+                           2, 0.01, 1.2, 0.5)
+    built_b = eng_b._build(pts, faces, owner, neigh, patches, n_int, sel,
+                           2, 0.01, 1.2, 0.5, vertex_height_scale={})
+    np.testing.assert_array_equal(built_a["points"], built_b["points"])
+
+
 def test_bl_normal_method_rejects_unknown_value():
     case = _build_dual_case(WORK_ROOT / "cube_nm_bad")
     eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
