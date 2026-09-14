@@ -299,3 +299,26 @@ failed 1 -> 3 (stesso pattern lam=10/slot1: il gate conta violazioni,
 non severità). NON promosso; operatore di SPLIT direzionale scoped come
 lavoro futuro. Nessun codice di produzione toccato. Commit `5854e18`.
 Dettagli in `notes/cylinder_aspect_clusters_reasoning.md`.
+
+## Avanzamento 2026-09-15 — Lane C2: guided filter da letteratura, no-op di principio
+
+Nuovo `normal_method="guided"` (Zhang et al. 2015, bilaterale guidato sui
+normali di faccia + media ai vertici), con test di riferimento
+indipendente e ridge-preservation verdi. Valvola: 7054 esclusioni =
+baseline al decimale; slot1: 510 = 510. Meccanismo: i normali dual non
+sono rumorosi (il problema che guided risolve) e al ridge il vertice
+media comunque tra i lati. NON promosso, resta opt-in documentato.
+Commit `5047c71`. Dettagli in `notes/guided_normal_filter_reasoning.md`.
+Nessun default cambiato.
+
+## Avanzamento 2026-09-15 — Lane D2: rilassamento zonale worst-element
+
+Nuova modalità opt-in di `smooth_dual_mesh` (Freitag-style minimax:
+mosse mascherate sulla zona + termine L_inf sul max, con test di
+pinning). Lungo la via catturati e fissati due errori veri (candidati
+mascherati valutati per ultimi = mai eseguiti; somma sulla coda che
+alzava il max). Cilindro + checkMesh reale: max 4.489 -> 4.468 (-0,5%)
+a costo zero, muro confermato a 3x iterazioni (topology-bound). NON
+cablato in produzione (guadagno sotto rumore); resta lo SPLIT come fix
+scoped. Commit `1061a88`. Dettagli in
+`notes/zonal_aspect_relaxation_reasoning.md`. Nessun default cambiato.
