@@ -35,9 +35,16 @@ Algorithm (per run)
    face of that patch, owned by the prism; the unselected wall faces move
    their shared wall vertices to the last layer so every cell stays
    closed  -  partial-patch BL is conforming and physically correct);
-2. per wall vertex: smoothed normal = normalised sum of incident face
-   area-vectors; max height = ``clamp_factor`` times the distance to the
-   nearest non-wall vertex of the incident cells (inversion guard);
+2. per wall vertex: extrusion normal (default: normalised sum of incident
+   face area-vectors; opt-in ``normal_method="most_visible"``: the unit
+   vector minimising the MAXIMUM angle to any incident face normal, per
+   Alauzet's closed-advancing-layer paper -- area-weighted averaging is
+   measured there to terminate BL growth earliest at concave ridges,
+   because it is pulled toward whichever incident face is largest instead
+   of staying equidistant from all of them; see
+   notes/most_visible_normal_reasoning.md); max height = ``clamp_factor``
+   times the distance to the nearest non-wall vertex of the incident cells
+   (inversion guard);
 3. layer heights ``h_k = h1 * r^(k-1)``, cumulative, per-vertex clamped;
 4. build the prism cells, move the wall vertices of the wall-adjacent
    internal faces to their last-layer positions, swap wall faces for the
@@ -104,6 +111,40 @@ def _gil_yield(step: int, every: int = 256) -> None:
     window 'non risponde'), even though the work itself is on a QThread."""
     if step % every == 0:
         time.sleep(0)
+
+
+def _most_visible_normal(f_norms: list, iters: int = 200) -> np.ndarray:
+    """Unit vector minimising the MAXIMUM angle to any vector in
+    ``f_norms`` (already unit-normalised incident face normals).
+
+    Iterative min-max (1-centre-on-sphere) fixed point: start from the
+    area-weighted average, repeatedly slerp a decaying step toward the
+    currently-worst (largest-angle) face normal. Verified against a
+    brute-force sampled search (30 random concave-ridge-like fans,
+    spread 20-160deg, k=2..6 incident faces): always at least as good as
+    the plain average, within ~1.4deg of the true optimum -- see
+    notes/most_visible_normal_reasoning.md.
+    """
+    f = np.asarray(f_norms, dtype=float)
+    if len(f) <= 1:
+        return f[0] if len(f) else np.zeros(3)
+    n = f.sum(axis=0)
+    nrm = np.linalg.norm(n)
+    if nrm <= 1e-300:
+        return f[0]
+    n = n / nrm
+    for k in range(iters):
+        dots = f @ n
+        f_worst = f[int(np.argmin(dots))]
+        cosang = float(np.clip(n @ f_worst, -1.0, 1.0))
+        ang = float(np.arccos(cosang))
+        if ang < 1e-9:
+            break
+        t = 0.5 / (1.0 + k * 0.15)
+        sin_ang = np.sin(ang)
+        n = (np.sin((1 - t) * ang) / sin_ang) * n + (np.sin(t * ang) / sin_ang) * f_worst
+        n = n / (np.linalg.norm(n) + 1e-300)
+    return n
 
 
 
@@ -481,6 +522,7 @@ class PolyBoundaryLayerEngine:
         early_exit_intermediates: bool = False,
         local_max_rounds: int = 3,
         local_exclude_widen: int = 0,
+        normal_method: str = "area_weighted",
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -510,6 +552,16 @@ class PolyBoundaryLayerEngine:
           detector that fires on the concave-feature dual cells of the
           valve where the normal fade is flat (measured >= 0.8 on all
           valve wall vertices).
+        - `normal_method`: how the per-vertex extrusion normal is computed.
+          "area_weighted" (default, historical, byte-identical) = normalised
+          sum of incident face area-vectors. "most_visible" = the unit
+          vector minimising the MAXIMUM angle to any incident face normal
+          (Aubry et al., via Alauzet's closed-advancing-layer BL paper),
+          opt-in experiment targeting the same concave-ridge early-
+          termination failure mode as `local_termination`; see
+          notes/most_visible_normal_reasoning.md. Only implemented for
+          `concavity_criterion="angle_fade"` (the default); raises if
+          combined with "dual_convexity".
         - `local_termination`: opt-in iterative local termination for
           geometries with concave defects (the reference valve).  Each
           attempt uses the binary layer-count mode (a face is either fully
@@ -593,6 +645,18 @@ class PolyBoundaryLayerEngine:
                 "(expected 'angle_fade' or 'dual_convexity')"
             )
             return res
+        if normal_method not in ("area_weighted", "most_visible"):
+            res.errors.append(
+                f"unknown normal_method {normal_method!r} "
+                "(expected 'area_weighted' or 'most_visible')"
+            )
+            return res
+        if normal_method == "most_visible" and concavity_criterion != "angle_fade":
+            res.errors.append(
+                "normal_method='most_visible' is only implemented for "
+                "concavity_criterion='angle_fade'"
+            )
+            return res
         res.stats["concavity_criterion"] = concavity_criterion
 
         poly = self._case_dir / "constant" / "polyMesh"
@@ -648,6 +712,7 @@ class PolyBoundaryLayerEngine:
                 early_exit_intermediates=early_exit_intermediates,
                 max_per_scale=int(local_max_rounds),
                 vertex_exclusions=(local_termination == "decoupled_vertex"),
+                normal_method=normal_method,
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
@@ -659,7 +724,7 @@ class PolyBoundaryLayerEngine:
         # is most of the speedup.
         pre = self._build_precompute(
             points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
-            concavity_criterion=concavity_criterion,
+            concavity_criterion=concavity_criterion, normal_method=normal_method,
         )
         for k, v in pre.get("dual_stats", {}).items():
             res.stats[k] = v
@@ -875,7 +940,8 @@ class PolyBoundaryLayerEngine:
                                early_exit_intermediates: bool = False,
                                max_per_scale: int = 3,
                                local_exclude_widen: int = 0,
-                               vertex_exclusions: bool = False):
+                               vertex_exclusions: bool = False,
+                               normal_method: str = "area_weighted"):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
@@ -972,6 +1038,7 @@ class PolyBoundaryLayerEngine:
                     points, faces, owner, neighbour, patches, n_int,
                     sel_cur, drop_bnd,
                     concavity_criterion=concavity_criterion,
+                    normal_method=normal_method,
                 )
                 for k, v in pre.get("dual_stats", {}).items():
                     res.stats[k] = v
@@ -1111,7 +1178,8 @@ class PolyBoundaryLayerEngine:
 
     def _build_precompute(self, points, faces, owner, neighbour, patches,
                           n_int, sel, drop_bnd,
-                          concavity_criterion: str = "angle_fade") -> dict:
+                          concavity_criterion: str = "angle_fade",
+                          normal_method: str = "area_weighted") -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
         vertices, per-vertex normals, the feature-aware angular fade (or the
@@ -1228,6 +1296,8 @@ class PolyBoundaryLayerEngine:
                 fn = _newell(pts, f)
                 fn = fn / (np.linalg.norm(fn) + 1e-300)
                 f_norms.append(fn)
+            if normal_method == "most_visible" and f_norms:
+                normals[w] = _most_visible_normal(f_norms)
             cos_max = -2.0
             for i in range(len(f_norms)):
                 for j in range(i + 1, len(f_norms)):
