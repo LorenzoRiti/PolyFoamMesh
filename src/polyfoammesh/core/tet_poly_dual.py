@@ -2042,29 +2042,37 @@ def _newell_dot(points: np.ndarray, verts: list[int], d: np.ndarray) -> float:
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):
     """Area vectors and centroids, using OpenFOAM's centre-point decomposition.
 
-    Faces are bucketed by vertex count so each bucket is one vectorised pass.
+    Faces are bucketed by vertex count so each bucket is one vectorised pass,
+    CHUNKED in 250k-face blocks (Lane A RAM fix): the dense ``(n, k, 3)``
+    temporaries are ~360 bytes/face/slot-set, i.e. one unchunked 16M-quad
+    call peaked past 7GB.  Same per-face op order -> bitwise-identical
+    output (locked by the merge/dual test suites).
     """
+    _BLOCK = 250_000
     n = len(faces)
     sf = np.zeros((n, 3), dtype=np.float64)
     cf = np.zeros((n, 3), dtype=np.float64)
     sizes = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n)
     for k in np.unique(sizes):
         idx = np.flatnonzero(sizes == k)
-        v = np.array([faces[i] for i in idx], dtype=np.int64)
-        p = points[v]
-        c0 = p.mean(axis=1)
-        a = p - c0[:, None, :]
-        b = np.roll(p, -1, axis=1) - c0[:, None, :]
-        tri_area = 0.5 * np.cross(a, b)
-        tri_cent = (c0[:, None, :] + p + np.roll(p, -1, axis=1)) / 3.0
-        w = np.linalg.norm(tri_area, axis=2)
-        wsum = w.sum(axis=1)
-        c = (tri_cent * w[:, :, None]).sum(axis=1) / np.maximum(wsum, 1e-300)[:, None]
-        degenerate = wsum <= 0.0
-        if np.any(degenerate):
-            c[degenerate] = c0[degenerate]
-        sf[idx] = tri_area.sum(axis=1)
-        cf[idx] = c
+        for s in range(0, len(idx), _BLOCK):
+            b = idx[s:s + _BLOCK]
+            v = np.array([faces[i] for i in b], dtype=np.int64)
+            p = points[v]
+            c0 = p.mean(axis=1)
+            a = p - c0[:, None, :]
+            b_ = np.roll(p, -1, axis=1) - c0[:, None, :]
+            tri_area = 0.5 * np.cross(a, b_)
+            tri_cent = (c0[:, None, :] + p + np.roll(p, -1, axis=1)) / 3.0
+            w = np.linalg.norm(tri_area, axis=2)
+            wsum = w.sum(axis=1)
+            c = ((tri_cent * w[:, :, None]).sum(axis=1)
+                 / np.maximum(wsum, 1e-300)[:, None])
+            degenerate = wsum <= 0.0
+            if np.any(degenerate):
+                c[degenerate] = c0[degenerate]
+            sf[b] = tri_area.sum(axis=1)
+            cf[b] = c
     return sf, cf
 
 
@@ -2141,15 +2149,24 @@ def _detect_defects(
 
 
 def _face_extent(points, faces, cf, sv, n_int):
-    """max over a face's points of |unit(sv) . (pt - faceCentre)|."""
+    """max over a face's points of |unit(sv) . (pt - faceCentre)|.
+
+    Chunked in 250k-face blocks (Lane A RAM fix, same reason as
+    ``_face_geometry`` above): the dense ``(n, k, 3)`` relative-position
+    array peaked past 1.5GB unchunked on a 16M-face mesh.  Bitwise-identical
+    output.
+    """
+    _BLOCK = 250_000
     hat = sv / np.maximum(np.linalg.norm(sv, axis=1), 1e-300)[:, None]
     out = np.zeros(n_int, dtype=np.float64)
     sizes = np.fromiter((len(faces[i]) for i in range(n_int)), dtype=np.int64, count=n_int)
     for k in np.unique(sizes):
         idx = np.flatnonzero(sizes == k)
-        v = np.array([faces[i] for i in idx], dtype=np.int64)
-        rel = points[v] - cf[idx][:, None, :]
-        out[idx] = np.abs((rel * hat[idx][:, None, :]).sum(axis=2)).max(axis=1)
+        for s in range(0, len(idx), _BLOCK):
+            b = idx[s:s + _BLOCK]
+            v = np.array([faces[i] for i in b], dtype=np.int64)
+            rel = points[v] - cf[b][:, None, :]
+            out[b] = np.abs((rel * hat[b][:, None, :]).sum(axis=2)).max(axis=1)
     return out
 
 

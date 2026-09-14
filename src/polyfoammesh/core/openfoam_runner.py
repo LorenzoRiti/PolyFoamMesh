@@ -1696,21 +1696,42 @@ class DualPolyWorker(QObject):
                     growth_rate=float(bl.get("thicknessRatio", 1.2)),
                 )
                 _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
-                if bl.get("concaveClosure") and _cc_n_cells > 1_500_000:
-                    # Safety guard (2026-09-14): a real user run at ~5M cells
-                    # with concaveClosure on exhausted 32GB RAM and crashed
-                    # the whole machine — decoupled_vertex + the post-BL
-                    # merge repair are pure-Python (dict/list-of-lists) per
-                    # vertex/cell, never load-tested above the ~600k-cell
-                    # reference valve. Root cause not yet found; until it is,
-                    # refuse silently-unbounded memory growth above a size
-                    # where we have evidence it is safe, rather than risk
-                    # another crash. Not a quality decision, a safety one.
+                _cc_n_faces = int(
+                    max(int(getattr(result, "n_internal_faces", 0) or 0), 0)
+                ) + int(
+                    max(int(getattr(result, "n_boundary_faces", 0) or 0), 0)
+                )
+                # Safety guard (2026-09-14 root cause, 2026-09-15 measured):
+                # a real user run at ~5M dual cells (~41M faces) with
+                # concaveClosure on exhausted 32GB RAM and crashed the whole
+                # machine. Lane A measured that BL/merge memory scales with
+                # FACES (~0.8KB/face hex, ~1.0KB/face dual marginal), NOT
+                # cells (dual meshes carry ~8 faces/cell vs ~3 for hex)  -
+                # so the guard is on faces: 8M faces projects to ~10.8GB
+                # peak on dual topology (two-point fit: 1.24M -> 2.8GB,
+                # 6.2M -> 10.5GB build peaks) and hex meshes peak far lower
+                # (measured 15.06M faces -> 13.05GB). Above the guard the
+                # stages are skipped rather than risking another crash. Not
+                # a quality decision, a safety one. See
+                # notes/ram_crash_rootcause_reasoning.md.
+                _cc_too_big = (
+                    _cc_n_faces > 8_000_000 if _cc_n_faces > 0
+                    else _cc_n_cells > 1_500_000
+                )
+                if bl.get("concaveClosure") and _cc_too_big:
+                    _cc_size = (
+                        f"~{_cc_n_faces:,} faces" if _cc_n_faces > 0
+                        else f"~{_cc_n_cells:,} cells"
+                    )
+                    _cc_lim = (
+                        "8M-face" if _cc_n_faces > 0 else "1.5M-cell"
+                    )
                     self.log_line.emit(
                         "[poly] WARN: Concave closure skipped — mesh has "
-                        f"~{_cc_n_cells:,} cells, above the 1.5M safety "
-                        "limit (a real run at ~5M cells exhausted 32GB RAM "
-                        "and crashed the system). Continuing without it."
+                        f"{_cc_size}, above the {_cc_lim} safety "
+                        "limit (memory scales with faces; a real run at ~5M "
+                        "dual cells exhausted 32GB RAM and crashed the "
+                        "system). Continuing without it."
                     )
                 elif bl.get("concaveClosure"):
                     # Opt-in (GUI checkbox, default off): per-vertex local
@@ -1760,10 +1781,10 @@ class DualPolyWorker(QObject):
                 )
                 result.bl_prism_cells = bres.n_prism_cells
                 result.bl_thickness = bres.total_thickness
-                if bl.get("concaveClosure") and _cc_n_cells > 1_500_000:
+                if bl.get("concaveClosure") and _cc_too_big:
                     self.log_line.emit(
                         "[poly] WARN: post-BL merge repair skipped — same "
-                        "1.5M-cell safety limit as concave closure above."
+                        "faces-based safety limit as concave closure above."
                     )
                 elif bl.get("concaveClosure"):
                     # Merge repair AFTER the boundary layer (not before -
