@@ -72,7 +72,7 @@ the reference valve; the wall shell under the excluded faces is given up
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import deque
 import itertools
 import logging
 import re
@@ -178,18 +178,12 @@ def _laplacian_smooth_normal_field(
 
 
 
-def _face_geometry(points: np.ndarray, faces: list[list[int]]):
-    """(area vectors, centroids) for every face  -  OpenFOAM convention:
-    centroid = arithmetic mean of the vertices.  Vectorised (padded face
-    matrix) so meshes with >1M faces stay fast."""
+_FACE_GEOMETRY_CHUNK = 250_000
+
+
+def _face_geometry_block(points: np.ndarray, faces: list[list[int]]):
+    """One dense-vectorised block of ``_face_geometry`` (see below)."""
     n_faces = len(faces)
-    if n_faces == 0:
-        return np.zeros((0, 3)), np.zeros((0, 3))
-    # Fully vectorised: no Python loop over faces (building the padded index
-    # matrix one row at a time was the dominant cost) and none over the
-    # padded columns either. Measured on 60,000 mixed 4..7-gons: 107 ms ->
-    # 58 ms (1.84x), with sf/cf bit-identical to the previous implementation
-    # (np.allclose on both outputs).
     lens = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n_faces)
     max_len = int(lens.max())
     if max_len == 0:
@@ -212,6 +206,39 @@ def _face_geometry(points: np.ndarray, faces: list[list[int]]):
     # implementation in tet_poly_dual._newell.
     sf = 0.5 * np.where(mask[..., None], np.cross(coords, nxt), 0.0).sum(axis=1)
     cf = np.where(mask[..., None], coords, 0.0).sum(axis=1) / lens[:, None]
+    return sf, cf
+
+
+def _face_geometry(points: np.ndarray, faces: list[list[int]],
+                   _chunk: int = _FACE_GEOMETRY_CHUNK):
+    """(area vectors, centroids) for every face  -  OpenFOAM convention:
+    centroid = arithmetic mean of the vertices.  Vectorised (padded face
+    matrix) so meshes with >1M faces stay fast, CHUNKED so meshes with
+    >10M faces stay in RAM: the dense ``(n_faces, max_len, 3)`` temporaries
+    are ~72 bytes/face/slot-set (coords + next + cross output), i.e. ~1.2GB
+    per 15M quad faces per live temporary, times 3-4 live at once  -  one
+    unchunked call peaked past 5GB on a 5M-cell mesh and this function is
+    called dozens of times per run (every metric/validation pass).  Chunking
+    bounds the transient to ~80MB per 250k-face block with bitwise-identical
+    output (same per-face op order; verified by
+    ``test_face_geometry_chunked_matches_unchunked``)."""
+    n_faces = len(faces)
+    if n_faces == 0:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    # Fully vectorised within each block: no Python loop over faces (building
+    # the padded index matrix one row at a time was the dominant cost) and
+    # none over the padded columns either. Measured on 60,000 mixed 4..7-gons:
+    # 107 ms -> 58 ms (1.84x). The outer loop is over BLOCKS only (one slice
+    # per 250k faces), so the per-face speed is unchanged while the dense
+    # temporaries stay bounded.
+    if n_faces <= _chunk:
+        return _face_geometry_block(points, faces)
+    sf = np.empty((n_faces, 3))
+    cf = np.empty((n_faces, 3))
+    for lo in range(0, n_faces, _chunk):
+        s, c = _face_geometry_block(points, faces[lo:lo + _chunk])
+        sf[lo:lo + len(s)] = s
+        cf[lo:lo + len(c)] = c
     return sf, cf
 
 
@@ -337,6 +364,40 @@ def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
     return bad
 
 
+class _FaceParityCSR:
+    """Compressed-row adjacency for the face-parity graph.
+
+    Lane A RAM fix: the old ``dict[int, list[tuple]]`` adjacency held one
+    dict entry + one list + one tuple per face-edge-side (~150 bytes/side,
+    ~10GB on a 5M-cell mesh).  CSR holds the same pairs in three dense
+    arrays (offsets int64, neighbours int32, parities int8, ~10 bytes/side)
+    with per-face neighbour order identical to the dict insertion order, so
+    the BFS solve assigns identical values.  ``items()`` yields
+    ``(face, [(nbr, parity), ...])`` for the equivalence test normalizer.
+    """
+
+    __slots__ = ("n_faces", "off", "nbr", "par")
+
+    def __init__(self, n_faces: int, off: np.ndarray, nbr: np.ndarray,
+                 par: np.ndarray):
+        self.n_faces = n_faces
+        self.off = off
+        self.nbr = nbr
+        self.par = par
+
+    def row(self, f: int):
+        s, e = int(self.off[f]), int(self.off[f + 1])
+        return zip(self.nbr[s:e], self.par[s:e])
+
+    def items(self):
+        for f in range(self.n_faces):
+            s, e = int(self.off[f]), int(self.off[f + 1])
+            yield f, list(zip(self.nbr[s:e].tolist(), self.par[s:e].tolist()))
+
+
+_PARITY_CELL_BATCH = 200_000
+
+
 def _build_face_parity_graph(faces, owner, neigh, n_int):
     """Build the face-adjacency parity graph consumed by the BFS winding
     solve: for every (edge, cell) with exactly two face-sides, an edge
@@ -350,73 +411,137 @@ def _build_face_parity_graph(faces, owner, neigh, n_int):
     and tests/test_bl_poly.py for the byte-for-byte check against an
     independently-written reference loop.
 
-    Returns ``(adj, n_incompat)`` where ``n_incompat`` counts (edge, cell)
-    groups that did NOT have exactly two occurrences (non-manifold).
+    Returns ``(csr, n_incompat)`` where ``csr`` is a ``_FaceParityCSR``
+    with the same pairs (and the same per-face neighbour order) the old
+    dict version produced, and ``n_incompat`` counts (edge, cell) groups
+    that did NOT have exactly two occurrences (non-manifold).
+
+    Lane A RAM fix: the old version materialized the occurrence rows for
+    ALL face-edge-sides at once (5 int64 arrays over 2x sides, ~5GB on a
+    5M-cell mesh) plus a stacked group-key matrix, a full lexsort scratch
+    set, and a dict-of-tuples adjacency (~150 bytes/side).  Grouping is now
+    done in batches over CELL ranges (every (edge, cell) group belongs to
+    exactly one cell, so batches never split a group and the pairs are
+    identical), and the adjacency is CSR (~10 bytes/side).  Peak on a 5M
+    hex mesh drops from ~12GB to ~2GB for this function.
     """
     n_faces = len(faces)
+    _empty = _FaceParityCSR(
+        n_faces, np.zeros(n_faces + 1, dtype=np.int64),
+        np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int8),
+    )
+    if n_faces == 0:
+        return _empty, 0
+    owner_arr = np.asarray(owner)
+    neigh_arr = np.asarray(neigh)
+    _mx = -1
+    if owner_arr.size:
+        _mx = max(_mx, int(owner_arr.max()))
+    if neigh_arr.size:
+        _mx = max(_mx, int(neigh_arr.max()))
+    n_cells_seen = _mx + 1
     degrees = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n_faces)
     n_sides = int(degrees.sum())
+    if n_sides == 0:
+        return _empty, 0
     flat_v = np.fromiter(
         (v for f in faces for v in f), dtype=np.int64, count=n_sides,
     )
+    if int(flat_v.max()) >= 2**31 or n_faces >= 2**31 or n_cells_seen >= 2**31:
+        raise ValueError(
+            "mesh too large for the 31-bit packed parity graph "
+            "(verts < 2**31 required, mesh is past it)"
+        )
     face_start = np.concatenate(([0], np.cumsum(degrees)[:-1]))
-    fi_flat = np.repeat(np.arange(n_faces, dtype=np.int64), degrees)
+    fi = np.repeat(np.arange(n_faces, dtype=np.int32), degrees)
     pos = np.arange(n_sides, dtype=np.int64) - np.repeat(face_start, degrees)
     deg_flat = np.repeat(degrees, degrees)
-    next_idx = np.repeat(face_start, degrees) + (pos + 1) % deg_flat
-    a_flat = flat_v
-    b_flat = flat_v[next_idx]
-    key_lo = np.minimum(a_flat, b_flat)
-    key_hi = np.maximum(a_flat, b_flat)
-    sd_flat = np.where(a_flat < b_flat, 1, -1).astype(np.int8)
+    b_side = flat_v[np.repeat(face_start, degrees) + (pos + 1) % deg_flat]
+    del deg_flat, pos, face_start
+    key = ((np.minimum(flat_v, b_side).astype(np.uint64) << np.uint64(32))
+           | np.maximum(flat_v, b_side).astype(np.uint64))
+    sd = np.where(flat_v < b_side, 1, -1).astype(np.int8)
+    del flat_v, b_side
+    fav = owner_arr[fi].astype(np.int32)
+    internal = fi < n_int
+    nav = np.full(n_sides, -1, dtype=np.int32)
+    if n_int and neigh_arr.size:
+        nav[internal] = neigh_arr[fi[internal]]
+    del owner_arr, neigh_arr
 
-    owner_arr = np.asarray(owner, dtype=np.int64)
-    neigh_arr = np.asarray(neigh, dtype=np.int64)
-    fav_flat = owner_arr[fi_flat]
-    has_neigh = fi_flat < n_int
-    nav_flat = np.where(has_neigh, neigh_arr[np.clip(fi_flat, 0, len(neigh_arr) - 1)], -1)
+    n_batches = max(1, -(-max(n_cells_seen, 1) // _PARITY_CELL_BATCH))
+    bounds = np.linspace(0, max(n_cells_seen, 1), n_batches + 1).astype(np.int64)
 
-    # occurrence rows: (key_lo, key_hi, cell, face, direction), owner side
-    # for every face-edge, plus neighbour side where it exists.
-    okey_lo = np.concatenate([key_lo, key_lo[has_neigh]])
-    okey_hi = np.concatenate([key_hi, key_hi[has_neigh]])
-    ocell = np.concatenate([fav_flat, nav_flat[has_neigh]])
-    oface = np.concatenate([fi_flat, fi_flat[has_neigh]])
-    odir = np.concatenate([sd_flat, -sd_flat[has_neigh]])
+    def _batch_pairs(lo: int, hi: int):
+        """(f1, f2, parity) for groups whose cell is in [lo, hi)."""
+        om = (fav >= lo) & (fav < hi)
+        nm = internal & (nav >= lo) & (nav < hi)
+        rk = np.concatenate([key[om], key[nm]])
+        if len(rk) == 0:
+            z32 = np.zeros(0, dtype=np.int32)
+            return z32, z32, np.zeros(0, dtype=np.int8), 0
+        rc = np.concatenate([fav[om], nav[nm]])
+        rf = np.concatenate([fi[om], fi[nm]])
+        rd = np.concatenate([sd[om], -sd[nm]])
+        order = np.lexsort((rf, rc, rk))
+        rk, rc, rf, rd = rk[order], rc[order], rf[order], rd[order]
+        del order
+        is_new = np.empty(len(rk), dtype=bool)
+        is_new[0] = True
+        is_new[1:] = (rk[1:] != rk[:-1]) | (rc[1:] != rc[:-1])
+        group_id = np.cumsum(is_new) - 1
+        group_size = np.bincount(group_id)
+        n_inc = int((group_size != 2).sum())
+        pair_mask = group_size[group_id] == 2
+        pf = rf[pair_mask]
+        pd = rd[pair_mask]
+        # within each size-2 group, the two rows are adjacent after the
+        # sort above (sorted by group key, ties by face).
+        f1 = pf[0::2]
+        d1 = pd[0::2]
+        f2 = pf[1::2]
+        d2 = pd[1::2]
+        keep = f1 != f2
+        return (f1[keep], f2[keep],
+                (-d1[keep] * d2[keep]).astype(np.int8), n_inc)
 
-    # group by (edge key, cell): exactly 2 occurrences -> a valid pairing.
-    order = np.lexsort((oface, ocell, okey_hi, okey_lo))
-    okey_lo, okey_hi, ocell, oface, odir = (
-        okey_lo[order], okey_hi[order], ocell[order], oface[order], odir[order],
-    )
-    group_key = np.stack([okey_lo, okey_hi, ocell], axis=1)
-    is_new = np.empty(len(okey_lo), dtype=bool)
-    is_new[0] = True
-    is_new[1:] = np.any(group_key[1:] != group_key[:-1], axis=1)
-    group_id = np.cumsum(is_new) - 1
-    n_groups = int(group_id[-1]) + 1 if len(group_id) else 0
-    group_size = np.bincount(group_id, minlength=n_groups)
-    n_incompat = int((group_size != 2).sum())
-
-    pair_mask = group_size[group_id] == 2
-    pf = oface[pair_mask]
-    pd = odir[pair_mask]
-    # within each size-2 group, the two rows are adjacent after the sort
-    # above (stable lexsort keeps ties in original relative order, and each
-    # group's own two rows are contiguous once sorted by group key).
-    f1 = pf[0::2]
-    d1 = pd[0::2]
-    f2 = pf[1::2]
-    d2 = pd[1::2]
-    same_face = f1 == f2
-    f1, d1, f2, d2 = f1[~same_face], d1[~same_face], f2[~same_face], d2[~same_face]
-    parity = (-d1 * d2).astype(np.int8)
-
-    adj: dict[int, list[tuple[int, int]]] = defaultdict(list)
-    for a_, b_, p_ in zip(f1.tolist(), f2.tolist(), parity.tolist()):
-        adj[a_].append((b_, p_))
-        adj[b_].append((a_, p_))
-    return adj, n_incompat
+    # pass 1: per-face pair counts -> CSR offsets.
+    counts = np.zeros(n_faces, dtype=np.int64)
+    n_incompat = 0
+    for lo, hi in zip(bounds[:-1].tolist(), bounds[1:].tolist()):
+        f1, f2, _par, n_inc = _batch_pairs(int(lo), int(hi))
+        n_incompat += n_inc
+        if len(f1):
+            np.add.at(counts, f1, 1)
+            np.add.at(counts, f2, 1)
+    off = np.zeros(n_faces + 1, dtype=np.int64)
+    np.cumsum(counts, out=off[1:])
+    del counts
+    nbr = np.empty(int(off[-1]), dtype=np.int32)
+    par = np.empty(int(off[-1]), dtype=np.int8)
+    # pass 2: fill the CSR rows (stable face order within each batch keeps
+    # the per-face neighbour order identical to the old dict version; the
+    # BFS assignment is order-independent on consistent graphs anyway).
+    for lo, hi in zip(bounds[:-1].tolist(), bounds[1:].tolist()):
+        f1, f2, par_b, _n_inc = _batch_pairs(int(lo), int(hi))
+        if not len(f1):
+            continue
+        fa = np.concatenate([f1, f2])
+        oa = np.concatenate([f2, f1])
+        pa = np.concatenate([par_b, par_b])
+        srt = np.argsort(fa, kind="stable")
+        sfa, soa, spa = fa[srt], oa[srt], pa[srt]
+        del fa, oa, pa, srt
+        new = np.empty(len(sfa), dtype=bool)
+        new[0] = True
+        new[1:] = sfa[1:] != sfa[:-1]
+        starts = np.flatnonzero(new)
+        rank = (np.arange(len(sfa))
+                - np.repeat(starts, np.diff(np.append(starts, len(sfa)))))
+        at = off[sfa] + rank
+        nbr[at] = soa
+        par[at] = spa
+    return _FaceParityCSR(n_faces, off, nbr, par), n_incompat
 
 
 def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
@@ -447,7 +572,7 @@ def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
     t0 = _time.monotonic()
     n_faces = len(faces)
 
-    adj, n_incompat = _build_face_parity_graph(faces, owner, neigh, n_int)
+    csr, n_incompat = _build_face_parity_graph(faces, owner, neigh, n_int)
 
     x = np.ones(n_faces, dtype=np.int8)
     comp = -np.ones(n_faces, dtype=np.int64)
@@ -460,7 +585,7 @@ def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
         q = deque([f0])
         while q:
             f = q.popleft()
-            for g, p in adj[f]:
+            for g, p in csr.row(f):
                 want = x[f] * p
                 if comp[g] < 0:
                     x[g] = want
@@ -472,7 +597,12 @@ def _solve_global_windings(points, faces, owner, neigh, n_int, n_cells):
         if n_comp % 64 == 0:
             _gil_yield(n_comp, 64)
 
-    faces = [list(reversed(f)) if x[fi] < 0 else list(f)
+    # Lane A RAM fix: flip in place, copying ONLY the flipped faces.  The
+    # input list is exclusively owned by the caller (``_build`` assembled it
+    # fresh: every element is already a private copy, and nothing downstream
+    # mutates face lists in place), so re-copying every face here just to
+    # reverse a few of them wasted a full mesh copy (~2.4GB on a 5M mesh).
+    faces = [list(reversed(f)) if x[fi] < 0 else f
              for fi, f in enumerate(faces)]
 
     # per-component sign: every connected component must have positive total
@@ -1333,12 +1463,16 @@ class PolyBoundaryLayerEngine:
                 wv[v] = None
         wall_verts = sorted(wv)
 
-        # vertex -> incident faces index (used by the normals, fade and clamp
-        # passes below)
+        # vertex -> incident faces index.  Lane A RAM fix: only WALL vertices
+        # are ever looked up (the interior-support probe below queries
+        # vertices of wall faces, which are wall vertices by construction),
+        # so faces are still scanned once but entries are kept only for wall
+        # vertices  -  the old map held every vertex (~2GB on a 5M mesh).
         vert_faces: dict[int, list[int]] = {}
         for fi, f in enumerate(faces):
             for v in f:
-                vert_faces.setdefault(v, []).append(fi)
+                if v in wv:
+                    vert_faces.setdefault(v, []).append(fi)
         wall_face_of: dict[int, list[int]] = {}
         for fi in bnd:
             for v in faces[fi]:
@@ -1584,7 +1718,6 @@ class PolyBoundaryLayerEngine:
         bnd = pre["bnd"]
         wv = pre["wv"]
         wall_verts = pre["wall_verts"]
-        vert_faces = pre["vert_faces"]
         wall_face_of = pre["wall_face_of"]
         normals = pre["normals"]
         angle_fade = pre["angle_fade"]
