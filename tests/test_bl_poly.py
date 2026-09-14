@@ -655,6 +655,72 @@ def test_bl_normal_method_most_visible_succeeds_on_healthy_cube():
     _mesh_ok(case_mv / "constant" / "polyMesh")
 
 
+def test_bl_normal_method_smoothed_rejects_dual_convexity_combo():
+    case = _build_dual_case(WORK_ROOT / "cube_nm_smooth_combo")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, normal_method="smoothed",
+                  concavity_criterion="dual_convexity")
+    assert not res.success
+    assert any("smoothed" in e for e in res.errors)
+
+
+def test_bl_normal_method_smoothed_succeeds_on_healthy_cube():
+    """'smoothed' (Alauzet normal smoothing, adapted -- see
+    notes/normal_smoothing_reasoning.md) must build a valid BL mesh on the
+    healthy cube with the same topology as area_weighted. On a flat cube
+    face every incident normal at an edge-interior wall vertex already
+    agrees with its neighbours, so Laplacian smoothing is near-identity
+    there; corner vertices (3 orthogonal incident normals, angle_fade < 1)
+    DO get blended toward their smoothed neighbours, same caveat as the
+    most_visible test above -- checked structurally, not geometrically."""
+    case_aw = _build_dual_case(WORK_ROOT / "cube_nm_sm_aw")
+    res_aw = PolyBoundaryLayerEngine(case_aw, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        normal_method="area_weighted",
+    )
+    case_sm = _build_dual_case(WORK_ROOT / "cube_nm_sm")
+    res_sm = PolyBoundaryLayerEngine(case_sm, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        normal_method="smoothed",
+    )
+    assert res_aw.success and res_sm.success, (res_aw.errors, res_sm.errors)
+    assert res_aw.n_prism_cells == res_sm.n_prism_cells
+    assert res_sm.stats.get("min_cell_volume", 0.0) > 0.0
+    _mesh_ok(case_sm / "constant" / "polyMesh")
+
+
+def test_laplacian_smooth_normal_field_matches_hand_computed_star():
+    """Direct unit test of the smoothing primitive against the
+    hand-verified 5-vertex star from
+    scratchpad/verify_normal_smoothing.py: a divergent 'ridge' normal at
+    the centre must move toward its 4 unanimous neighbours' consensus
+    direction, stay unit length, and converge to a stable fixed point."""
+    from polyfoammesh.core.bl_poly import _laplacian_smooth_normal_field
+
+    normals = np.zeros((5, 3))
+    idx = {"c": 0, "a": 1, "b": 2, "d": 3, "e": 4}
+    normals[idx["c"]] = [1.0, 0.0, 0.0]
+    for k in ("a", "b", "d", "e"):
+        normals[idx[k]] = [0.0, 0.0, 1.0]
+    adjacency = {
+        idx["c"]: {idx["a"], idx["b"], idx["d"], idx["e"]},
+        idx["a"]: {idx["c"]}, idx["b"]: {idx["c"]},
+        idx["d"]: {idx["c"]}, idx["e"]: {idx["c"]},
+    }
+    wall_verts = list(idx.values())
+
+    result_20 = _laplacian_smooth_normal_field(normals, wall_verts, adjacency, iters=20)
+    result_100 = _laplacian_smooth_normal_field(normals, wall_verts, adjacency, iters=100)
+    for v in wall_verts:
+        assert np.linalg.norm(result_20[v]) == pytest.approx(1.0, abs=1e-9)
+    # converged to a stable fixed point by iteration 20 (matches the
+    # hand-verified script's own measurement)
+    np.testing.assert_allclose(result_20[idx["c"]], result_100[idx["c"]], atol=1e-6)
+    angle_c = np.degrees(np.arccos(np.clip(result_20[idx["c"]] @ [0, 0, 1], -1, 1)))
+    assert 20.0 < angle_c < 45.0, angle_c  # moved from 90deg toward the neighbours' 0deg
+
+
 def test_bl_local_exclude_widen_param():
     """local_exclude_widen is validated and plumbed: a raised value runs
     (healthy cube unaffected, since the widen step is a no-op when no

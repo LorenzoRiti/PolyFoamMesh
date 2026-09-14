@@ -147,6 +147,35 @@ def _most_visible_normal(f_norms: list, iters: int = 200) -> np.ndarray:
     return n
 
 
+def _laplacian_smooth_normal_field(
+    normals: np.ndarray, wall_verts: list, adjacency: dict, iters: int = 20,
+) -> np.ndarray:
+    """Standard Laplacian smoothing of a per-vertex unit-normal FIELD over
+    the wall topology (self + adjacent wall vertices, re-normalised every
+    iteration since directions are smoothed, not free vectors), per
+    Alauzet's closed-advancing-layer BL paper's "normal smoothing".
+
+    Verified on a hand-computable 5-vertex star
+    (``scratchpad/verify_normal_smoothing.py``): converges to a stable
+    fixed point, preserves unit length exactly, and pulls a divergent
+    "ridge" normal toward its neighbours' consensus direction.
+    """
+    smoothed = normals.copy()
+    for _ in range(iters):
+        nxt = smoothed.copy()
+        for w in wall_verts:
+            nbrs = adjacency.get(w, ())
+            if not nbrs:
+                continue
+            acc = smoothed[w].copy()
+            for w2 in nbrs:
+                acc += smoothed[w2]
+            acc /= (1 + len(nbrs))
+            nrm = np.linalg.norm(acc)
+            nxt[w] = acc / nrm if nrm > 1e-300 else smoothed[w]
+        smoothed = nxt
+    return smoothed
+
 
 
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):
@@ -559,9 +588,17 @@ class PolyBoundaryLayerEngine:
           (Aubry et al., via Alauzet's closed-advancing-layer BL paper),
           opt-in experiment targeting the same concave-ridge early-
           termination failure mode as `local_termination`; see
-          notes/most_visible_normal_reasoning.md. Only implemented for
-          `concavity_criterion="angle_fade"` (the default); raises if
-          combined with "dual_convexity".
+          notes/most_visible_normal_reasoning.md. "smoothed" = Laplacian
+          smoothing of the normal field over the wall-vertex topology
+          (~20 iterations), blended with the true normal by (1 -
+          angle_fade) so concave ridges are nearly fully smoothed and flat
+          regions stay exact (Alauzet's "normal smoothing", adapted to our
+          single-direction-per-vertex extrusion model since we have no
+          per-layer "distance from the wall" to blend by); see
+          notes/normal_smoothing_reasoning.md. Both "most_visible" and
+          "smoothed" are only implemented for `concavity_criterion=
+          "angle_fade"` (the default); raise if combined with
+          "dual_convexity".
         - `local_termination`: opt-in iterative local termination for
           geometries with concave defects (the reference valve).  Each
           attempt uses the binary layer-count mode (a face is either fully
@@ -645,15 +682,15 @@ class PolyBoundaryLayerEngine:
                 "(expected 'angle_fade' or 'dual_convexity')"
             )
             return res
-        if normal_method not in ("area_weighted", "most_visible"):
+        if normal_method not in ("area_weighted", "most_visible", "smoothed"):
             res.errors.append(
                 f"unknown normal_method {normal_method!r} "
-                "(expected 'area_weighted' or 'most_visible')"
+                "(expected 'area_weighted', 'most_visible' or 'smoothed')"
             )
             return res
-        if normal_method == "most_visible" and concavity_criterion != "angle_fade":
+        if normal_method in ("most_visible", "smoothed") and concavity_criterion != "angle_fade":
             res.errors.append(
-                "normal_method='most_visible' is only implemented for "
+                f"normal_method={normal_method!r} is only implemented for "
                 "concavity_criterion='angle_fade'"
             )
             return res
@@ -1307,6 +1344,33 @@ class PolyBoundaryLayerEngine:
             theta = np.degrees(np.arccos(min(max(cos_max, -1.0), 1.0)))
             # theta = 0..180; fade linearly from full at <=60° to 5% at 150°+
             angle_fade[w] = max(0.05, min(1.0, (150.0 - theta) / 90.0))
+
+        # --- opt-in normal_method="smoothed" (Alauzet's "normal smoothing")--
+        # Laplacian-smooth the per-vertex normal field over the wall-vertex
+        # topology (~20 iterations), then blend per vertex with the true
+        # normal by (1 - angle_fade): flat regions (angle_fade ~= 1) keep the
+        # true normal almost exactly, concave ridges (angle_fade as low as
+        # 0.05) are nearly fully smoothed  -  reusing the concavity signal
+        # already computed above instead of the paper's "distance from the
+        # wall" (which does not exist in our single-direction-per-vertex
+        # extrusion model; see notes/normal_smoothing_reasoning.md for why).
+        if normal_method == "smoothed":
+            wall_adj: dict[int, set[int]] = {w: set() for w in wall_verts}
+            for fi in bnd:
+                f = faces[fi]
+                for k in range(len(f)):
+                    a, b = f[k], f[(k + 1) % len(f)]
+                    if a in wall_adj and b in wall_adj:
+                        wall_adj[a].add(b)
+                        wall_adj[b].add(a)
+            smoothed = _laplacian_smooth_normal_field(
+                normals, wall_verts, wall_adj, iters=20,
+            )
+            for w in wall_verts:
+                blend_w = 1.0 - angle_fade[w]
+                v = (1.0 - blend_w) * normals[w] + blend_w * smoothed[w]
+                nrm = np.linalg.norm(v)
+                normals[w] = v / nrm if nrm > 1e-300 else normals[w]
 
         # --- interior support distance (inversion clamp, scale-independent) --
         # distance from the wall vertex to the nearest NON-wall vertex of the
