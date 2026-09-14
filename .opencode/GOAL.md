@@ -277,3 +277,25 @@ skew 16.805, aspect 981 identici) + costo retry visibile (short edges
 299) + una regressione onesta oltre le singole (severeNO 10411 vs
 10117, +2,9%). Promosso a combinazione opt-in documentata, non default.
 Dettagli in `notes/combined_normal_height_retry_reasoning.md`.
+
+## Avanzamento 2026-09-15 — Lane C: smoothed+dual sbloccato, no-op misurato
+
+Il `raise` era stantio (il blend legge già `angle_fade` = `dual_fade` in
+modalità dual): sbloccata la combo per solo "smoothed" (most_visible+dual
+resta rifiutato, genuinamente non implementabile). A/B valvola + checkMesh
+reale: esclusioni 6470 -> 6455 (-0,23%, sotto la barra), checkMesh
+identico. NON promosso, documentato come no-op (il dual fade termina già
+tutto ciò che lo smoothing potrebbe salvare). Commit `ac8a3e4`. Dettagli
+in `notes/smoothed_dual_blend_reasoning.md`. Nessun default cambiato.
+
+## Avanzamento 2026-09-15 — Lane D: cluster aspect mappati, trial respinto
+
+Mappa per-cella sul cilindro: cluster tappi (z≈±0.995) + parete esterna
+(r≈0.49) confermati, termine direzionale ovunque; la peggiore è una
+lastra sottile al tappo (allungamento in-plane). Trial greedy di merge
+mirati su copia scratch: 12 merge, max 4.489 -> 4.013 in-process, poi
+muro di validità. checkMesh reale RESPINGE: NOmax +80%, skew +233%,
+failed 1 -> 3 (stesso pattern lam=10/slot1: il gate conta violazioni,
+non severità). NON promosso; operatore di SPLIT direzionale scoped come
+lavoro futuro. Nessun codice di produzione toccato. Commit `5854e18`.
+Dettagli in `notes/cylinder_aspect_clusters_reasoning.md`.
