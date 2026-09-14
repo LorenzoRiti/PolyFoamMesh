@@ -540,6 +540,13 @@ def smooth_dual_mesh(
     # that improves aspect ratio but not non-ortho/skew would never be
     # preferred over one that doesn't (see the "converges to the same
     # result" finding in notes/getme_compactness_reasoning.md).
+    # lam=1 (measured, real checkMesh, cylinder). A higher weight (10) was
+    # tried and looked like a free win in the in-process replica (aspect
+    # ratio 4.49 -> 4.40, non-ortho/skew unchanged) but real checkMesh
+    # showed the opposite: non-ortho max 36.6 -> 49.6 and skew 1.17 -> 1.31
+    # got WORSE while aspect ratio only improved slightly - a net
+    # regression on 2 of 3 metrics, not a free lunch. Reverted to lam=1.
+    # See notes/getme_compactness_reasoning.md.
     aspect_lam = 1.0 if (use_compactness or use_axis_balance) else 0.0
     best_obj = _current_objective(
         objective, objective_limit_deg, sf, cf, ctr, owner, neigh, n_int,

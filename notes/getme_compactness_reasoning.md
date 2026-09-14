@@ -125,6 +125,35 @@ constraints) - but is no longer concerning in practice, since the shared
 result is now a real, verified improvement on 3 of 4 tracked metrics with
 no regression on the 4th.
 
+## Result 4: tried a higher aspect_lam weight — real checkMesh caught a regression the in-process replica missed
+
+The worst cell's aspect ratio (4.49) is dominated by the directional term
+in ~10,620 of 10,622 cells, and is a genuine LOCAL OPTIMUM of vertex
+relaxation: more iterations (30 instead of 10) changed nothing, and
+raising `aspect_lam` from 1 to 10 in the in-process replica squeezed out
+a further small gain (4.49 -> 4.40) that plateaued identically at 100
+(consistent with a real optimum, not an undertuned weight).
+
+**Real checkMesh caught what the in-process replica missed**: lam=10
+looked like a free improvement (same non-ortho/skew, better aspect
+ratio) using the in-process counts, but real checkMesh on the resulting
+mesh showed non-orthogonality max 36.6 -> 49.6 and skewness 1.17 -> 1.31
+BOTH got worse, for a small aspect-ratio gain (4.49 -> 4.40) — a net
+regression on 2 of 3 metrics, not a free lunch. **Reverted to lam=1**.
+This is exactly the kind of gap between the in-process replica and real
+checkMesh this whole session has repeatedly found (see the skewness
+formula bug) — another concrete reminder that a real `checkMesh` run,
+not just the in-process detector, is the only thing that can be trusted
+for a final verdict.
+
+The remaining aspect-ratio gap (4.49 vs snappyHexMesh's 3.02) most likely
+needs a topology-level intervention (the worst cells are probably
+adjacent to the cylinder's flat end caps, where the dual mesh's
+construction inherently produces elongated cells vertex-relaxation alone
+cannot fix), not more smoothing tuning — consistent with the session's
+broader finding that the concave-cell MERGE repair (a topology change,
+not smoothing) was needed for the pyramid/orientation problem earlier.
+
 ## Honest bottom line
 
 - Real, verified, substantial gain, confirmed by real checkMesh (not
