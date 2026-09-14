@@ -181,3 +181,52 @@ def test_smoothing_on_clean_mesh_is_noop(tmp_path):
     sm_total = sm_counts["pyramid"] + sm_counts["non_ortho"] + sm_counts["skew"]
     assert sm_total <= base_total
     assert (sm_vol > 0.0).all()
+
+
+def test_zonal_mode_empty_zone_is_bit_identical(tmp_path):
+    """Lane D2 plumbing pin: with a threshold above every cell's aspect
+    (empty zone), one iteration must follow the default path bit-for-bit
+    (masked candidates are immobile, zonal objective term is exactly 0).
+    iterations=1 isolates the stop-condition, which legitimately differs
+    (zonal keeps polishing at zero defects)."""
+    points, faces, owner, neigh, _patches, n_int, n_cells = _run_dual(tmp_path)
+    rng = np.random.default_rng(3)
+    boundary = _boundary_vertex_mask(points, faces, n_int)
+    injected = points.copy()
+    for v in np.flatnonzero(~boundary):
+        injected[v] += rng.normal(0, 0.15, 3)
+    kw = dict(
+        detect_defects=_detect_defects, face_geometry=_face_geometry,
+        cell_centres=_cell_centres,
+    )
+    base, _ = smooth_dual_mesh(
+        injected, faces, owner, neigh, n_int, n_cells,
+        iterations=1, relaxation=0.5, **kw)
+    zoned, _ = smooth_dual_mesh(
+        injected, faces, owner, neigh, n_int, n_cells,
+        iterations=1, relaxation=0.5, worst_aspect_thr=1e18, **kw)
+    np.testing.assert_array_equal(zoned, base)
+
+
+def test_zonal_mode_holds_safety_contract(tmp_path):
+    """Lane D2 contract: a live zone never breaks the keep-best guarantees
+    (defects non-increasing, boundary pinned, volumes positive)."""
+    points, faces, owner, neigh, _patches, n_int, n_cells = _run_dual(tmp_path)
+    boundary = _boundary_vertex_mask(points, faces, n_int)
+    rng = np.random.default_rng(3)
+    injected = points.copy()
+    for v in np.flatnonzero(~boundary):
+        injected[v] += rng.normal(0, 0.15, 3)
+    inj_counts, _ = _defects(injected, faces, owner, neigh, n_int, n_cells)
+    inj_total = inj_counts["pyramid"] + inj_counts["non_ortho"] + inj_counts["skew"]
+    assert inj_total > 0
+    smoothed, _best = smooth_dual_mesh(
+        injected, faces, owner, neigh, n_int, n_cells,
+        _detect_defects, _face_geometry, _cell_centres,
+        iterations=4, relaxation=0.5, worst_aspect_thr=1.5,
+    )
+    sm_counts, sm_vol = _defects(smoothed, faces, owner, neigh, n_int, n_cells)
+    sm_total = sm_counts["pyramid"] + sm_counts["non_ortho"] + sm_counts["skew"]
+    assert sm_total <= inj_total
+    assert np.array_equal(smoothed[boundary], injected[boundary])
+    assert (sm_vol > 0.0).all()
