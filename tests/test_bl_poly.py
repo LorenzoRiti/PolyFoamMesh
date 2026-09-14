@@ -812,3 +812,24 @@ def test_bl_local_termination_early_exit_intermediates_noop_on_healthy():
     assert not any("early-exit-intermediates: skipping" in w
                    for w in res.warnings)
     _mesh_ok(case / "constant" / "polyMesh")
+
+
+def test_face_geometry_chunked_matches_unchunked():
+    """Chunked _face_geometry (Lane A RAM fix) is bitwise-identical to the
+    single-block path on a ragged non-planar face set, including faces that
+    straddle chunk boundaries."""
+    from polyfoammesh.core.bl_poly import _face_geometry, _face_geometry_block
+
+    rng = np.random.default_rng(7)
+    pts = rng.random((60, 3))
+    faces = []
+    i = 0
+    for size in (3, 4, 5, 6, 7, 4, 3, 5):
+        faces.append([(i + k) % 60 for k in range(size)])
+        i += size - 1
+    faces = faces * 5  # 40 faces, mixed sizes
+    sf_ref, cf_ref = _face_geometry_block(pts, faces)
+    for chunk in (1, 7, 13, 10**9):
+        sf, cf = _face_geometry(pts, faces, _chunk=chunk)
+        np.testing.assert_array_equal(sf, sf_ref)
+        np.testing.assert_array_equal(cf, cf_ref)
