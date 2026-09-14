@@ -116,6 +116,13 @@ def main():
         ok, msg = eng._validate(built, total_vol0, 0.0)
     print(f"[validate] ok={ok} msg={msg} peak={s.peak:.0f} MB", flush=True)
 
+    # production-faithful: openfoam_runner re-reads the mesh from disk, so
+    # the input mesh and the precompute are dead before merge runs. Without
+    # this, the harness overestimates the merge peak by the input mesh.
+    import gc
+    del points, faces, owner, neigh, patches, pre, m
+    gc.collect()
+    print(f"[freed-input] rss={rss_mb():.0f} MB", flush=True)
     bp, bf, bo, bn = (built["points"], built["faces"], built["owner"],
                       built["neigh"])
     bn_int = int(built["n_int"])
