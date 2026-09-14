@@ -1695,7 +1695,24 @@ class DualPolyWorker(QObject):
                     first_height=float(bl.get("firstLayerThickness", 0.0)),
                     growth_rate=float(bl.get("thicknessRatio", 1.2)),
                 )
-                if bl.get("concaveClosure"):
+                _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
+                if bl.get("concaveClosure") and _cc_n_cells > 1_500_000:
+                    # Safety guard (2026-09-14): a real user run at ~5M cells
+                    # with concaveClosure on exhausted 32GB RAM and crashed
+                    # the whole machine — decoupled_vertex + the post-BL
+                    # merge repair are pure-Python (dict/list-of-lists) per
+                    # vertex/cell, never load-tested above the ~600k-cell
+                    # reference valve. Root cause not yet found; until it is,
+                    # refuse silently-unbounded memory growth above a size
+                    # where we have evidence it is safe, rather than risk
+                    # another crash. Not a quality decision, a safety one.
+                    self.log_line.emit(
+                        "[poly] WARN: Concave closure skipped — mesh has "
+                        f"~{_cc_n_cells:,} cells, above the 1.5M safety "
+                        "limit (a real run at ~5M cells exhausted 32GB RAM "
+                        "and crashed the system). Continuing without it."
+                    )
+                elif bl.get("concaveClosure"):
                     # Opt-in (GUI checkbox, default off): per-vertex local
                     # termination (H4). Measured no-op on simple geometries,
                     # closes the layer on the production-collapsed valve and
@@ -1743,7 +1760,12 @@ class DualPolyWorker(QObject):
                 )
                 result.bl_prism_cells = bres.n_prism_cells
                 result.bl_thickness = bres.total_thickness
-                if bl.get("concaveClosure"):
+                if bl.get("concaveClosure") and _cc_n_cells > 1_500_000:
+                    self.log_line.emit(
+                        "[poly] WARN: post-BL merge repair skipped — same "
+                        "1.5M-cell safety limit as concave closure above."
+                    )
+                elif bl.get("concaveClosure"):
                     # Merge repair AFTER the boundary layer (not before -
                     # measured 2026-09-14: merging concave cells BEFORE
                     # building the BL regresses aspect ratio 3x on the
