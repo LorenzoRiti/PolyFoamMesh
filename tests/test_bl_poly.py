@@ -608,7 +608,51 @@ def test_bl_local_termination_decoupled_vertex_on_healthy_cube():
     assert res.stats.get("local_excluded_faces") == 0
     assert res.stats.get("scale") == 1.0
     assert res.stats.get("local_termination_mode") == "decoupled_vertex"
-    _mesh_ok(case / "constant" / "polyMesh")
+
+
+def test_bl_normal_method_rejects_unknown_value():
+    case = _build_dual_case(WORK_ROOT / "cube_nm_bad")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, normal_method="bogus")
+    assert not res.success
+    assert any("unknown normal_method" in e for e in res.errors)
+
+
+def test_bl_normal_method_rejects_dual_convexity_combo():
+    """most_visible is only implemented for concavity_criterion=angle_fade
+    (the default) — dual_convexity does not compute per-vertex face-normal
+    fans, so there is nothing for the min-max search to run on."""
+    case = _build_dual_case(WORK_ROOT / "cube_nm_combo")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    res = eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                  apply_to_all=True, normal_method="most_visible",
+                  concavity_criterion="dual_convexity")
+    assert not res.success
+    assert any("most_visible" in e for e in res.errors)
+
+
+def test_bl_normal_method_most_visible_succeeds_on_healthy_cube():
+    """most_visible must build a valid BL mesh on the easy healthy-cube
+    case with the same topology (prism count) as area_weighted — the cube
+    has corner wall vertices with 3 mutually orthogonal incident face
+    normals, so the two methods legitimately pick DIFFERENT extrusion
+    directions there (min-max vs area-weighted average), which is why
+    this only checks structural equivalence, not identical geometry."""
+    case_aw = _build_dual_case(WORK_ROOT / "cube_nm_aw")
+    res_aw = PolyBoundaryLayerEngine(case_aw, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        normal_method="area_weighted",
+    )
+    case_mv = _build_dual_case(WORK_ROOT / "cube_nm_mv")
+    res_mv = PolyBoundaryLayerEngine(case_mv, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        normal_method="most_visible",
+    )
+    assert res_aw.success and res_mv.success, (res_aw.errors, res_mv.errors)
+    assert res_aw.n_prism_cells == res_mv.n_prism_cells
+    assert res_mv.stats.get("min_cell_volume", 0.0) > 0.0
+    _mesh_ok(case_mv / "constant" / "polyMesh")
 
 
 def test_bl_local_exclude_widen_param():
