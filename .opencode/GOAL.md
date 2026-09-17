@@ -137,9 +137,11 @@ Raccomandazione (non implementata, nessun default cambiato): invertire
 l'ordine delle scale o azzerare le esclusioni scendendo di scala.
 Dettagli e numeri completi in `docs/residual_risks.md` §FASE 3.
 
-## Prossimo passo — thin-first generalizza oltre la valvola?
+## Prossimo passo — thin-first generalizza oltre la valvola? (ESEGUITO)
 
-Vedi `notes/goal_addendum_thinfirst.md` per il compito completo.
+Compito eseguito — vedi Avanzamento FASE 4 sotto e
+`notes/thinfirst_reasoning.md`. (Il brief originale è stato potato
+nell'igiene pre-push: era superato dall'esito registrato qui.)
 Riassunto: la scoperta thin-first (9,5x meno esclusioni, +8,5% prismi,
 ~5x più veloce) è stata misurata solo sulla valvola — ripetila su
 cilindro/cubo/groove1/slot1 con lo stesso metodo (previsione scritta
