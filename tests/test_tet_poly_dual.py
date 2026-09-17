@@ -269,11 +269,29 @@ def test_write_failure_rollback(tmp_path):
 
 @pytest.mark.parametrize(
     # The in-process detector reproduces checkMesh EXACTLY on the pyramid
-    # count (895/895).  Its non-orthogonality / skew counts use a cheaper
-    # approximation of OpenFOAM's own methodology (302 vs 55, 11 vs 111 on
-    # this mesh) — they only freeze the detector's own baseline, so a change
-    # to the detector is caught without pretending it matches checkMesh.
-    "expected", [{"pyramid": 895, "non_ortho_det": 302, "skew_det": 11}]
+    # count (863/863 on the regenerated 2026-09-09 fixture).  Its
+    # non-orthogonality count matches the faces checkMesh writes to the
+    # nonOrthoFaces set (203); checkMesh's own "errors" line counts only the
+    # >70-degree faces (9).
+    #
+    # Skewness (2026-09-13 fix): the formula previously SUMMED the two
+    # normalisation terms instead of taking OpenFOAM's own max() of them
+    # (primitiveMeshTools::faceSkewness), which silently inflated the
+    # denominator and under-reported skewness everywhere - see
+    # notes/skewness_formula_fix_reasoning.md. Fixed formula VERIFIED
+    # EXACT against real checkMesh on two independent boundary-layer-built
+    # meshes (valve baseline and merge-repaired, both post-BL: our max
+    # skewness 22.16451 vs checkMesh's reported 22.1645, both cases).
+    # On THIS specific fixture (the pure dual, no boundary layer, points
+    # stored as float32) the fixed formula gets much closer but still
+    # doesn't match exactly (max skew 13.0 vs checkMesh's 14.5848, 6 vs 98
+    # faces over the 4.0 threshold) - most likely the fixture's own
+    # float32 precision compounding over many near-threshold faces, not a
+    # remaining formula error (unconfirmed - flagged honestly, not
+    # asserted). This test freezes the CURRENT detector's own count on
+    # this fixture (a regression guard), it does not claim exact
+    # equivalence to checkMesh here.
+    "expected", [{"pyramid": 863, "non_ortho_det": 203, "skew_det": 6}]
 )
 def test_detect_defects_matches_recorded_checkmesh(expected):
     npz = FIXDIR / "valve_dual.npz"
@@ -295,7 +313,7 @@ def test_detect_defects_matches_recorded_checkmesh(expected):
     ctr, vol = _cell_centres(sf, cf, owner, neigh, n_int, n_cells)
     bad, counts = _detect_defects(pts, faces, sf, cf, ctr, owner, neigh, n_int, n_cells)
 
-    # the one number that must match checkMesh exactly (docs: 895 / 895)
+    # the one number that must match checkMesh exactly (docs: 863 / 863)
     assert counts["pyramid"] == expected["pyramid"], counts
     assert counts["non_ortho"] == expected["non_ortho_det"]
     assert counts["skew"] == expected["skew_det"]
@@ -418,9 +436,17 @@ def test_fix_triangulate_eliminates_nonplanar_faces(tmp_path):
     assert rep["max_dev"] < 1e-9
     # every previously non-planar face is now a triangle (planar faces are
     # copied through untouched, so the mesh still has quads etc.); the count
-    # grew by sum(k-1) over the 15 non-planar faces (62 -> 122)
+    # grew by sum(k-1) over the non-planar faces. This number shifted from
+    # 122 to 162 on 2026-09-14: smoothing now always runs (see
+    # notes/smoothing_gate_fix_reasoning.md — it used to be skipped
+    # whenever this mesh had zero non-ortho/skew/pyramid defects, which it
+    # does), and it moves interior points before this triangulation step
+    # sees them, changing WHICH faces count as non-planar. The two
+    # properties that actually matter are asserted below regardless of the
+    # exact count: triangulation truly eliminates non-planarity
+    # (n_nonplanar == 0, max_dev < 1e-9).
     pts2, faces, owner, neigh, _ = fio.read_polymesh(case / "constant" / "polyMesh")
-    assert len(faces) == 122
+    assert len(faces) == 162
     assert all(len(f) >= 3 for f in faces)
     # no non-triangular face may be non-planar anymore
     for f in faces:

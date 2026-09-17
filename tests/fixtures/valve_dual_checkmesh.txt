@@ -8,10 +8,10 @@
 Build  : _bd2b6720-20260127 OPENFOAM=2512 version=2512
 Arch   : "LSB;label=32;scalar=64"
 Exec   : checkMesh
-Date   : Aug 01 2026
-Time   : 12:54:55
+Date   : Sep 10 2026
+Time   : 22:46:37
 Host   : DESKTOP-K5QPEJ4
-PID    : 4462
+PID    : 1774
 I/O    : uncollated
 Case   : /mnt/c/polybench2/fixture_valve
 nProcs : 1
@@ -201,18 +201,18 @@ Checking geometry...
     Mesh has 3 geometric (non-empty/wedge) directions (1 1 1)
     Mesh has 3 solution (non-empty) directions (1 1 1)
     Boundary openness (1.3927e-16 -1.71321e-17 5.58308e-17) OK.
-    Max cell openness = 2.6916e-16 OK.
-    Max aspect ratio = 778.671 OK.
-    Minimum face area = 6.0239e-10. Maximum face area = 0.00203648.  Face area magnitudes OK.
-    Min volume = 1.15354e-14. Max volume = 0.000188752.  Total volume = 0.121835.  Cell volumes OK.
-    Mesh non-orthogonality Max: 123.25 average: 14.2311
-   *Number of severely non-orthogonal (> 70 degrees) faces: 247.
- ***Number of non-orthogonality errors: 55.
-  <<Writing 302 non-orthogonal faces to set nonOrthoFaces
- ***Error in face pyramids: 895 faces are incorrectly oriented.
-  <<Writing 895 faces with incorrect orientation to set wrongOrientedFaces
- ***Max skewness = 44.328, 111 highly skew faces detected which may impair the quality of the results
-  <<Writing 111 skew faces to set skewFaces
+    Max cell openness = 2.51937e-16 OK.
+    Max aspect ratio = 108.21 OK.
+    Minimum face area = 6.0239e-10. Maximum face area = 0.00223058.  Face area magnitudes OK.
+    Min volume = 1.7858e-13. Max volume = 0.000200619.  Total volume = 0.121835.  Cell volumes OK.
+    Mesh non-orthogonality Max: 99.6025 average: 11.4032
+   *Number of severely non-orthogonal (> 70 degrees) faces: 194.
+ ***Number of non-orthogonality errors: 9.
+  <<Writing 203 non-orthogonal faces to set nonOrthoFaces
+ ***Error in face pyramids: 863 faces are incorrectly oriented.
+  <<Writing 863 faces with incorrect orientation to set wrongOrientedFaces
+ ***Max skewness = 14.5848, 98 highly skew faces detected which may impair the quality of the results
+  <<Writing 98 skew faces to set skewFaces
     Coupled point location match (average 0) OK.
 
 Failed 3 mesh checks.

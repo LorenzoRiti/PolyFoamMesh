@@ -344,6 +344,31 @@ class ParamsPanel(QWidget):
         self._bl_apply_all = QCheckBox("Apply BL to all patches")
         bl_form.addRow(self._bl_apply_all)
 
+        # Opt-in, unchecked by default: switches the poly-path BL engine to
+        # per-vertex local termination (H4/decoupled_vertex, see
+        # docs/residual_risks.md "FASE 9"). Measured on cylinder/cube/
+        # groove1 (no-op, identical result) and on the production-collapsed
+        # valve and slot1 (closes the layer where the current path leaves
+        # gaps or fails). Off by default because it has only been validated
+        # on a handful of geometries so far — see the doc for the numbers.
+        self._bl_concave_closure = QCheckBox(
+            "Chiusura avanzata per geometrie concave (sperimentale)"
+        )
+        self._bl_concave_closure.setToolTip(
+            "Attiva la modalità di chiusura del boundary layer per-vertice "
+            "invece che per-faccia, e (2026-09-14) una riparazione delle "
+            "celle concave dopo la costruzione del layer (fusione con la "
+            "cella vicina, applicata solo se non peggiora orientamento o "
+            "skewness — verificato con checkMesh reale: -83% facce mal "
+            "orientate sulla valvola, aspect ratio invariato). Utile su "
+            "geometrie con giunzioni concave dove il layer normalmente "
+            "non si chiude o lascia buchi. Non peggiora mai le geometrie "
+            "semplici (misurato: cilindro, cubo, groove — nessuna "
+            "differenza), ma è ancora sperimentale: su alcune geometrie "
+            "strette esclude più facce del normale prima di chiudere."
+        )
+        bl_form.addRow(self._bl_concave_closure)
+
         # Physical inputs: the layer parameters above are derived from these
         # rather than guessed, which is how commercial meshers do it.
         self._bl_velocity = QDoubleSpinBox()
@@ -1019,10 +1044,15 @@ class ParamsPanel(QWidget):
             # patch; unchecked (default) -> wall-typed / wall-named patches
             # only (G1 fix, FASE 1)
             "applyToAll": self._bl_apply_all.isChecked(),
+            # opt-in, default False — see the checkbox above for context.
+            "concaveClosure": self._bl_concave_closure.isChecked(),
         }
 
     def get_bl_apply_all(self) -> bool:
         return self._bl_apply_all.isChecked()
+
+    def get_bl_concave_closure(self) -> bool:
+        return self._bl_concave_closure.isChecked()
 
     def get_poly_conversion(self) -> bool:
         return self._poly_check.isChecked()

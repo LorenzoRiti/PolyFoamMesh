@@ -72,6 +72,13 @@ def main() -> int:
     ap.add_argument("--n-layers", type=int, default=3)
     ap.add_argument("--first-height", type=float, default=0.005)
     ap.add_argument("--skip-wsl", action="store_true")
+    ap.add_argument(
+        "--local-termination", action="store_true",
+        help="use the opt-in iterative local termination (binary layer "
+             "counts + exclusion of geometrically invalid prisms); measured "
+             "to produce and validate a BL on the valve where the standard "
+             "path fails at every scale",
+    )
     args = ap.parse_args()
 
     cfg = OFConfig()
@@ -106,6 +113,7 @@ def main() -> int:
     res = PolyBoundaryLayerEngine(CASE, log=log).run(
         n_layers=args.n_layers, first_height=args.first_height,
         growth_rate=1.2, patch_names=walls, apply_to_all=False,
+        local_termination=args.local_termination,
     )
     dt = time.monotonic() - t0
     print(f"\nBL: success={res.success} ({dt:.1f}s)")
