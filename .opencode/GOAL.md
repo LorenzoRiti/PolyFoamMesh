@@ -324,3 +324,28 @@ a costo zero, muro confermato a 3x iterazioni (topology-bound). NON
 cablato in produzione (guadagno sotto rumore); resta lo SPLIT come fix
 scoped. Commit `1061a88`. Dettagli in
 `notes/zonal_aspect_relaxation_reasoning.md`. Nessun default cambiato.
+
+## Avanzamento 2026-09-17 — pre-push wrap-up
+
+- Parte 1 (igiene): 10 record di decisione committati, 10 scarti potati
+  (6 brief, lane_c_verification, overnight_plan eseguito, MEGA_PLAN
+  stantio, scratch commit_split_rounds), 2 dangling pointer riparati.
+  Commit `9d1e6d1`, tree pulito.
+- Parte 2 (verifica piena): full suite 1206 passed / 2 skipped
+  (venturi-throat, tessellation-dependent) / 1 xfailed preesistente /
+  0 failed in ~14 min; `ruff check src/ tests/` pulito. Zero regressioni.
+- Parte 3 (handoff): `docs/dev/STATO_PRE_PUSH_2026-09-17.md` — temi dal
+  9/9, default dichiarati invariati con prova, tabella opt-in con numeri,
+  lista scarti onesti, limiti residui, ambito non toccato (installer, CI,
+  commercial, pyproject: zero commit dal 9/9 verificato).
+- Parte 4 (split): NON tentata per decisione — uno split affrettato
+  rischiava l'albero verde a ore dal push; taskata al collega notturno
+  con prompt blindato + barriere. Resta l'unico lavoro strutturale aperto,
+  con specifica pronta.
+- Mai pushato, mai toccato origin/main (qui non esiste nemmeno il remote).
+
+VERDETTO: **pronto per il push.** L'albero è verde, i default invariati,
+ogni numero dichiarato ha una misura dietro e i limiti sono scritti
+nell'handoff §5 (gap aspect cilindro, soglia RAM misurata solo su hex,
+validazioni pesanti solo WSL). Leggi §5 prima di decidere: se uno di quei
+limiti ti è inaccettabile sul pubblico, quello — e solo quello — blocca.
