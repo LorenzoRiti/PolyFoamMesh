@@ -508,7 +508,22 @@ class TetPolyDualConverter:
 
         # Quality-driven smoothing of interior vertices (keep-best against
         # the in-process checkMesh replica; boundary pinned, topology fixed).
-        if self._smooth and best_defects is not None and best_defects > 0:
+        #
+        # Runs regardless of whether best_defects > 0 (2026-09-14 fix): the
+        # old `best_defects > 0` guard only checks THRESHOLD-crossing counts
+        # (pyramid<=0, non_ortho>70deg, skew>4), so it silently skipped
+        # smoothing on any mesh with zero threshold violations - which is
+        # most healthy geometries, not just already-perfect ones. Measured
+        # on a plain cylinder (0/0/0 defects, so the guard used to skip it
+        # entirely): forcing this pass anyway reduced max non-orthogonality
+        # 51.3 -> 41.7 degrees and max skewness 1.53 -> 1.28 (real checkMesh,
+        # not just the in-process replica) - both were well below their
+        # failure thresholds already, so there was real headroom the old
+        # gate left untouched. Safe to always run: smooth_dual_mesh is
+        # keep-best by construction (never accepts a worse defect count),
+        # so removing the gate can only find improvement or leave the mesh
+        # unchanged, never regress it - see notes/smoothing_gate_fix_reasoning.md.
+        if self._smooth:
             self._check_cancel()
             t = time.monotonic()
             from polyfoammesh.core.poly_smoother import smooth_dual_mesh
@@ -2027,29 +2042,37 @@ def _newell_dot(points: np.ndarray, verts: list[int], d: np.ndarray) -> float:
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):
     """Area vectors and centroids, using OpenFOAM's centre-point decomposition.
 
-    Faces are bucketed by vertex count so each bucket is one vectorised pass.
+    Faces are bucketed by vertex count so each bucket is one vectorised pass,
+    CHUNKED in 250k-face blocks (Lane A RAM fix): the dense ``(n, k, 3)``
+    temporaries are ~360 bytes/face/slot-set, i.e. one unchunked 16M-quad
+    call peaked past 7GB.  Same per-face op order -> bitwise-identical
+    output (locked by the merge/dual test suites).
     """
+    _BLOCK = 250_000
     n = len(faces)
     sf = np.zeros((n, 3), dtype=np.float64)
     cf = np.zeros((n, 3), dtype=np.float64)
     sizes = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n)
     for k in np.unique(sizes):
         idx = np.flatnonzero(sizes == k)
-        v = np.array([faces[i] for i in idx], dtype=np.int64)
-        p = points[v]
-        c0 = p.mean(axis=1)
-        a = p - c0[:, None, :]
-        b = np.roll(p, -1, axis=1) - c0[:, None, :]
-        tri_area = 0.5 * np.cross(a, b)
-        tri_cent = (c0[:, None, :] + p + np.roll(p, -1, axis=1)) / 3.0
-        w = np.linalg.norm(tri_area, axis=2)
-        wsum = w.sum(axis=1)
-        c = (tri_cent * w[:, :, None]).sum(axis=1) / np.maximum(wsum, 1e-300)[:, None]
-        degenerate = wsum <= 0.0
-        if np.any(degenerate):
-            c[degenerate] = c0[degenerate]
-        sf[idx] = tri_area.sum(axis=1)
-        cf[idx] = c
+        for s in range(0, len(idx), _BLOCK):
+            b = idx[s:s + _BLOCK]
+            v = np.array([faces[i] for i in b], dtype=np.int64)
+            p = points[v]
+            c0 = p.mean(axis=1)
+            a = p - c0[:, None, :]
+            b_ = np.roll(p, -1, axis=1) - c0[:, None, :]
+            tri_area = 0.5 * np.cross(a, b_)
+            tri_cent = (c0[:, None, :] + p + np.roll(p, -1, axis=1)) / 3.0
+            w = np.linalg.norm(tri_area, axis=2)
+            wsum = w.sum(axis=1)
+            c = ((tri_cent * w[:, :, None]).sum(axis=1)
+                 / np.maximum(wsum, 1e-300)[:, None])
+            degenerate = wsum <= 0.0
+            if np.any(degenerate):
+                c[degenerate] = c0[degenerate]
+            sf[b] = tri_area.sum(axis=1)
+            cf[b] = c
     return sf, cf
 
 
@@ -2111,7 +2134,12 @@ def _detect_defects(
     scale = (sf[:n_int] * cpf).sum(axis=1) / np.where(np.abs(denom) > 0, denom, 1e-300)
     sv = cpf - scale[:, None] * d
     svm = np.linalg.norm(sv, axis=1)
-    fd = 0.2 * dn + _face_extent(points, faces, cf, sv, n_int)
+    # OpenFOAM's own formula (primitiveMeshTools::faceSkewness) takes the
+    # MAX of the base extent and the largest vertex projection, not a SUM
+    # - see notes/skewness_formula_fix_reasoning.md. Using + here silently
+    # inflated the denominator and under-reported skewness (measured: our
+    # detector said 0 skewed faces on a mesh where real checkMesh found 3).
+    fd = np.maximum(0.2 * dn, _face_extent(points, faces, cf, sv, n_int))
     m_sk = svm / np.maximum(fd, 1e-300) > skew_limit
     n_sk = int(m_sk.sum())
     bad[owner[:n_int][m_sk]] = True
@@ -2121,15 +2149,24 @@ def _detect_defects(
 
 
 def _face_extent(points, faces, cf, sv, n_int):
-    """max over a face's points of |unit(sv) . (pt - faceCentre)|."""
+    """max over a face's points of |unit(sv) . (pt - faceCentre)|.
+
+    Chunked in 250k-face blocks (Lane A RAM fix, same reason as
+    ``_face_geometry`` above): the dense ``(n, k, 3)`` relative-position
+    array peaked past 1.5GB unchunked on a 16M-face mesh.  Bitwise-identical
+    output.
+    """
+    _BLOCK = 250_000
     hat = sv / np.maximum(np.linalg.norm(sv, axis=1), 1e-300)[:, None]
     out = np.zeros(n_int, dtype=np.float64)
     sizes = np.fromiter((len(faces[i]) for i in range(n_int)), dtype=np.int64, count=n_int)
     for k in np.unique(sizes):
         idx = np.flatnonzero(sizes == k)
-        v = np.array([faces[i] for i in idx], dtype=np.int64)
-        rel = points[v] - cf[idx][:, None, :]
-        out[idx] = np.abs((rel * hat[idx][:, None, :]).sum(axis=2)).max(axis=1)
+        for s in range(0, len(idx), _BLOCK):
+            b = idx[s:s + _BLOCK]
+            v = np.array([faces[i] for i in b], dtype=np.int64)
+            rel = points[v] - cf[b][:, None, :]
+            out[b] = np.abs((rel * hat[b][:, None, :]).sum(axis=2)).max(axis=1)
     return out
 
 

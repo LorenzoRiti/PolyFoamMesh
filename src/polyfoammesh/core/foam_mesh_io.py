@@ -243,20 +243,21 @@ def read_label_list(path: Path) -> np.ndarray:
             # neighbour on a real mesh) without needing a size threshold.
             probe_len = min(64, count * 4, len(raw) - data_start)
             probe = raw[data_start:data_start + probe_len] if probe_len > 0 else b""
-            # A ')' inside the probe is decisive: the binary payload of a
-            # count-N list occupies exactly count*4 bytes, and probe_len is
-            # capped at count*4 — so a ')' can only appear there in the
-            # ASCII form ("... 4\n)\n"), never in genuine binary data. This
-            # matters for very short lists (3-4 entries) where the 64-byte
-            # probe would otherwise swallow the terminator. (On Windows this
-            # bug was masked because CRLF line endings made "N\n(" fail to
-            # match at all; on LF-only files short sets crashed with
-            # "Binary labels: need 12 bytes, got 9".)
-            if b")" in probe:
-                looks_ascii = True
-            else:
-                looks_ascii = bool(re.match(rb'^[\s\-\d]*$', probe))
-            if not (looks_ascii and probe):
+            # A ')' inside the probe only proves ASCII when EVERY probe
+            # byte is ASCII text (digits, whitespace, '-', ')').  Treating a
+            # bare ')' as decisive misclassified genuine binary payloads
+            # whose first 64 bytes happen to contain a 0x29 byte — i.e. any
+            # cell index like 41, 296 or 10537 — which is common enough
+            # (measured: ~1 in 5 gmshToFoam neighbour files) that it
+            # silently returned an EMPTY list and corrupted the mesh on the
+            # next write.  The all-text test still covers the short-ASCII-
+            # despite-binary-header case it was added for ("... 4\n)\n") and
+            # is exact: binary int32 data of realistic mesh indices always
+            # contains a byte outside this 17-value alphabet (a 0x00 for any
+            # index < 2**24) within 16 values, so it cannot pass.
+            _text_bytes = set(b" \t\n\r\v\f-0123456789)")
+            looks_ascii = bool(probe) and all(b in _text_bytes for b in probe)
+            if not looks_ascii:
                 data = raw[data_start:data_start + count * 4]
                 if len(data) < count * 4:
                     raise ValueError(f"Binary labels: need {count * 4} bytes, got {len(data)}")

@@ -1695,6 +1695,54 @@ class DualPolyWorker(QObject):
                     first_height=float(bl.get("firstLayerThickness", 0.0)),
                     growth_rate=float(bl.get("thicknessRatio", 1.2)),
                 )
+                _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
+                _cc_n_faces = int(
+                    max(int(getattr(result, "n_internal_faces", 0) or 0), 0)
+                ) + int(
+                    max(int(getattr(result, "n_boundary_faces", 0) or 0), 0)
+                )
+                # Safety guard (2026-09-14 root cause, 2026-09-15 measured):
+                # a real user run at ~5M dual cells (~41M faces) with
+                # concaveClosure on exhausted 32GB RAM and crashed the whole
+                # machine. Lane A measured that BL/merge memory scales with
+                # FACES (~0.8KB/face hex, ~1.0KB/face dual marginal), NOT
+                # cells (dual meshes carry ~8 faces/cell vs ~3 for hex)  -
+                # so the guard is on faces: 8M faces projects to ~10.8GB
+                # peak on dual topology (two-point fit: 1.24M -> 2.8GB,
+                # 6.2M -> 10.5GB build peaks) and hex meshes peak far lower
+                # (measured 15.06M faces -> 13.05GB). Above the guard the
+                # stages are skipped rather than risking another crash. Not
+                # a quality decision, a safety one. See
+                # notes/ram_crash_rootcause_reasoning.md.
+                _cc_too_big = (
+                    _cc_n_faces > 8_000_000 if _cc_n_faces > 0
+                    else _cc_n_cells > 1_500_000
+                )
+                if bl.get("concaveClosure") and _cc_too_big:
+                    _cc_size = (
+                        f"~{_cc_n_faces:,} faces" if _cc_n_faces > 0
+                        else f"~{_cc_n_cells:,} cells"
+                    )
+                    _cc_lim = (
+                        "8M-face" if _cc_n_faces > 0 else "1.5M-cell"
+                    )
+                    self.log_line.emit(
+                        "[poly] WARN: Concave closure skipped — mesh has "
+                        f"{_cc_size}, above the {_cc_lim} safety "
+                        "limit (memory scales with faces; a real run at ~5M "
+                        "dual cells exhausted 32GB RAM and crashed the "
+                        "system). Continuing without it."
+                    )
+                elif bl.get("concaveClosure"):
+                    # Opt-in (GUI checkbox, default off): per-vertex local
+                    # termination (H4). Measured no-op on simple geometries,
+                    # closes the layer on the production-collapsed valve and
+                    # on tight geometries where the default path leaves gaps
+                    # — see docs/residual_risks.md "FASE 9".
+                    kw["local_termination"] = "decoupled_vertex"
+                    self.log_line.emit(
+                        "[poly] Concave closure (decoupled_vertex) enabled"
+                    )
                 engine = PolyBoundaryLayerEngine(
                     self._case_dir,
                     log=self.log_line.emit,
@@ -1733,6 +1781,59 @@ class DualPolyWorker(QObject):
                 )
                 result.bl_prism_cells = bres.n_prism_cells
                 result.bl_thickness = bres.total_thickness
+                if bl.get("concaveClosure") and _cc_too_big:
+                    self.log_line.emit(
+                        "[poly] WARN: post-BL merge repair skipped — same "
+                        "faces-based safety limit as concave closure above."
+                    )
+                elif bl.get("concaveClosure"):
+                    # Merge repair AFTER the boundary layer (not before -
+                    # measured 2026-09-14: merging concave cells BEFORE
+                    # building the BL regresses aspect ratio 3x on the
+                    # valve; merging the SAME cells AFTER the BL is built
+                    # (so the merge selection sees the real prism geometry
+                    # it sits next to) avoids that regression entirely -
+                    # 340 -> 58 wrong-oriented faces, aspect ratio and
+                    # non-orthogonality unchanged or slightly BETTER, real
+                    # checkMesh. See notes/getme_compactness_reasoning.md
+                    # and docs/residual_risks.md. Reuses the same
+                    # concaveClosure opt-in flag (off by default) rather
+                    # than adding a second checkbox for the same theme.
+                    try:
+                        import polyfoammesh.core.foam_mesh_io as fio
+                        from polyfoammesh.core.poly_cell_merge import (
+                            repair_concave_cells_if_safe,
+                        )
+
+                        poly_dir = self._case_dir / "constant" / "polyMesh"
+                        pts, fcs, own, nbr, patches = fio.read_polymesh(poly_dir)
+                        fcs = [list(f) for f in fcs]
+                        n_int_m = len(nbr)
+                        n_cells_m = int(max(own.max(), nbr.max())) + 1
+                        fcs2, own2, nbr2, n_int2, n_cells2, patches2, rep = (
+                            repair_concave_cells_if_safe(
+                                pts, fcs, own, nbr, n_int_m, n_cells_m, patches,
+                            )
+                        )
+                        if rep["applied"]:
+                            fio.write_polymesh(
+                                poly_dir, pts, fcs2, own2, nbr2, patches2,
+                            )
+                            self.log_line.emit(
+                                "[poly] Post-BL cell-merge repair applied: "
+                                f"{rep['reason']}"
+                            )
+                        else:
+                            self.log_line.emit(
+                                "[poly] Post-BL cell-merge repair skipped: "
+                                f"{rep['reason']}"
+                            )
+                    except Exception as exc:  # noqa: BLE001 - never fail the
+                        # whole mesh over this opt-in extra repair pass
+                        self.log_line.emit(
+                            f"[poly] WARN: post-BL cell-merge repair failed, "
+                            f"mesh kept as built by BL: {exc}"
+                        )
             else:
                 msg = (
                     "; ".join(bres.errors) if bres is not None
