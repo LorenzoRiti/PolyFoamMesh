@@ -3797,6 +3797,10 @@ class MainWindow(QMainWindow):
                 f"{Tag.FIX} Quality auto-fix #{n}: retrying autopoly at coarser detail "
                 f"({self._params.get_detail_level()})"
             )
+            self._log_substitution(
+                "Qualità insufficiente: raffinamento ridotto sul percorso "
+                "autopoly."
+            )
             self._run_id += 1
             self._poly_was_converted = False
             self._poly_fallback_active = False
