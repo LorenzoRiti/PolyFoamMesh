@@ -180,8 +180,7 @@ def test_repair_concave_cells_if_safe_rejects_when_skew_would_worsen():
     this trade-off and correctly REJECTS the merge rather than silently
     accepting a mesh that trades one defect for another. This locks in
     that the gate is doing its job (this test used to assert acceptance,
-    before the guardian could see skewness at all - see
-    notes/overnight_plan_2026-09-14.md)."""
+    before the guardian could see skewness at all)."""
     npz = FIXDIR / "valve_dual.npz"
     if not npz.exists():
         pytest.skip("valve_dual.npz fixture not present")
