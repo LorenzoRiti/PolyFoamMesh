@@ -225,6 +225,17 @@ line reviewed before merging. Full breakdown, including who wrote what:
 The human author is fully responsible for the correctness and physical
 validity of this code. AI was a supporting tool, not an autonomous author.
 
+## Trademarks
+
+PolyFoamMesh is an independent project and is not affiliated with,
+approved by or endorsed by OpenCFD Ltd, owner of the OPENFOAM®
+trademark. OPENFOAM® is a registered trademark of OpenCFD Ltd.
+
+GMSH, cfMesh, and any other third-party tool named in this project are
+likewise the property of their respective owners; naming them here
+describes interoperability only and implies no affiliation or
+endorsement.
+
 ## License
 
 GPLv3 — see [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
