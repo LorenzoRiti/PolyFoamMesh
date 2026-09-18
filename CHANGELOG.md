@@ -1,123 +1,123 @@
 # Changelog
 
-Tutte le modifiche notevoli a PolyFoamMesh sono documentate qui.
+All notable changes to PolyFoamMesh are documented here.
 
-Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e
-il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and the project follows [Semantic Versioning](https://semver.org/).
 
-## [Non rilasciato] - 2026-09-17
+## [Unreleased] - 2026-09-17
 
-### Corretto
+### Fixed
 
-- **Crash da esaurimento RAM su mesh grandi**: un run reale a ~5M celle
-  con "concave closure" attivo esauriva 32GB di RAM e faceva riavviare
-  il sistema. Causa: strutture Python (dizionari/liste) costruite
-  sull'intera mesh invece che solo sulle celle/facce effettivamente
-  coinvolte nel boundary layer e nel merge post-BL. Corretto con
-  geometria a blocchi, grafo di adiacenza CSR e mappe limitate ai
-  vertici di parete — un run reale a 5M celle / 15M facce ora ha un
-  picco di ~13GB. La soglia di sicurezza è passata da un limite a
-  occhio (1,5M celle) a una soglia misurata (8M facce); vedi
-  [#9](https://github.com/LorenzoRiti/PolyFoamMesh/issues/9) per la
-  validazione ancora mancante sul percorso poliedrico reale.
-- Bug reale nella formula di skewness (sommava due termini di
-  normalizzazione invece di prendere il massimo, come fa OpenFOAM) e un
-  bug che disattivava silenziosamente il passaggio di qualità su mesh
-  già sane.
+- **RAM-exhaustion crash on large meshes**: a real run at ~5M cells with
+  "concave closure" enabled exhausted 32GB of RAM and crashed the
+  system. Cause: Python structures (dicts/lists) built over the entire
+  mesh instead of only the cells/faces actually involved in the
+  boundary layer and the post-BL merge. Fixed with chunked geometry, a
+  CSR adjacency graph, and maps restricted to wall vertices — a real
+  5M-cell / 15M-face run now peaks at ~13GB. The safety threshold moved
+  from a rough eyeballed limit (1.5M cells) to a measured one (8M
+  faces); see [#9](https://github.com/LorenzoRiti/PolyFoamMesh/issues/9)
+  for the validation still missing on the real polyhedral path.
+- Real bug in the skewness formula (summed two normalisation terms
+  instead of taking the max, as OpenFOAM itself does) and a bug that
+  silently disabled the quality pass on already-healthy meshes.
 
-### Aggiunto (sperimentale, opt-in, default invariati)
+### Added (experimental, opt-in, defaults unchanged)
 
-- Tre strategie di calcolo della normale di estrusione del boundary
-  layer, valutate con checkMesh reale su geometrie concave: normale "più
-  visibile" (minimizza l'angolo massimo), smoothing Laplaciano, filtro
-  bilaterale guidato. Solo la prima ha un effetto reale misurabile da
-  sola; combinata con il recupero locale dell'altezza (vedi sotto) batte
-  entrambe le leve singole sulla copertura del boundary layer.
-- Recupero locale dell'altezza per-vertice: invece di escludere un
-  vertice di parete il cui prisma fallisce all'altezza piena, ritenta con
-  un'altezza molto più corta prima di arrendersi.
-- Smoothing della mesh ispirato a GETMe, consapevole dell'aspect ratio.
+- Three boundary-layer extrusion-normal strategies, evaluated with real
+  checkMesh on concave geometries: "most visible" normal (minimises the
+  maximum angle), Laplacian smoothing, guided bilateral filter. Only the
+  first has a real measurable effect on its own; combined with the
+  per-vertex local-height retry (below) it beats both individual levers
+  on boundary-layer coverage.
+- Per-vertex local-height retry: instead of excluding a wall vertex
+  whose prism fails at full height, retry with a much shorter height
+  before giving up.
+- GETMe-inspired mesh smoothing, aspect-ratio-aware.
 
-### Non promosso (provato, misurato, scartato onestamente)
+### Not promoted (tried, measured, honestly discarded)
 
-- Filtro bilaterale guidato sulle normali (Zhang 2015): nessun effetto,
-  le normali analitiche del dual non sono rumorose come nel caso che
-  quel filtro risolve.
-- Merge diretto delle celle per correggere l'aspect ratio sul cilindro:
-  migliorava la metrica interna ma veniva respinto da checkMesh reale
-  (non-ortogonalità +80%, skewness +233%). Il gap aspect ratio sul
-  cilindro (4,49 vs 3,02 di snappyHexMesh) resta aperto — vedi
-  [#8](https://github.com/LorenzoRiti/PolyFoamMesh/issues/8) per il vero
-  lavoro necessario (operatore di split direzionale).
+- Guided bilateral normal filter (Zhang 2015): no effect — the dual's
+  analytic normals are not noisy the way that filter's target case is.
+- Direct cell merging to fix the cylinder's aspect ratio: improved the
+  in-process metric but was rejected by real checkMesh
+  (non-orthogonality +80%, skewness +233%). The cylinder aspect-ratio
+  gap (4.49 vs snappyHexMesh's 3.02) remains open — see
+  [#8](https://github.com/LorenzoRiti/PolyFoamMesh/issues/8) for the
+  actual work needed (a directional split operator).
 
 ## [2.2.0] - 2026-09-08
 
-### Cambi di rottura (breaking)
+### Breaking changes
 
-- **Percorso dati rinominato**: i dati applicativi sono passati da
-  `%APPDATA%\cfmesh-autogui\` a `%APPDATA%\polyfoammesh\` (log, sessioni,
-  telemetria octopoda). Alla prima esecuzione la nuova cartella viene
-  popolata automaticamente copiando il contenuto della vecchia, se
-  presente. Chi ha installato una versione precedente non perde nulla, ma
-  il vecchio percorso non viene più scritto. Le impostazioni applicative
-  (tema, parametri recenti) vivono nel registro di Windows e non cambiano
-  posizione: restano dove erano, così le preferenze dell'utente sopravvivono
-  al rename del pacchetto (`cfmesh_autogui` → `polyfoammesh`).
+- **Data path renamed**: application data moved from
+  `%APPDATA%\cfmesh-autogui\` to `%APPDATA%\polyfoammesh\` (logs,
+  sessions, octopoda telemetry). On first run the new folder is
+  populated automatically by copying the old one's contents, if
+  present. Anyone with a previous install loses nothing, but the old
+  path is no longer written to. Application settings (theme, recent
+  parameters) live in the Windows registry and do not move: they stay
+  where they were, so user preferences survive the package rename
+  (`cfmesh_autogui` → `polyfoammesh`).
 
-### Aggiunto
+### Added
 
-- **Pipeline di release**: su push di un tag `v*`, GitHub Actions builda
-  l'eseguibile PyInstaller + l'installer Inno Setup su Windows e li allega
-  alla GitHub Release del tag (con changelog estratto da questo file).
-  Rimossi gli script installer obsoleti (NSIS e Inno duplicati); corretto
-  `UninstallDisplayName` in `inno_setup.iss` (direttiva spezzata su due
-  righe).
-- **Avviso di sostituzione algoritmo nella GUI**: quando il motore sostituisce
-  silenziosamente un percorso di meshing (boundary layer disattivato,
-  parallelo→seriale, retry GMSH più grossolano, retry di qualità), ora il
-  log panel mostra una riga `[SUBSTITUTED]` evidenziata — mai più silenzio.
-- **Documentazione bilingue**: `docs/INSTALL.md` e `docs/USER_GUIDE.md`
-  riscritte in inglese (principali), versioni italiane in
-  `docs/INSTALL.it.md` / `docs/USER_GUIDE.it.md`, link incrociati in cima.
-- **Community**: `CODE_OF_CONDUCT.md`, template PR in
-  `.github/PULL_REQUEST_TEMPLATE.md`, 5 issue "good first issue" sul repo
-  pubblico.
-- `_paths.py`: fonte unica per la directory dati applicativi e migrazione
-  one-shot dal percorso legacy.
+- **Release pipeline**: on a `v*` tag push, GitHub Actions builds the
+  PyInstaller executable + the Inno Setup installer on Windows and
+  attaches them to the tag's GitHub Release (with a changelog excerpt
+  from this file). Removed obsolete installer scripts (duplicate NSIS
+  and Inno); fixed `UninstallDisplayName` in `inno_setup.iss` (directive
+  split across two lines).
+- **Algorithm-substitution notice in the GUI**: when the engine silently
+  substitutes a meshing path (boundary layer disabled, parallel→serial,
+  coarser GMSH retry, quality retry), the log panel now shows a
+  highlighted `[SUBSTITUTED]` line — no more silence.
+- **Bilingual documentation**: `docs/INSTALL.md` and
+  `docs/USER_GUIDE.md` rewritten in English (primary), Italian versions
+  in `docs/INSTALL.it.md` / `docs/USER_GUIDE.it.md`, cross-links at the
+  top.
+- **Community**: `CODE_OF_CONDUCT.md`, PR template in
+  `.github/PULL_REQUEST_TEMPLATE.md`, 5 "good first issue" issues on the
+  public repo.
+- `_paths.py`: single source of truth for the application data
+  directory and a one-shot migration from the legacy path.
 
 ## [2.1.0] - 2026-09-08
 
-### Cambi di rottura (breaking)
+### Breaking changes
 
-- **Rename del pacchetto Python**: `cfmesh_autogui` → `polyfoammesh`. Gli
-  import nel codice, nei test e nei tool sono stati aggiornati; i moduli
-  entry point della CLI sono ora `polyfoammesh`, `polyfoammesh-mesh` e
-  `polyfoammesh-batch`. L'eseguibile PyInstaller si chiama `PolyFoamMesh`.
+- **Python package rename**: `cfmesh_autogui` → `polyfoammesh`. Imports
+  across the code, tests, and tools were updated; the CLI entry-point
+  modules are now `polyfoammesh`, `polyfoammesh-mesh`, and
+  `polyfoammesh-batch`. The PyInstaller executable is named
+  `PolyFoamMesh`.
 
-### Aggiunto
+### Added
 
-- CI riportata verde su GitHub Actions (era rossa su ogni push): `pytest-qt`
-  negli extra, percorsi compatibili POSIX in `config.py`/`validation.py`,
-  dipendenze `networkx` e `rtree` dichiarate.
+- CI brought back to green on GitHub Actions (it was red on every
+  push): `pytest-qt` in the extras, POSIX-compatible paths in
+  `config.py`/`validation.py`, `networkx` and `rtree` dependencies
+  declared.
 
-### Corretto
+### Fixed
 
-- Zone di raffinamento manuali: `setAsBackgroundMesh` scartava il campo
-  adattivo geometrico; ora MIN-combinato (`gmsh_wrapper.py`).
-- Corpi curvi chiusi (es. sfera) tessellati non-watertight: vertici
-  coincidenti a cuciture/poli ora fusi e triangoli degeneri scartati
-  (`geometry.py::tessellate_patches`).
-- Test che sovrascrivevano `sample_cad/` tracciato; stub sempre-skip
-  sostituito con un test di integrazione reale.
-- Storia git: blob da ~278 MB (`installer/output/*.exe`) rimosso dalla
-  storia di `master` con `filter-branch`.
+- Manual refinement zones: `setAsBackgroundMesh` was discarding the
+  adaptive geometric field; now MIN-combined (`gmsh_wrapper.py`).
+- Closed curved bodies (e.g. a sphere) tessellated non-watertight:
+  coincident vertices at seams/poles are now merged and degenerate
+  triangles discarded (`geometry.py::tessellate_patches`).
+- Tests that overwrote the tracked `sample_cad/`; an always-skip stub
+  replaced with a real integration test.
+- Git history: a ~278 MB blob (`installer/output/*.exe`) removed from
+  `master`'s history with `filter-branch`.
 
-### Nota
+### Note
 
-- L'eseguibile e l'installer precompilati non vengono committati nel repo:
-  si trovano rispettivamente in `dist/` e `installer/output/` (entrambi
-  ignorati da `.gitignore`) e vengono generati localmente o dalla pipeline
-  di release.
+- The prebuilt executable and installer are not committed to the repo:
+  they live in `dist/` and `installer/output/` respectively (both
+  ignored by `.gitignore`) and are generated locally or by the release
+  pipeline.
 
 [2.2.0]: https://github.com/LorenzoRiti/PolyFoamMesh/releases/tag/v2.2.0
 [2.1.0]: https://github.com/LorenzoRiti/PolyFoamMesh/releases/tag/v2.1.0
