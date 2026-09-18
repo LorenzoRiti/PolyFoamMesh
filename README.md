@@ -92,6 +92,7 @@ paying for a license to get it.
 - **[Installation](docs/INSTALL.md)** — Windows installer or from source
 - **[User guide](docs/USER_GUIDE.md)** — how the workflow works, tab by tab
 - **[Known limitations](docs/residual_risks.md)** — what doesn't work yet, and why
+- **[Open issues](https://github.com/LorenzoRiti/PolyFoamMesh/issues)** — the real, currently-open work, each with a diagnosis and acceptance criteria
 
 ## Architecture
 

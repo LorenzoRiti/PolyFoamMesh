@@ -5,6 +5,44 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## Status as of 2026-09-17
+
+A RAM-exhaustion crash was found and fixed on the boundary-layer /
+cell-merge path (a real ~5M-cell run with "concave closure" on exhausted
+32GB and crashed the OS). Root cause was Python dict/list structures
+built over the whole mesh instead of the cells/faces actually involved;
+now chunked/vectorized. A ~5M-cell / 15M-face synthetic run now peaks at
+~13GB; the safety guard moved from a rough 1.5M-cell cap to a measured
+8M-face threshold. **That threshold is still only measured on a
+synthetic hex mesh, not on the real dual/poly path** — see
+[#9](https://github.com/LorenzoRiti/PolyFoamMesh/issues/9).
+
+Three literature-grounded boundary-layer extrusion-normal strategies were
+evaluated against real `checkMesh` on concave geometries (most-visible
+normal, Laplacian-smoothed normal, guided bilateral filter), plus a
+batched per-vertex local-height retry. The most-visible + local-height-
+retry combination is shipped as an opt-in that measurably improves wall
+coverage over either alone; the other variants were measured and are
+documented as honest no-ops, not shipped. All of this is opt-in;
+defaults are unchanged.
+
+The reference cylinder still has a real aspect-ratio gap against
+snappyHexMesh (4.49 vs 3.02). A direct cell-merge fix was tried and
+rejected by real checkMesh (non-orthogonality +80%, skewness +233%); a
+zonal smoothing pass helped marginally (-0.5%) but hit a topology-bound
+wall. The diagnosed fix is a directional split operator, not yet
+written — see [#8](https://github.com/LorenzoRiti/PolyFoamMesh/issues/8).
+
+**Open issues tracking the largest known gaps** (good starting points for
+contributors — each has a diagnosis, prior attempts, and acceptance
+criteria already written up):
+
+- [#8 — Directional split operator for the cylinder aspect-ratio gap](https://github.com/LorenzoRiti/PolyFoamMesh/issues/8)
+- [#9 — Validate the RAM safety threshold on real dual/poly geometries](https://github.com/LorenzoRiti/PolyFoamMesh/issues/9)
+- [#10 — Vectorize the remaining O(n_cells) loop in the cell-merge repair](https://github.com/LorenzoRiti/PolyFoamMesh/issues/10)
+
+See `CHANGELOG.md` for the full list of what changed in this pass.
+
 ## Meshing Timeouts
 
 - GMSH volume meshing uses a 3600 s wall-clock timeout in every path

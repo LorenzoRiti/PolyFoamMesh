@@ -5,6 +5,51 @@ Tutte le modifiche notevoli a PolyFoamMesh sono documentate qui.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e
 il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
+## [Non rilasciato] - 2026-09-17
+
+### Corretto
+
+- **Crash da esaurimento RAM su mesh grandi**: un run reale a ~5M celle
+  con "concave closure" attivo esauriva 32GB di RAM e faceva riavviare
+  il sistema. Causa: strutture Python (dizionari/liste) costruite
+  sull'intera mesh invece che solo sulle celle/facce effettivamente
+  coinvolte nel boundary layer e nel merge post-BL. Corretto con
+  geometria a blocchi, grafo di adiacenza CSR e mappe limitate ai
+  vertici di parete — un run reale a 5M celle / 15M facce ora ha un
+  picco di ~13GB. La soglia di sicurezza è passata da un limite a
+  occhio (1,5M celle) a una soglia misurata (8M facce); vedi
+  [#9](https://github.com/LorenzoRiti/PolyFoamMesh/issues/9) per la
+  validazione ancora mancante sul percorso poliedrico reale.
+- Bug reale nella formula di skewness (sommava due termini di
+  normalizzazione invece di prendere il massimo, come fa OpenFOAM) e un
+  bug che disattivava silenziosamente il passaggio di qualità su mesh
+  già sane.
+
+### Aggiunto (sperimentale, opt-in, default invariati)
+
+- Tre strategie di calcolo della normale di estrusione del boundary
+  layer, valutate con checkMesh reale su geometrie concave: normale "più
+  visibile" (minimizza l'angolo massimo), smoothing Laplaciano, filtro
+  bilaterale guidato. Solo la prima ha un effetto reale misurabile da
+  sola; combinata con il recupero locale dell'altezza (vedi sotto) batte
+  entrambe le leve singole sulla copertura del boundary layer.
+- Recupero locale dell'altezza per-vertice: invece di escludere un
+  vertice di parete il cui prisma fallisce all'altezza piena, ritenta con
+  un'altezza molto più corta prima di arrendersi.
+- Smoothing della mesh ispirato a GETMe, consapevole dell'aspect ratio.
+
+### Non promosso (provato, misurato, scartato onestamente)
+
+- Filtro bilaterale guidato sulle normali (Zhang 2015): nessun effetto,
+  le normali analitiche del dual non sono rumorose come nel caso che
+  quel filtro risolve.
+- Merge diretto delle celle per correggere l'aspect ratio sul cilindro:
+  migliorava la metrica interna ma veniva respinto da checkMesh reale
+  (non-ortogonalità +80%, skewness +233%). Il gap aspect ratio sul
+  cilindro (4,49 vs 3,02 di snappyHexMesh) resta aperto — vedi
+  [#8](https://github.com/LorenzoRiti/PolyFoamMesh/issues/8) per il vero
+  lavoro necessario (operatore di split direzionale).
+
 ## [2.2.0] - 2026-09-08
 
 ### Cambi di rottura (breaking)
