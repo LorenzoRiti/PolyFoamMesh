@@ -261,6 +261,17 @@ L'autore umano è pienamente responsabile della correttezza e della
 validità fisica di questo codice. L'IA è stata uno strumento di supporto,
 non un autore autonomo.
 
+## Marchi registrati
+
+PolyFoamMesh is an independent project and is not affiliated with,
+approved by or endorsed by OpenCFD Ltd, owner of the OPENFOAM®
+trademark. OPENFOAM® is a registered trademark of OpenCFD Ltd.
+
+GMSH, cfMesh e ogni altro strumento di terze parti citato in questo
+progetto sono ugualmente proprietà dei rispettivi titolari; nominarli
+qui descrive solo l'interoperabilità e non implica alcuna affiliazione
+o approvazione.
+
 ## License
 
 GPLv3 — vedi [LICENSE](LICENSE) e [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

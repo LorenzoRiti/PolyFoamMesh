@@ -1,21 +1,21 @@
 # Third-Party Licenses
 
-PolyFoamMesh è GPLv3 ([LICENSE](LICENSE)) e usa le seguenti dipendenze.
-Nessuna di queste è ridistribuita modificata; le versioni sono quelle
-dichiarate in [pyproject.toml](pyproject.toml).
+PolyFoamMesh is GPLv3 ([LICENSE](LICENSE)) and uses the following
+dependencies. None of these is redistributed modified; versions are
+those declared in [pyproject.toml](pyproject.toml).
 
-| Componente | Licenza | Note |
+| Component | License | Notes |
 |---|---|---|
-| [GMSH](https://gmsh.info/) | GPLv2+ | Eseguito sempre in subprocess separato (CLI + JSON), mai linkato nello stesso processo — vedi `core/gmsh_subprocess.py` |
-| [cfMesh](https://cfmesh.com/) / [OpenFOAM](https://openfoam.org/) | GPLv3 | Non ridistribuito: gira in WSL2, installato separatamente dall'utente (`installer/setup_wsl_openfoam.ps1`) |
-| [PySide6](https://www.qt.io/qt-for-python) (Qt for Python) | LGPLv3 | Compatibile con GPLv3 |
+| [GMSH](https://gmsh.info/) | GPLv2+ | Always run in a separate subprocess (CLI + JSON), never linked into the same process — see `core/gmsh_subprocess.py` |
+| [cfMesh](https://cfmesh.com/) / [OpenFOAM](https://openfoam.org/) | GPLv3 | Not redistributed: runs in WSL2, installed separately by the user (`installer/setup_wsl_openfoam.ps1`) |
+| [PySide6](https://www.qt.io/qt-for-python) (Qt for Python) | LGPLv3 | Compatible with GPLv3 |
 | [CadQuery](https://cadquery.readthedocs.io/) | Apache-2.0 | |
 | [PyVista](https://pyvista.org/) / pyvistaqt | MIT | |
 | [trimesh](https://trimesh.org/) | MIT | |
 | [NumPy](https://numpy.org/) / [SciPy](https://scipy.org/) | BSD-3-Clause | |
 | [meshio](https://github.com/nschloe/meshio) | MIT | |
-| [ReportLab](https://www.reportlab.com/) | BSD-style | Genera i report PDF di qualità mesh |
+| [ReportLab](https://www.reportlab.com/) | BSD-style | Generates the mesh-quality PDF reports |
 | [PyMeshFix](https://github.com/pyvista/pymeshfix) | GPLv3 (via MeshFix) | |
 
-Se noti una licenza mancante o non aggiornata, apri una issue —
-vedi [CONTRIBUTING.md](CONTRIBUTING.md).
+If you notice a missing or outdated license, open an issue — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
