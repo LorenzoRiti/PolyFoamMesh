@@ -87,558 +87,561 @@ See `CHANGELOG.md` for the full list of what changed in this pass.
   The GUI now keeps BL enabled on the "Polyhedral (CFD)" path: the
   converter still only ever sees pure tetrahedra, the layers are added
   after conversion.
-- **BL selettivo per patch (FASE 1, 2026-08-10)**: `core/bl_poly.py` non
-  auto-chiude più la selezione su tutto il boundary. Con `patch_names`
-  (default del runner: solo patch `wall` / nome *wall* / ruoli geometrici
-  da `infer_patch_roles`), le facce laterali dei prismi al bordo della zona
-  BL giacciono nel piano della parete adiacente e diventano **facce di
-  boundary della patch senza BL** (possedute dai prismi); le facce di parete
-  non selezionate muovono i vertici condivisi all'ultimo layer. Verifica
-  reale (`tools/bench_bl_poly_partial.py`, checkMesh WSL, ri-misurato
-  2026-09-09): A. cilindro GMSH con patch nominate inlet/outlet/wall → BL
-  solo su wall, 60.354 prismi = 3 layer x 20.118 facce (70.976 celle,
-  skew 2.264, NOmax 81.1, `Mesh OK`); B. cubo duct (in-memory) → 81 celle,
-  72 prismi = 3 x 24, skew 2.175, NOmax 44.8, `Mesh OK`. I vecchi numeri
-  "72 prismi = 3 x 24" erano il cubo, non il cilindro.
-  `n_prism_cells == n_layers × facce_di_parete` derivato dal mesh di
-  ingresso, mai hardcoded.
-- **Solver sulla valvola (FASE 0, 2026-08-10)**: vedi
-  `docs/poly_solver_validation.md` — potentialFoam converge sulla poly della
-  valvola (residuo finale 4.6e-6, continuity error 1.6% del flusso, volume
-  0.00%), quindi il difetto concavo (852 facce "incorrectly oriented",
-  checkMesh non-OK) è un **limite documentato**, non un bug: FASE 3 non
-  necessaria.
-- **FASE 2 (terminazione locale dei layer, 2026-08-10)**: macchina
-  implementata (conteggio per-vertice nv basato su angle_fade, conteggio per
-  faccia, fixpoint di consistenza che rende il conteggio uniforme per
-  componente connessa, gate piramidi rilassato `n_pyr_after <= n_pyr_before`,
-  facce violate dell'input ridotte a 1 layer) e verificata su mesh sane
-  (cubo 6/6: chiusura 0 celle, volume 1e-6; gate FASE 1 ri-verificato PASS).
-  Sulle geometrie con difetti concavi pre-esistenti (valvola) il BL fallisce
-  ancora pulito con mesh invariata: la chiusura non regge in nessuna delle
-  strategie misurate (199 celle non chiuse nella costruzione non vincolata;
-  63.252 nel fixpoint; il drop a 0 layer perde il volume). Causa radice:
-  angle_fade >= 0.8 su TUTTI i vertici di parete della valvola — la
-  concavità delle celle duali non è rilevabile dalle normali di parete.
-   Il fallback globale su 5 scale resta il comportamento della valvola
-   finché `local_termination` resta opt-in (vedi risultato FASE 2 sotto).
-- **Criterio di concavità duale (Lane B, 2026-09-08)**: nuovo parametro
-  opt-in `concavity_criterion="dual_convexity"` in `core/bl_poly.py`
-  (funzione `_dual_convexity_wall_fade`; default `"angle_fade"` invariato e
-  byte-identico). Il detector misura la convessità delle CELLE DUALI
-  direttamente: per ogni vertice di parete, frazione delle facce di parete
-  incidenti il cui owner cell è non-convesso nel senso esatto del test
-  'face pyramids' di checkMesh (centroide OpenFOAM della cella fuori da una
-  sua faccia), mappata nella stessa convenzione 0.05..1.0 di angle_fade.
-  Misurato sulla fixture valvola (1.051.199 punti, 1.241.048 facce, 152.086
-  celle): il segnale scatta ESATTAMENTE sulla classe di difetto documentata —
-  393 celle duali non-convesse (intervallo documentato 268-462), 1007 facce
-  difettose (= i 1007 difetti piramide dell'input), 1123 vertici di parete
-  con fade < 0.5 contro ZERO per angle_fade (fade >= 1.0 su tutti i 226.538
-  vertici, confermando la causa radice documentata). Esito misurato dei due
-  run completi (in-process, replica checkMesh; n_layers=2, h1=1e-5,
-  apply_to_all=True, 5 scale):
-  - `angle_fade` (baseline): chiusura fallita a ogni scala — 161 → 106 → 65
-    → 45 → 15 celle non chiuse, nessun volume negativo, 523 s, mesh invariata;
-  - `dual_convexity`: 24 → 378.605 celle a volume non positivo (flip globale
-    del winding alla scala 0.6, 99.99% della mesh) → 11 → 12 → 6 celle non
-    chiuse, 599 s, mesh invariata. Meglio della baseline su 4 scale su 5
-    (fino a 6.7x a scale=1.0: 24 vs 161), ma NESSUNA scala arriva a 0 celle
-    non chiuse: nessun BL valido nemmeno col criterio nuovo.
-  Perché non chiude G2 (misurato, non assunto): il fixpoint di consistenza
-  appiattisce il conteggio a uniforme per componente connessa — misurato
-  nv=nf=1 su TUTTE le 226.542 facce sotto ENTRAMBI i criteri (le 937 facce
-  dell'input segnalate forzano l'intera parete a 1 layer in ~100 passate di
-  fixpoint). Un detector per-vertice può quindi cambiare solo l'ALTEZZA
-  locale (max_h = fade x ...), non il conteggio: migliora la chiusura ma non
-  la porta a 0, e destabilizza la riparazione del winding a scale intermedie.
-  Raccomandazione: il segnale di convessità duale è un detector STRETTAMENTE
-  migliore del fade (393 celle vs 0) e più utile per la chiusura a 4/5 scale,
-  ma da solo non chiude la valvola; per sfruttarlo serve rilassare il
-  fixpoint (conteggi per-faccia con facce di transizione che chiudono, o
-  fixpoint limitato alla regione difettosa). Default invariato: ri-misurare
-  prima di abilitare. Gate WSL (`tools/bench_bl_valve_fase2.py`) NON eseguito:
-  nessuna scala produce una mesh valida in-process (il verdetto dell'engine
-  è deciso dal replicatore, che sulla valvola coincide con checkMesh 895/895),
-  quindi non esiste una mesh nuova da sottoporre a checkMesh — la baseline
-  pinnata resta il comportamento della valvola. Gate salute
-  (`tools/bench_bl_poly_partial.py`): PASS invariato (cilindro 72 prismi =
-  3 x 24, Mesh OK; cubo duct 81 celle, skew 2.175, NOmax 44.8, Mesh OK);
-  test veloci `tests/test_bl_poly.py`: 6/6 verdi (9/9 con i nuovi test
-  del solver globale e della terminazione binaria).
-- **Solver di winding GLOBALE (Lane B, 2026-09-08)**: la riparazione
-  greedy per-cella è stata sostituita da una soluzione ESATTA
-  (`_solve_global_windings`): vincoli di parità per ogni lato-faccia
-  (le due facce di una cella su un edge devono percorrerlo in direzioni
-  opposte), risolti con BFS sul grafo delle facce, poi segno globale per
-  componente (volume totale positivo). Deterministico, O(F+E). Misurato
-  sulla valvola a TUTTE e 5 le scale: **0 celle non chiuse** (max_rel
-  ~1e-12, era 24 alla scala 1.0), **volume conservato a 1e-16** (era
-  drift), nessun flip globale catastrofico — la vecchia greedy alla scala
-  0.6 produceva 378.605 celle a volume non positivo, ora nessuna.
-  Il solver riporta anche `n_conflicts` (mesh non orientabile) e
-  `n_nonmanifold_edges`: sulla valvola entrambi 0. Gate sano
-  (`tools/bench_bl_poly_partial.py`) invariato e PASS: cilindro 60.354
-  prismi = 3 x 20.118, `Mesh OK`; cubo duct 81 celle, 72 prismi =
-  3 x 24, skew 2.175, NOmax 44.8, `Mesh OK`. Nuovo test di regressione:
+- **Per-patch selective BL (PHASE 1, 2026-08-10)**: `core/bl_poly.py` no
+  longer auto-closes the selection over the whole boundary. With
+  `patch_names` (the runner's default: only `wall` patches / name
+  *wall* / geometric roles from `infer_patch_roles`), the prism side
+  faces at the edge of the BL zone lie in the plane of the adjacent
+  wall and become **boundary faces of the non-BL patch** (owned by the
+  prisms); the unselected wall faces move their shared vertices to the
+  last layer. Real verification (`tools/bench_bl_poly_partial.py`,
+  checkMesh WSL, re-measured 2026-09-09): A. GMSH cylinder with patches
+  named inlet/outlet/wall → BL only on wall, 60,354 prisms = 3 layers x
+  20,118 faces (70,976 cells, skew 2.264, NOmax 81.1, `Mesh OK`);
+  B. duct cube (in-memory) → 81 cells, 72 prisms = 3 x 24, skew 2.175,
+  NOmax 44.8, `Mesh OK`. The old "72 prisms = 3 x 24" numbers were the
+  cube, not the cylinder. `n_prism_cells == n_layers × wall_faces`
+  derived from the input mesh, never hardcoded.
+- **Solver on the valve (PHASE 0, 2026-08-10)**: see
+  `docs/poly_solver_validation.md` — potentialFoam converges on the
+  valve's poly mesh (final residual 4.6e-6, continuity error 1.6% of
+  flow, volume 0.00%), so the concave defect (852 "incorrectly
+  oriented" faces, checkMesh not OK) is a **documented limitation**,
+  not a bug: PHASE 3 not needed.
+- **PHASE 2 (local layer termination, 2026-08-10)**: machinery
+  implemented (per-vertex layer count nv based on angle_fade, per-face
+  count, a consistency fixpoint that makes the count uniform per
+  connected component, relaxed pyramid gate `n_pyr_after <=
+  n_pyr_before`, input-violating faces reduced to 1 layer) and verified
+  on healthy meshes (cube 6/6: 0 unclosed cells, volume 1e-6; PHASE 1
+  gate re-verified PASS). On geometries with pre-existing concave
+  defects (the valve) the BL still fails cleanly with the mesh
+  unchanged: closure does not hold under any of the measured strategies
+  (199 unclosed cells in the unconstrained construction; 63,252 in the
+  fixpoint; dropping to 0 layers loses volume). Root cause: angle_fade
+  >= 0.8 on ALL of the valve's wall vertices — the dual cells'
+  concavity is not detectable from wall normals. The global 5-scale
+  fallback remains the valve's behaviour as long as `local_termination`
+  stays opt-in (see the PHASE 2 result below).
+- **Dual-convexity concavity criterion (Lane B, 2026-09-08)**: new
+  opt-in parameter `concavity_criterion="dual_convexity"` in
+  `core/bl_poly.py` (function `_dual_convexity_wall_fade`; default
+  `"angle_fade"` unchanged and byte-identical). The detector measures
+  the DUAL CELLS' convexity directly: for each wall vertex, the
+  fraction of incident wall faces whose owner cell is non-convex in the
+  exact sense of checkMesh's 'face pyramids' test (the OpenFOAM cell
+  centroid falls outside one of its faces), mapped onto the same
+  0.05..1.0 convention as angle_fade. Measured on the valve fixture
+  (1,051,199 points, 1,241,048 faces, 152,086 cells): the signal fires
+  EXACTLY on the documented defect class — 393 non-convex dual cells
+  (documented range 268-462), 1,007 defective faces (= the input's
+  1,007 pyramid defects), 1,123 wall vertices with fade < 0.5 versus
+  ZERO for angle_fade (fade >= 1.0 on all 226,538 vertices, confirming
+  the documented root cause). Measured outcome of the two full runs
+  (in-process, checkMesh replica; n_layers=2, h1=1e-5, apply_to_all=True,
+  5 scales):
+  - `angle_fade` (baseline): closure failed at every scale — 161 → 106
+    → 65 → 45 → 15 unclosed cells, no negative volumes, 523 s, mesh
+    unchanged;
+  - `dual_convexity`: 24 → 378,605 non-positive-volume cells (a global
+    winding flip at scale 0.6, 99.99% of the mesh) → 11 → 12 → 6
+    unclosed cells, 599 s, mesh unchanged. Better than the baseline on
+    4 of 5 scales (up to 6.7x at scale=1.0: 24 vs 161), but NO scale
+    reaches 0 unclosed cells: no valid BL even with the new criterion.
+  Why it doesn't close G2 (measured, not assumed): the consistency
+  fixpoint flattens the count to uniform per connected component —
+  measured nv=nf=1 on ALL 226,542 faces under BOTH criteria (the
+  input's 937 flagged faces force the whole wall to 1 layer within
+  ~100 fixpoint passes). A per-vertex detector can therefore only
+  change the local HEIGHT (max_h = fade x ...), not the count: it
+  improves closure but does not bring it to 0, and destabilises the
+  winding repair at intermediate scales. Recommendation: the dual
+  convexity signal is a STRICTLY better detector than the fade
+  (393 cells vs 0) and more useful for closure at 4/5 scales, but on
+  its own it does not close the valve; using it needs the fixpoint
+  relaxed (per-face counts with transition faces that close, or a
+  fixpoint restricted to the defective region). Default unchanged:
+  re-measure before enabling. WSL gate (`tools/bench_bl_valve_fase2.py`)
+  NOT run: no scale produces a valid mesh in-process (the engine's
+  verdict is decided by the replica, which on the valve matches
+  checkMesh at 895/895), so there is no new mesh to submit to
+  checkMesh — the pinned baseline remains the valve's behaviour.
+  Health gate (`tools/bench_bl_poly_partial.py`): PASS unchanged
+  (cylinder 72 prisms = 3 x 24, Mesh OK; duct cube 81 cells, skew 2.175,
+  NOmax 44.8, Mesh OK); fast tests `tests/test_bl_poly.py`: 6/6 green
+  (9/9 with the new global-solver and binary-termination tests).
+- **GLOBAL winding solver (Lane B, 2026-09-08)**: the greedy per-cell
+  repair was replaced with an EXACT solution (`_solve_global_windings`):
+  parity constraints for every face-side (the two faces of a cell on an
+  edge must traverse it in opposite directions), solved with a BFS on
+  the face graph, then a global sign per component (positive total
+  volume). Deterministic, O(F+E). Measured on the valve at ALL 5 scales:
+  **0 unclosed cells** (max_rel ~1e-12, was 24 at scale 1.0), **volume
+  conserved to 1e-16** (was drifting), no catastrophic global flip — the
+  old greedy repair at scale 0.6 produced 378,605 non-positive-volume
+  cells, now none. The solver also reports `n_conflicts` (non-orientable
+  mesh) and `n_nonmanifold_edges`: both 0 on the valve. Health gate
+  (`tools/bench_bl_poly_partial.py`) unchanged and PASS: cylinder 60,354
+  prisms = 3 x 20,118, `Mesh OK`; duct cube 81 cells, 72 prisms =
+  3 x 24, skew 2.175, NOmax 44.8, `Mesh OK`. New regression test:
   `tests/test_bl_poly.py::test_bl_global_winding_solve_is_exact_after_flip`
-  (una faccia ribaltata a mano viene richiusa esattamente).
-- **Chiusura BL su concava (FASE 2 completata, 2026-09-09)**: opt-in
-  `run(local_termination=True)` produce il primo BL VALIDO sulla valvola.
-  Meccanismo in due parti, entrambe opt-in:
-  1. terminazione binaria (`_build(..., zero_concave=True)`): una faccia o
-     riceve l'intero stack di layer o viene esclusa (0 layer) — niente
-     fixpoint di consistenza che appiattisce la regione sana a 1 layer;
-  2. esclusione iterativa (`_collect_exclusions`): le facce i cui prismi
-     risultano invalidi (volume non positivo, piramidi, celle core
-     spostate) vengono rimosse dalla selezione e si riprova; fino a
-     5 scale x 3 round, esclusioni portate tra le scale; la mesh viene
-     scritta SOLO se il gate di validazione passa (altrimenti resta
-     invariata, stesso contratto del percorso standard).
-  Misurato end-to-end sulla valvola (1.051.199 punti, 1.241.048 facce,
-  226.542 facce di parete; n_layers=2, h1=1e-5, `dual_convexity`):
-  successo alla scala 0.1 dopo esclusioni a 1.0/0.6/0.35/0.2 — **19.625
-  facce escluse (8.7%)**, 410.668 celle prisma, spessore 2.2e-06, volume
-  conservato (0.1218350 vs 0.1218351 d'ingresso), min volume cella
-  1.15e-14, 1602 s. checkMesh reale: **891 facce "incorrectly oriented" vs
-  895 dell'input (migliore)**, non-ortho max 123.3, max skewness 46.8 vs
-  45.0, "Failed 4" vs "Failed 3" — l'unico check in più è l'aspect ratio
-  (max 15522, 15.921 celle), intrinseco ai prismi BL sottili (h1 = 1e-6 m
-  alla scala 0.1); nessun altro check peggiora. Default invariato
-  (`local_termination=False`): il percorso standard sulla valvola fallisce
-  ancora pulito come documentato (slow test
-  `test_valve_fixture_bl_invariants`, 1 passed in 473 s). Nuovi test in
-  `tests/test_bl_poly.py` (chiusura esatta, drop binario, successo su cubo
-  sano): 9/9 fast verdi.
-  Il bench FASE 1 ha inoltre esposto un bug del reader:
-  `foam_mesh_io.read_label_list` scambiava per ASCII un payload binario il
-  cui probe da 64 byte conteneva un byte 0x29 (indici cella come 41/296/
-  10537), restituendo una lista VUOTA — e il rename patch riscriveva il
-  polyMesh corrotto (neighbour=0). Risolto con il test "tutti i byte sono
-  testo ASCII" al posto dell'euristica `')' in probe`, più regression test
+  (a manually flipped face is closed exactly).
+- **BL closure on concave geometry (PHASE 2 complete, 2026-09-09)**:
+  opt-in `run(local_termination=True)` produces the first VALID BL on
+  the valve. Two-part mechanism, both opt-in:
+  1. binary termination (`_build(..., zero_concave=True)`): a face
+     either gets the whole layer stack or is excluded (0 layers) — no
+     consistency fixpoint flattening the healthy region to 1 layer;
+  2. iterative exclusion (`_collect_exclusions`): faces whose prisms
+     turn out invalid (non-positive volume, pyramids, moved core cells)
+     are removed from the selection and it retries; up to 5 scales x
+     3 rounds, exclusions carried across scales; the mesh is written
+     ONLY if the validation gate passes (otherwise it is left
+     unchanged, same contract as the standard path).
+  Measured end-to-end on the valve (1,051,199 points, 1,241,048 faces,
+  226,542 wall faces; n_layers=2, h1=1e-5, `dual_convexity`): success
+  at scale 0.1 after exclusions at 1.0/0.6/0.35/0.2 — **19,625 excluded
+  faces (8.7%)**, 410,668 prism cells, thickness 2.2e-06, volume
+  conserved (0.1218350 vs 0.1218351 input), min cell volume 1.15e-14,
+  1602 s. Real checkMesh: **891 "incorrectly oriented" faces vs 895 in
+  the input (better)**, max non-ortho 123.3, max skewness 46.8 vs 45.0,
+  "Failed 4" vs "Failed 3" — the one extra check is aspect ratio
+  (max 15522, 15,921 cells), intrinsic to thin BL prisms (h1 = 1e-6 m
+  at scale 0.1); no other check gets worse. Default unchanged
+  (`local_termination=False`): the standard path on the valve still
+  fails cleanly as documented (slow test
+  `test_valve_fixture_bl_invariants`, 1 passed in 473 s). New tests in
+  `tests/test_bl_poly.py` (exact closure, binary drop, success on a
+  healthy cube): 9/9 fast, green.
+  The PHASE 1 bench also exposed a reader bug:
+  `foam_mesh_io.read_label_list` misclassified a binary payload as
+  ASCII when its 64-byte probe contained a 0x29 byte (cell indices like
+  41/296/10537), returning an EMPTY list — and the rename patch then
+  wrote back a corrupted polyMesh (neighbour=0). Fixed with an
+  "every byte is ASCII text" test instead of the `')' in probe`
+  heuristic, plus a regression test
   `test_local_refinement_boxes.py::test_read_label_list_binary_payload_with_0x29_byte`.
-- **FASE 3 — la terminazione locale generalizza? (2026-09-09)**.
-  Protocollo: `local_termination=True` su geometrie diverse dalla valvola,
-  checkMesh REALE prima/dopo, stesse metriche (celle non chiuse, % escluse,
-  tempo). Ragionamento e previsioni scritti PRIMA dei test in
-  `notes/fase3_reasoning.md` (untracked). Nessun default cambiato; nessun
-  wiring GUI (bloccato sulla validazione utente di FASE 2).
+- **PHASE 3 — does local termination generalise? (2026-09-09)**.
+  Protocol: `local_termination=True` on geometries other than the
+  valve, REAL checkMesh before/after, the same metrics (unclosed cells,
+  % excluded, time). Reasoning and predictions written BEFORE testing
+  in `notes/fase3_reasoning.md` (untracked). No default changed; no GUI
+  wiring (blocked on user validation of PHASE 2).
 
-  **Predittore economico (senza estrudere nulla):** contare sul dual
-  `pyr_input` (facce che violano il criterio piramide) e i vertici di
-  parete con fade duale < 0.5. Ordina la difficoltà esattamente come i
-  run: cilindro 0/0, cubo 0/0, groove1 4/2, slot1 42/17, valvola
-  1.007/1.123. Costo: 27 s sulla valvola (vs 115 s del primo build).
+  **Cheap predictor (without extruding anything):** count, on the dual,
+  `pyr_input` (faces violating the pyramid criterion) and wall vertices
+  with dual fade < 0.5. It orders difficulty exactly like the runs:
+  cylinder 0/0, cube 0/0, groove1 4/2, slot1 42/17, valve 1,007/1,123.
+  Cost: 27 s on the valve (vs 115 s for the first build).
 
-  **Esiti (n_layers=3, h1=0.005, apply_to_all; `standard` vs
-  `local_termination` dual_convexity, checkMesh reale):**
-  - cilindro (dual 10.618 celle, 24.936 facce): standard 74.808 prismi,
-    scala 1.0, Mesh OK (skew 2.97, NOmax 81.1) — **LT identico, 0
-    escluse**, 12,6 s; anche `angle_fade` identico. Nessun peggioramento
-    dove il percorso standard già funziona.
-  - cubo duct (9 celle): identico, 108 prismi, Mesh OK.
-  - groove1 (682 celle, 3.372 facce; predittore 4/2): standard
-    "success=True" a scala 0.1 ma con TUTTO a 1 layer e checkMesh
-    **Failed 2** (2 errori non-ortho, skew 46,2) — una mesh che checkMesh
-    boccia. LT dual: **10.062 prismi (3 layer), scala 1.0, Mesh OK**
-    (skew 3,29, NOmax 89,1), 18 facce scartate dal criterio binario (0
-    esclusioni iterative), 1,4 s. LT angle: 10.032 prismi, 28 scartate,
-    Mesh OK. LT triplica i layer E rende la mesh valida.
-  - slot1 (9.372 celle, 26.754 facce; predittore 42/17): standard
-    **FALLISCE** a tutte le scale (mesh invariata, 34,5 s). LT dual:
-    **79.614 prismi, scala 1.0, Mesh OK** (skew 2,89, NOmax 87,0), 216
-    facce senza BL = 0,8%, 27,1 s; LT angle: 79.593 prismi, 190 scartate,
-    Mesh OK. Seconda geometria concava dove LT sblocca il BL.
-  - valvola: seed predicibile 2.737 facce (1,21%): 937 difettose input +
-    1.800 con un vertice a fade<0.5 (0 solo-drop). Run a 0.1 con la
-    logica di esclusione di produzione: 3 round (114,8/90,7/99,4 s),
-    2.058 esclusioni iterative, di cui **1.828 (88,8%) nel seed** e solo
-    230 (0,10% del totale) cascata pura; 91,5% delle escluse entro 2
-    anelli di adiacenza da una faccia difettosa (ring 0/1/2 =
-    803/651/429). checkMesh: 885 facce male orientate vs 895 input,
-    "Failed 4" (quarto = aspect ratio), 597.802 celle.
-    Contabilità: `local_excluded_faces` conta solo l'iterativo; il totale
-    senza BL è 3.684 facce (**1,63%**) perché i drop binari si rivalutano
-    a ogni round (un vertice può scendere sotto 0,5 perdendo una faccia
-    incidente).
-  - **Finding principale — l'ordine delle scale è il vero costo:**
-    l'engine thick-first (1.0 → 0.1) accumula TUTTE le 19.625 esclusioni
-    iterative prima di arrivare a 0.1 (i warning mostrano fallimenti solo
-    a 1.0/0.6/0.35/0.2; a 0.1 valida con il set portato). Lo stesso 0.1
-    thin-first ne richiede 2.058: **9,5x in meno**, 8,5% di prismi in più
-    (445.716 vs 410.668) e checkMesh marginalmente migliore (885 vs 891).
-    Raccomandazione per un lavoro futuro: invertire l'ordine delle scale
-    (o azzerare le esclusioni scendendo di scala) con test dedicati —
-    NON implementato qui: nessun default cambiato.
-  - **Winding globale vs terminazione binaria:** il solver di winding è
-    un risolutore esatto (nessun conflitto/edge non-manifold su nessuna
-    geometria; 0 celle non chiuse ovunque). Col solo winding il percorso
-    standard della valvola resta invalido per volumi negativi (22-44 per
-    scala, stage1c): il residuo è geometrico, non di orientamento. La
-    terminazione binaria è l'unico pezzo che scala con la difficoltà:
-    no-op su cilindro/cubo, 0,5-0,8% di scarto su groove/slot, 0,9-1,6%
-    sulla valvola (thin-first).
-  - **Previsioni vs misure:** seed, thin-first e anelli confermati. Una
-    previsione sbagliata dichiarata: per groove1 avevo previsto "decine/
-    centinaia" di vertici a fade basso, misurati 2 — il predittore ordina
-    correttamente ma la soglia facile/difficile va tarata. Nessun
-    fallimento di LT nel set; l'unico fallimento misurato è il percorso
-    STANDARD su slot1.
-  - **Tempo:** ~lineare nella dimensione con overhead fisso (cubo 0,03 s;
-    groove 1,4-3,2 s; cilindro 12,6-13,5 s; slot1 27,1 s; valvola ~100
-    s/tentativo). Il totale = tentativi × dimensione; il thin-first
-    valvola costa ~305 s di build contro i 1.602 s del thick-first.
-- **FASE 4 — thin-first generalizza oltre la valvola? NO (2026-09-09)**.
-  Domanda: il vantaggio del thin-first misurato sulla valvola (9,5x meno
-  esclusioni, +8,5% prismi, ~5x più veloce) vale anche su
-  cilindro/cubo/groove1/slot1? Metodo: previsione scritta PRIMA
-  (`notes/thinfirst_reasoning.md`), due run per geometria con la stessa
-  logica interna e la sola tupla delle scale cambiata
-  (`tools/bench_bl_thinfirst.py`; il thick-first riproduce esattamente i
-  risultati LT di FASE 3, quindi il patch è fedele).
+  **Outcomes (n_layers=3, h1=0.005, apply_to_all; `standard` vs
+  `local_termination` dual_convexity, real checkMesh):**
+  - cylinder (dual 10,618 cells, 24,936 faces): standard 74,808 prisms,
+    scale 1.0, Mesh OK (skew 2.97, NOmax 81.1) — **LT identical, 0
+    excluded**, 12.6 s; `angle_fade` also identical. No regression
+    where the standard path already works.
+  - duct cube (9 cells): identical, 108 prisms, Mesh OK.
+  - groove1 (682 cells, 3,372 faces; predictor 4/2): standard
+    "success=True" at scale 0.1 but with EVERYTHING at 1 layer and
+    checkMesh **Failed 2** (2 non-ortho errors, skew 46.2) — a mesh
+    checkMesh rejects. LT dual: **10,062 prisms (3 layers), scale 1.0,
+    Mesh OK** (skew 3.29, NOmax 89.1), 18 faces dropped by the binary
+    criterion (0 iterative exclusions), 1.4 s. LT angle: 10,032 prisms,
+    28 dropped, Mesh OK. LT triples the layer count AND makes the mesh
+    valid.
+  - slot1 (9,372 cells, 26,754 faces; predictor 42/17): standard
+    **FAILS** at every scale (mesh unchanged, 34.5 s). LT dual:
+    **79,614 prisms, scale 1.0, Mesh OK** (skew 2.89, NOmax 87.0), 216
+    faces with no BL = 0.8%, 27.1 s; LT angle: 79,593 prisms, 190
+    dropped, Mesh OK. Second concave geometry where LT unlocks the BL.
+  - valve: predictable seed of 2,737 faces (1.21%): 937 defective in
+    the input + 1,800 with one vertex at fade<0.5 (0 drop-only). A run
+    at 0.1 with the production exclusion logic: 3 rounds
+    (114.8/90.7/99.4 s), 2,058 iterative exclusions, of which
+    **1,828 (88.8%) in the seed** and only 230 (0.10% of the total)
+    pure cascade; 91.5% of the excluded faces within 2 adjacency rings
+    of a defective face (ring 0/1/2 = 803/651/429). checkMesh: 885
+    wrongly-oriented faces vs 895 in the input, "Failed 4" (the fourth
+    = aspect ratio), 597,802 cells. Accounting: `local_excluded_faces`
+    counts only the iterative part; the total with no BL is 3,684 faces
+    (**1.63%**) because the binary drops are re-evaluated every round
+    (a vertex can drop below 0.5 and lose an incident face).
+  - **Main finding — scale ORDER is the real cost:** the thick-first
+    engine (1.0 → 0.1) accumulates ALL 19,625 iterative exclusions
+    before reaching 0.1 (the warnings show failures only at
+    1.0/0.6/0.35/0.2; at 0.1 it validates with the carried set). The
+    same 0.1 thin-first needs only 2,058: **9.5x fewer**, 8.5% more
+    prisms (445,716 vs 410,668) and marginally better checkMesh (885 vs
+    891). Recommendation for future work: reverse the scale order (or
+    reset exclusions when descending a scale) with dedicated tests —
+    NOT implemented here: no default changed.
+  - **Global winding vs binary termination:** the winding solver is an
+    exact solver (no conflicts/non-manifold edges on any geometry; 0
+    unclosed cells everywhere). With winding alone the valve's standard
+    path remains invalid due to negative volumes (22-44 per scale,
+    stage1c): the residual is geometric, not orientation. Binary
+    termination is the only piece that scales with difficulty: a no-op
+    on cylinder/cube, 0.5-0.8% dropped on groove/slot, 0.9-1.6% on the
+    valve (thin-first).
+  - **Predictions vs measurements:** seed, thin-first, and rings
+    confirmed. One wrong prediction reported honestly: for groove1 I
+    had predicted "tens/hundreds" of low-fade vertices, measured 2 —
+    the predictor orders correctly but the easy/hard threshold needs
+    calibrating. No LT failure in the set; the only measured failure is
+    the STANDARD path on slot1.
+  - **Time:** ~linear in size with fixed overhead (cube 0.03 s; groove
+    1.4-3.2 s; cylinder 12.6-13.5 s; slot1 27.1 s; valve ~100
+    s/attempt). Total = attempts × size; the valve's thin-first costs
+    ~305 s of build time against the thick-first's 1,602 s.
+- **PHASE 4 — does thin-first generalise beyond the valve? NO
+  (2026-09-09)**. Question: does the thin-first advantage measured on
+  the valve (9.5x fewer exclusions, +8.5% prisms, ~5x faster) also hold
+  on cylinder/cube/groove1/slot1? Method: prediction written BEFORE
+  testing (`notes/thinfirst_reasoning.md`), two runs per geometry with
+  the same internal logic and only the scale tuple changed
+  (`tools/bench_bl_thinfirst.py`; thick-first reproduces PHASE 3's LT
+  results exactly, so the patch is faithful).
 
-  **Risultato: come inversione cieca NON generalizza — introduce un
-  effetto collaterale grave.** Su TUTTE e 4 le geometrie thin-first
-  valida al PRIMO tentativo (scala 0.1) e scrive una BL con
-  `first_height` effettivo 10x più piccolo del richiesto (5e-4 invece di
-  5e-3), in silenzio:
-  - cilindro: THICK scala 1.0 vs THIN scala 0.1; stessi prismi (74.808),
-    0 esclusioni, tempo identico (17,9 vs 17,0 s), MA aspect max 18,3 →
-    **104,3**;
-  - cubo duct: 108 prismi in entrambi, aspect 78,7 → **781,6** (~10x);
-  - groove1: 10.062 prismi in entrambi, aspect 15,9 → **90,8**;
-  - slot1: THICK 79.614 prismi con 132 esclusioni iterative (216 totali)
-    a scala 1.0 in 2 round, 36,5 s; THIN 80.004 prismi con **0 esclusioni
-    iterative** (86 totali = solo seed) a scala 0.1 in 1 round, 17,9 s —
-    qui il vantaggio valvola si rivede (meno esclusioni, +390 prismi, 2x
-    più veloce) ma di nuovo con spessore 10x ridotto (aspect 16,7 →
-    **128,5**);
-  - valvola (FASE 3): nessun conflitto di spessore possibile — la scala
-    1.0 falliva comunque, 0.1 era l'unica valida; lì thin-first resta
-    migliore e non danneggia.
+  **Result: as a blind inversion it does NOT generalise — it introduces
+  a serious side effect.** On ALL 4 geometries thin-first validates on
+  the FIRST attempt (scale 0.1) and silently writes a BL whose
+  effective `first_height` is 10x smaller than requested (5e-4 instead
+  of 5e-3):
+  - cylinder: THICK scale 1.0 vs THIN scale 0.1; same prisms (74,808),
+    0 exclusions, identical time (17.9 vs 17.0 s), BUT max aspect 18.3
+    → **104.3**;
+  - duct cube: 108 prisms either way, aspect 78.7 → **781.6** (~10x);
+  - groove1: 10,062 prisms either way, aspect 15.9 → **90.8**;
+  - slot1: THICK 79,614 prisms with 132 iterative exclusions (216 total)
+    at scale 1.0 in 2 rounds, 36.5 s; THIN 80,004 prisms with **0
+    iterative exclusions** (86 total = seed only) at scale 0.1 in 1
+    round, 17.9 s — here the valve-like advantage reappears (fewer
+    exclusions, +390 prisms, 2x faster) but again with a 10x reduced
+    thickness (aspect 16.7 → **128.5**);
+  - valve (PHASE 3): no thickness conflict is possible — scale 1.0
+    always failed, 0.1 was the only valid one; there thin-first stays
+    better and does no harm.
 
-  **Lettura:** i due effetti sono intrecciati. Il vantaggio (meno
-  esclusioni, più prismi, più veloce) esiste solo dove una scala spessa
-  fallisce davvero, e nasce dall'evitare di accumulare esclusioni prima
-  di arrivare alla scala che valida. Ma "accetta la prima scala che
-  valida" significa accettare la 0.1 anche dove la 1.0 richiesta
-  funzionerebbe: su una mesh sana degrada l'y+ di 10x senza fallire.
-  Per questo l'inversione NON va proposta come default (né implementata).
-  La variante da misurare (lavoro futuro, esplicitamente non
-  implementato) è **decoupled**: provare la scala richiesta per prima e,
-  scendendo di scala, NON portare le esclusioni accumulate (reset al
-  cambio scala) — così la valvola otterrebbe ~2.058 esclusioni come
-  thin-first ma i casi sani manterrebbero lo spessore richiesto.
-  **Previsioni vs misure (onesto):** avevo previsto "thin-first
-  identico a thick-first" su cilindro/cubo/groove1 — SBAGLIATO nello
-  spessore/scala/aspect (la meccanica "esce al round 0" era giusta, ma
-  il round 0 di thin-first È la scala 0.1). Su slot1 avevo previsto
-  "uguale o leggermente peggiore in % esclusioni" — sbagliato in segno
-  (0 vs 132, quindi meglio), giusto nella meccanica; mancato l'effetto
-  spessore. Il predittore FASE 3 (pyr_input) resta valido: il vantaggio
-  compare solo dove pyr_input > 0 e cresce col numero di difetti.
-  Default invariato (`local_termination=False`, ordine scale invariato),
-  nessun wiring GUI.
-- **FASE 5 — variante "decoupled" implementata e misurata (2026-09-09)**.
-  Sulla scorta di FASE 3/4 è stata implementata la variante proposta:
-  opt-in nel motore `run(local_termination="decoupled")` (`bl_poly.py`):
-  stesso loop (max 3 round, scale 1.0 → 0.1) ma il set di esclusioni
-  viene **azzerato al cambio di scala** — si prova prima la scala
-  RICHIESTA (1.0, spessore pieno) e solo se fallisce si scende, senza
-  far pagare alle scale sottili i difetti delle scale grosse. `True`
-  (legacy carry) e il default `False` restano invariati; test nuovi
-  `test_bl_local_termination_decoupled_mode_on_healthy_cube` e
+  **Reading:** the two effects are intertwined. The advantage (fewer
+  exclusions, more prisms, faster) exists only where a thick scale
+  genuinely fails, and comes from avoiding accumulating exclusions
+  before reaching the validating scale. But "accept the first scale
+  that validates" means accepting 0.1 even where the requested 1.0
+  would have worked: on a healthy mesh it degrades y+ by 10x without
+  failing. This is why the inversion should NOT be proposed as a
+  default (nor implemented). The variant to measure (future work,
+  explicitly not implemented) is **decoupled**: try the requested scale
+  first and, when descending, do NOT carry the accumulated exclusions
+  (reset on scale change) — so the valve would get ~2,058 exclusions
+  like thin-first while healthy cases would keep the requested
+  thickness. **Predictions vs measurements (honest):** I had predicted
+  "thin-first identical to thick-first" on cylinder/cube/groove1 —
+  WRONG on thickness/scale/aspect (the "exits at round 0" mechanics
+  were right, but thin-first's round 0 IS scale 0.1). On slot1 I had
+  predicted "equal or slightly worse in % excluded" — wrong in sign
+  (0 vs 132, so better), right in mechanics; missed the thickness
+  effect. The PHASE 3 predictor (pyr_input) remains valid: the
+  advantage only appears where pyr_input > 0 and grows with the number
+  of defects. Default unchanged (`local_termination=False`, scale order
+  unchanged), no GUI wiring.
+- **PHASE 5 — "decoupled" variant implemented and measured
+  (2026-09-09)**. Building on PHASE 3/4, the proposed variant was
+  implemented: opt-in engine mode `run(local_termination="decoupled")`
+  (`bl_poly.py`): same loop (max 3 rounds, scales 1.0 → 0.1) but the
+  exclusion set is **reset on scale change** — the REQUESTED scale
+  (1.0, full thickness) is tried first and only descended if it fails,
+  without making the thin scales pay for the thick scales' defects.
+  `True` (legacy carry) and the default `False` remain unchanged; new
+  tests `test_bl_local_termination_decoupled_mode_on_healthy_cube` and
   `test_bl_local_termination_rejects_unknown_mode` (fast suite 1153
-  verdi). Previsione scritta prima in `notes/decoupled_reasoning.md`.
+  green). Prediction written before testing in
+  `notes/decoupled_reasoning.md`.
 
-  Misure (`tools/bench_bl_thinfirst.py --modes thick,thin,decoupled
-  [--valve]`, checkMesh reale):
-  - cilindro/cubo/groove1/slot1: DECOUPLED **identico a THICK** in tutto
-    — scala 1.0 (spessore pieno), stessi prismi (74.808 / 108 / 10.062 /
-    79.614), stesse esclusioni (0/0/0/132), stessi aspect max (18,3 /
-    78,7 / 15,9 / 16,7) e tempi. Il reset non entra mai in gioco quando
-    il successo arriva dentro la scala richiesta: nessuna degradazione
-    dello spessore del thin-first puro.
-  - valvola: successo a scala 0.1 con **2.058 esclusioni** (previste e
-    ottenute) e **445.716 prismi** — esattamente il risultato thin-first
-    (3.684 facce senza BL = 1,63%). checkMesh: **885 facce male orientate
-    vs 895 input**, "Failed 4" (quarto = aspect ratio), skew 47,6,
-    non-ortho 55 — identico al thin-first.
-  - **Tempo valvola: 2.215 s (37 min)** — più lento della previsione
-    (24-30 min) e più lento sia del thin (305 s) sia del thick (1.602 s):
-    prova comunque tutte le scale (15 build, 3 round per scala). Il
-    vantaggio è in esclusioni/prismi, non nel tempo.
-  - Traiettoria warning valvola: fallimenti a 1.0 (50→6→6 volumi
-    negativi), 0.6, 0.35, 0.2, poi 0.1 fresco al terzo round
-    (1.946+112) valida.
+  Measurements (`tools/bench_bl_thinfirst.py --modes thick,thin,decoupled
+  [--valve]`, real checkMesh):
+  - cylinder/cube/groove1/slot1: DECOUPLED **identical to THICK** in
+    every respect — scale 1.0 (full thickness), same prisms (74,808 /
+    108 / 10,062 / 79,614), same exclusions (0/0/0/132), same max
+    aspect (18.3 / 78.7 / 15.9 / 16.7) and times. The reset never comes
+    into play when success arrives within the requested scale: no
+    thickness degradation versus pure thin-first.
+  - valve: success at scale 0.1 with **2,058 exclusions** (predicted
+    and obtained) and **445,716 prisms** — exactly the thin-first
+    result (3,684 faces with no BL = 1.63%). checkMesh: **885 wrongly
+    oriented faces vs 895 in the input**, "Failed 4" (fourth = aspect
+    ratio), skew 47.6, non-ortho 55 — identical to thin-first.
+  - **Valve time: 2,215 s (37 min)** — slower than predicted (24-30
+    min) and slower than both thin (305 s) and thick (1,602 s): it
+    still tries every scale (15 builds, 3 rounds per scale). The
+    advantage is in exclusions/prisms, not time.
+  - Valve warning trajectory: failures at 1.0 (50→6→6 negative
+    volumes), 0.6, 0.35, 0.2, then a fresh 0.1 validates on the third
+    round (1,946+112).
 
-  **Verdetto**: decoupled centra l'obiettivo — cattura il vantaggio
-  thin-first sulla valvola (9,5x meno esclusioni, +8,5% prismi,
-  checkMesh migliore) SENZA degradare lo spessore sui casi sani
-  (restano a scala 1.0 piena). È la candidata naturale per la semantica
-  della terminazione locale quando verrà abilitata (FASE 2 in
-  validazione utente): "spessore richiesto se possibile, solo i difetti
-  pagano". Resta il costo in tempo sulle geometrie difettose; una
-  possibile ottimizzazione (saltare scale intermedie o riusare le
-  esclusioni a firma di fallimento identica) richiede una misura
-  dedicata. Default invariato, nessun wiring GUI.
+  **Verdict**: decoupled hits the target — it captures the thin-first
+  advantage on the valve (9.5x fewer exclusions, +8.5% prisms, better
+  checkMesh) WITHOUT degrading thickness on healthy cases (they stay
+  at full scale 1.0). It is the natural candidate for local-termination
+  semantics once enabled (PHASE 2, pending user validation): "requested
+  thickness where possible, only defects pay". The time cost on
+  defective geometries remains; a possible optimisation (skipping
+  intermediate scales or reusing exclusions with an identical failure
+  signature) needs a dedicated measurement. Default unchanged, no GUI
+  wiring.
 
-  Tabella riassuntiva valvola (stesso input fixture, n_layers=2,
-  h1=1e-5, dual_convexity):
+  Valve summary table (same fixture input, n_layers=2, h1=1e-5,
+  dual_convexity):
 
-  | variante | escl. iterative | facce senza BL | prismi | checkMesh | tempo |
+  | variant | iterative excl. | faces with no BL | prisms | checkMesh | time |
   |---|---|---|---|---|---|
-  | THICK (legacy) | 19.625 | 21.208 (9,36%) | 410.668 | 891 wrong | 1.602 s |
-  | THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 305 s |
-  | DECOUPLED | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 2.215 s |
-- **FASE 6 — early-exit-intermediates implementato e misurato
-  (2026-09-09)**. Per rispondere alla domanda "un early-exit (fermati
-  alla prima scala valida) riduce il tempo sulla valvola?": L'engine
-  ha GIÀ un early-exit alla prima scala valida (`if ok: return
-  self._accept_built(...)`) — la cilindro/cubo/groove1 validano a
-  scala 1.0 round 0 e fanno **1 sola build** (12,8 s, 1,4 s, 0,0 s).
-  Il tempo lungo della valvola nel decoupled (2.215 s, 15 build) non
-  è un bug di "non esce": è che solo 0.1 valida e le 4 scale grosse
-  sono tutte "ugualmente inutili" (pyr count 1010-1019 vs input 1007).
-  Per risparmiare quei 9 build è stata implementata la variante
-  opt-in `early_exit_intermediates`: se 1.0 round 0 fallisce, le scale
-  intermedie (0.6, 0.35, 0.2) vengono skippate e si va diretto a 0.1.
-  Implementazione in `bl_poly.py` (parametro engine, default off;
-  trigger dentro `_run_local_termination` dopo il fallimento di 1.0
-  round 0; statistiche in `res.stats["local_termination_early_exit_intermediates"]`).
-  Test: `test_bl_local_termination_early_exit_intermediates_noop_on_healthy`
-  (fast suite 1154 verdi). Previsione scritta prima in
+  | THICK (legacy) | 19,625 | 21,208 (9.36%) | 410,668 | 891 wrong | 1,602 s |
+  | THIN (experimental) | 2,058 | 3,684 (1.63%) | 445,716 | 885 wrong | 305 s |
+  | DECOUPLED | 2,058 | 3,684 (1.63%) | 445,716 | 885 wrong | 2,215 s |
+- **PHASE 6 — early-exit-intermediates implemented and measured
+  (2026-09-09)**. To answer "does an early-exit (stop at the first
+  valid scale) reduce the valve's time?": the engine ALREADY has an
+  early-exit at the first valid scale (`if ok: return
+  self._accept_built(...)`) — cylinder/cube/groove1 validate at scale
+  1.0 round 0 and do **just 1 build** (12.8 s, 1.4 s, 0.0 s). The
+  valve's long time under decoupled (2,215 s, 15 builds) is not an
+  "it never exits" bug: it's that only 0.1 validates and the 4 thick
+  scales are all "equally useless" (pyr count 1010-1019 vs input
+  1007). To save those 9 builds, the opt-in variant
+  `early_exit_intermediates` was implemented: if 1.0 round 0 fails,
+  the intermediate scales (0.6, 0.35, 0.2) are skipped and it goes
+  straight to 0.1. Implemented in `bl_poly.py` (engine parameter,
+  default off; triggers inside `_run_local_termination` after 1.0
+  round 0 fails; stats in
+  `res.stats["local_termination_early_exit_intermediates"]`). Test:
+  `test_bl_local_termination_early_exit_intermediates_noop_on_healthy`
+  (fast suite 1154 green). Prediction written before testing in
   `notes/early_exit_reasoning.md`.
 
-  Misure (`tools/bench_bl_thinfirst.py --modes early_exit [--valve]`,
-  checkMesh reale):
+  Measurements (`tools/bench_bl_thinfirst.py --modes early_exit
+  [--valve]`, real checkMesh):
 
-  | Geometria | DECOUPLED | EARLY_EXIT | Δ |
+  | Geometry | DECOUPLED | EARLY_EXIT | Δ |
   |---|---|---|---|
-  | cilindro | scala 1.0, 74.808, 0 escl, 17,8 s, aspect 18,3 | scala 1.0, 74.808, 0 escl, 12,8 s, aspect 18,3 | identico (no-op) |
-  | cubo | scala 1.0, 108, 0 escl, 0,0 s, aspect 78,7 | scala 1.0, 108, 0 escl, 0,0 s, aspect 78,7 | identico |
-  | groove1 | scala 1.0, 10.062, 0 escl, 2,1 s, aspect 15,9 | scala 1.0, 10.062, 0 escl, 1,4 s, aspect 15,9 | identico |
-  | **slot1** | scala 1.0, 79.614, 132 escl, 36,3 s, aspect 16,7 | **scala 0.1, 80.004, 0 escl, 25,2 s, aspect 128,5** | **degenera in thin-first** |
-  | **valvola** | scala 0.1, 445.716, 2.058 escl, 2.215 s, checkMesh 885 | **scala 0.1, 445.716, 2.058 escl, 414 s, checkMesh 885** | **identico, 5,4x più veloce** |
+  | cylinder | scale 1.0, 74,808, 0 excl, 17.8 s, aspect 18.3 | scale 1.0, 74,808, 0 excl, 12.8 s, aspect 18.3 | identical (no-op) |
+  | cube | scale 1.0, 108, 0 excl, 0.0 s, aspect 78.7 | scale 1.0, 108, 0 excl, 0.0 s, aspect 78.7 | identical |
+  | groove1 | scale 1.0, 10,062, 0 excl, 2.1 s, aspect 15.9 | scale 1.0, 10,062, 0 excl, 1.4 s, aspect 15.9 | identical |
+  | **slot1** | scale 1.0, 79,614, 132 excl, 36.3 s, aspect 16.7 | **scale 0.1, 80,004, 0 excl, 25.2 s, aspect 128.5** | **degenerates into thin-first** |
+  | **valve** | scale 0.1, 445,716, 2,058 excl, 2,215 s, checkMesh 885 | **scale 0.1, 445,716, 2,058 excl, 414 s, checkMesh 885** | **identical, 5.4x faster** |
 
-  **Verdetto**: sulla valvola centra l'obiettivo: stesso risultato del
-  decoupled (2.058 escl, 445.716 prismi, checkMesh 885) in **414 s
-  invece di 2.215 s (5,4x)** con sole 4 build (1.0 round 0 fail +
-  skip + 0.1 round 0, 1, 2) invece di 15. Traiettoria warning valvola:
-  1.0 round 0 fail (50 volumi negativi) → skip 0.6/0.35/0.2 → 0.1
-  round 0 fail (2 neg) → 0.1 round 1 fail (1012 piramidi > 1007
-  input) → 0.1 round 2 valida con 2.058 escl.
+  **Verdict**: on the valve it hits the target: the same result as
+  decoupled (2,058 excl, 445,716 prisms, checkMesh 885) in **414 s
+  instead of 2,215 s (5.4x)** with only 4 builds (1.0 round 0 fail +
+  skip + 0.1 round 0, 1, 2) instead of 15. Valve warning trajectory:
+  1.0 round 0 fail (50 negative volumes) → skip 0.6/0.35/0.2 → 0.1
+  round 0 fail (2 neg) → 0.1 round 1 fail (1012 pyramids > 1007
+  input) → 0.1 round 2 validates with 2,058 excl.
 
-  **Rischio documentato**: la euristica è sicura sulla valvola ma
-  **degenera in thin-first su slot1** (scala 0.1, aspect 128,5
-  invece di 1.0/16,7): il trigger "1.0 round 0 fallisce → skip
-  intermedie" si attiva anche quando 1.0 avrebbe validato dopo 1 round
-  di esclusioni (slot1: round 0 fallisce con 50 pyr > 42 input, ma
-  round 1 con 132 excl valida). Lo skip fa perdere quel round 1 e
-  costringe a 0.1 con set pulito (= thin-first). Quindi
-  `early_exit_intermediates` è candidato *solo* per geometrie tipo
-  valvola (dove 1.0 non ha speranza di validare a nessun round); per
-  geometrie tipo slot1 è troppo aggressivo. Una euristica più fine
-  ("skip solo se round 0 e round 1 di 1.0 falliscono entrambi") o
-  ("skip solo se pyr_round0 di 1.0 non migliora scendendo") richiede
-  una misura dedicata. Default invariato, nessun wiring GUI.
+  **Documented risk**: the heuristic is safe on the valve but
+  **degenerates into thin-first on slot1** (scale 0.1, aspect 128.5
+  instead of 1.0/16.7): the "1.0 round 0 fails → skip intermediates"
+  trigger also fires when 1.0 would have validated after 1 round of
+  exclusions (slot1: round 0 fails with 50 pyr > 42 input, but round 1
+  with 132 excl validates). The skip loses that round 1 and forces
+  0.1 with a clean set (= thin-first). So
+  `early_exit_intermediates` is a candidate *only* for valve-like
+  geometries (where 1.0 has no hope of validating at any round); for
+  slot1-like geometries it is too aggressive. A finer heuristic
+  ("skip only if both round 0 and round 1 of 1.0 fail") or ("skip
+  only if 1.0's pyr_round0 does not improve on descending") needs a
+  dedicated measurement. Default unchanged, no GUI wiring.
 
-  Tabella riassuntiva valvola (stesso input fixture, n_layers=2,
-  h1=1e-5, dual_convexity):
+  Valve summary table (same fixture input, n_layers=2, h1=1e-5,
+  dual_convexity):
 
-  | variante | escl. iterative | facce senza BL | prismi | checkMesh | tempo |
+  | variant | iterative excl. | faces with no BL | prisms | checkMesh | time |
   |---|---|---|---|---|---|
-  | THICK (legacy) | 19.625 | 21.208 (9,36%) | 410.668 | 891 wrong | 1.602 s |
-  | THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 305 s |
-  | DECOUPLED | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong | 2.215 s |
+  | THICK (legacy) | 19,625 | 21,208 (9.36%) | 410,668 | 891 wrong | 1,602 s |
+  | THIN (experimental) | 2,058 | 3,684 (1.63%) | 445,716 | 885 wrong | 305 s |
+  | DECOUPLED | 2,058 | 3,684 (1.63%) | 445,716 | 885 wrong | 2,215 s |
 
-  **CAVEAT (FASE 7, 2026-09-09)**: i numeri valvola di FASE 6 sono
-  **pinned alla fixture stale** `valve_dual.npz` (generata 2026-08-01 con
-  un converter diverso da quello attuale) e il trigger di
-  `early_exit_intermediates` è stato **corretto in FASE 7** (saltava anche
-  i round 1-2 della scala 1.0, non solo le intermedie). Su un input
-  riconvertito con il converter attuale la storia cambia: vedi §FASE 7.
-- **FASE 7 — BL sulla topologia di PRODUZIONE (collapsed) + fixture
-  stale (2026-09-09)**. Origine: `openfoam_runner.py:1652` converte il
-  poly di produzione con `collapse_smooth_edges=True,
-  boundary_feature_angle=40.0, collapse_volume_tolerance=0.10`, mentre
-  TUTTE le misure BL FASE 2-6 (fixture e bench) usano il converter con i
-  default (**collapse OFF**, tre quad per triangolo). Il dual collapsed ha
-  3-6x meno facce di bordo e `bl_poly` estrude un prisma per faccia:
-  misurato con `tools/bench_bl_production_topology.py` (nuovo).
+  **CAVEAT (PHASE 7, 2026-09-09)**: the PHASE 6 valve numbers are
+  **pinned to the stale fixture** `valve_dual.npz` (generated
+  2026-08-01 with a different converter than the current one) and the
+  `early_exit_intermediates` trigger was **fixed in PHASE 7** (it was
+  also skipping rounds 1-2 of scale 1.0, not just the intermediate
+  scales). On an input reconverted with the current converter the
+  story changes: see §PHASE 7.
+- **PHASE 7 — BL on the PRODUCTION (collapsed) topology + stale
+  fixture (2026-09-09)**. Origin: `openfoam_runner.py:1652` converts
+  the production poly with `collapse_smooth_edges=True,
+  boundary_feature_angle=40.0, collapse_volume_tolerance=0.10`, while
+  ALL PHASE 2-6 BL measurements (fixture and bench) use the converter
+  with defaults (**collapse OFF**, three quads per triangle). The
+  collapsed dual has 3-6x fewer boundary faces and `bl_poly` extrudes
+  one prism per face: measured with
+  `tools/bench_bl_production_topology.py` (new).
 
   | | exact (default) | production (collapsed) |
   |---|---|---|
-  | cilindro, facce bordo | 24.936 (quad) | **4.412** (4-8-goni, 5,65x meno) |
-  | cilindro, drift volume | 1,4e-16 | 0,128% |
-  | cilindro, BL 3 layer | scala 1.0, 0 escl, **74.808** prismi, 13,0 s, Mesh OK | scala 1.0, 0 escl, **13.236** prismi, 5,6 s, Mesh OK |
-  | valvola, facce bordo | 226.542 (quad) | **42.130** (4-9-goni, 5,4x meno) |
-  | valvola, difetti input (checkMesh wrong) | 863 | **340** |
-  | valvola, drift volume | 3,4e-16 | 1,08% |
-  | valvola, BL | **successo scala 1.0** (2 build): 2.525 escl, 444.924 prismi, 217 s; checkMesh 836 wrong (< 863 input), skew 38,1 (vs 14,6 input), aspect 1.543, Failed 4 | **FALLISCE**: `decoupled` 15 build in 892,7 s, 2.189 escl, stallo 375-444 piramidi vs 370 input; mesh invariata |
+  | cylinder, boundary faces | 24,936 (quad) | **4,412** (4-8-gons, 5.65x fewer) |
+  | cylinder, volume drift | 1.4e-16 | 0.128% |
+  | cylinder, BL 3 layers | scale 1.0, 0 excl, **74,808** prisms, 13.0 s, Mesh OK | scale 1.0, 0 excl, **13,236** prisms, 5.6 s, Mesh OK |
+  | valve, boundary faces | 226,542 (quad) | **42,130** (4-9-gons, 5.4x fewer) |
+  | valve, input defects (checkMesh wrong) | 863 | **340** |
+  | valve, volume drift | 3.4e-16 | 1.08% |
+  | valve, BL | **success at scale 1.0** (2 builds): 2,525 excl, 444,924 prisms, 217 s; checkMesh 836 wrong (< 863 input), skew 38.1 (vs 14.6 input), aspect 1,543, Failed 4 | **FAILS**: `decoupled` 15 builds in 892.7 s, 2,189 excl, stalled at 375-444 pyramids vs 370 input; mesh unchanged |
 
-  - **La fixture valvola è STALE**: `tests/fixtures/valve_dual.npz`
-    (2026-08-01) registra 895 wrong / 55 errori non-ortho / skew 44,3;
-    una conversione fresca dello STESSO tet backup oggi dà 863 wrong / 9
-    errori / skew 14,6. Tutti i numeri valvola di FASE 2-6 sono quindi
-    rappresentativi solo di quello snapshot: sulla conversione attuale lo
-    stesso pipeline si comporta diversamente (esempio: il successo a 0.1
-    con 2.058 escl non si riproduce; il nuovo input valida a **scala 1.0
-    round 1** con 2.525 escl e spessore pieno).
-  - **Bug dell'early-exit FASE 6 trovato e corretto**: il trigger
-    scattava a 1.0 round 0 e saltava anche i round 1-2 della scala
-    richiesta (non solo le intermedie). Mascherato dalla fixture stale
-    (dove 1.0 era comunque senza speranza) e causa reale della
-    "degenerazione" su slot1. Ora il trigger scatta solo quando la scala
-    1.0 ha esaurito i suoi round: su cylinder/cubo/groove1 resta no-op;
-    sulla valvola exact ri-misurata dà successo a 1.0 round 1 in 217 s
-    (identico al legacy). Test fast 12/12 verdi.
-  - **Previsione vs misura**: avevo previsto (70%) che il BL chiudesse
-    anche sulla topologia di produzione; **misura: fallisce** (30%
-    previsto). Sui casi sani la previsione era corretta (successo, 5,65x
-    meno prismi, Mesh OK).
-  - **Implicazioni (nessun default cambiato)**: (1) la fixture va
-    rigenerata e i numeri pinnati aggiornati prima di qualunque altra
-    misura valvola; (2) il percorso BL di produzione su geometria concava
-    **non è oggi supportato** (il collapsed è ottimo per conteggio celle e
-    sui casi sani, ma la mappatura esclusioni→poligoni non chiude la
-    valvola): da affrontare come lane dedicata (es. esclusione per-vertice
-    o granularità mista), non in questa sessione; (3) i bench BL esistenti
-    usano ancora il dual exact: dichiararlo in questo documento evita di
-    confondere i due mondi.
-- **FASE 8 — fixture rigenerata, fast test re-pinnati, BL collapsed
-  measurement (widen=0/1) (2026-09-09)**. Tre esiti consecutivi su
-  questa lane; le conclusioni oneste, **nessun default cambiato**.
+  - **The valve fixture is STALE**: `tests/fixtures/valve_dual.npz`
+    (2026-08-01) records 895 wrong / 55 non-ortho errors / skew 44.3; a
+    fresh conversion of the SAME tet backup today gives 863 wrong / 9
+    errors / skew 14.6. All PHASE 2-6 valve numbers are therefore only
+    representative of that snapshot: on the current conversion the same
+    pipeline behaves differently (example: success at 0.1 with 2,058
+    excl does not reproduce; the new input validates at **scale 1.0
+    round 1** with 2,525 excl and full thickness).
+  - **PHASE 6 early-exit bug found and fixed**: the trigger fired at
+    1.0 round 0 and was also skipping rounds 1-2 of the requested scale
+    (not just the intermediates). Masked by the stale fixture (where
+    1.0 was hopeless anyway) and the real cause of the "degeneration"
+    on slot1. Now the trigger only fires once scale 1.0 has exhausted
+    its rounds: on cylinder/cube/groove1 it stays a no-op; on the
+    re-measured exact valve it now succeeds at 1.0 round 1 in 217 s
+    (identical to legacy). Fast tests 12/12 green.
+  - **Prediction vs measurement**: I had predicted (70%) that the BL
+    would close on the production topology too; **measured: it fails**
+    (30% predicted). On healthy cases the prediction was correct
+    (success, 5.65x fewer prisms, Mesh OK).
+  - **Implications (no default changed)**: (1) the fixture must be
+    regenerated and the pinned numbers updated before any other valve
+    measurement; (2) the production BL path on concave geometry **is
+    not supported today** (collapsed is great for cell count and on
+    healthy cases, but the exclusion→polygon mapping does not close the
+    valve): to be addressed as a dedicated lane (e.g. per-vertex
+    exclusion or mixed granularity), not in this session; (3) the
+    existing BL benches still use the exact dual: stating this here
+    avoids confusing the two worlds.
+- **PHASE 8 — fixture regenerated, fast tests re-pinned, collapsed BL
+  measurement (widen=0/1) (2026-09-09)**. Three consecutive outcomes
+  on this lane; honest conclusions, **no default changed**.
 
-  1. **Fixture valvola `tests/fixtures/valve_dual.npz` rigenerata** con
-     il converter attuale (2026-09-09, dimensione 27,3 MB, identica
-     alla precedente; il file `valve_dual_checkmesh.txt` registrato
-     accanto): checkMesh riporta **863 facce male orientate, 9 errori
-     non-ortho, skew 14,58, Failed 3**, contro i vecchi pinnati
-     (895/55/44,3) — un miglioramento del converter sullo stesso tet
-     backup. L'in-process detector `_detect_defects` riporta
-     **863 / 203 / 3** (pyr / non-ortho-det / skew-det): 863 pyr coincide
-     con checkMesh; 203 = checkMesh "nonOrthoFaces" scritto sul set (la
-     863 → 9 "errors" >70° del checkMesh); 3 è la skew-det
-     (checkMesh ne scrive 98 "highly skew"). Il `tests/test_tet_poly_dual`
-     parametrize e' stato aggiornato a
-     `{"pyramid": 863, "non_ortho_det": 203, "skew_det": 3}`.
-  2. **`poly_fixture_builder.py` corretto**: il fvSchemes iniziale non
-     conteneva `divSchemes`/`laplacianSchemes`/`interpolationSchemes`/
-     `snGradSchemes` e `checkMesh` 2512 falliva con `FATAL IO ERROR:
-     Entry 'divSchemes' not found`. Aggiunto il set completo. Tutti i
-     successivi run del builder producono un checkMesh valido.
-  3. **Slow test `test_valve_fixture_bl_invariants`**: passa sul nuovo
-     fixture (373 s, clean-failure: volumi negativi per scala 1.0→0.1
-     con 104/64/48/40/16 counts; mesh invariata, polyMesh esiste). La
-     docstring "must FAIL CLEANLY" resta corretta; un FileNotFoundError
-     accidentale in una run precedente era dovuto a una **doppia
-     esecuzione concorrente** del test (il fixer ha rilanciato il
-     comando, la seconda istanza ha cancellato `valve_bl` con `rmtree`
-     mentre la prima girava) — un artefatto di concorrenza, non un bug
-     del motore. Per ridurre la finestra di race, una soluzione
-     semplice sarebbe rendere la `case` unica per run (es. tramite
-     timestamp nel nome) — non implementata qui.
-  4. **BL collapsed widening experiment (FASE 8)**: parametro engine
-     opt-in `local_exclude_widen: int = 0` (default invariato) in
-     `bl_poly.run()` (validato 0..3), con metodo `_widen_exclusions`
-     che espande l'elenco di esclusioni raccolto in ogni round di N
-     anelli di vicini di bordo (costruiti da
-     `pre["bnd_edge_faces"]`). Test:
-     `test_bl_local_exclude_widen_param` (cubo sano riusce con
-     `widen=2`; `widen=4` errore). Bench:
+  1. **Valve fixture `tests/fixtures/valve_dual.npz` regenerated** with
+     the current converter (2026-09-09, 27.3 MB, identical size to the
+     previous one; the `valve_dual_checkmesh.txt` file recorded
+     alongside it): checkMesh reports **863 wrongly oriented faces, 9
+     non-ortho errors, skew 14.58, Failed 3**, against the old pinned
+     numbers (895/55/44.3) — an improvement in the converter on the
+     same tet backup. The in-process detector `_detect_defects` reports
+     **863 / 203 / 3** (pyr / non-ortho-det / skew-det): 863 pyr matches
+     checkMesh; 203 = checkMesh's "nonOrthoFaces" set (the 863 → 9
+     "errors" >70° in checkMesh); 3 is the skew-det (checkMesh writes
+     98 "highly skew"). `tests/test_tet_poly_dual`'s parametrize was
+     updated to `{"pyramid": 863, "non_ortho_det": 203, "skew_det": 3}`.
+  2. **`poly_fixture_builder.py` fixed**: the initial fvSchemes did not
+     contain `divSchemes`/`laplacianSchemes`/`interpolationSchemes`/
+     `snGradSchemes` and checkMesh 2512 failed with `FATAL IO ERROR:
+     Entry 'divSchemes' not found`. Added the full set. All subsequent
+     builder runs produce a valid checkMesh.
+  3. **Slow test `test_valve_fixture_bl_invariants`**: passes on the
+     new fixture (373 s, clean-failure: negative volumes for scale
+     1.0→0.1 with counts 104/64/48/40/16; mesh unchanged, polyMesh
+     exists). The "must FAIL CLEANLY" docstring remains correct; an
+     accidental FileNotFoundError in a previous run was caused by a
+     **concurrent double execution** of the test (the fixer had
+     re-launched the command, and the second instance deleted
+     `valve_bl` with `rmtree` while the first was still running) — a
+     concurrency artefact, not an engine bug. To reduce the race
+     window, a simple fix would be to make `case` unique per run
+     (e.g. via a timestamp in the name) — not implemented here.
+  4. **Collapsed-BL widening experiment (PHASE 8)**: new opt-in engine
+     parameter `local_exclude_widen: int = 0` (default unchanged) in
+     `bl_poly.run()` (validated 0..3), with method `_widen_exclusions`
+     that expands the exclusion list collected each round by N rings
+     of boundary-edge neighbours (built from `pre["bnd_edge_faces"]`).
+     Test: `test_bl_local_exclude_widen_param` (healthy cube succeeds
+     with `widen=2`; `widen=4` errors). Bench:
      `tools/bench_bl_production_topology.py --exclude-widen N`.
-  5. **Misura collapsed valve con `local_exclude_widen=1`** (production
-     + decoupled + `max_rounds=6`): 2.064 s, 25 build, **2.207
-     esclusioni** (identico a widen=0), stallo 373-378 (0.2) / 379
-     (0.1 r3-r5), fallimento pulito. **H6 widen=1 falsificata**:
-     allargare di 1 anello non aggiunge facce al set escludibile (la
-     frontiera del rim e' gia' 1-anello in molte posizioni, o la
-     pyr-violation al rim non e' semplicemente "spostata di 1 anello").
-     `widen=2` non misurato (costo ~30 min, atteso negativo).
-  6. **H2 confermata, H3 + H6 widen=1 falsificate**: il difetto del
-     BL collapsed sulla valvola non e' chiudibile con exclusion
-     granularity (face + 1 anello). Il gap strutturale (H4, mapping
-     esclusione → per-vertice) resta la strada da percorrere per
-     supportare la BL di produzione su geometrie concave. Tutto
-     rimane opt-in: nessun default e' cambiato.
-- **FASE 9 / H4 — esclusioni per-VERTICE: la valvola collapsed di
-  produzione CHIUDE (2026-09-09)**. Nuova modalita' opt-in
-  `local_termination="decoupled_vertex"` (default invariato):
-  identica a `"decoupled"` ma l'unita' di esclusione iterativa e' il
-  VERTICE di parete — quando un prisma/cella core e' invalido si
-  escludono TUTTI i vertici della sua faccia di base; una faccia e'
-  estrusa solo se nessuno dei suoi vertici e' escluso. Sul dual
-  collapsed (una poligonale di bordo = la stella di un vertice) una
-  vertice difettoso propaga a tutte le facce incidenti in UN round.
-  Il drop binario iniziale (`zero_concave`) resta per-faccia,
-  invariato; `local_exclude_widen` e' un no-op in questa modalita'.
-  Implementazione in `core/bl_poly.py`
+  5. **Collapsed valve measurement with `local_exclude_widen=1`**
+     (production + decoupled + `max_rounds=6`): 2,064 s, 25 builds,
+     **2,207 exclusions** (identical to widen=0), stalled at 373-378
+     (0.2) / 379 (0.1 r3-r5), clean failure. **H6 widen=1 falsified**:
+     widening by 1 ring does not add faces to the excludable set (the
+     rim's frontier is already 1-ring in many spots, or the pyramid
+     violation at the rim is not simply "shifted by 1 ring"). `widen=2`
+     not measured (cost ~30 min, expected negative).
+  6. **H2 confirmed, H3 + H6 widen=1 falsified**: the collapsed BL
+     defect on the valve cannot be closed with exclusion granularity
+     (face + 1 ring). The structural gap (H4, exclusion→per-vertex
+     mapping) remains the path to take to support production BL on
+     concave geometries. Everything stays opt-in: no default changed.
+- **PHASE 9 / H4 — per-VERTEX exclusions: the production collapsed
+  valve CLOSES (2026-09-09)**. New opt-in mode
+  `local_termination="decoupled_vertex"` (default unchanged): identical
+  to `"decoupled"` but the iterative exclusion unit is the wall
+  VERTEX — when a prism/core cell is invalid, ALL vertices of its base
+  face are excluded; a face is extruded only if none of its vertices is
+  excluded. On the collapsed dual (one boundary polygon = a vertex's
+  star) a defective vertex propagates to all incident faces in ONE
+  round. The initial binary drop (`zero_concave`) stays per-face,
+  unchanged; `local_exclude_widen` is a no-op in this mode.
+  Implementation in `core/bl_poly.py`
   (`_run_local_termination(..., vertex_exclusions=True)`); unit test
-  `test_bl_local_termination_decoupled_vertex_on_healthy_cube`
-  (fast suite 15/15 nel file); regressione slow
-  `tests/test_bl_collapsed_valve.py` (skip se il tet backup di
-  C:/polybench/valve1 manca).
+  `test_bl_local_termination_decoupled_vertex_on_healthy_cube` (fast
+  suite 15/15 in the file); slow regression
+  `tests/test_bl_collapsed_valve.py` (skipped if the tet backup at
+  C:/polybench/valve1 is missing).
 
-  Misura (production converter kwargs, `n_layers=2`, h1=1e-5,
-  dual_convexity, max_rounds=3; conversione collapsed ~105 s):
-  - **success=True a scala 0.6**, 5 build, ~297 s;
-  - **4.008 facce escluse su 42.130 (9,5%)**, **75.360 prismi**;
-  - traiettoria: 1.0 r0 fail (54 volumi negativi) → r1 383 vs 370 →
-    r2 373 vs 370 (fixed point del vertex-closure: il gate a 1.0 NON
-    e' raggiungibile); 0.6 r0 fail (38 neg) → r1 valida;
-    `max_rounds=6` da' lo stesso risultato (1.0 si ferma comunque);
-  - checkMesh reale: **340 facce male orientate = esattamente
-    l'input (ZERO aggiunte)**, 10 errori non-ortho (= input), NOmax
-    95,6 (= input), skew 27,5 (input 22,2), aspect 6.555 (input
-    100,8), "Failed 4" vs input "Failed 3" — l'unico check in piu'
-    e' l'aspect ratio, intrinseco ai prismi BL sottili.
-  Confronto con il modello per-faccia sullo stesso input: FASE 7/8
-  falliva a tutte le scale (stallo 373-385 vs 370, 2.189-2.207
-  esclusioni). Previsione precedente (45% di chiusura, 2.300-2.900
-  esclusioni a 0.1) era **pessimista sul successo e conservativa sul
-  conteggio**: ha chiuso con piu' facce (4.008) ma a scala piu'
-  spessa (0.6). Nessun default cambiato: la modalita' e' opt-in e
-  documentata.
-  - **Interazione da NON combinare**: `early_exit_intermediates`
-    salterebbe proprio la scala 0.6 che questa modalita' usa per
-    validare (1.0 esaurisce senza chiudere → il flag va diretto a
-    0.1). La combinazione non e' stata misurata e non e'
-    raccomandata; il flag resta pensato per i casi in cui 1.0 e'
-    senza speranza e le intermedie inutili (valvola exact, fixture).
-  - **No-op sui sani, verificato**: cilindro exact con
-    `decoupled_vertex` = identico a `decoupled` (scala 1.0, 0
-    esclusioni, 74.808 prismi, `Mesh OK`, 13,6 s); cubo sano nel
-    unit test. Su mesh senza difetti il vertex-closure non raccoglie
-    nulla per costruzione (break al primo round).
-  - **Generalizzazione a cubo/groove1/slot1 (2026-09-11,
-    `tools/h4_generalization_rebench.py`)**: previsione scritta
-    prima in `notes/h4_generalization_reasoning.md`, misura con
-    checkMesh reale via WSL, confronto diretto `decoupled` vs
-    `decoupled_vertex` sullo stesso input:
-    - **cube_duct** (9 celle, 0 difetti in input): identici in
-      tutto — 0 esclusioni, 108 prismi, scala 1.0, `Mesh OK`.
-      Previsione (no-op) **confermata**.
-    - **groove1** (682 celle, 3.372 facce): identici — 0
-      esclusioni, 10.062 prismi, scala 1.0, `Mesh OK`. Previsione
-      (equivalente a `decoupled`) **confermata**.
-    - **slot1** (9.372 celle, 26.754 facce, 22 difetti piramide in
-      input): entrambi chiudono (scala 1.0, `Mesh OK`, 0 difetti
-      aggiunti), ma **non identici**: `decoupled` esclude 132 facce
-      → 79.614 prismi; `decoupled_vertex` esclude **378** facce
-      (~3x) → **78.903** prismi (-711). La previsione (0 esclusioni
-      aggiuntive, risultato numericamente identico a `decoupled`) e'
-      **smentita**: il cascade per-vertice su slot1 propaga a piu'
-      facce del face-mode pur convergendo allo stesso esito
-      qualitativo (chiude, nessun difetto aggiunto). Nessun default
-      cambiato; `decoupled_vertex` resta opt-in.
-  - **Diagnosi del ~3x su slot1 (2026-09-11,
-    `tools/slot1_exclusion_inspect.py`)**: l'ipotesi iniziale
-    "valenza per-vertice più alta su slot1" (più facce incidenti
-    per vertice → propagazione per-vertice più ampia) è
-    **smentita**. Misura della valenza dei vertici di parete sul
-    dual convertito (numero di facce di parete incidenti per vertice)
-    su ciascuna delle tre mesh:
+  Measurement (production converter kwargs, `n_layers=2`, h1=1e-5,
+  dual_convexity, max_rounds=3; collapsed conversion ~105 s):
+  - **success=True at scale 0.6**, 5 builds, ~297 s;
+  - **4,008 excluded faces out of 42,130 (9.5%)**, **75,360 prisms**;
+  - trajectory: 1.0 r0 fail (54 negative volumes) → r1 383 vs 370 →
+    r2 373 vs 370 (fixed point of the vertex-closure: the 1.0 gate is
+    NOT reachable); 0.6 r0 fail (38 neg) → r1 validates;
+    `max_rounds=6` gives the same result (1.0 stalls regardless);
+  - real checkMesh: **340 wrongly oriented faces = exactly the
+    input (ZERO added)**, 10 non-ortho errors (= input), NOmax 95.6
+    (= input), skew 27.5 (input 22.2), aspect 6,555 (input 100.8),
+    "Failed 4" vs input "Failed 3" — the one extra check is aspect
+    ratio, intrinsic to thin BL prisms.
+  Compared to the per-face model on the same input: PHASE 7/8 failed
+  at every scale (stalled at 373-385 vs 370, 2,189-2,207 exclusions).
+  The earlier prediction (45% chance of closure, 2,300-2,900
+  exclusions at 0.1) was **pessimistic on success and conservative on
+  the count**: it closed with more faces (4,008) but at a thicker
+  scale (0.6). No default changed: the mode is opt-in and documented.
+  - **Interaction that should NOT be combined**: `early_exit_intermediates`
+    would skip exactly the scale 0.6 that this mode uses to validate
+    (1.0 exhausts without closing → the flag goes straight to 0.1).
+    The combination has not been measured and is not recommended; the
+    flag remains intended for cases where 1.0 is hopeless and the
+    intermediates are useless (exact valve, fixture).
+  - **No-op on healthy cases, verified**: exact cylinder with
+    `decoupled_vertex` = identical to `decoupled` (scale 1.0, 0
+    exclusions, 74,808 prisms, `Mesh OK`, 13.6 s); healthy cube in the
+    unit test. On a defect-free mesh the vertex-closure collects
+    nothing by construction (breaks on the first round).
+  - **Generalisation to cube/groove1/slot1 (2026-09-11,
+    `tools/h4_generalization_rebench.py`)**: prediction written before
+    testing in `notes/h4_generalization_reasoning.md`, measured with
+    real checkMesh via WSL, direct comparison of `decoupled` vs
+    `decoupled_vertex` on the same input:
+    - **cube_duct** (9 cells, 0 defects in the input): identical in
+      every respect — 0 exclusions, 108 prisms, scale 1.0, `Mesh OK`.
+      Prediction (no-op) **confirmed**.
+    - **groove1** (682 cells, 3,372 faces): identical — 0 exclusions,
+      10,062 prisms, scale 1.0, `Mesh OK`. Prediction (equivalent to
+      `decoupled`) **confirmed**.
+    - **slot1** (9,372 cells, 26,754 faces, 22 pyramid defects in the
+      input): both close (scale 1.0, `Mesh OK`, 0 defects added), but
+      **not identical**: `decoupled` excludes 132 faces →
+      79,614 prisms; `decoupled_vertex` excludes **378** faces (~3x)
+      → **78,903** prisms (-711). The prediction (0 extra exclusions,
+      numerically identical to `decoupled`) is **contradicted**: the
+      per-vertex cascade on slot1 propagates to more faces than the
+      face-mode while still converging to the same qualitative outcome
+      (closes, no defects added). No default changed;
+      `decoupled_vertex` stays opt-in.
+  - **Diagnosis of the ~3x on slot1 (2026-09-11,
+    `tools/slot1_exclusion_inspect.py`)**: the initial hypothesis
+    ("higher per-vertex valence on slot1" — more incident faces per
+    vertex → wider per-vertex propagation) is **contradicted**.
+    Measured the wall vertices' valence on the converted dual (number
+    of incident wall faces per vertex) on each of the three meshes:
 
     | geometry | n wall verts | mean | max | p50 | p90 | p99 |
     |---|---|---|---|---|---|---|
@@ -646,53 +649,52 @@ See `CHANGELOG.md` for the full list of what changed in this pass.
     | groove1 | 3374 | 4.00 | 9 | 248.0 | 1854.6 | 2208.7 |
     | slot1 | 26756 | 4.00 | 9 | 261.0 | 14271.2 | 17483.1 |
 
-    La valenza media (4.0 vs 4.0 vs 3.79) e massima (9 vs 9 vs 5)
-    sono simili tra slot1 e groove1 (la differenza cube-duct è
-    irrilevante per il confronto: è il caso "no-op"). Quindi la
-    causa del ~3x esclusioni su slot1 NON è la valenza locale ma
-    la **scala assoluta**: slot1 ha ~7.9x più vertici di parete
-    di groove1 (26756 vs 3374), e il cascade vertex-mode propaga
-    l'esclusione a tutti i vertici incidenti alle facce difettose
-    (chiusura 1-anello). Più vertici → più superficie nella
-    closure → più facce escluse, anche con valenza simile. Il
-    fattore osservato (~3x) è circa 38% del rapporto di vertici
-    (7.9x) perché il closure cattura solo i vertici incidenti ai
-    difetti (22 input → ~22 × valenza ≈ ~100 vertici catturati),
-    non tutti i 26756. Il rapporto 2.86x tra set esclusi (378 vs
-    132) è la proiezione locale della propagazione per-vertice
-    sulla sottoregione dei difetti, non un effetto del modello
-    vertex-mode sul resto della mesh. Conclusione: il modello vertex
-    fa il suo lavoro (chiude la mesh, Mesh OK), ma su input con
-    geometrie ad alta densità di boundary vertices (canali stretti,
-    fessure), l'amplificazione è proporzionale al numero di
-    vertici incidenti alla closure — non un bug del criterio
-    vertex, una proprietà della topologia locale. Nessun default
-    cambiato.
-  - **Wiring in GUI come opzione opt-in (2026-09-11)**: `decoupled_vertex`
-    è ora raggiungibile dall'utente — checkbox "Chiusura avanzata per
-    geometrie concave (sperimentale)" nel pannello Boundary Layers
-    (`gui/params_panel.py`, `get_bl_params()["concaveClosure"]`), spenta
-    di default. Quando spuntata, `core/openfoam_runner.py`
-    (`DualPolyWorker`) passa `local_termination="decoupled_vertex"` al
-    motore invece di lasciarlo invariato (`False`). Nessun altro
-    parametro è esposto (il `concavity_criterion` resta al default
-    `"angle_fade"`, non `"dual_convexity"` usato nel benchmark FASE 9).
-    **Validazione end-to-end reale** (non mock — `DualPolyWorker.run()`
-    chiamato direttamente sulla valvola di produzione, stesso percorso
-    di codice della GUI, checkMesh via WSL): 75.200 prismi (2 layer),
-    340 facce mal orientate = **esattamente il baseline pre-BL** (zero
-    aggiunte), 10 errori non-ortho (= baseline), NOmax 95,6 (= baseline),
-    "Failed 4 mesh checks" (= atteso, il difetto concavo è un limite
-    noto della conversione, non introdotto dal BL). Cioè: **anche col
-    criterio di default `angle_fade`** (non quello usato nel benchmark
-    originale) il vertex-cascade chiude comunque la mesh senza
-    aggiungere difetti — il ciclo di validazione per-round è basato su
-    controlli checkMesh diretti (volumi/piramidi), non solo sul fade
-    delle normali, quindi il criterio iniziale conta meno del previsto.
-    Copertura test: `tests/test_bl_gui_wiring.py` (checkbox
-    off-by-default, propagazione a `get_bl_params()`),
-    `tests/test_dual_poly_options.py` (propagazione end-to-end, mockata,
-    fino a `local_termination` nel motore). Nessun default cambiato.
+    Mean valence (4.0 vs 4.0 vs 3.79) and max (9 vs 9 vs 5) are similar
+    between slot1 and groove1 (the cube-duct difference is irrelevant
+    to the comparison: it's the "no-op" case). So the cause of the
+    ~3x exclusions on slot1 is NOT local valence but **absolute
+    scale**: slot1 has ~7.9x more wall vertices than groove1 (26756 vs
+    3374), and the vertex-mode cascade propagates the exclusion to
+    every vertex incident to the defective faces (1-ring closure).
+    More vertices → more surface in the closure → more excluded faces,
+    even with similar valence. The observed factor (~3x) is about 38%
+    of the vertex ratio (7.9x) because the closure only captures the
+    vertices incident to the defects (22 input → ~22 × valence ≈ ~100
+    captured vertices), not all 26756. The 2.86x ratio between the
+    excluded sets (378 vs 132) is the local projection of per-vertex
+    propagation onto the defect sub-region, not an effect of the
+    vertex-mode model on the rest of the mesh. Conclusion: the vertex
+    model does its job (closes the mesh, Mesh OK), but on inputs with
+    a high density of boundary vertices (narrow channels, slits), the
+    amplification is proportional to the number of vertices incident
+    to the closure — not a bug in the vertex criterion, a property of
+    the local topology. No default changed.
+  - **GUI wiring as an opt-in option (2026-09-11)**: `decoupled_vertex`
+    is now reachable by the user — a "Advanced closure for concave
+    geometries (experimental)" checkbox in the Boundary Layers panel
+    (`gui/params_panel.py`, `get_bl_params()["concaveClosure"]`), off
+    by default. When checked, `core/openfoam_runner.py`
+    (`DualPolyWorker`) passes `local_termination="decoupled_vertex"` to
+    the engine instead of leaving it unchanged (`False`). No other
+    parameter is exposed (`concavity_criterion` stays at the default
+    `"angle_fade"`, not the `"dual_convexity"` used in the PHASE 9
+    benchmark). **Real end-to-end validation** (not mocked —
+    `DualPolyWorker.run()` called directly on the production valve, the
+    same code path as the GUI, checkMesh via WSL): 75,200 prisms
+    (2 layers), 340 wrongly oriented faces = **exactly the pre-BL
+    baseline** (zero added), 10 non-ortho errors (= baseline), NOmax
+    95.6 (= baseline), "Failed 4 mesh checks" (= expected, the concave
+    defect is a known limitation of the conversion, not introduced by
+    the BL). In other words: **even with the default `angle_fade`
+    criterion** (not the one used in the original benchmark) the
+    vertex-cascade still closes the mesh without adding defects — the
+    per-round validation loop is based on direct checkMesh checks
+    (volumes/pyramids), not just the normal fade, so the initial
+    criterion matters less than expected. Test coverage:
+    `tests/test_bl_gui_wiring.py` (checkbox off-by-default, propagation
+    to `get_bl_params()`), `tests/test_dual_poly_options.py`
+    (end-to-end propagation, mocked, down to `local_termination` in the
+    engine). No default changed.
 
 ## Boundary Layer Patch Selection — single source of truth
 
