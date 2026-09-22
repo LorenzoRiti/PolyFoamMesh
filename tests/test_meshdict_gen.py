@@ -69,6 +69,33 @@ def test_bl_fraction_as_thickness_ratio_does_not_collapse_layers():
     assert m and float(m.group(1)) > 1.0, "growth ratio must stay > 1"
 
 
+def test_bl_braces_balanced_with_and_without_first_layer():
+    """Regression: the regex sub-dictionary's closing '}' used to sit inside
+    `if first_layer_abs`, so any bl_params WITHOUT firstLayerThickness
+    produced an unbalanced meshDict — cartesianMesh died with
+    'Unexpected EOF while reading dictionary entry ... meshDict' (caught by
+    the comparison harness smoke run, 2026-09-22)."""
+    def _depth(lines):
+        d = 0
+        for ln in lines:
+            d += ln.count("{") - ln.count("}")
+        return d
+
+    no_fl = build_meshdict_lines(bl_params={
+        "nLayers": 3, "thicknessRatio": 1.2, "wallPatches": ["wall"],
+    })
+    assert _depth(no_fl) == 0, "meshDict braces must balance without firstLayerThickness"
+
+    with_fl = build_meshdict_lines(bl_params={
+        "nLayers": 3, "thicknessRatio": 1.2,
+        "firstLayerThickness": 1e-4, "wallPatches": ["wall"],
+    })
+    assert _depth(with_fl) == 0, "meshDict braces must balance with firstLayerThickness"
+
+    no_bl = build_meshdict_lines()
+    assert _depth(no_bl) == 0
+
+
 def test_with_patches():
     """Each patchCellSize entry must be a SUB-DICTIONARY containing
     `cellSize`, not a flat scalar (`"wall" 0.02;`) — cfMesh's

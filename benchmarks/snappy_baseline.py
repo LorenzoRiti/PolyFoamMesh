@@ -141,6 +141,7 @@ def build_snappy_dict(
         "    maxLoadUnbalance 0.1;",
         "    nCellsBetweenLevels 3;",
         f"    locationInMesh ({loc});",
+        "    allowFreeStandingZoneFaces true;",
         "",
         "    refinementSurfaces",
         "    {",

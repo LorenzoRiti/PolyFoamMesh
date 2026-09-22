@@ -265,7 +265,12 @@ def build_meshdict_lines(
             lines.append("            maxThicknessToMedialRatio 0.3;")
             lines.append("            reCalculateNormals       1;")
             lines.append("            maxBoundaryLayerAngle    60;")
-            lines.append("        }")
+        # MUST stay unconditional: closing the regex sub-dictionary inside the
+        # `if first_layer_abs` above left boundaryLayers unclosed whenever a
+        # caller omitted firstLayerThickness — cartesianMesh then died with
+        # "Unexpected EOF while reading dictionary entry ... meshDict at line 29"
+        # (reproduced: brace depth 1 at EOF without firstLayerThickness, 0 with).
+        lines.append("        }")
         lines.append("    }")
         # Optimisation parameters for boundary layer quality:
         # - nSmoothNormals: number of normal-direction smoothing passes
