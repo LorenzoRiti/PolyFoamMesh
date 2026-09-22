@@ -65,6 +65,10 @@ def test_both_modes_have_quality_controls_and_sane_cells() -> None:
         assert "maxNonOrtho 65;" in t
         assert "maxInternalSkewness 4;" in t
         assert "maxGlobalCells" in t
+        # OpenFOAM v2512 refuses snappyHexMeshDict without this entry
+        # (FOAM FATAL IO ERROR: Entry 'allowFreeStandingZoneFaces' not found)
+        assert "allowFreeStationZoneFaces" not in t  # typo guard
+        assert "allowFreeStandingZoneFaces true;" in t
 
 
 def test_block_mesh_dict_has_hex_block_scaled_by_max_cell() -> None:
