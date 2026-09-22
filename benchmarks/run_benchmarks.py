@@ -122,18 +122,18 @@ def _to_wsl_path(win_path: Path) -> str:
     return f"/mnt/{drive}{rel}"
 
 
-def _run_cartesian_mesh(case_dir: Path) -> tuple[int, str, float]:
+def _run_cartesian_mesh(case_dir: Path, timeout: int = TIMEOUT_S) -> tuple[int, str, float]:
     linux = _to_wsl_path(case_dir)
     t0 = time.perf_counter()
-    rc, out = _wsl_of_run(f"cd {linux} && cartesianMesh 2>&1")
+    rc, out = _wsl_of_run(f"cd {linux} && cartesianMesh 2>&1", timeout=timeout)
     elapsed = time.perf_counter() - t0
     return rc, out, elapsed
 
 
-def _run_check_mesh(case_dir: Path) -> tuple[int, str, float]:
+def _run_check_mesh(case_dir: Path, timeout: int = TIMEOUT_S) -> tuple[int, str, float]:
     linux = _to_wsl_path(case_dir)
     t0 = time.perf_counter()
-    rc, out = _wsl_of_run(f"cd {linux} && checkMesh 2>&1")
+    rc, out = _wsl_of_run(f"cd {linux} && checkMesh 2>&1", timeout=timeout)
     elapsed = time.perf_counter() - t0
     return rc, out, elapsed
 
@@ -283,7 +283,7 @@ def _make_result(
 
 
 def _prepare_geometry(
-    stl_path: Path, pipeline: str = "hex",
+    stl_path: Path, pipeline: str = "hex", require_watertight: bool = True,
 ) -> tuple[dict | None, dict | None]:
     """Shared geometry prep for both pipelines.
 
@@ -312,7 +312,7 @@ def _prepare_geometry(
             is_negative_case=True,
             pipeline=pipeline,
         ), None
-    if not watertight:
+    if not watertight and require_watertight:
         return _make_result(
             name, success=False, wall_time_s=0.0,
             errors=["Non-watertight geometry"], pipeline=pipeline,
@@ -348,7 +348,10 @@ def _prepare_geometry(
     }
 
 
-def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
+def _benchmark_one(
+    stl_path: Path, keep_case: bool = False,
+    mesh_timeout_s: int = TIMEOUT_S, check_timeout_s: int = TIMEOUT_S,
+) -> dict:
     name = stl_path.stem
     logger.info("=" * 60)
     logger.info("Benchmarking: %s", name)
@@ -413,7 +416,9 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
         _write_solver_dicts(case_dir)
 
         logger.info("  --- cartesianMesh ---")
-        mesh_rc, mesh_out, mesh_time = _run_cartesian_mesh(case_dir)
+        mesh_rc, mesh_out, mesh_time = _run_cartesian_mesh(
+            case_dir, timeout=mesh_timeout_s,
+        )
         logger.info("  cartesianMesh rc=%d  wall=%.1fs", mesh_rc, mesh_time)
 
         if mesh_rc == -2:
@@ -439,7 +444,7 @@ def _benchmark_one(stl_path: Path, keep_case: bool = False) -> dict:
                                 errors=errors)
 
         logger.info("  --- checkMesh ---")
-        cm_rc, cm_out, cm_time = _run_check_mesh(case_dir)
+        cm_rc, cm_out, cm_time = _run_check_mesh(case_dir, timeout=check_timeout_s)
         logger.info("  checkMesh rc=%d  wall=%.1fs", cm_rc, cm_time)
         total_time = mesh_time + cm_time
 
@@ -615,6 +620,9 @@ def _benchmark_poly_one(
     stl_path: Path,
     keep_case: bool = False,
     allowances: dict[str, int] | None = None,
+    gmsh_timeout_s: int = 600,
+    gmsh_to_foam_timeout_s: int = 600,
+    check_timeout_s: int = TIMEOUT_S,
 ) -> dict:
     """Run the GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh pipeline.
 
@@ -662,7 +670,7 @@ def _benchmark_poly_one(
                 stl_path, msh_path, detail="medium",
                 user_lc=max_cell, min_lc=min_cell,
                 on_line=lambda m: logger.info("  [gmsh] %s", m),
-                timeout_s=600,
+                timeout_s=gmsh_timeout_s,
                 # Force single-threaded GMSH: HXT's multi-threaded meshing is
                 # non-deterministic (measured: pipe 9956 vs 9976 tets, and a
                 # BL scale flip that swung thin_gap skew 3.4 -> 19.3 between
@@ -683,7 +691,10 @@ def _benchmark_poly_one(
         _write_solver_dicts(case_dir)
         t0 = time.perf_counter()
         linux = _to_wsl_path(case_dir)
-        rc, out = _wsl_of_run(f"cd {linux} && gmshToFoam mesh.msh 2>&1", timeout=600)
+        rc, out = _wsl_of_run(
+            f"cd {linux} && gmshToFoam mesh.msh 2>&1",
+            timeout=gmsh_to_foam_timeout_s,
+        )
         stage_times["gmsh_to_foam"] = round(time.perf_counter() - t0, 2)
         if rc == -1:
             stages["gmsh_to_foam"] = False
@@ -770,7 +781,7 @@ def _benchmark_poly_one(
 
         # --- stage 5: checkMesh via WSL -------------------------------------
         t0 = time.perf_counter()
-        cm_rc, cm_out, cm_time = _run_check_mesh(case_dir)
+        cm_rc, cm_out, cm_time = _run_check_mesh(case_dir, timeout=check_timeout_s)
         stage_times["check_mesh"] = round(time.perf_counter() - t0, 2)
         logger.info("  checkMesh rc=%d  wall=%.1fs", cm_rc, cm_time)
 
