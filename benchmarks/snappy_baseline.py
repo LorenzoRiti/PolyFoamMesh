@@ -206,6 +206,10 @@ def build_snappy_dict(
         "    minVol 1e-13;",
         "    minTetQuality 1e-15;",
         "    minArea -1;",
+        "    minTwist 0.02;",
+        "    minDeterminant 0.001;",
+        "    minFaceWeight 0.05;",
+        "    minVolRatio 0.01;",
         "    minTriangleTwist -1;",
         "    nSmoothScale 4;",
         "    errorReduction 0.75;",
@@ -264,5 +268,23 @@ def prepare_snappy_case(
     (system / "fvSolution").write_text(
         "FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }\n"
         "solvers {}\n",
+        encoding="ascii",
+    )
+    # surfaceFeatureExtractDict (expert mode): OF v2512's surfaceFeatureExtract
+    # reads this dict (no CLI geometry argument) and writes surface.eMesh next
+    # to the surface in constant/triSurface.
+    (system / "surfaceFeatureExtractDict").write_text(
+        "FoamFile { version 2.0; format ascii; class dictionary; "
+        "object surfaceFeatureExtractDict; }\n"
+        "\n"
+        "surface.stl\n"
+        "{\n"
+        "    extractionMethod extractFromSurface;\n"
+        "    includedAngle 120;\n"
+        "    curvature true;\n"
+        "    geometricTestOnly yes;\n"
+        "    intersectionMethod none;\n"
+        "    writeObj yes;\n"
+        "}\n",
         encoding="ascii",
     )

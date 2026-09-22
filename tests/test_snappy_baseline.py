@@ -69,6 +69,35 @@ def test_both_modes_have_quality_controls_and_sane_cells() -> None:
         # (FOAM FATAL IO ERROR: Entry 'allowFreeStandingZoneFaces' not found)
         assert "allowFreeStationZoneFaces" not in t  # typo guard
         assert "allowFreeStandingZoneFaces true;" in t
+        # OF v2512 meshQualityControls requires these entries (the harness
+        # smoke run failed with "Entry 'minFaceWeight' not found")
+        for required in (
+            "minFaceWeight", "minTwist", "minDeterminant", "minVolRatio",
+            "minTriangleTwist",
+        ):
+            assert required in t, f"{required} missing from {mode} dict"
+
+
+def test_prepare_snappy_case_writes_surface_feature_extract_dict(tmp_path) -> None:
+    """OF v2512 surfaceFeatureExtract reads system/surfaceFeatureExtractDict."""
+    import trimesh
+    from benchmarks.snappy_baseline import prepare_snappy_case
+
+    stl = tmp_path / "surface.stl"
+    mesh = trimesh.creation.box(extents=(0.1, 0.1, 0.1))
+    mesh.export(stl)
+    case = tmp_path / "case"
+    case.mkdir()
+    prepare_snappy_case(case, stl, [mesh], "expert", 0.02, 0.005)
+    d = case / "system" / "surfaceFeatureExtractDict"
+    assert d.exists()
+    text = d.read_text(encoding="ascii")
+    assert "surface.stl" in text
+    assert "extractionMethod extractFromSurface;" in text
+    # base mode also gets the dict (harmless; used only when extract runs)
+    assert (case / "constant" / "triSurface" / "surface.stl").exists()
+    assert (case / "system" / "blockMeshDict").exists()
+    assert (case / "system" / "snappyHexMeshDict").exists()
 
 
 def test_block_mesh_dict_has_hex_block_scaled_by_max_cell() -> None:

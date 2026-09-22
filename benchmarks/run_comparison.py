@@ -238,15 +238,17 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
 
         if mode == "expert":
             t0 = time.perf_counter()
+            # OF v2512: surfaceFeatureExtract reads system/surfaceFeatureExtractDict
+            # (written by prepare_snappy_case); no geometry argument on the CLI.
             rc_, out = rb._wsl_of_run(
-                f"cd {linux} && surfaceFeatureExtract "
-                f"constant/triSurface/surface.stl -angle 60 -writeObj "
-                f"-prefix surface 2>&1",
+                f"cd {linux} && surfaceFeatureExtract 2>&1",
                 timeout=SNAPPY_FEATURE_TIMEOUT_S,
             )
             stage_times["featureExtract"] = round(time.perf_counter() - t0, 2)
             if rc_ != 0:
                 warnings.append(f"surfaceFeatureExtract exit {rc_} (non-fatal)")
+            elif not (case_dir / "constant" / "triSurface" / "surface.eMesh").exists():
+                warnings.append("surfaceFeatureExtract produced no surface.eMesh")
 
         t0 = time.perf_counter()
         rc_, out = rb._wsl_of_run(
