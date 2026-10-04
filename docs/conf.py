@@ -33,7 +33,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_autodoc_typehints",
     "sphinx_rtd_theme",
-    "sphinx.sitemap",
+    "sphinx_sitemap",
 ]
 
 templates_path = ["_templates"]
