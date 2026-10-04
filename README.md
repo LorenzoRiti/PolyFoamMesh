@@ -17,6 +17,8 @@ the polyhedral mesh, patch by patch.
 
 License: [GPLv3](LICENSE) · [Third-party licenses](THIRD_PARTY_LICENSES.md) · [Contributing](CONTRIBUTING.md)
 
+Documentation: [lorenzoriti.github.io/PolyFoamMesh](https://lorenzoriti.github.io/PolyFoamMesh/)
+
 ## Screenshots
 
 The mesher choice and the boundary-layer engine — the two things this

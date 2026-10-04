@@ -53,6 +53,7 @@ docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
     "sphinx-autodoc-typehints>=2.0",
+    "sphinx-sitemap>=2.5",
 ]
 api = [
     "fastapi>=0.110.0",
