@@ -45,6 +45,9 @@ html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 html_title = f"{project} v{release}"
 html_baseurl = "https://lorenzoriti.github.io/PolyFoamMesh/"
+# Single-language site: drop the default "{lang}" segment, which would
+# otherwise emit /en/ paths that do not exist.
+sitemap_url_scheme = "{link}"
 # Copied verbatim to the site root so Google Search Console can verify
 # ownership at https://lorenzoriti.github.io/PolyFoamMesh/<file>.
 html_extra_path = ["googlef60389a8173f6e88.html"]
