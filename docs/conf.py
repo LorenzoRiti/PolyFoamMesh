@@ -43,6 +43,9 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 html_title = f"{project} v{release}"
+# Copied verbatim to the site root so Google Search Console can verify
+# ownership at https://lorenzoriti.github.io/PolyFoamMesh/<file>.
+html_extra_path = ["googlef60389a8173f6e88.html"]
 
 # -- Autodoc configuration ---------------------------------------------------
 
