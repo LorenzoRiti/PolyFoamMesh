@@ -17,6 +17,8 @@ poliedrica, patch per patch.
 
 Licenza: [GPLv3](LICENSE) · [Licenze di terze parti](THIRD_PARTY_LICENSES.md) · [Come contribuire](CONTRIBUTING.md)
 
+Documentazione: [lorenzoriti.github.io/PolyFoamMesh](https://lorenzoriti.github.io/PolyFoamMesh/)
+
 ## Screenshot
 
 La scelta del mesher e il motore di boundary layer — le due cose che
