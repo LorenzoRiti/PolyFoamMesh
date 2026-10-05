@@ -76,6 +76,13 @@ def test_both_modes_have_quality_controls_and_sane_cells() -> None:
             "minTriangleTwist",
         ):
             assert required in t, f"{required} missing from {mode} dict"
+        # OF v2512 layerParameters.C reads addLayersControls via
+        # meshRefinement::get -> the harness smoke run died with
+        # "FOAM FATAL IO ERROR: Entry 'featureAngle' not found in
+        # dictionary ... addLayersControls" (0 cells, snappy stage only).
+        # Tutorial defaults: nGrow 0, featureAngle 60.
+        assert "    nGrow 0;" in t, f"nGrow missing from {mode} dict"
+        assert "    featureAngle 60;" in t, f"featureAngle missing from {mode} dict"
 
 
 def test_prepare_snappy_case_writes_surface_feature_extract_dict(tmp_path) -> None:
