@@ -1,0 +1,24 @@
+[
+  {
+    "geometry": "mini_valve",
+    "runner": "hex",
+    "timestamp": "2026-10-05T12:37:10",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 38.13,
+    "cell_count": 611958,
+    "max_non_ortho": 72.58,
+    "avg_non_ortho": 13.83,
+    "max_skewness": 2.41,
+    "max_aspect_ratio": 10.92,
+    "neg_cells": 0,
+    "min_volume": 1.81927e-15,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  }
+]

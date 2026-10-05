@@ -357,6 +357,11 @@ commit `b1bc71f`, `benchmarks/results/LEADERBOARD.md`): pass rate **hex 5/10 ·
 poly 4/10 · gmsh_direct 5/10 · snappy_base 6/10 · snappy_expert 6/10**.
 Nessun runner passa dirty_cad (0/5) né mini_valve (0/5); snappy vince 5 celle
 su 10 (expert 3, base 2), hex 3 (cylinder, venturi, multi_inlet).
+Pass rate **fast tier** (6 geometrie × 5 runner, re-run
+`comparison_20261005T135839.json` con la sentinella di timeout corretta):
+**hex 3/6 · poly 4/6 · gmsh_direct 4/6 · snappy_base 6/6 ·
+snappy_expert 5/6** (l'unica differenza rispetto al vecchio fast baseline è
+`thin_gap/snappy_expert`, ora `timed_out: true`).
 
 Top 3 gap (`benchmarks/results/GAP_ANALYSIS.md`, commit `78cff6f`, 31 righe):
 1. **`max_non_ortho`** — 15 righe su 31 (48%), 8 geometrie su 10, e contiene
