@@ -370,11 +370,14 @@ keep-best copre quello (non confronta non-ortho/skewness) e ha fatto il suo
 lavoro.
 
 VERDETTO: **KILLED, non promosso** (precedente: lane misurate e scartate).
-Prossimo passo scoped, a scelta umana: (a) correggere la causa radice della
-splice (chord di chiusura degli archi con nf ≥ 3 ai vertici non-feature dopo
-la dissoluzione — vedi nota) o restringere la dissoluzione ai casi provabili;
-(b) attaccare il dual di venturi (74.0) e le piramidi di concave con le leve
-già misurate (compactness/axis, wedge cells). Dettagli in
+Prossimo passo scoped, a scelta umana: (a) la causa radice della splice
+(chord di chiusura con nf ≥ 3) è stata CORRETTA il 2026-10-05: la closure
+regge, ma il gate piramidi resta bloccante e STRUTTURALE — le celle fuse
+sono non-convesse per costruzione (170 vs 0 / 84 vs 15 / 139 vs 36). Il
+revival richiede rilassamento dei punti durante il merge o un'operazione
+topologica diversa, non un fix della splice; (b) attaccare il dual di
+venturi (74.0) e le piramidi di concave con le leve già misurate
+(compactness/axis, wedge cells). Dettagli in
 `notes/poly_nonortho_reasoning.md` §B-side; piano e review in
 `docs/superpowers/plans/2026-10-05-poly-dual-boundary-star-dissolution.md`.
 
