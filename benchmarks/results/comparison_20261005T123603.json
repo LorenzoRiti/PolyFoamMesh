@@ -1,0 +1,68 @@
+[
+  {
+    "geometry": "groove1",
+    "runner": "hex",
+    "timestamp": "2026-10-05T12:35:07",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 7.0,
+    "cell_count": 9768,
+    "max_non_ortho": 75.98,
+    "avg_non_ortho": 14.64,
+    "max_skewness": 2.09,
+    "max_aspect_ratio": 8.03,
+    "neg_cells": 0,
+    "min_volume": 2.75744e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "hex",
+    "timestamp": "2026-10-05T12:35:21",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 9.74,
+    "cell_count": 34142,
+    "max_non_ortho": 77.18,
+    "avg_non_ortho": 11.39,
+    "max_skewness": 2.11,
+    "max_aspect_ratio": 10.03,
+    "neg_cells": 0,
+    "min_volume": 1.36497e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "hex",
+    "timestamp": "2026-10-05T12:36:03",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 28.3,
+    "cell_count": 666976,
+    "max_non_ortho": 73.76,
+    "avg_non_ortho": 6.25,
+    "max_skewness": 2.16,
+    "max_aspect_ratio": 9.15,
+    "neg_cells": 0,
+    "min_volume": 6.36565e-15,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  }
+]
