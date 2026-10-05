@@ -46,29 +46,22 @@ from __future__ import annotations
 
 import numpy as np
 
-from polyfoammesh.core.tet_poly_dual import (
-    _boundary_star_areas,
-    _plan_star_dissolution,
-    _smooth_boundary_neighbours,
-)
+import polyfoammesh.core.tet_poly_dual as tpd
 
 
-class _FakeP:
-    """Minimal primal stub: 4 boundary triangles around vertex 0 (tiny) and
-    vertex 1 (large), plus one triangle touching both, on patch 0."""
+class _StarP:
+    """Primal stub for `_boundary_star_areas` (points + bnd_tri only)."""
 
     def __init__(self):
-        # points on the z=0 plane
         self.points = np.array([
-            [0.0, 0.0, 0.0],   # 0 tiny star centre
-            [0.001, 0.0, 0.0],  # 1 tiny star rim
-            [1.0, 0.0, 0.0],   # 2 big star centre
-            [1.001, 0.0, 0.0],  # 3
-            [1.0, 1.0, 0.0],   # 4
-            [0.0, 1.0, 0.0],   # 5
+            [0.0, 0.0, 0.0],    # 0 tiny star centre
+            [0.01, 0.0, 0.0],   # 1
+            [1.0, 0.0, 0.0],    # 2 big star centre
+            [1.01, 0.0, 0.0],   # 3
+            [1.0, 1.0, 0.0],    # 4
+            [0.0, 1.0, 0.0],    # 5
         ])
-        # boundary triangles (v0,v1,v5), (v0,v5,v4), (v1,v2,v5)... area of the
-        # tiny ones ~5e-4, big ones ~0.5
+        # t0/t3 tiny (~5e-3), t1/t2 big (~0.5)
         self.bnd_tri = np.array([
             [0, 1, 5],
             [1, 2, 5],
@@ -76,54 +69,48 @@ class _FakeP:
             [2, 3, 4],
         ])
         self.n_bnd = 4
-        self.bnd_face_ids = np.arange(4)
-        self.patch_of_bnd = np.zeros(4, dtype=np.int64)
-        # boundary edges: (0,1) is the smooth edge between the two stars
-        self.face_edge = np.array([
-            [10, 11, 12],
-            [11, 13, 12],
-            [13, 14, 12],
-            [15, 14, 13],
-        ])
-        self.feat_edge = np.zeros(16, dtype=bool)
-        self.uniq_key = np.array(
-            [0 * 100 + 1, 1 * 100 + 5, 0 * 100 + 5,
-             1 * 100 + 2, 5 * 100 + 2, 2 * 100 + 4,
-             5 * 100 + 4, 2 * 100 + 3, 3 * 100 + 4],
-            dtype=np.int64,
-        )
-        # bnd_e_faces: each boundary edge -> its two triangles
-        self.bnd_e_faces = {
-            10: [0, 1], 11: [0, 1], 12: [0, 2], 13: [1, 2],
-            14: [2, 3], 15: [3, 3],
-        }
+
+
+class _EdgeP:
+    """Primal stub for `_smooth_boundary_neighbours` (edge fields only)."""
+
+    def __init__(self, feature: bool = False):
+        self.n_pi = 100
+        self.bnd_e_faces = {10: [0, 1], 11: [0, 2]}
+        self.uniq_key = {10: 0 * 100 + 1, 11: 0 * 100 + 5}
+        self.feat_edge = {10: feature, 11: False}
+        self.patch_of_bnd = np.array([0, 0, 0])
 
 
 def test_star_areas_flag_the_tiny_star():
-    P = _FakeP()
-    areas = _boundary_star_areas(P)
-    assert areas[0] < areas[2]
+    areas = tpd._boundary_star_areas(_StarP())
+    assert 0.0 < areas[0] < areas[2]
+    assert areas[2] > 0.5
 
 
-def test_plan_dissolves_tiny_into_largest_neighbour():
-    P = _FakeP()
-    plan = _plan_star_dissolution(P, threshold_fraction=0.5)
-    assert plan.get(0) == 2
+def test_plan_dissolves_tiny_into_largest_neighbour(monkeypatch):
+    areas = np.zeros(6)
+    areas[0], areas[1], areas[2] = 0.005, 0.505, 1.005
+    areas[3], areas[4], areas[5] = 0.005, 0.505, 1.005
+    monkeypatch.setattr(tpd, "_boundary_star_areas", lambda P: areas)
+    monkeypatch.setattr(
+        tpd, "_smooth_boundary_neighbours",
+        lambda P: {0: [1, 5], 3: [2, 4], 1: [0, 5], 5: [0, 1, 2],
+                   2: [1, 5, 3, 4], 4: [3, 2]},
+    )
+    plan = tpd._plan_star_dissolution(object(), threshold_fraction=0.5)
+    assert plan == {0: 5, 3: 2}
 
 
-def test_plan_is_empty_when_disabled():
-    P = _FakeP()
-    assert _plan_star_dissolution(P, threshold_fraction=0.0) == {}
+def test_plan_is_empty_when_disabled(monkeypatch):
+    monkeypatch.setattr(tpd, "_boundary_star_areas", lambda P: np.array([1.0, 1.0]))
+    assert tpd._plan_star_dissolution(object(), threshold_fraction=0.0) == {}
 
 
 def test_smooth_neighbours_exclude_feature_edges():
-    P = _FakeP()
-    P.feat_edge[10] = True
-    nb = _smooth_boundary_neighbours(P)
-    assert 1 not in nb.get(0, [])
+    assert tpd._smooth_boundary_neighbours(_EdgeP()) == {0: [1, 5], 1: [0], 5: [0]}
+    assert tpd._smooth_boundary_neighbours(_EdgeP(feature=True)) == {0: [5], 5: [0]}
 ```
-
-(The stub's `uniq_key` encodes `a * 100 + b`; adapt the encoder to the real `P.uniq_key` layout after reading `_read_primal` — the test is the contract, the stub is scaffolding.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -218,36 +205,36 @@ git commit -m "feat(poly): boundary-star area/dissolution planning helpers (unus
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-from polyfoammesh.core.tet_poly_dual import _splice_boundary_loops
-
-
-def _square(x0, y0, s):
-    return [
-        [x0, y0, 0.0], [x0 + s, y0, 0.0],
-        [x0 + s, y0 + s, 0.0], [x0, y0 + s, 0.0],
-    ]
+from polyfoammesh.core.tet_poly_dual import _newell_area, _splice_boundary_loops
 
 
 def test_splice_two_squares_sharing_an_edge():
-    xyz = np.array(_square(0, 0, 1) + _square(1, 0, 1), dtype=float)
-    a = [0, 1, 2, 3]          # left square, edge (1,0) shared? see note
-    b = [4, 5, 6, 7]          # right square
-    # make the shared chain explicit: right square traverses (1,4)
-    b = [4, 1, 2, 5]
+    # left square 0-1-2-3, right square sharing edge (1,2) traversed reversed
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [2.0, 0.0, 0.0], [2.0, 1.0, 0.0],
+    ], dtype=float)
+    a = [0, 1, 2, 3]        # left square (area 1)
+    b = [1, 4, 5, 2]        # right square (area 1), shared chain (2,1)
     merged = _splice_boundary_loops(a, b, xyz)
     assert merged is not None
     assert len(set(merged)) == 6
+    assert abs(_newell_area(xyz, merged) - 2.0) < 1e-9
 
 
 def test_splice_rejects_disjoint_loops():
-    xyz = np.array(_square(0, 0, 1) + _square(5, 5, 1), dtype=float)
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [5.0, 5.0, 0.0], [6.0, 5.0, 0.0], [6.0, 6.0, 0.0], [5.0, 6.0, 0.0],
+    ], dtype=float)
     assert _splice_boundary_loops([0, 1, 2, 3], [4, 5, 6, 7], xyz) is None
 
 
-def test_splice_rejects_bowtie():
-    # a figure-eight union has a different Newell area than the sum
-    xyz = np.array([[0, 0, 0], [2, 0, 0], [0, 2, 0], [2, 2, 0]], dtype=float)
-    assert _splice_boundary_loops([0, 1, 2], [0, 3, 2], xyz) is None
+def test_splice_rejects_identical_loops():
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+    ], dtype=float)
+    assert _splice_boundary_loops([0, 1, 2, 3], [0, 1, 2, 3], xyz) is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
