@@ -1,0 +1,51 @@
+[
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-10-05T22:04:28",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 13.48,
+    "cell_count": 18258,
+    "max_non_ortho": 80.64,
+    "avg_non_ortho": 12.7,
+    "max_skewness": 4.92,
+    "max_aspect_ratio": 554.2,
+    "neg_cells": 0,
+    "min_volume": 2.75869e-13,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "star dissolution of 171 tiny boundary stars refused (pyramid non-regression failed (170 vs 0 on the unmerged dual)); the unmerged dual was kept"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-10-05T22:04:37",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 7.18,
+    "cell_count": 4732,
+    "max_non_ortho": 146.41,
+    "avg_non_ortho": 16.11,
+    "max_skewness": 3.66,
+    "max_aspect_ratio": 108.74,
+    "neg_cells": 0,
+    "min_volume": 3.1777e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "star dissolution of 97 tiny boundary stars refused (pyramid non-regression failed (84 vs 15 on the unmerged dual)); the unmerged dual was kept"
+    ],
+    "_raw_success": false
+  }
+]
