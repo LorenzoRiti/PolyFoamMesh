@@ -2148,6 +2148,61 @@ def _detect_defects(
     return bad, {"pyramid": n_pyr, "non_ortho": n_no, "skew": n_sk}
 
 
+def _boundary_star_areas(P) -> np.ndarray:
+    """Sum of incident boundary-triangle areas per primal vertex."""
+    n_pts = len(P.points)
+    areas = np.zeros(n_pts, dtype=np.float64)
+    pts = np.asarray(P.points, dtype=np.float64)
+    for bi in range(P.n_bnd):
+        vs = P.bnd_tri[bi]
+        p0, p1, p2 = pts[vs[0]], pts[vs[1]], pts[vs[2]]
+        a = 0.5 * float(np.linalg.norm(np.cross(p1 - p0, p2 - p0)))
+        areas[vs[0]] += a
+        areas[vs[1]] += a
+        areas[vs[2]] += a
+    return areas
+
+
+def _smooth_boundary_neighbours(P) -> dict[int, list[int]]:
+    """Boundary-vertex adjacency across non-feature, same-patch edges."""
+    n_pi = P.n_pi
+    out: dict[int, list[int]] = {}
+    for ei, bis in P.bnd_e_faces.items():
+        if P.feat_edge[ei]:
+            continue
+        key = int(P.uniq_key[ei])
+        a, b = key // n_pi, key % n_pi
+        if a == b or len(bis) != 2:
+            continue
+        if P.patch_of_bnd[bis[0]] != P.patch_of_bnd[bis[1]]:
+            continue
+        out.setdefault(a, []).append(b)
+        out.setdefault(b, []).append(a)
+    return out
+
+
+def _plan_star_dissolution(P, threshold_fraction: float) -> dict[int, int]:
+    """Assign sub-threshold boundary stars to their largest smooth neighbour."""
+    if threshold_fraction <= 0.0:
+        return {}
+    areas = _boundary_star_areas(P)
+    nz = areas[areas > 0.0]
+    if len(nz) == 0:
+        return {}
+    thr = float(np.median(nz)) * threshold_fraction
+    nb = _smooth_boundary_neighbours(P)
+    small = {v for v in nb if areas[v] < thr}
+    if not small:
+        return {}
+    plan: dict[int, int] = {}
+    for v in sorted(small, key=lambda x: areas[x]):
+        cands = [u for u in nb[v] if u not in small and areas[u] >= areas[v]]
+        if not cands:
+            continue
+        plan[v] = max(cands, key=lambda u: areas[u])
+    return plan
+
+
 def _face_extent(points, faces, cf, sv, n_int):
     """max over a face's points of |unit(sv) . (pt - faceCentre)|.
 
