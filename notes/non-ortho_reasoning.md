@@ -57,10 +57,10 @@ recomputed read-only) and the baseline result:
 | venturi | 0.0534 | sampler `min_thickness` | 0.0141 | 3.79 | 53.33 | PASS |
 | cylinder | 0.100 | sampler `min_thickness` | 0.0187 | 5.35 | 52.83 | PASS |
 
-Separation on all 8 hex quality-relevant geometries: **every failure has ≤0.85
-cells across the thinnest feature; every pass has ≥1.76** (nothing measured in
-0.85–1.76 — the band the B-side will land in is exactly what the experiment
-tests).
+Separation on all 9 hex quality-relevant geometries (dirty_cad excluded — 0
+cells for every runner): **every failure has ≤0.85 cells across the thinnest
+feature; every pass has ≥1.76** (nothing measured in 0.85–1.76 — the band the
+B-side will land in is exactly what the experiment tests).
 
 ## Hypothesis
 
@@ -122,10 +122,10 @@ behind the flag named below), on the gap cluster:
   `--hex-thin-refine` in the harness; **default off — no default changed**,
   additive only).
 - **Kill criterion:** if B does not bring the primary metric (groove1 hex
-  `max_non_ortho`) below 70 — or it moves <5° from 75.98 — **or** any fast-tier
-  geometry regresses (cube_duct 64.86 → >70, or any healthy primary metric
-  worse by >2°, or a currently-passing row starts failing), the lane is killed
-  ("measured no-op, not promoted" — repo precedent,
+  `max_non_ortho`) below 70 — or it improves by <5° from 75.98 — **or** any
+  fast-tier geometry regresses (cube_duct 64.86 → >70, or any healthy primary
+  metric worse by >2°, or a currently-passing row starts failing), the lane is
+  killed ("measured no-op, not promoted" — repo precedent,
   `notes/smoothed_dual_blend_reasoning.md`).
 
 ### A-side
