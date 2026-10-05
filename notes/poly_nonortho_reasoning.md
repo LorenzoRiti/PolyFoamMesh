@@ -208,3 +208,25 @@ nf ≥ 3 arc split at non-feature vertices; add the keep-branch test (merged
 mesh actually written with the pyramid gate active); reuse the pyramid
 baseline instead of rebuilding it twice; keep the harness `warnings`
 propagation so future B-side records are self-evidencing.
+
+### Revival attempt (2026-10-05, arc-chord fix) — closure fixed, pyramid blocker structural
+
+The arc-chord root cause was fixed (`_build_boundary_collapsed` now uses the
+fan branch whenever nf ≥ 3, not only at feature points; the fan telescopes
+exactly for any nf). Measured on real geometry (fraction 0.5, artefacts
+committed `2e75df0`):
+
+- the closure deficits are GONE — no more "a cell is not closed" refusals;
+- the pyramid non-regression gate is now the sole blocker, and it is
+  **structural**: merging two adjacent dual cells without moving any point
+  yields a non-convex cell (the union of two vertex stars is not
+  star-shaped), so essentially every merged cell fails checkMesh's
+  face-pyramid criterion — 170 vs 0 (cube_duct), 84 vs 15 (venturi),
+  139 vs 36 (concave_bracket); all refused, every metric unchanged.
+
+Conclusion: walk-level star dissolution cannot be promoted as implemented,
+and the remaining blocker is not a splice bug — it needs either point
+relocation during the merge (restore convexity) or a different topology
+operation (e.g. collapsing the tiny star's cell into an interior neighbour
+with a local re-triangulation). The flag stays `0.0`/off and unwired; the
+keep-best gate guarantees no worse mesh is ever written.
