@@ -370,8 +370,9 @@ keep-best copre quello (non confronta non-ortho/skewness) e ha fatto il suo
 lavoro.
 
 VERDETTO: **KILLED, non promosso** (precedente: lane misurate e scartate).
-Prossimo passo scoped, a scelta umana: (a) correggere l'interazione
-multi-star nella splice (o restringere la dissoluzione ai casi provabili);
+Prossimo passo scoped, a scelta umana: (a) correggere la causa radice della
+splice (chord di chiusura degli archi con nf ≥ 3 ai vertici non-feature dopo
+la dissoluzione — vedi nota) o restringere la dissoluzione ai casi provabili;
 (b) attaccare il dual di venturi (74.0) e le piramidi di concave con le leve
 già misurate (compactness/axis, wedge cells). Dettagli in
 `notes/poly_nonortho_reasoning.md` §B-side; piano e review in
