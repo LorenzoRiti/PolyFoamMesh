@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 import polyfoammesh.core.tet_poly_dual as tpd
+from polyfoammesh.core.tet_poly_dual import _newell_area, _splice_boundary_loops
 
 
 class _StarP:
@@ -67,3 +68,32 @@ def test_plan_is_empty_when_disabled(monkeypatch):
 def test_smooth_neighbours_exclude_feature_edges():
     assert tpd._smooth_boundary_neighbours(_EdgeP()) == {0: [1, 5], 1: [0], 5: [0]}
     assert tpd._smooth_boundary_neighbours(_EdgeP(feature=True)) == {0: [5], 5: [0]}
+
+
+def test_splice_two_squares_sharing_an_edge():
+    # left square 0-1-2-3, right square sharing edge (1,2) traversed reversed
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [2.0, 0.0, 0.0], [2.0, 1.0, 0.0],
+    ], dtype=float)
+    a = [0, 1, 2, 3]        # left square (area 1)
+    b = [1, 4, 5, 2]        # right square (area 1), shared chain (2,1)
+    merged = _splice_boundary_loops(a, b, xyz)
+    assert merged is not None
+    assert len(set(merged)) == 6
+    assert abs(_newell_area(xyz, merged) - 2.0) < 1e-9
+
+
+def test_splice_rejects_disjoint_loops():
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [5.0, 5.0, 0.0], [6.0, 5.0, 0.0], [6.0, 6.0, 0.0], [5.0, 6.0, 0.0],
+    ], dtype=float)
+    assert _splice_boundary_loops([0, 1, 2, 3], [4, 5, 6, 7], xyz) is None
+
+
+def test_splice_rejects_identical_loops():
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+    ], dtype=float)
+    assert _splice_boundary_loops([0, 1, 2, 3], [0, 1, 2, 3], xyz) is None

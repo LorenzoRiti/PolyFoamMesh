@@ -2203,6 +2203,74 @@ def _plan_star_dissolution(P, threshold_fraction: float) -> dict[int, int]:
     return plan
 
 
+def _newell_area(xyz, ids) -> float:
+    p = np.asarray([xyz[i] for i in ids], dtype=np.float64)
+    n = np.zeros(3)
+    for k in range(len(p)):
+        j = (k + 1) % len(p)
+        n += np.cross(p[k], p[j])
+    return 0.5 * float(np.linalg.norm(n))
+
+
+def _splice_boundary_loops(a, b, xyz):
+    """Union of two outward polygons sharing a consecutive, reversed chain."""
+    # find the longest consecutive run of a that appears reversed in b
+    set_b = set(b)
+    runs, cur = [], []
+    for x in a:
+        if x in set_b:
+            cur.append(x)
+        else:
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = []
+    if len(cur) >= 2:
+        runs.append(cur)
+    if not runs:
+        return None
+    chain = max(runs, key=len)
+    na, nb_ = len(a), len(b)
+    ia = a.index(chain[0])
+    rev = list(reversed(chain))
+    ib = None
+    for start in range(nb_):
+        if all(b[(start + k) % nb_] == rev[k] for k in range(len(rev))):
+            ib = start
+            break
+    if ib is None:
+        return None
+    pos_a = [(ia + k) % na for k in range(len(chain))]
+    if len(pos_a) == na:
+        return None
+    comp = []
+    k = pos_a[-1]
+    while True:
+        comp.append(a[k])
+        if k == pos_a[0]:
+            break
+        k = (k + 1) % na
+    pos_b = [(ib + k) % nb_ for k in range(len(chain))]
+    start_b, end_b = pos_b[-1], pos_b[0]
+    out = list(comp)
+    k = (start_b + 1) % nb_
+    while k != end_b:
+        out.append(b[k])
+        k = (k + 1) % nb_
+    clean = []
+    for x in out:
+        if not clean or clean[-1] != x:
+            clean.append(x)
+    if clean and clean[0] == clean[-1]:
+        clean.pop()
+    if len(clean) < 3 or len(set(clean)) != len(clean):
+        return None
+    if abs(_newell_area(xyz, clean) - (_newell_area(xyz, a) + _newell_area(xyz, b))) > 1e-6 * max(
+        _newell_area(xyz, a) + _newell_area(xyz, b), 1e-30
+    ):
+        return None
+    return clean
+
+
 def _face_extent(points, faces, cf, sv, n_int):
     """max over a face's points of |unit(sv) . (pt - faceCentre)|.
 
