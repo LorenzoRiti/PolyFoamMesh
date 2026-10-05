@@ -125,6 +125,7 @@ class DualPolyResult:
     # How many tiny boundary stars the opt-in star-dissolution pass actually
     # merged (0 whenever the pass is off, unused or refused).
     n_dissolved_stars: int = 0
+    dissolve_fallbacks: int = 0
 
     # Boundary-layer outcome, attached by the poly worker after the optional
     # BL pass. Declared here so consumers can rely on the fields existing.
@@ -365,6 +366,7 @@ class TetPolyDualConverter:
                 f"{dissolve_tiny_boundary_stars!r}"
             )
         self._dissolve_stars = float(dissolve_tiny_boundary_stars)
+        self._last_dissolve_fallbacks = 0
         if self._dissolve_stars > 0.0 and not self._collapse:
             logger.info(
                 "tet_poly_dual: dissolve_tiny_boundary_stars ignored — the "
@@ -533,6 +535,7 @@ class TetPolyDualConverter:
 
         M = best
         res.n_dissolved_stars = int(getattr(M, "n_dissolved_stars", 0))
+        res.dissolve_fallbacks = int(getattr(M, "dissolve_fallbacks", 0))
         dissolve_warning = getattr(M, "dissolve_warning", None)
         if dissolve_warning:
             res.warnings.append(dissolve_warning)
@@ -883,6 +886,14 @@ class TetPolyDualConverter:
         dissolve: dict[int, int] = {}
         if allow_dissolve and self._dissolve_stars > 0.0 and self._collapse:
             dissolve = _plan_star_dissolution(P, self._dissolve_stars)
+            if dissolve and splits:
+                # a split vertex's star is already partitioned; dissolving it
+                # would claim the survivor's group ids and guarantee a
+                # closure failure (refused later) — drop those pairs up front
+                dissolve = {
+                    v: u for v, u in dissolve.items()
+                    if v not in splits and u not in splits
+                }
             for v, u in dissolve.items():
                 base_l[v] = base_l[u]
             if dissolve:
@@ -1244,6 +1255,7 @@ class TetPolyDualConverter:
             n_int=n_int, patches=new_patches, n_cells=n_cells,
             cell_vertex=cell_vertex,
             n_dissolved_stars=len(dissolve),
+            dissolve_fallbacks=self._last_dissolve_fallbacks,
         )
         if not dissolve:
             return M
@@ -1252,10 +1264,23 @@ class TetPolyDualConverter:
         # Drop the points no face references any more and renumber the cell
         # ids of the absorbed cells away, keeping owner/neighbour upper
         # triangular.  Then the keep-best gate: a dissolved mesh that is not
-        # closed or has a non-positive cell volume is thrown away and the
-        # unmerged dual is rebuilt instead — never a worse mesh.
+        # closed, has a non-positive cell volume, or ADDS face-pyramid
+        # violations over the unmerged dual is thrown away and the unmerged
+        # dual is rebuilt instead — never a worse mesh.
         _compact_dissolved(M)
         reason = _dissolve_sanity(M)
+        if reason is None:
+            merged_pyr = _pyramid_count(M)
+            if merged_pyr > 0:
+                baseline = self._build_dual(
+                    P, splits, wedge_edges, ref_ctr, allow_dissolve=False,
+                )
+                base_pyr = _pyramid_count(baseline)
+                if merged_pyr > base_pyr:
+                    reason = (
+                        f"pyramid non-regression failed ({merged_pyr} vs "
+                        f"{base_pyr} on the unmerged dual)"
+                    )
         if reason is None:
             return M
         self._log(
@@ -2419,6 +2444,19 @@ def _dissolve_sanity(M) -> str | None:
     return None
 
 
+def _pyramid_count(M) -> int:
+    """Face-pyramid violations of a built mesh (checkMesh's criterion).
+
+    Same arithmetic as ``_detect_defects``'s pyramid term: every face must
+    form a positive-volume pyramid with its owner's (and neighbour's) centre.
+    """
+    sf, cf = _face_geometry(M.points, M.faces)
+    ctr, _vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+    pv_own = (sf * (cf - ctr[M.owner])).sum(axis=1)
+    pv_nb = -(sf[: M.n_int] * (cf[: M.n_int] - ctr[M.neigh])).sum(axis=1)
+    return int((pv_own <= 0.0).sum() + (pv_nb <= 0.0).sum())
+
+
 def _newell_vector(xyz, ids) -> np.ndarray:
     """Newell vector (2 x signed area, direction = polygon normal)."""
     p = np.asarray([xyz[i] for i in ids], dtype=np.float64)
@@ -2543,12 +2581,14 @@ def _splice_boundary_loops(a, b, xyz):
         clean.pop()
     if len(clean) < 3 or len(set(clean)) != len(clean):
         return None
-    # The Newell VECTOR is exactly additive across a shared chain (the chain's
-    # cross products cancel between a and b because the chain is traversed in
-    # opposite directions).  Comparing vector sums — not per-polygon norms —
-    # is what makes the guard valid for NON-PLANAR adjacent polygons too
-    # (e.g. two cube-corner stars: their normals differ, so |N_a| + |N_b|
-    # would exceed |N_a + N_b| and reject a perfectly valid union).
+    # Float-noise sanity on the Newell VECTOR identity (the chain's cross
+    # products cancel between a and b because it is traversed in opposite
+    # directions, so N_union == N_a + N_b holds by construction for any
+    # splice output — this only catches numerical/implementation drift).
+    # NOTE: the per-polygon NORM sum is NOT an invariant for non-planar
+    # adjacent polygons (their normals differ), which is why the earlier
+    # norm-based guard wrongly rejected valid cube-corner unions; the real
+    # validity gate is `_loop_is_simple` below.
     n_sum = _newell_vector(xyz, a) + _newell_vector(xyz, b)
     n_union = _newell_vector(xyz, clean)
     scale = max(float(np.linalg.norm(n_sum)), 1e-30)

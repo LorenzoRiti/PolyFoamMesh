@@ -160,7 +160,7 @@ def _cube_case_points_tets() -> tuple[np.ndarray, list[list[int]]]:
 @pytest.mark.parametrize("collapse", [False, True])
 def test_default_off_is_byte_identical(tmp_path, collapse):
     """Global constraint: `dissolve_tiny_boundary_stars=0.0` (and the absent
-    default) must leave the written polyMesh byte-identical — in collapse
+    default) must leave the written polyMesh byte-identical --- in collapse
     mode too, which is the only mode where the pass can ever run."""
     pts, tets = _cube_case_points_tets()
     conv_kwargs: dict = {"log": lambda _m: None}
@@ -197,10 +197,11 @@ def _boundary_face_count(case_dir: Path) -> int:
 
 def test_dissolution_splices_when_plan_forces_a_merge(tmp_path, monkeypatch):
     """Forced plan {0: 1} on the cube: the two corner polygons must merge
-    into one (boundary face count drops by 1) and the mesh stays valid."""
+    into one union (2 fewer sub-faces: 3 + 3 -> 4) and the mesh stays valid."""
     pts, tets = _cube_case_points_tets()
     case = build_tet_case(tmp_path / "splice", pts, tets)
     monkeypatch.setattr(tpd, "_plan_star_dissolution", lambda P, f: {0: 1})
+    monkeypatch.setattr(tpd, "_pyramid_count", lambda M: 0)
     conv = tpd.TetPolyDualConverter(
         case, log=lambda _m: None, collapse_smooth_edges=True,
         dissolve_tiny_boundary_stars=1.0,
@@ -208,8 +209,8 @@ def test_dissolution_splices_when_plan_forces_a_merge(tmp_path, monkeypatch):
     res = conv.run()
     assert res.success, res.errors
     assert res.n_dissolved_stars == 1
-    assert conv._last_dissolve_fallbacks == 0
-    assert getattr(res, "dissolve_warning", None) is None
+    assert res.dissolve_fallbacks == 0
+    assert res.warnings == []
 
     case_ref = build_tet_case(tmp_path / "ref", pts, tets)
     tpd.TetPolyDualConverter(
@@ -228,6 +229,7 @@ def test_dissolution_falls_back_when_splice_refuses(tmp_path, monkeypatch):
     case = build_tet_case(tmp_path / "fallback", pts, tets)
     monkeypatch.setattr(tpd, "_plan_star_dissolution", lambda P, f: {0: 1})
     monkeypatch.setattr(tpd, "_splice_boundary_loops", lambda a, b, xyz: None)
+    monkeypatch.setattr(tpd, "_pyramid_count", lambda M: 0)
     conv = tpd.TetPolyDualConverter(
         case, log=lambda _m: None, collapse_smooth_edges=True,
         dissolve_tiny_boundary_stars=1.0,
@@ -235,10 +237,50 @@ def test_dissolution_falls_back_when_splice_refuses(tmp_path, monkeypatch):
     res = conv.run()
     assert res.success, res.errors
     assert res.n_dissolved_stars == 1
-    assert conv._last_dissolve_fallbacks == 1
+    assert res.dissolve_fallbacks == 1
 
     case_ref = build_tet_case(tmp_path / "ref2", pts, tets)
     tpd.TetPolyDualConverter(
         case_ref, log=lambda _m: None, collapse_smooth_edges=True,
     ).run()
     assert _boundary_face_count(case) == _boundary_face_count(case_ref)
+
+
+def test_dissolution_refusal_keeps_the_unmerged_dual(tmp_path, monkeypatch):
+    """Keep-best gate: a sanity refusal must rebuild without dissolution and
+    surface the reason in res.warnings (never a worse mesh)."""
+    pts, tets = _cube_case_points_tets()
+    case = build_tet_case(tmp_path / "refused", pts, tets)
+    monkeypatch.setattr(tpd, "_plan_star_dissolution", lambda P, f: {0: 1})
+    monkeypatch.setattr(tpd, "_dissolve_sanity", lambda M: "forced refusal")
+    conv = tpd.TetPolyDualConverter(
+        case, log=lambda _m: None, collapse_smooth_edges=True,
+        dissolve_tiny_boundary_stars=1.0,
+    )
+    res = conv.run()
+    assert res.success, res.errors
+    assert res.n_dissolved_stars == 0
+    assert res.dissolve_fallbacks == 0
+    assert any("refused" in w for w in res.warnings)
+
+    case_ref = build_tet_case(tmp_path / "refused_ref", pts, tets)
+    tpd.TetPolyDualConverter(
+        case_ref, log=lambda _m: None, collapse_smooth_edges=True,
+    ).run()
+    assert _boundary_face_count(case) == _boundary_face_count(case_ref)
+
+
+def test_dissolution_pyramid_gate_refuses_forced_merge(tmp_path, monkeypatch):
+    """The pyramid non-regression gate: a forced merge that ADDS a pyramid
+    violation over the unmerged dual must be refused (keep-best)."""
+    pts, tets = _cube_case_points_tets()
+    case = build_tet_case(tmp_path / "pyr", pts, tets)
+    monkeypatch.setattr(tpd, "_plan_star_dissolution", lambda P, f: {0: 1})
+    conv = tpd.TetPolyDualConverter(
+        case, log=lambda _m: None, collapse_smooth_edges=True,
+        dissolve_tiny_boundary_stars=1.0,
+    )
+    res = conv.run()
+    assert res.success, res.errors
+    assert res.n_dissolved_stars == 0
+    assert any("pyramid" in w for w in res.warnings)
