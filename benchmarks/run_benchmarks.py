@@ -625,6 +625,11 @@ def _benchmark_poly_one(
     check_timeout_s: int = TIMEOUT_S,
     sliver_dissolve: float = 0.0,
     bl_min_face: float = 0.0,
+    dual_smooth_iters: int = 3,
+    dual_compact: bool = False,
+    dual_axis: bool = False,
+    dual_planar_fix: str = "none",
+    dual_worst_aspect: float = 0.0,
 ) -> dict:
     """Run the GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh pipeline.
 
@@ -636,6 +641,10 @@ def _benchmark_poly_one(
 
     ``bl_min_face`` is threaded to the BL engine as
     ``min_base_face_fraction`` (0.0 = off, the legacy behaviour).
+
+    The ``dual_*`` options are the harness opt-ins for the dual smoother /
+    non-planar-face fix (``--poly-dual-*``); their defaults keep the
+    converter's legacy behaviour.
     """
     name = stl_path.stem
     logger.info("=" * 60)
@@ -736,6 +745,13 @@ def _benchmark_poly_one(
                 # Opt-in (harness --poly-sliver-dissolve): 0.0 keeps the
                 # converter default, i.e. dissolution completely off.
                 dissolve_tiny_boundary_stars=sliver_dissolve,
+                # Opt-in (harness --poly-dual-*): the defaults below are the
+                # converter's own defaults, i.e. no behaviour change.
+                smooth_iters=dual_smooth_iters,
+                smooth_compactness=dual_compact,
+                smooth_axis_balance=dual_axis,
+                fix_nonplanar_faces=dual_planar_fix,
+                smooth_worst_aspect=dual_worst_aspect,
             )
             dres = conv.run()
             stage_times["dual"] = round(time.perf_counter() - t0, 2)

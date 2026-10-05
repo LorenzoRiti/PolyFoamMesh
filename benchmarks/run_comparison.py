@@ -321,6 +321,11 @@ def run_single(
     keep_case: bool = False,
     poly_sliver_dissolve: float = 0.0,
     poly_bl_min_face: float = 0.0,
+    poly_dual_smooth_iters: int = 3,
+    poly_dual_compact: bool = False,
+    poly_dual_axis: bool = False,
+    poly_dual_planar_fix: str = "none",
+    poly_dual_worst_aspect: float = 0.0,
 ) -> int:
     import benchmarks.run_benchmarks as rb
 
@@ -339,6 +344,11 @@ def run_single(
             check_timeout_s=CHECK_TIMEOUT_S,
             sliver_dissolve=poly_sliver_dissolve,
             bl_min_face=poly_bl_min_face,
+            dual_smooth_iters=poly_dual_smooth_iters,
+            dual_compact=poly_dual_compact,
+            dual_axis=poly_dual_axis,
+            dual_planar_fix=poly_dual_planar_fix,
+            dual_worst_aspect=poly_dual_worst_aspect,
         )
         rec = _record_from_bench(name, runner, bench)
     elif runner == "gmsh_direct":
@@ -378,6 +388,11 @@ def run_parent(
     keep: bool = False,
     poly_sliver_dissolve: float = 0.0,
     poly_bl_min_face: float = 0.0,
+    poly_dual_smooth_iters: int = 3,
+    poly_dual_compact: bool = False,
+    poly_dual_axis: bool = False,
+    poly_dual_planar_fix: str = "none",
+    poly_dual_worst_aspect: float = 0.0,
     _child_out_dir: Path | None = None,
     _write_results: bool = True,
 ) -> tuple[list[dict], int]:
@@ -404,6 +419,19 @@ def run_parent(
                 cmd += ["--poly-sliver-dissolve", str(poly_sliver_dissolve)]
             if poly_bl_min_face > 0.0:
                 cmd += ["--poly-bl-min-face", str(poly_bl_min_face)]
+            # Dual-config opt-ins: append ONLY when they differ from the
+            # defaults, so a default run's child cmd is byte-identical to
+            # the pre-flag one.
+            if poly_dual_smooth_iters != 3:
+                cmd += ["--poly-dual-smooth-iters", str(poly_dual_smooth_iters)]
+            if poly_dual_compact:
+                cmd.append("--poly-dual-compact")
+            if poly_dual_axis:
+                cmd.append("--poly-dual-axis")
+            if poly_dual_planar_fix != "none":
+                cmd += ["--poly-dual-planar-fix", str(poly_dual_planar_fix)]
+            if poly_dual_worst_aspect > 0.0:
+                cmd += ["--poly-dual-worst-aspect", str(poly_dual_worst_aspect)]
             logger.info("RUN %s / %s (cap %ds)", spec.name, runner, RUN_TIMEOUT_S)
             try:
                 proc = subprocess.run(cmd, timeout=RUN_TIMEOUT_S, capture_output=True, text=True)
@@ -457,6 +485,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poly-bl-min-face", type=float, default=0.0,
                    help="opt-in: drop BL base faces below this fraction of the "
                         "median face size on the poly runner (0 = off)")
+    p.add_argument("--poly-dual-smooth-iters", type=int, default=3,
+                   help="opt-in: dual smoother iterations on the poly runner "
+                        "(default 3, the converter default)")
+    p.add_argument("--poly-dual-compact", action="store_true",
+                   help="opt-in: enable compactness term in the dual smoother")
+    p.add_argument("--poly-dual-axis", action="store_true",
+                   help="opt-in: enable axis-balance term in the dual smoother")
+    p.add_argument("--poly-dual-planar-fix",
+                   choices=["none", "triangulate", "planarize"], default="none",
+                   help="opt-in: non-planar boundary face fix on the poly "
+                        "runner (default: none, the converter default)")
+    p.add_argument("--poly-dual-worst-aspect", type=float, default=0.0,
+                   help="opt-in: aspect-ratio threshold that makes the dual "
+                        "smoother target the worst cells (0 = off)")
     return p
 
 
@@ -476,6 +518,11 @@ def main(args: list[str] | None = None) -> int:
                 opts.runner[0], geometry_path(spec), Path(opts.out), opts.keep,
                 poly_sliver_dissolve=opts.poly_sliver_dissolve,
                 poly_bl_min_face=opts.poly_bl_min_face,
+                poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
+                poly_dual_compact=opts.poly_dual_compact,
+                poly_dual_axis=opts.poly_dual_axis,
+                poly_dual_planar_fix=opts.poly_dual_planar_fix,
+                poly_dual_worst_aspect=opts.poly_dual_worst_aspect,
             )
         except ValueError as exc:
             logger.error("%s", exc)
@@ -484,6 +531,11 @@ def main(args: list[str] | None = None) -> int:
         opts.tier, opts.runner, opts.geometry, opts.keep,
         poly_sliver_dissolve=opts.poly_sliver_dissolve,
         poly_bl_min_face=opts.poly_bl_min_face,
+        poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
+        poly_dual_compact=opts.poly_dual_compact,
+        poly_dual_axis=opts.poly_dual_axis,
+        poly_dual_planar_fix=opts.poly_dual_planar_fix,
+        poly_dual_worst_aspect=opts.poly_dual_worst_aspect,
     )
     return exit_code
 
