@@ -121,6 +121,21 @@ SNAPPY_FEATURE_TIMEOUT_S = 60
 SNAPPY_MESH_TIMEOUT_S = 1200
 
 
+def _stage_failure(stage: str, out: str, tail: int = 15) -> str:
+    """Compose the error string for a failed stage.
+
+    run_benchmarks._wsl_of_run signals a stage-budget overrun with the
+    sentinel "TIMEOUT"; normalise it to the "<stage> timed out" wording used
+    elsewhere in the harness (run_benchmarks.py, e.g. "cartesianMesh timed
+    out") so make_record's "timed out" predicates (fatal / timed_out) catch it
+    and the record gets timed_out/fatal instead of a plain "failed: TIMEOUT"
+    string that no predicate matches.
+    """
+    if out.strip() == "TIMEOUT":
+        return f"{stage} timed out"
+    return f"{stage} failed: " + "\n".join(out.splitlines()[-tail:])
+
+
 def _make_result_fail(name, errors, warnings, stage_times) -> dict:
     return {
         "geometry": name, "success": False,
@@ -176,9 +191,7 @@ def _run_gmsh_direct(stl_path: Path) -> dict:
         )
         stage_times["gmsh_to_foam"] = round(time.perf_counter() - t0, 2)
         if rc_ != 0:
-            errors.append(
-                "gmshToFoam failed: " + "\n".join(out.splitlines()[-15:])
-            )
+            errors.append(_stage_failure("gmshToFoam", out))
             return _make_result_fail(name, errors, warnings, stage_times)
 
         t0 = time.perf_counter()
@@ -233,7 +246,7 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
         rc_, out = rb._wsl_of_run(f"cd {linux} && blockMesh 2>&1", timeout=SNAPPY_BLOCK_TIMEOUT_S)
         stage_times["blockMesh"] = round(time.perf_counter() - t0, 2)
         if rc_ != 0:
-            errors.append("blockMesh failed: " + "\n".join(out.splitlines()[-10:]))
+            errors.append(_stage_failure("blockMesh", out, tail=10))
             return _make_result_fail(name, errors, warnings, stage_times)
 
         if mode == "expert":
@@ -257,7 +270,7 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
         )
         stage_times["snappyHexMesh"] = round(time.perf_counter() - t0, 2)
         if rc_ != 0:
-            errors.append("snappyHexMesh failed: " + "\n".join(out.splitlines()[-15:]))
+            errors.append(_stage_failure("snappyHexMesh", out))
             return _make_result_fail(name, errors, warnings, stage_times)
 
         t0 = time.perf_counter()
