@@ -1448,9 +1448,15 @@ class TetPolyDualConverter:
                 return
 
             m = len(dual_face)
-            if feat_vertex[v]:
-                # feature POINT: fan from the primal vertex (polyDualMesh's
-                # "feature point becomes a face centre")
+            if feat_vertex[v] or nf >= 3:
+                # feature POINT fan, and also any loop with 3+ feature
+                # midpoints: the fan sub-faces telescope exactly to the loop's
+                # Newell vector for ANY nf, while the arc branch's closing
+                # chords only cancel pairwise at nf == 2 (and nf < 2 does not
+                # split).  A dissolved star at a feature point contributes 3+
+                # midpoints to a non-feature survivor's merged loop, so the
+                # arc branch there produced the measured closure deficits
+                # (2.9e-1 / 3.7e-2) — see notes/poly_nonortho_reasoning.md.
                 vp = pt_vert(v)
                 for i in range(nf):
                     start, end = feat_idx[i], feat_idx[(i + 1) % nf]
