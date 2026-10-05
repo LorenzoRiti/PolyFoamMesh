@@ -1266,7 +1266,9 @@ class TetPolyDualConverter:
         # triangular.  Then the keep-best gate: a dissolved mesh that is not
         # closed, has a non-positive cell volume, or ADDS face-pyramid
         # violations over the unmerged dual is thrown away and the unmerged
-        # dual is rebuilt instead — never a worse mesh.
+        # dual is rebuilt instead.  Scope note: the gate covers closure,
+        # volume and pyramid non-regression — it does NOT compare non-ortho
+        # or skewness, so "never worse" means exactly within that scope.
         _compact_dissolved(M)
         reason = _dissolve_sanity(M)
         if reason is None:

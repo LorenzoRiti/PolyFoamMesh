@@ -735,6 +735,9 @@ def _benchmark_poly_one(
             )
             dres = conv.run()
             stage_times["dual"] = round(time.perf_counter() - t0, 2)
+            # keep-best refusals (e.g. star-dissolution closure/pyramid gate)
+            # must be visible in the record, not only in the child stdout
+            warnings.extend(getattr(dres, "warnings", []))
             if not dres.success:
                 stages["dual"] = False
                 errors.append("dual: " + "; ".join(dres.errors))

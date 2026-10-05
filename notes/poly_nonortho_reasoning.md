@@ -144,9 +144,9 @@ the MEDIAN boundary-star area (0 = off, byte-identical default).
 
 - [x] Prediction written (before any mesher change)
 - [x] A-side measured (baseline + isolation/config/localization probes)
-- [ ] Fix implemented (follow-up plan — needs human approval)
-- [ ] B-side measured
-- [ ] Verdict
+- [x] Fix implemented (follow-up plan — walk-level dissolution, opt-in, default off)
+- [x] B-side measured (refused; no metric moved)
+- [x] Verdict: KILLED — not promoted; no default changed
 
 ## B-side (with walk-level star dissolution, --poly-sliver-dissolve)
 
@@ -171,16 +171,42 @@ byte-identical to the A-side:
   venturi 54 stars, 44 vs 15 pyramids); concave_bracket had zero candidates.
 
 VERDICT: **KILLED** (measured, not promoted). The keep-best gate did its
-job � no worse mesh was ever written � but the walk-level dissolution as
-implemented does not produce closed merged cells on real multi-star
-geometry: the single-star cube fixture closes (1e-15), while batches of
-97-171 dissolved stars with mixed splice/fallback paths do not. Failure
-modes scoped for a possible follow-up: (a) multi-star splice interaction
-(several dissolved vertices per survivor, chains of feature midpoints);
-(b) the union validity gate (_loop_is_simple) is projection-based and
-blind to collinear/touching edges on non-planar stars; (c) the merged
-cell can become non-convex even when the union is simple (pyramids).
+job � no worse mesh was ever written � but the walk-level dissolution as
+implemented does not produce closed merged cells on real geometry: the
+single-star cube fixture closes (1e-15), while real batches do not.
+
+Refusal provenance: the star counts and refusal reasons above are
+transcribed from the run logs (logs are not committed); the committed
+B-side JSONs carry `warnings: []` because `_benchmark_poly_one` did not
+propagate `DualPolyResult.warnings` into the record at the time of the run
+(now fixed in the harness for future runs). What the committed artefacts
+DO prove independently: the B-side `cell_count` is identical to the A-side
+baseline on all three geometries, and a successful dissolution compacts
+absorbed cells away — so no merged mesh was ever written.
+
+Failure modes scoped for a possible follow-up:
+(a) refined root cause (code-derived, not yet empirically isolated): after
+    a splice, `feat_idx` is recomputed from the UNION of all feature
+    midpoints (`_build_boundary_collapsed`). A non-corner survivor starts
+    with ≤2 midpoints (chords cancel pairwise), but absorbing a tiny star
+    that sits at a feature point contributes 3+, and with nf ≥ 3 at a
+    non-`feat_vertex` loop the arcs' closing chords no longer cancel —
+    the emitted sub-faces' area vectors stop summing to the loop's Newell
+    vector, giving the measured closure deficits (2.9e-1 / 3.7e-2). The
+    cube fixture passes because cube corners ARE feature points (fan
+    branch, exact cancellation). This can fire on a SINGLE splice, so the
+    earlier "multi-star interaction" label was imprecise;
+(b) the union validity gate (`_loop_is_simple`) is projection-based and
+    blind to collinear/touching edges on non-planar stars;
+(c) the merged cell can become non-convex even when the union is simple
+    (pyramids: 84 vs 15 on venturi).
+
+Revival checklist (before the flag is ever promoted): gate or fix the
+nf ≥ 3 arc split at non-feature vertices; add the keep-branch test (merged
+mesh actually written with the pyramid gate active); reuse the pyramid
+baseline instead of rebuilding it twice; keep the harness `warnings`
+propagation so future B-side records are self-evidencing.
 
 - [x] Fix implemented (walk-level dissolution, opt-in, default off)
 - [x] B-side measured (refused; no metric moved)
-- [x] Verdict: KILLED � not promoted; no default changed
+- [x] Verdict: KILLED � not promoted; no default changed
