@@ -1,5 +1,10 @@
 # Hex Thin-Feature Refinement (Lane NON-ORTHO) Implementation Plan
 
+> **SUPERSEDED (2026-10-05, human decision):** the lane target moved from the
+> cfMesh hex path (external library) to OUR tet→poly engine. Do not execute
+> this plan; see `docs/superpowers/plans/2026-10-05-poly-dual-boundary-star-dissolution.md`
+> and `notes/poly_nonortho_reasoning.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement the opt-in `thin_feature_refinement` fix predicted in `notes/non-ortho_reasoning.md` — feature-keyed `objectRefinements` boxes that resolve sub-cell thin features in the hex/cfMesh path — and measure it A/B against the recorded baseline. No default changes.
