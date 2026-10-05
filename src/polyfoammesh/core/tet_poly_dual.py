@@ -1176,6 +1176,79 @@ class TetPolyDualConverter:
     # P5b: collapsed boundary dual faces (polyDualMesh semantics)
     # ------------------------------------------------------------------
 
+    def _walk_boundary_vertex(
+        self, P, xyz, pt_face, pt_edge, vert_out, v, e0,
+    ) -> tuple[list[int], list[int], list[int]]:
+        """Rotational walk around boundary vertex v through its incident
+        boundary-triangle centroids; returns (dual_face, face_patch, feat_idx).
+        `e0` is the starting boundary edge id. Raises on a non-manifold or
+        non-terminating walk (same checks as before)."""
+        n_int_primal = P.n_int_primal
+        bnd_tri = P.bnd_tri
+        fe_all = P.face_edge
+        pob_l = P.patch_of_bnd
+        feat_edge = P.feat_edge
+        bnd_e_faces = P.bnd_e_faces
+        guard = 4 * len(bnd_e_faces) + 4
+
+        bis0 = bnd_e_faces.get(e0)
+        if bis0 is None or len(bis0) != 2:
+            raise RuntimeError(
+                f"Non-manifold boundary edge at vertex {v} "
+                f"({0 if bis0 is None else len(bis0)} incident boundary "
+                "faces, expected 2) — the input surface is not a closed "
+                "2-manifold."
+            )
+        cur_bi = bis0[0]
+        cur_edge = e0
+        dual_face: list[int] = []
+        face_patch: list[int] = []   # patch of each face-centroid entry
+        feat_idx: list[int] = []     # positions of feature midpoints
+        while True:
+            vs = bnd_tri[cur_bi].tolist()
+            dual_face.append(pt_face(n_int_primal + cur_bi))
+            face_patch.append(int(pob_l[cur_bi]))
+            c = vs.index(v)
+            fe = fe_all[n_int_primal + cur_bi]
+            e_next = int(fe[c])       # edge (v_c, v_c+1)
+            e_prev = int(fe[c - 1])   # edge (v_c-1, v_c)
+            if cur_edge not in (e_next, e_prev):
+                raise RuntimeError(
+                    f"Boundary walk desync at vertex {v} (face {cur_bi})"
+                )
+            new_edge = e_next if cur_edge == e_prev else e_prev
+            if feat_edge[new_edge]:
+                dual_face.append(pt_edge(new_edge))
+                face_patch.append(-1)
+                feat_idx.append(len(dual_face) - 1)
+            if new_edge == e0:
+                break
+            bis = bnd_e_faces.get(new_edge)
+            if bis is None or len(bis) != 2:
+                raise RuntimeError(
+                    f"Non-manifold boundary edge at vertex {v} — the input "
+                    "surface is not a closed 2-manifold."
+                )
+            cur_bi = bis[0] if bis[1] == cur_bi else bis[1]
+            cur_edge = new_edge
+            if len(dual_face) > guard:
+                raise RuntimeError(
+                    f"Boundary walk around vertex {v} did not terminate."
+                )
+
+        # orient outward (away from the dual cell of v)
+        ref = vert_out.get(v)
+        if ref is None or float(np.linalg.norm(ref)) < 1e-300:
+            raise RuntimeError(
+                f"Boundary vertex {v} has no outward reference normal."
+            )
+        if _newell_dot(xyz, dual_face, ref) < 0.0:
+            dual_face.reverse()
+            face_patch.reverse()
+            m = len(dual_face) - 1
+            feat_idx = [m - i for i in reversed(feat_idx)]
+        return dual_face, face_patch, feat_idx
+
     def _build_boundary_collapsed(
         self, P, xyz, pt_face, pt_edge, pt_vert, base_l,
         bnd_by_patch, bown_by_patch,
@@ -1199,11 +1272,7 @@ class TetPolyDualConverter:
         side of a seam.
         """
         n_pi = P.n_pi
-        n_int_primal = P.n_int_primal
         bnd_tri_l = P.bnd_tri.tolist()
-        fe_bnd = P.face_edge[P.bnd_face_ids].tolist()
-        pob_l = P.patch_of_bnd.tolist()
-        feat_edge = P.feat_edge
         feat_vertex = P.feat_vertex
         bnd_e_faces = P.bnd_e_faces
         uniq = P.uniq_key
@@ -1229,68 +1298,13 @@ class TetPolyDualConverter:
                 else:
                     vert_out[v] = nrm.copy()
 
-        guard = 4 * len(bnd_e_faces) + 4
         for n_done, v in enumerate(sorted(vert_edges)):
             if n_done % 4096 == 0:
                 time.sleep(0)  # release the GIL — the Qt UI thread starves otherwise
-            eis = vert_edges[v]
-            e0 = eis[0]
-            bis0 = bnd_e_faces.get(e0)
-            if bis0 is None or len(bis0) != 2:
-                raise RuntimeError(
-                    f"Non-manifold boundary edge at vertex {v} "
-                    f"({0 if bis0 is None else len(bis0)} incident boundary "
-                    "faces, expected 2) — the input surface is not a closed "
-                    "2-manifold."
-                )
-            cur_bi = bis0[0]
-            cur_edge = e0
-            dual_face: list[int] = []
-            face_patch: list[int] = []   # patch of each face-centroid entry
-            feat_idx: list[int] = []     # positions of feature midpoints
-            while True:
-                vs = bnd_tri_l[cur_bi]
-                dual_face.append(pt_face(n_int_primal + cur_bi))
-                face_patch.append(pob_l[cur_bi])
-                c = vs.index(v)
-                fe = fe_bnd[cur_bi]
-                e_next = int(fe[c])       # edge (v_c, v_c+1)
-                e_prev = int(fe[c - 1])   # edge (v_c-1, v_c)
-                if cur_edge not in (e_next, e_prev):
-                    raise RuntimeError(
-                        f"Boundary walk desync at vertex {v} (face {cur_bi})"
-                    )
-                new_edge = e_next if cur_edge == e_prev else e_prev
-                if feat_edge[new_edge]:
-                    dual_face.append(pt_edge(new_edge))
-                    face_patch.append(-1)
-                    feat_idx.append(len(dual_face) - 1)
-                if new_edge == e0:
-                    break
-                bis = bnd_e_faces.get(new_edge)
-                if bis is None or len(bis) != 2:
-                    raise RuntimeError(
-                        f"Non-manifold boundary edge at vertex {v} — the input "
-                        "surface is not a closed 2-manifold."
-                    )
-                cur_bi = bis[0] if bis[1] == cur_bi else bis[1]
-                cur_edge = new_edge
-                if len(dual_face) > guard:
-                    raise RuntimeError(
-                        f"Boundary walk around vertex {v} did not terminate."
-                    )
-
-            # orient outward (away from the dual cell of v)
-            ref = vert_out.get(v)
-            if ref is None or float(np.linalg.norm(ref)) < 1e-300:
-                raise RuntimeError(
-                    f"Boundary vertex {v} has no outward reference normal."
-                )
-            if _newell_dot(xyz, dual_face, ref) < 0.0:
-                dual_face.reverse()
-                face_patch.reverse()
-                m = len(dual_face) - 1
-                feat_idx = [m - i for i in reversed(feat_idx)]
+            e0 = vert_edges[v][0]
+            dual_face, face_patch, feat_idx = self._walk_boundary_vertex(
+                P, xyz, pt_face, pt_edge, vert_out, v, e0,
+            )
 
             cell = base_l[v]
 
