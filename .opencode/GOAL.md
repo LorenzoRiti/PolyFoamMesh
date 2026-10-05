@@ -349,3 +349,46 @@ ogni numero dichiarato ha una misura dietro e i limiti sono scritti
 nell'handoff §5 (gap aspect cilindro, soglia RAM misurata solo su hex,
 validazioni pesanti solo WSL). Leggi §5 prima di decidere: se uno di quei
 limiti ti è inaccettabile sul pubblico, quello — e solo quello — blocca.
+
+## Avanzamento 2026-10-05 — baseline vs snappy + prima lane NON-ORTHO
+
+Baseline ufficiale full-tier locale (10 geometrie × 5 runner = 50 record,
+commit `b1bc71f`, `benchmarks/results/LEADERBOARD.md`): pass rate **hex 5/10 ·
+poly 4/10 · gmsh_direct 5/10 · snappy_base 6/10 · snappy_expert 6/10**.
+Nessun runner passa dirty_cad (0/5) né mini_valve (0/5); snappy vince 5 celle
+su 10 (expert 3, base 2), hex 3 (cylinder, venturi, multi_inlet).
+
+Top 3 gap (`benchmarks/results/GAP_ANALYSIS.md`, commit `78cff6f`, 31 righe):
+1. **`max_non_ortho`** — 15 righe su 31 (48%), 8 geometrie su 10, e contiene
+   TUTTE e 9 le nostre threshold-miss di qualità (hex 4, poly 3, gmsh 2):
+   è l'unico cluster che decide il gate.
+2. **`max_skewness` relativo** — 6 righe / 4 geometrie; le due nostre righe
+   di skew che falliscono il gate cadono sempre dentro una miss non-ortho,
+   quindi qui restano solo perdite relative (es. groove1 poly 3.67 vs 0.65).
+3. **`cells_produced` = 0** — 7 righe / 3 geometrie ma quasi tutte condivise
+   (dirty_cad 0/5, mini_valve 0/5 anche per snappy; l'unica competitiva è
+   multi_inlet, dove hex vince). Più 3 timeout — tutti di snappy, mai nostri.
+
+Lane scelta: **NON-ORTHO**. Primo bersaglio: **cluster hex** — groove1 75.98,
+slot1 77.28, thin_gap 73.75, mini_valve 72.58 contro gate 70, mentre snappy
+sta a 39.40–42.71 sulle stesse geometrie. Scelta perché 4 gate-flip in un solo
+percorso (vs 1 riga del peggio assoluto venturi/poly 146.41), tutte e 4
+falloano **solo** `non_ortho_max` → un solo fix porta hex 5/10 → 9/10, sopra
+il 6/10 di entrambi gli snappy; 3 delle 4 righe sono fast tier.
+
+Predizione (scritta PRIMA di ogni esperimento in
+`notes/non-ortho_reasoning.md`): il percorso hex emette un meshDict con solo
+`maxCellSize/minCellSize` — nessuna direttiva di raffinamento agganciata alla
+feature sottile — quindi dove lo scanalo/slot è più sottile di `max_cell`
+(0.85 / 0.32 / 0.43 / 0.27 celle across in groove1/slot1/thin_gap/mini_valve)
+una cella copre entrambe le pareti e la proiezione produce le facce >70° che
+checkMesh riporta. Con un fix dietro flag opt-in `thin_feature_refinement`
+(default off) groove1 hex deve scendere **75.98 → 50–68 (<70)** a costo ≤3×
+celle e ≤2× tempo, con cylinder/cube_duct/venturi **identici** (la direttiva
+non si attiva). A-side misurata e registrata:
+`comparison_20261005T123603.json` (groove1/slot1/thin_gap) +
+`comparison_20261005T123710.json` (mini_valve) — tutte e 4 falliscono solo
+`non_ortho_max`, coerente con il baseline.
+
+Il fix è un **piano da approvare** (follow-up): in questo turno ZERO modifiche
+al mesher, nessun default cambiato; si ferma qui e si riporta all'umano.
