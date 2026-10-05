@@ -929,6 +929,139 @@ def test_guided_filter_matches_reference_and_preserves_ridge():
                                np.ones(4), atol=1e-12)
 
 
+# ---------------------------------------------------------------------------
+# min_base_face_fraction: opt-in base-face size filter (default off)
+# ---------------------------------------------------------------------------
+
+def _boundary_face_sizes(points, faces, n_int):
+    """sqrt(Newell area) of every boundary face — an independent
+    re-implementation of the metric the filter uses (computed straight
+    from the polygon, not via the engine's helper)."""
+    out = []
+    for bi in range(len(faces) - n_int):
+        p = points[np.asarray(faces[n_int + bi])]
+        nv = 0.5 * np.cross(p, np.roll(p, -1, axis=0)).sum(axis=0)
+        out.append(float(np.sqrt(np.linalg.norm(nv))))
+    return out
+
+
+def test_min_base_face_fraction_default_off():
+    """Default (argument absent) must be exactly `0.0`: no face is
+    excluded (`n_excluded_small_faces == 0`) and the written mesh is
+    byte-identical to the control run that passes `0.0` explicitly."""
+    case_default = _build_dual_case(WORK_ROOT / "cube_mbf_default")
+    case_control = _build_dual_case(WORK_ROOT / "cube_mbf_control")
+    res_default = PolyBoundaryLayerEngine(case_default, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+    )
+    res_control = PolyBoundaryLayerEngine(case_control, log=lambda m: None).run(
+        n_layers=2, first_height=0.01, growth_rate=1.2, apply_to_all=True,
+        min_base_face_fraction=0.0,
+    )
+    assert res_default.success, res_default.errors
+    assert res_control.success, res_control.errors
+    assert res_default.n_excluded_small_faces == 0
+    assert res_control.n_excluded_small_faces == 0
+    assert res_default.n_prism_cells == res_control.n_prism_cells
+    poly_d = case_default / "constant" / "polyMesh"
+    poly_c = case_control / "constant" / "polyMesh"
+    files_d = {p.name: p.read_bytes() for p in sorted(poly_d.iterdir()) if p.is_file()}
+    files_c = {p.name: p.read_bytes() for p in sorted(poly_c.iterdir()) if p.is_file()}
+    assert files_d.keys() == files_c.keys()
+    assert files_d == files_c, "default-off run must be byte-identical to control"
+
+
+def test_min_base_face_fraction_excludes_crafted_tiny_face():
+    """A boundary face ~100x smaller (linear size) than the rest of the
+    selection is dropped at `min_base_face_fraction=0.2`, is reported in
+    `n_excluded_small_faces`, and the run still validates and writes a
+    closed, positive-volume mesh (the terminator band around the dropped
+    face is handled by `_build` — no auto-close, every cell stays closed).
+
+    The tiny face is crafted cheaply on the existing dual-cube fixture: a
+    small corner triangle is cut off boundary face 0 (the cut points are
+    inserted into the two neighbouring faces so the edge bookkeeping stays
+    manifold), leaving a face of size median/100 plus the rest of the
+    original face."""
+    case = _build_dual_case(WORK_ROOT / "cube_mbf_tiny")
+    poly = case / "constant" / "polyMesh"
+    points, faces, owner, neigh, patches = fio.read_polymesh(poly)
+    n_int = len(neigh)
+    assert len(patches) == 1  # single 'wall' patch: appending/shifting is trivial
+    median_size = float(np.median(_boundary_face_sizes(points, faces, n_int)))
+
+    # --- craft: cut a corner triangle of size median/100 off face 0 -------
+    target = median_size / 100.0
+    bi = n_int
+    f = list(faces[bi])
+    v0, v1, vk = points[f[0]], points[f[1]], points[f[-1]]
+    u1 = (v1 - v0) / np.linalg.norm(v1 - v0)
+    uk = (vk - v0) / np.linalg.norm(vk - v0)
+    sin_th = float(np.linalg.norm(np.cross(u1, uk)))  # |sin| of the corner angle
+    a = target / np.sqrt(sin_th / 2.0)  # tri area = a^2 sin(theta)/2
+    p1i, p2i = len(points), len(points) + 1
+    points2 = np.vstack([points, v0 + a * u1, v0 + a * uk])
+    tri = [f[0], p1i, p2i]            # the crafted tiny face
+    rest = [p1i] + f[1:] + [p2i]      # the original face, minus its corner
+    faces2 = faces[:bi] + [tri, rest] + faces[bi + 1:]
+    owner2 = np.concatenate(
+        [owner[:bi], owner[bi:bi + 1], owner[bi:bi + 1], owner[bi + 1:]]
+    )
+    # manifold edge bookkeeping: insert each cut point into the face on the
+    # other side of the cut edge (the split face itself already has it)
+    for a_, b_, pt in ((f[0], f[1], p1i), (f[-1], f[0], p2i)):
+        for j, g in enumerate(faces2):
+            gg, n = list(g), len(g)
+            for i in range(n):
+                if ((gg[i] == a_ and gg[(i + 1) % n] == b_)
+                        or (gg[i] == b_ and gg[(i + 1) % n] == a_)):
+                    faces2[j] = gg[:i + 1] + [pt] + gg[i + 1:]
+                    break
+            else:
+                continue
+            break
+        else:
+            raise AssertionError("neighbour across the cut edge not found")
+    patches2 = [dict(p) for p in patches]
+    for p in patches2:
+        if p["startFace"] > bi:
+            p["startFace"] += 1
+        if p["startFace"] <= bi < p["startFace"] + p["nFaces"] + 1:
+            p["nFaces"] += 1  # 2 faces replace 1
+    fio.write_polymesh(poly, points2, faces2, owner2, neigh, patches2)
+
+    # the crafted mesh must still be a valid BL input (closed, positive)
+    p2, f2, o2, n2, pa2 = fio.read_polymesh(poly)
+    ni2 = len(n2)
+    nc2 = int(max(o2.max(), n2.max())) + 1
+    vols, closure, scale = _cell_metrics(p2, f2, o2, n2, nc2, ni2)
+    rel = np.linalg.norm(closure, axis=1) / np.maximum(scale, 1e-300)
+    assert np.all(rel < 1e-8), f"crafted input not closed: {int((rel >= 1e-8).sum())}"
+    assert np.all(vols > 0.0)
+    sizes2 = _boundary_face_sizes(p2, f2, ni2)
+    med2 = float(np.median(sizes2))
+    assert sizes2[0] < 0.2 * med2, "crafted face must sit under the 0.2 cutoff"
+    assert 50.0 < med2 / sizes2[0] < 500.0, med2 / sizes2[0]  # ~100x smaller
+
+    logs: list[str] = []
+    res = PolyBoundaryLayerEngine(case, log=logs.append).run(
+        n_layers=2, first_height=1e-3, growth_rate=1.2, apply_to_all=True,
+        min_base_face_fraction=0.2,
+    )
+    assert res.success, (res.errors, res.warnings)
+    assert res.n_excluded_small_faces >= 1
+    assert any("small base faces" in m for m in logs), logs
+    _mesh_ok(poly)
+
+
+def test_min_base_face_fraction_rejects_negative():
+    case = _build_dual_case(WORK_ROOT / "cube_mbf_neg")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    with pytest.raises(ValueError):
+        eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                apply_to_all=True, min_base_face_fraction=-0.01)
+
+
 def test_bl_normal_method_guided_succeeds_on_healthy_cube():
     """'guided' must build a valid BL mesh on the healthy cube with the
     same topology (prism count) as area_weighted."""
