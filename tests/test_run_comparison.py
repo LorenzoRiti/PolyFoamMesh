@@ -71,3 +71,62 @@ def test_record_is_json_serialisable() -> None:
     rec = rc.make_record("g", "hex", success=True, wall_time_s=0.1,
                          metrics=_metrics(), errors=[], warnings=[])
     json.dumps(rec)
+
+
+def test_stage_failure_normalises_timeout_sentinel() -> None:
+    # _wsl_of_run returns the bare sentinel "TIMEOUT" on a stage-budget
+    # overrun; without normalisation the composed string was
+    # "snappyHexMesh failed: TIMEOUT", which matches neither "FATAL" nor
+    # "timed out" in make_record's predicates (Task 2 review finding).
+    assert rc._stage_failure("snappyHexMesh", "TIMEOUT") == "snappyHexMesh timed out"
+    assert rc._stage_failure("blockMesh", "  TIMEOUT \n") == "blockMesh timed out"
+    # Non-timeout output keeps the original "failed:" wording/tail.
+    assert (
+        rc._stage_failure("snappyHexMesh", "line1\nline2\nFOAM FATAL IO ERROR")
+        == "snappyHexMesh failed: line1\nline2\nFOAM FATAL IO ERROR"
+    )
+    assert (
+        rc._stage_failure("blockMesh", "a\nb\nc", tail=2)
+        == "blockMesh failed: b\nc"
+    )
+
+
+def test_snappy_stage_timeout_sentinel_marks_record_timed_out(
+    tmp_path, monkeypatch
+) -> None:
+    """End-to-end producer path: TIMEOUT sentinel -> timed_out record.
+
+    Replays the thin_gap/snappy_expert stage timeout (snappyHexMesh hits its
+    stage budget, _wsl_of_run returns (-1, "TIMEOUT")) without WSL, then
+    normalises the bench dict exactly as run_single does.
+    """
+    import benchmarks.run_benchmarks as rb
+    import benchmarks.snappy_baseline as sb
+
+    def fake_prepare(stl_path, pipeline="hex", require_watertight=True):
+        return None, {
+            "name": stl_path.stem, "meshes": [], "bbox_dim": 1.0,
+            "max_cell": 0.1, "min_cell": 0.01, "size_warnings": [],
+        }
+
+    def fake_wsl(cmd, timeout=180):
+        if "snappyHexMesh" in cmd:
+            return -1, "TIMEOUT"  # stage budget exhausted (SNAPPY_MESH_TIMEOUT_S)
+        return 0, ""
+
+    monkeypatch.setattr(rb, "_prepare_geometry", fake_prepare)
+    monkeypatch.setattr(rb, "_wsl_of_run", fake_wsl)
+    monkeypatch.setattr(rb, "WORK_ROOT", tmp_path)
+    monkeypatch.setattr(sb, "prepare_snappy_case", lambda *a, **k: None)
+
+    bench = rc._run_snappy(tmp_path / "thin_gap.stl", "expert")
+
+    assert bench["success"] is False
+    assert bench["errors"] == ["snappyHexMesh timed out"]
+
+    rec = rc._record_from_bench("thin_gap", "snappy_expert", bench)
+    assert any("timed out" in e.lower() for e in rec["errors"])
+    assert rec["timed_out"] is True
+    assert "timed_out" in rec["failed_thresholds"]
+    assert "fatal" in rec["failed_thresholds"]
+    assert rec["thresholds_pass"] is False
