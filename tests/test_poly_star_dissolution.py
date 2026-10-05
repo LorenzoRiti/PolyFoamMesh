@@ -84,6 +84,33 @@ def test_splice_two_squares_sharing_an_edge():
     assert abs(_newell_area(xyz, merged) - 2.0) < 1e-9
 
 
+def test_splice_handles_wrap_around_chain():
+    # same two squares, but `a` starts mid-shared-chain: the (1,2) chain
+    # straddles a[0]/a[-1] and the linear run-scan must not miss it
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [2.0, 0.0, 0.0], [2.0, 1.0, 0.0],
+    ], dtype=float)
+    a = [2, 3, 0, 1]        # left square rotated: shared chain wraps the seam
+    b = [1, 4, 5, 2]        # right square (area 1), shared chain (2,1)
+    merged = _splice_boundary_loops(a, b, xyz)
+    assert merged is not None
+    assert len(set(merged)) == 6
+    assert abs(_newell_area(xyz, merged) - 2.0) < 1e-9
+
+
+def test_splice_rejects_overlapping_union():
+    # vertex 6 pokes into the right square: the union is not a simple polygon,
+    # so its Newell area is not area(a) + area(b)
+    xyz = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [2.0, 0.0, 0.0], [2.0, 1.0, 0.0], [2.0, 0.5, 0.0],
+    ], dtype=float)
+    a = [0, 1, 2, 6]
+    b = [1, 4, 5, 2]
+    assert _splice_boundary_loops(a, b, xyz) is None
+
+
 def test_splice_rejects_disjoint_loops():
     xyz = np.array([
         [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],

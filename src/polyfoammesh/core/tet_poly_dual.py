@@ -2214,8 +2214,25 @@ def _newell_area(xyz, ids) -> float:
 
 def _splice_boundary_loops(a, b, xyz):
     """Union of two outward polygons sharing a consecutive, reversed chain."""
-    # find the longest consecutive run of a that appears reversed in b
+    # never raise on malformed ids
+    n_pts = len(xyz)
+    for i in a:
+        if not 0 <= i < n_pts:
+            return None
+    for i in b:
+        if not 0 <= i < n_pts:
+            return None
+    a = list(a)
     set_b = set(b)
+    # the run-scan below is linear, so a shared chain straddling a[0]/a[-1]
+    # would be split into two short runs; rotate to start on a vertex outside
+    # b (a chain cannot cross that vertex).  If every vertex is in b, no
+    # rotation exists and the `len(pos_a) == na` guard below rejects it.
+    for rot in range(len(a)):
+        if a[rot] not in set_b:
+            a = a[rot:] + a[:rot]
+            break
+    # find the longest consecutive run of a that appears reversed in b
     runs, cur = [], []
     for x in a:
         if x in set_b:
