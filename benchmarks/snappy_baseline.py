@@ -182,6 +182,11 @@ def build_snappy_dict(
         f"    expansionRatio {expansion};",
         f"    finalLayerThickness {final_t};",
         f"    minThickness {min_t};",
+        # OF v2512 layerParameters.C reads these via meshRefinement::get
+        # (FOAM FATAL IO ERROR: Entry 'nGrow'/'featureAngle' not found in
+        # dictionary addLayersControls); tutorial values: nGrow 0, featureAngle 60.
+        "    nGrow 0;",
+        "    featureAngle 60;",
         "    nSmoothSurfaceNormals 1;",
         "    nSmoothNormals 3;",
         "    nSmoothThickness 10;",
