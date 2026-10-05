@@ -326,6 +326,7 @@ def run_single(
     poly_dual_axis: bool = False,
     poly_dual_planar_fix: str = "none",
     poly_dual_worst_aspect: float = 0.0,
+    poly_merge_repair: bool = False,
 ) -> int:
     import benchmarks.run_benchmarks as rb
 
@@ -349,6 +350,7 @@ def run_single(
             dual_axis=poly_dual_axis,
             dual_planar_fix=poly_dual_planar_fix,
             dual_worst_aspect=poly_dual_worst_aspect,
+            merge_repair=poly_merge_repair,
         )
         rec = _record_from_bench(name, runner, bench)
     elif runner == "gmsh_direct":
@@ -393,6 +395,7 @@ def run_parent(
     poly_dual_axis: bool = False,
     poly_dual_planar_fix: str = "none",
     poly_dual_worst_aspect: float = 0.0,
+    poly_merge_repair: bool = False,
     _child_out_dir: Path | None = None,
     _write_results: bool = True,
 ) -> tuple[list[dict], int]:
@@ -432,6 +435,10 @@ def run_parent(
                 cmd += ["--poly-dual-planar-fix", str(poly_dual_planar_fix)]
             if poly_dual_worst_aspect > 0.0:
                 cmd += ["--poly-dual-worst-aspect", str(poly_dual_worst_aspect)]
+            # Post-BL concave-cell merge repair: opt-in, default off — append
+            # only when requested so a default run's child cmd is unchanged.
+            if poly_merge_repair:
+                cmd.append("--poly-merge-repair")
             logger.info("RUN %s / %s (cap %ds)", spec.name, runner, RUN_TIMEOUT_S)
             try:
                 proc = subprocess.run(cmd, timeout=RUN_TIMEOUT_S, capture_output=True, text=True)
@@ -499,6 +506,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poly-dual-worst-aspect", type=float, default=0.0,
                    help="opt-in: aspect-ratio threshold that makes the dual "
                         "smoother target the worst cells (0 = off)")
+    p.add_argument("--poly-merge-repair", action="store_true",
+                   help="opt-in: run the concave-cell merge repair on the "
+                        "polyMesh after the BL stage (default: off)")
     return p
 
 
@@ -523,6 +533,7 @@ def main(args: list[str] | None = None) -> int:
                 poly_dual_axis=opts.poly_dual_axis,
                 poly_dual_planar_fix=opts.poly_dual_planar_fix,
                 poly_dual_worst_aspect=opts.poly_dual_worst_aspect,
+                poly_merge_repair=opts.poly_merge_repair,
             )
         except ValueError as exc:
             logger.error("%s", exc)
@@ -536,6 +547,7 @@ def main(args: list[str] | None = None) -> int:
         poly_dual_axis=opts.poly_dual_axis,
         poly_dual_planar_fix=opts.poly_dual_planar_fix,
         poly_dual_worst_aspect=opts.poly_dual_worst_aspect,
+        poly_merge_repair=opts.poly_merge_repair,
     )
     return exit_code
 

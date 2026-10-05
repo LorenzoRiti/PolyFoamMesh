@@ -630,6 +630,7 @@ def _benchmark_poly_one(
     dual_axis: bool = False,
     dual_planar_fix: str = "none",
     dual_worst_aspect: float = 0.0,
+    merge_repair: bool = False,
 ) -> dict:
     """Run the GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh pipeline.
 
@@ -645,6 +646,11 @@ def _benchmark_poly_one(
     The ``dual_*`` options are the harness opt-ins for the dual smoother /
     non-planar-face fix (``--poly-dual-*``); their defaults keep the
     converter's legacy behaviour.
+
+    ``merge_repair`` (harness ``--poly-merge-repair``, default False) runs the
+    post-BL concave-cell merge repair on the built polyMesh between the BL and
+    checkMesh stages. It is purely additive: any failure is recorded as a
+    warning and the mesh built by the BL is kept.
     """
     name = stl_path.stem
     logger.info("=" * 60)
@@ -811,6 +817,49 @@ def _benchmark_poly_one(
         except Exception as exc:
             stages["bl"] = False
             warnings.append(f"BL raised: {exc}")
+
+        # --- stage 4b: opt-in post-BL concave-cell merge repair -------------
+        # Opt-in (harness --poly-merge-repair), default off. Merging AFTER the
+        # BL is built (same rationale as the production post-BL repair in
+        # openfoam_runner): the merge selection then sees the real prism
+        # geometry it sits next to. `repair_concave_cells_if_safe` keeps the
+        # ORIGINAL mesh unless its pyramid/skew/volume gate passes, so a
+        # refused repair is a no-op. Everything here is best-effort: a failure
+        # must never fail the run (the mesh built by the BL is kept).
+        if merge_repair:
+            t0 = time.perf_counter()
+            try:
+                import polyfoammesh.core.foam_mesh_io as fio
+                from polyfoammesh.core.poly_cell_merge import (
+                    repair_concave_cells_if_safe,
+                )
+
+                poly_dir = case_dir / "constant" / "polyMesh"
+                pts, fcs, own, nbr, patches = fio.read_polymesh(poly_dir)
+                fcs = [list(f) for f in fcs]
+                n_int_m = len(nbr)
+                n_cells_m = int(max(own.max(), nbr.max())) + 1
+                fcs2, own2, nbr2, _n_int2, _n_cells2, patches2, rep = (
+                    repair_concave_cells_if_safe(
+                        pts, fcs, own, nbr, n_int_m, n_cells_m, patches,
+                    )
+                )
+                if rep.get("applied"):
+                    fio.write_polymesh(poly_dir, pts, fcs2, own2, nbr2, patches2)
+                n_concave = int(rep.get("concave_cells", 0))
+                n_fixed = (
+                    n_concave - int(rep.get("candidates_unresolved", 0))
+                    if rep.get("applied") else 0
+                )
+                summary = f"merge repair: fixed {n_fixed} of {n_concave} concave cells"
+                if not rep.get("applied"):
+                    summary += f" ({rep.get('reason', 'not applied')})"
+                warnings.append(summary)
+                logger.info("  %s", summary)
+            except Exception as exc:
+                warnings.append(f"merge repair failed: {exc} (mesh kept as built)")
+                logger.warning("  merge repair failed: %s", exc)
+            stage_times["merge_repair"] = round(time.perf_counter() - t0, 2)
 
         # --- stage 5: checkMesh via WSL -------------------------------------
         t0 = time.perf_counter()
