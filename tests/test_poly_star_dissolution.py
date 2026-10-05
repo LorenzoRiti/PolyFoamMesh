@@ -284,3 +284,69 @@ def test_dissolution_pyramid_gate_refuses_forced_merge(tmp_path, monkeypatch):
     assert res.success, res.errors
     assert res.n_dissolved_stars == 0
     assert any("pyramid" in w for w in res.warnings)
+
+
+# ---------------------------------------------------------------------------
+# converter wiring: smoother opt-ins (compactness / axis balance / worst
+# aspect) are OFF by default and off means byte-identical
+# ---------------------------------------------------------------------------
+
+def _poly_bytes(case_dir: Path) -> dict[str, bytes]:
+    poly = case_dir / "constant" / "polyMesh"
+    return {p.name: p.read_bytes() for p in sorted(poly.iterdir())}
+
+
+def test_smooth_optins_default_off_is_byte_identical(tmp_path):
+    """`smooth_compactness=False, smooth_axis_balance=False,
+    smooth_worst_aspect=0.0` (and the absent defaults) must leave the
+    written polyMesh byte-identical — the converter may only forward these
+    to smooth_dual_mesh, whose own defaults are the same False/False/0.0."""
+    pts, tets = _cube_case_points_tets()
+    kw: dict = {"log": lambda _m: None}
+    case_default = build_tet_case(tmp_path / "default", pts, tets)
+    case_explicit = build_tet_case(tmp_path / "explicit", pts, tets)
+
+    res_default = tpd.TetPolyDualConverter(case_default, **kw).run()
+    res_explicit = tpd.TetPolyDualConverter(
+        case_explicit, smooth_compactness=False, smooth_axis_balance=False,
+        smooth_worst_aspect=0.0, **kw,
+    ).run()
+    assert res_default.success, res_default.errors
+    assert res_explicit.success, res_explicit.errors
+
+    got_default, got_explicit = _poly_bytes(case_default), _poly_bytes(case_explicit)
+    assert got_default, "the converter wrote no polyMesh files"
+    assert sorted(got_default) == sorted(got_explicit)
+    for name in sorted(got_default):
+        assert got_default[name] == got_explicit[name], name
+
+
+def test_smooth_worst_aspect_negative_raises():
+    with pytest.raises(ValueError, match="smooth_worst_aspect"):
+        tpd.TetPolyDualConverter(Path("."), smooth_worst_aspect=-0.1)
+
+
+@pytest.mark.parametrize("optin", [
+    {"smooth_compactness": True},
+    {"smooth_axis_balance": True},
+    {"smooth_worst_aspect": 1.5},
+])
+def test_smooth_optin_reaches_the_smoother(tmp_path, optin):
+    """Wiring sanity: the flag has to actually arrive at smooth_dual_mesh —
+    on the cube fixture with smooth_iters=3 the opted-in run must write a
+    different polyMesh than the default one (measured 2026-10-06: the
+    points file differs for all three opt-ins; the explicit-off run above
+    is byte-identical, so any difference comes from the flag alone)."""
+    pts, tets = _cube_case_points_tets()
+    kw: dict = {"log": lambda _m: None, "smooth_iters": 3}
+    case_base = build_tet_case(tmp_path / "base", pts, tets)
+    case_optin = build_tet_case(tmp_path / "optin", pts, tets)
+    res_base = tpd.TetPolyDualConverter(case_base, **kw).run()
+    res_optin = tpd.TetPolyDualConverter(case_optin, **kw, **optin).run()
+    assert res_base.success, res_base.errors
+    assert res_optin.success, res_optin.errors
+
+    got_base, got_optin = _poly_bytes(case_base), _poly_bytes(case_optin)
+    assert sorted(got_base) == sorted(got_optin)
+    changed = [n for n in sorted(got_base) if got_base[n] != got_optin[n]]
+    assert changed, f"{optin} left every polyMesh file byte-identical"
