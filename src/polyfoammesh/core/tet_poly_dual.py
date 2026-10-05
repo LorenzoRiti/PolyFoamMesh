@@ -119,6 +119,12 @@ class DualPolyResult:
     defect_breakdown: dict[str, int] = field(default_factory=dict)
     stage_times: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    # Non-fatal outcomes (e.g. an opt-in pass that was refused and rebuilt
+    # away). Never affects `success`.
+    warnings: list[str] = field(default_factory=list)
+    # How many tiny boundary stars the opt-in star-dissolution pass actually
+    # merged (0 whenever the pass is off, unused or refused).
+    n_dissolved_stars: int = 0
 
     # Boundary-layer outcome, attached by the poly worker after the optional
     # BL pass. Declared here so consumers can rely on the fields existing.
@@ -171,6 +177,7 @@ class TetPolyDualConverter:
         collapse_smooth_edges: bool = False,
         boundary_feature_angle: float = 90.0,
         collapse_volume_tolerance: float = 0.05,
+        dissolve_tiny_boundary_stars: float = 0.0,
     ):
         """
         median_faces
@@ -306,6 +313,20 @@ class TetPolyDualConverter:
             coarse mesh (raise the tolerance deliberately) or a broken walk
             (do not raise it).  Ignored when `collapse_smooth_edges` is False,
             where the tiling is exact and the tolerance stays 1e-6.
+        dissolve_tiny_boundary_stars
+            0.0 (default): off — the output is byte-identical to a converter
+            built without this argument.
+
+            > 0: opt-in star dissolution (collapse mode only).  A boundary
+            vertex whose boundary-star area is below this fraction of the
+            MEDIAN star area is merged into its largest smooth neighbour:
+            the two dual cells become one, the seam face between them is
+            dropped, and the dissolved vertex keeps emitting its own
+            boundary polygon owned by the survivor cell (removing that tiny
+            polygon too is a later step).  Only a mesh that still passes the
+            closure/positive-volume sanity check is kept; otherwise the pass
+            is refused, the unmerged dual is rebuilt and the refusal is
+            recorded in `DualPolyResult.warnings`.
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -338,6 +359,17 @@ class TetPolyDualConverter:
                 f"{collapse_volume_tolerance!r}"
             )
         self._collapse_vol_tol = float(collapse_volume_tolerance)
+        if dissolve_tiny_boundary_stars < 0.0:
+            raise ValueError(
+                "dissolve_tiny_boundary_stars must be >= 0, got "
+                f"{dissolve_tiny_boundary_stars!r}"
+            )
+        self._dissolve_stars = float(dissolve_tiny_boundary_stars)
+        if self._dissolve_stars > 0.0 and not self._collapse:
+            logger.info(
+                "tet_poly_dual: dissolve_tiny_boundary_stars ignored — the "
+                "collapsed boundary is where a dissolved star's polygon lives"
+            )
         if self._collapse:
             # Both subdivide the per-corner boundary quads that the collapsed
             # walk replaces; keeping them would emit two different boundary
@@ -500,6 +532,11 @@ class TetPolyDualConverter:
                 self._log("[poly 6/9] no concave edges to fix — wedge pass skipped")
 
         M = best
+        res.n_dissolved_stars = int(getattr(M, "n_dissolved_stars", 0))
+        dissolve_warning = getattr(M, "dissolve_warning", None)
+        if dissolve_warning:
+            res.warnings.append(dissolve_warning)
+            self._log(f"[poly 5/9] {dissolve_warning}")
         res.split_vertices = len(splits)
         res.residual_defects = int(best_defects or 0)
         res.defect_breakdown = dict(best_counts)
@@ -797,6 +834,7 @@ class TetPolyDualConverter:
         self, P, splits: dict[int, dict[int, int]],
         wedge_edges: dict[int, int] | None = None,
         ref_ctr: np.ndarray | None = None,
+        allow_dissolve: bool = True,
     ) -> SimpleNamespace:
         """Build the dual complex.
 
@@ -806,6 +844,10 @@ class TetPolyDualConverter:
         concave corner.  `ref_ctr` is the cell-centroid array of the plain
         dual (used only to orient the wedge faces); it must be provided
         whenever `wedge_edges` is.
+
+        `allow_dissolve=False` rebuilds the SAME mesh with the opt-in star
+        dissolution switched off — the keep-best fallback used when the
+        dissolved build fails its sanity check.
         """
         n_pi = P.n_pi
         median = self._median_faces
@@ -830,6 +872,24 @@ class TetPolyDualConverter:
         else:
             n_cells = n_vertex_cells
         base_l = base[:n_pi].tolist()
+
+        # ---- opt-in star dissolution (collapse mode only) ----------------
+        # Each dissolved boundary vertex hands its cell id to its survivor,
+        # so every face it owns is emitted for the survivor instead; the seam
+        # face between the pair then has owner == neighbour and is dropped
+        # below (the primal edge no longer separates two cells).  The
+        # boundary walk is NOT touched: the dissolved vertex still emits its
+        # own polygon, owned by the survivor, so the mesh stays closed.
+        dissolve: dict[int, int] = {}
+        if allow_dissolve and self._dissolve_stars > 0.0 and self._collapse:
+            dissolve = _plan_star_dissolution(P, self._dissolve_stars)
+            for v, u in dissolve.items():
+                base_l[v] = base_l[u]
+            if dissolve:
+                self._log(
+                    f"[poly 5/9] star dissolution: {len(dissolve):,} tiny "
+                    "boundary stars merged into their survivor cell"
+                )
 
         # ---- lazy dual-point allocator ----------------------------------
         # Points are materialised only when a face actually references them,
@@ -974,6 +1034,11 @@ class TetPolyDualConverter:
             sb = splits.get(vb)
             ba = base_l[va]
             bb = base_l[vb]
+            if ba == bb:
+                # Both endpoints were dissolved into the same cell: the
+                # primal edge no longer separates two cells, so no dual face
+                # is emitted for it (the two cells are glued into one).
+                continue
             if sa is None and sb is None:
                 uniform = True
                 pa = pb = None
@@ -1142,6 +1207,14 @@ class TetPolyDualConverter:
                 bown_by_patch[pi].append(base_l[x] + g)
 
         # ---- assemble in OpenFOAM order --------------------------------
+        if dissolve:
+            # A dissolved endpoint can hand the face to the pair in either
+            # order, so normalise owner < neighbour here (rewinding the loop
+            # keeps the normal pointing owner -> neighbour) before the sort.
+            for i, (o, nb) in enumerate(zip(int_own, int_nb)):
+                if o > nb:
+                    int_own[i], int_nb[i] = nb, o
+                    int_faces[i].reverse()
         io = np.array(int_own, dtype=np.int64)
         inb = np.array(int_nb, dtype=np.int64)
         if len(io) and np.any(io == inb):
@@ -1164,13 +1237,39 @@ class TetPolyDualConverter:
             )
             start += k
 
-        return SimpleNamespace(
+        M = SimpleNamespace(
             points=xyz[:n_pt], faces=faces,
             owner=np.array(out_own, dtype=np.int64),
             neigh=np.array(out_nb, dtype=np.int64),
             n_int=n_int, patches=new_patches, n_cells=n_cells,
             cell_vertex=cell_vertex,
+            n_dissolved_stars=len(dissolve),
         )
+        if not dissolve:
+            return M
+
+        # ---- star dissolution post-pass (opt-in only) --------------------
+        # Drop the points no face references any more and renumber the cell
+        # ids of the absorbed cells away, keeping owner/neighbour upper
+        # triangular.  Then the keep-best gate: a dissolved mesh that is not
+        # closed or has a non-positive cell volume is thrown away and the
+        # unmerged dual is rebuilt instead — never a worse mesh.
+        _compact_dissolved(M)
+        reason = _dissolve_sanity(M)
+        if reason is None:
+            return M
+        self._log(
+            f"[poly 5/9] star dissolution refused ({reason}) — rebuilding "
+            "without it"
+        )
+        fallback = self._build_dual(
+            P, splits, wedge_edges, ref_ctr, allow_dissolve=False,
+        )
+        fallback.dissolve_warning = (
+            f"star dissolution of {len(dissolve)} tiny boundary stars refused "
+            f"({reason}); the unmerged dual was kept"
+        )
+        return fallback
 
     # ------------------------------------------------------------------
     # P5b: collapsed boundary dual faces (polyDualMesh semantics)
@@ -2215,6 +2314,71 @@ def _plan_star_dissolution(P, threshold_fraction: float) -> dict[int, int]:
             continue
         plan[v] = max(cands, key=lambda u: areas[u])
     return plan
+
+
+def _compact_dissolved(M) -> None:
+    """Post-pass for a star-dissolution build, in place on `M`.
+
+    Drops the points no face references any more (the seam faces the
+    dissolution removed took their ring points with them) and remaps every
+    face index, then renumbers the cell ids of the absorbed cells away so the
+    mesh is `0..n_cells-1` again.  No face is added or removed here, so
+    `n_int` and the patch ranges are unchanged; the renumbering is monotone,
+    so an upper-triangular internal list stays upper-triangular.
+    """
+    # ---- points: drop the unreferenced ones, remap the face indices ----
+    used = np.zeros(len(M.points), dtype=bool)
+    for f in M.faces:
+        used[f] = True
+    keep = np.flatnonzero(used)
+    if len(keep) != len(M.points):
+        remap = np.full(len(M.points), -1, dtype=np.int64)
+        remap[keep] = np.arange(len(keep), dtype=np.int64)
+        for f in M.faces:
+            f[:] = [int(remap[i]) for i in f]
+        M.points = M.points[keep]
+
+    # ---- cells: compact the ids of the absorbed cells away -------------
+    cells = np.unique(np.concatenate([M.owner, M.neigh]))
+    if len(cells) != M.n_cells:
+        remap_c = np.full(M.n_cells, -1, dtype=np.int64)
+        remap_c[cells] = np.arange(len(cells), dtype=np.int64)
+        M.owner = remap_c[M.owner]
+        M.neigh = remap_c[M.neigh]
+        M.cell_vertex = M.cell_vertex[cells]
+        M.n_cells = int(len(cells))
+
+
+def _dissolve_sanity(M) -> str | None:
+    """Keep-best gate for the star-dissolution build.
+
+    Returns ``None`` when every cell is closed, every cell volume is positive
+    and the internal list is upper-triangular; otherwise the reason the pass
+    must be refused.  The caller then rebuilds the unmerged dual instead —
+    the written mesh is never the one that failed here.
+    """
+    try:
+        sf, cf = _face_geometry(M.points, M.faces)
+        closure = np.zeros((M.n_cells, 3), dtype=np.float64)
+        np.add.at(closure, M.owner, sf)
+        np.add.at(closure, M.neigh, -sf[: M.n_int])
+        mag = np.linalg.norm(sf, axis=1)
+        scale = np.zeros(M.n_cells, dtype=np.float64)
+        np.add.at(scale, M.owner, mag)
+        np.add.at(scale, M.neigh, mag[: M.n_int])
+        rel = np.linalg.norm(closure, axis=1) / np.maximum(scale, 1e-300)
+        _, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+        rel_max = float(rel.max())
+        vol_min = float(vol.min())
+    except Exception as exc:  # a refusal, never a crash
+        return f"sanity check raised {exc!r}"
+    if not np.isfinite(rel_max) or rel_max > 1e-8:
+        return f"a cell is not closed (relative closure {rel_max:.3e})"
+    if not np.isfinite(vol_min) or vol_min <= 0.0:
+        return f"a cell has non-positive volume (min {vol_min:.3e})"
+    if np.any(M.owner[: M.n_int] >= M.neigh):
+        return "internal faces are not in owner<neighbour order"
+    return None
 
 
 def _newell_area(xyz, ids) -> float:

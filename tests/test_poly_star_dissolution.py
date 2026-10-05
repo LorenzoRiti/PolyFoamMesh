@@ -1,10 +1,14 @@
 """Boundary-star dissolution helpers for the poly dual (opt-in, default off)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 import polyfoammesh.core.tet_poly_dual as tpd
 from polyfoammesh.core.tet_poly_dual import _newell_area, _splice_boundary_loops
+from test_tet_poly_dual import build_tet_case  # noqa: E402
 
 
 class _StarP:
@@ -124,3 +128,61 @@ def test_splice_rejects_identical_loops():
         [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
     ], dtype=float)
     assert _splice_boundary_loops([0, 1, 2, 3], [0, 1, 2, 3], xyz) is None
+
+
+# ---------------------------------------------------------------------------
+# converter wiring: the flag exists, is >= 0, and OFF is byte-identical
+# ---------------------------------------------------------------------------
+
+def test_converter_rejects_negative_threshold():
+    with pytest.raises(ValueError):
+        tpd.TetPolyDualConverter(Path("."), dissolve_tiny_boundary_stars=-0.1)
+
+
+def _cube_case_points_tets() -> tuple[np.ndarray, list[list[int]]]:
+    """The cube fixture of tests/test_tet_poly_dual.py::test_cube_invariants."""
+    corners = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
+    ])
+    pts = np.vstack([corners, corners.mean(axis=0)])
+    faces2d = [
+        [0, 1, 2, 3], [0, 4, 5, 1], [1, 5, 6, 2],
+        [2, 6, 7, 3], [3, 7, 4, 0], [4, 7, 6, 5],
+    ]
+    tets = []
+    for f in faces2d:
+        for tri in ((f[0], f[1], f[2]), (f[0], f[2], f[3])):
+            tets.append([tri[0], tri[1], tri[2], 8])
+    return pts, tets
+
+
+@pytest.mark.parametrize("collapse", [False, True])
+def test_default_off_is_byte_identical(tmp_path, collapse):
+    """Global constraint: `dissolve_tiny_boundary_stars=0.0` (and the absent
+    default) must leave the written polyMesh byte-identical — in collapse
+    mode too, which is the only mode where the pass can ever run."""
+    pts, tets = _cube_case_points_tets()
+    conv_kwargs: dict = {"log": lambda _m: None}
+    if collapse:
+        conv_kwargs["collapse_smooth_edges"] = True
+    case_off = build_tet_case(tmp_path / "off", pts, tets)
+    case_explicit = build_tet_case(tmp_path / "explicit", pts, tets)
+
+    res_off = tpd.TetPolyDualConverter(case_off, **conv_kwargs).run()
+    res_explicit = tpd.TetPolyDualConverter(
+        case_explicit, dissolve_tiny_boundary_stars=0.0, **conv_kwargs,
+    ).run()
+    assert res_off.success, res_off.errors
+    assert res_explicit.success, res_explicit.errors
+    assert res_off.n_dissolved_stars == 0
+    assert res_explicit.n_dissolved_stars == 0
+    assert res_explicit.warnings == []
+
+    poly_off = case_off / "constant" / "polyMesh"
+    poly_explicit = case_explicit / "constant" / "polyMesh"
+    names = sorted(p.name for p in poly_off.iterdir())
+    assert names == sorted(p.name for p in poly_explicit.iterdir())
+    assert names, "the converter wrote no polyMesh files"
+    for name in names:
+        assert (poly_off / name).read_bytes() == (poly_explicit / name).read_bytes(), name
