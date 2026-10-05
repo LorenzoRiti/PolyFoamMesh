@@ -624,6 +624,7 @@ def _benchmark_poly_one(
     gmsh_to_foam_timeout_s: int = 600,
     check_timeout_s: int = TIMEOUT_S,
     sliver_dissolve: float = 0.0,
+    bl_min_face: float = 0.0,
 ) -> dict:
     """Run the GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh pipeline.
 
@@ -632,6 +633,9 @@ def _benchmark_poly_one(
 
     ``sliver_dissolve`` is threaded to the converter as
     ``dissolve_tiny_boundary_stars`` (0.0 = off, the legacy behaviour).
+
+    ``bl_min_face`` is threaded to the BL engine as
+    ``min_base_face_fraction`` (0.0 = off, the legacy behaviour).
     """
     name = stl_path.stem
     logger.info("=" * 60)
@@ -772,6 +776,9 @@ def _benchmark_poly_one(
                 first_height=POLY_BL_FIRST_HEIGHT_FRACTION * max_cell,
                 growth_rate=POLY_BL_GROWTH_RATE,
                 apply_to_all=True,
+                # Opt-in (harness --poly-bl-min-face): 0.0 keeps the engine
+                # default, i.e. the small-base-face filter completely off.
+                min_base_face_fraction=bl_min_face,
             )
             stage_times["bl"] = round(time.perf_counter() - t0, 2)
             if bres.success:
