@@ -179,6 +179,9 @@ class TetPolyDualConverter:
         boundary_feature_angle: float = 90.0,
         collapse_volume_tolerance: float = 0.05,
         dissolve_tiny_boundary_stars: float = 0.0,
+        smooth_compactness: bool = False,
+        smooth_axis_balance: bool = False,
+        smooth_worst_aspect: float = 0.0,
     ):
         """
         median_faces
@@ -328,6 +331,26 @@ class TetPolyDualConverter:
             closure/positive-volume sanity check is kept; otherwise the pass
             is refused, the unmerged dual is rebuilt and the refusal is
             recorded in `DualPolyResult.warnings`.
+        smooth_compactness
+            False (default): output is byte-identical to a converter built
+            without this argument — the smoother runs with its own default
+            (`use_compactness=False`).
+            True: hand `use_compactness=True` to `smooth_dual_mesh`, which
+            also tries a GETMe-inspired compactness step (reduce total cell
+            surface area) as a second candidate per backtracking level.
+            Opt-in quality axis; the default path is never changed.
+        smooth_axis_balance
+            False (default): byte-identical (smoother default
+            `use_axis_balance=False`).
+            True: additionally try the directional axis-balance term in the
+            smoother (targets the aspect-ratio axis compactness does not
+            cover).  Opt-in.
+        smooth_worst_aspect
+            0.0 (default) = off, byte-identical (smoother default
+            `worst_aspect_thr=0.0`).
+            > 0: Freitag-style zonal aspect-ratio threshold — cells whose
+            aspect ratio exceeds it get the worst-aspect objective term.
+            Must be >= 0 (a negative value raises `ValueError`).
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -366,6 +389,18 @@ class TetPolyDualConverter:
                 f"{dissolve_tiny_boundary_stars!r}"
             )
         self._dissolve_stars = float(dissolve_tiny_boundary_stars)
+        # Smoother opt-ins (2026-10-06): forwarded verbatim to
+        # smooth_dual_mesh.  All three default to that function's own
+        # defaults (False/False/0.0), so a converter built without them is
+        # byte-identical to the previous behaviour.
+        self._smooth_compactness = bool(smooth_compactness)
+        self._smooth_axis_balance = bool(smooth_axis_balance)
+        if smooth_worst_aspect < 0.0:
+            raise ValueError(
+                "smooth_worst_aspect must be >= 0, got "
+                f"{smooth_worst_aspect!r}"
+            )
+        self._smooth_worst_aspect = float(smooth_worst_aspect)
         self._last_dissolve_fallbacks = 0
         if self._dissolve_stars > 0.0 and not self._collapse:
             logger.info(
@@ -574,6 +609,9 @@ class TetPolyDualConverter:
                 iterations=self._smooth_iters,
                 relaxation=self._smooth_relax,
                 log=self._log,
+                use_compactness=self._smooth_compactness,
+                use_axis_balance=self._smooth_axis_balance,
+                worst_aspect_thr=self._smooth_worst_aspect,
             )
             if pts is not M.points:
                 M.points = pts
