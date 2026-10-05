@@ -320,6 +320,7 @@ def run_single(
     out_path: Path,
     keep_case: bool = False,
     poly_sliver_dissolve: float = 0.0,
+    poly_bl_min_face: float = 0.0,
 ) -> int:
     import benchmarks.run_benchmarks as rb
 
@@ -337,6 +338,7 @@ def run_single(
             gmsh_to_foam_timeout_s=GMSH_TO_FOAM_TIMEOUT_S,
             check_timeout_s=CHECK_TIMEOUT_S,
             sliver_dissolve=poly_sliver_dissolve,
+            bl_min_face=poly_bl_min_face,
         )
         rec = _record_from_bench(name, runner, bench)
     elif runner == "gmsh_direct":
@@ -375,6 +377,7 @@ def run_parent(
     geometries: list[str] | None,
     keep: bool = False,
     poly_sliver_dissolve: float = 0.0,
+    poly_bl_min_face: float = 0.0,
     _child_out_dir: Path | None = None,
     _write_results: bool = True,
 ) -> tuple[list[dict], int]:
@@ -399,6 +402,8 @@ def run_parent(
                 cmd.append("--keep")
             if poly_sliver_dissolve > 0.0:
                 cmd += ["--poly-sliver-dissolve", str(poly_sliver_dissolve)]
+            if poly_bl_min_face > 0.0:
+                cmd += ["--poly-bl-min-face", str(poly_bl_min_face)]
             logger.info("RUN %s / %s (cap %ds)", spec.name, runner, RUN_TIMEOUT_S)
             try:
                 proc = subprocess.run(cmd, timeout=RUN_TIMEOUT_S, capture_output=True, text=True)
@@ -449,6 +454,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poly-sliver-dissolve", type=float, default=0.0,
                    help="opt-in: dissolve sub-threshold boundary stars on the "
                         "poly runner (0 = off)")
+    p.add_argument("--poly-bl-min-face", type=float, default=0.0,
+                   help="opt-in: drop BL base faces below this fraction of the "
+                        "median face size on the poly runner (0 = off)")
     return p
 
 
@@ -467,6 +475,7 @@ def main(args: list[str] | None = None) -> int:
             return run_single(
                 opts.runner[0], geometry_path(spec), Path(opts.out), opts.keep,
                 poly_sliver_dissolve=opts.poly_sliver_dissolve,
+                poly_bl_min_face=opts.poly_bl_min_face,
             )
         except ValueError as exc:
             logger.error("%s", exc)
@@ -474,6 +483,7 @@ def main(args: list[str] | None = None) -> int:
     _, exit_code = run_parent(
         opts.tier, opts.runner, opts.geometry, opts.keep,
         poly_sliver_dissolve=opts.poly_sliver_dissolve,
+        poly_bl_min_face=opts.poly_bl_min_face,
     )
     return exit_code
 
