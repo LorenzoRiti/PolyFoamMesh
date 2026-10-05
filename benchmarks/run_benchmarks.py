@@ -623,11 +623,15 @@ def _benchmark_poly_one(
     gmsh_timeout_s: int = 600,
     gmsh_to_foam_timeout_s: int = 600,
     check_timeout_s: int = TIMEOUT_S,
+    sliver_dissolve: float = 0.0,
 ) -> dict:
     """Run the GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh pipeline.
 
     Each stage is individually timed and its success/failure recorded, so a
     regression can be attributed to a stage rather than to "poly is bad".
+
+    ``sliver_dissolve`` is threaded to the converter as
+    ``dissolve_tiny_boundary_stars`` (0.0 = off, the legacy behaviour).
     """
     name = stl_path.stem
     logger.info("=" * 60)
@@ -725,6 +729,9 @@ def _benchmark_poly_one(
                 collapse_smooth_edges=True,
                 boundary_feature_angle=40.0,
                 collapse_volume_tolerance=0.10,
+                # Opt-in (harness --poly-sliver-dissolve): 0.0 keeps the
+                # converter default, i.e. dissolution completely off.
+                dissolve_tiny_boundary_stars=sliver_dissolve,
             )
             dres = conv.run()
             stage_times["dual"] = round(time.perf_counter() - t0, 2)
