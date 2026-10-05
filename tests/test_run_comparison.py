@@ -309,3 +309,87 @@ def test_run_single_passes_bl_min_face_to_poly(tmp_path, monkeypatch) -> None:
         poly_bl_min_face=0.2,
     )
     assert seen_kwargs["bl_min_face"] == 0.2
+
+
+def test_poly_dual_config_defaults() -> None:
+    """The five dual-config opts default to the converter's own defaults."""
+    opts = rc._build_parser().parse_args(["--tier", "fast"])
+    assert opts.poly_dual_smooth_iters == 3
+    assert opts.poly_dual_compact is False
+    assert opts.poly_dual_axis is False
+    assert opts.poly_dual_planar_fix == "none"
+    assert opts.poly_dual_worst_aspect == 0.0
+
+
+def test_poly_dual_config_non_default_combo_forwarded_to_child(
+    tmp_path, monkeypatch
+) -> None:
+    """run_parent(...non-default dual combo...) appends every flag, right value."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None, **kw):
+        seen.append(list(cmd))
+
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        poly_dual_smooth_iters=10, poly_dual_compact=True, poly_dual_axis=True,
+        poly_dual_planar_fix="triangulate", poly_dual_worst_aspect=5000.0,
+        _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    for cmd in seen:
+        i = cmd.index("--poly-dual-smooth-iters")
+        assert cmd[i + 1] == "10"
+        assert "--poly-dual-compact" in cmd
+        assert "--poly-dual-axis" in cmd
+        j = cmd.index("--poly-dual-planar-fix")
+        assert cmd[j + 1] == "triangulate"
+        k = cmd.index("--poly-dual-worst-aspect")
+        assert cmd[k + 1] == "5000.0"
+
+    # Defaults must not change any existing behaviour: no flag appended.
+    seen.clear()
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    for flag in ("--poly-dual-smooth-iters", "--poly-dual-compact",
+                 "--poly-dual-axis", "--poly-dual-planar-fix",
+                 "--poly-dual-worst-aspect"):
+        assert all(flag not in cmd for cmd in seen)
+
+
+def test_run_single_passes_dual_config_to_poly(tmp_path, monkeypatch) -> None:
+    """The child's poly branch threads the five dual opts into the runner."""
+    import benchmarks.run_benchmarks as rb
+
+    seen_kwargs: dict = {}
+
+    def fake_poly(stl_path, **kw):
+        seen_kwargs.update(kw)
+        return {
+            "geometry": Path(stl_path).stem, "success": True,
+            "wall_time_s": 1.0, "cell_count": 1000, "max_non_ortho": 40.0,
+            "avg_non_ortho": 10.0, "max_skewness": 1.2,
+            "max_aspect_ratio": 25.0, "neg_cells": 0, "min_volume": 1e-5,
+            "errors": [], "warnings": [],
+        }
+
+    monkeypatch.setattr(rb, "_benchmark_poly_one", fake_poly)
+    rc.run_single(
+        "poly", tmp_path / "cylinder.stl", tmp_path / "out.json",
+        poly_dual_smooth_iters=10, poly_dual_compact=True, poly_dual_axis=True,
+        poly_dual_planar_fix="planarize", poly_dual_worst_aspect=5000.0,
+    )
+    assert seen_kwargs["dual_smooth_iters"] == 10
+    assert seen_kwargs["dual_compact"] is True
+    assert seen_kwargs["dual_axis"] is True
+    assert seen_kwargs["dual_planar_fix"] == "planarize"
+    assert seen_kwargs["dual_worst_aspect"] == 5000.0
