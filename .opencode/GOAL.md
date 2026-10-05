@@ -365,7 +365,9 @@ la walk (default off, keep-best, 4 task + review indipendenti). Parte su
 tutte e tre le geometrie (171/97/163 star a frazione 0.5) ma OGNI build è
 rifiutato dal gate: closure rotta su cube_duct (2.94e-1) e concave (3.74e-2),
 piramidi 84 vs 15 su venturi; a frazione 0.25 idem. Nessuna metrica si muove
-e mai è stata scritta una mesh peggiore — il gate ha fatto il suo lavoro.
+e mai è stata scritta una mesh che fallisse closure/volume/piramidi — il gate
+keep-best copre quello (non confronta non-ortho/skewness) e ha fatto il suo
+lavoro.
 
 VERDETTO: **KILLED, non promosso** (precedente: lane misurate e scartate).
 Prossimo passo scoped, a scelta umana: (a) correggere l'interazione
