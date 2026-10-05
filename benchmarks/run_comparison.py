@@ -127,13 +127,30 @@ def _stage_failure(stage: str, out: str, tail: int = 15) -> str:
     run_benchmarks._wsl_of_run signals a stage-budget overrun with the
     sentinel "TIMEOUT"; normalise it to the "<stage> timed out" wording used
     elsewhere in the harness (run_benchmarks.py, e.g. "cartesianMesh timed
-    out") so make_record's "timed out" predicates (fatal / timed_out) catch it
-    and the record gets timed_out/fatal instead of a plain "failed: TIMEOUT"
-    string that no predicate matches.
+    out") so the "timed out" predicates catch it — _record_from_bench's
+    `timed_out` scan (it inspects the bench errors) and make_record's `fatal`
+    predicate — and the record gets timed_out/fatal instead of a plain
+    "failed: TIMEOUT" string that no predicate matches.
     """
     if out.strip() == "TIMEOUT":
         return f"{stage} timed out"
     return f"{stage} failed: " + "\n".join(out.splitlines()[-tail:])
+
+
+def _check_mesh_failure(rc: int) -> str:
+    """Compose the error string for a failed checkMesh stage from its rc.
+
+    _run_check_mesh -> _wsl_of_run returns rc == -1 on a stage-budget
+    overrun (and -2 when WSL is missing). Emitting the bare
+    "checkMesh exit -1" matched neither the "timed out" nor the "FATAL"
+    predicate, so the record kept timed_out=False despite the overrun:
+    mirror run_benchmarks.py:451 ("checkMesh timed out") instead.
+    """
+    if rc == -1:
+        return "checkMesh timed out"
+    if rc == -2:
+        return "WSL not found"
+    return f"checkMesh exit {rc}"
 
 
 def _make_result_fail(name, errors, warnings, stage_times) -> dict:
@@ -198,7 +215,7 @@ def _run_gmsh_direct(stl_path: Path) -> dict:
         cm_rc, cm_out, _cm_t = rb._run_check_mesh(case_dir, timeout=CHECK_TIMEOUT_S)
         stage_times["check_mesh"] = round(time.perf_counter() - t0, 2)
         if cm_rc != 0:
-            errors.append(f"checkMesh exit {cm_rc}")
+            errors.append(_check_mesh_failure(cm_rc))
             return _make_result_fail(name, errors, warnings, stage_times)
 
         from polyfoammesh.core.openfoam_runner import parse_checkmesh_output
@@ -277,7 +294,7 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
         cm_rc, cm_out, _ = rb._run_check_mesh(case_dir, timeout=CHECK_TIMEOUT_S)
         stage_times["check_mesh"] = round(time.perf_counter() - t0, 2)
         if cm_rc != 0:
-            errors.append(f"checkMesh exit {cm_rc}")
+            errors.append(_check_mesh_failure(cm_rc))
             return _make_result_fail(name, errors, warnings, stage_times)
 
         from polyfoammesh.core.openfoam_runner import parse_checkmesh_output

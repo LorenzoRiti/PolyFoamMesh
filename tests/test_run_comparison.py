@@ -130,3 +130,60 @@ def test_snappy_stage_timeout_sentinel_marks_record_timed_out(
     assert "timed_out" in rec["failed_thresholds"]
     assert "fatal" in rec["failed_thresholds"]
     assert rec["thresholds_pass"] is False
+
+
+def test_check_mesh_failure_string() -> None:
+    # _run_check_mesh -> _wsl_of_run: -1 = stage-budget overrun, -2 = WSL
+    # missing. Only the "<stage> timed out" wording trips the predicates.
+    assert rc._check_mesh_failure(-1) == "checkMesh timed out"
+    assert rc._check_mesh_failure(-2) == "WSL not found"
+    assert rc._check_mesh_failure(7) == "checkMesh exit 7"
+
+
+def test_check_mesh_timeout_marks_record_timed_out(tmp_path, monkeypatch) -> None:
+    """checkMesh stage-budget overrun (rc == -1) must flip timed_out/fatal.
+
+    Both in-file runners (_run_gmsh_direct, _run_snappy) appended the bare
+    "checkMesh exit -1", which matches neither make_record's "FATAL"/"timed
+    out" predicate nor _record_from_bench's timed_out scan — so the record
+    kept timed_out=False on a real overrun (review finding F1, the class of
+    bug the committed fast-tier baseline froze).
+    """
+    import benchmarks.run_benchmarks as rb
+    import benchmarks.snappy_baseline as sb
+
+    def fake_prepare(stl_path, pipeline="hex", require_watertight=True):
+        return None, {
+            "name": stl_path.stem, "meshes": [], "bbox_dim": 1.0,
+            "max_cell": 0.1, "min_cell": 0.01, "size_warnings": [],
+        }
+
+    def fake_wsl(cmd, timeout=180):
+        return 0, ""
+
+    def fake_check(case_dir, timeout=120):
+        return -1, "", 0.0  # CHECK_TIMEOUT_S exhausted inside _wsl_of_run
+
+    monkeypatch.setattr(rb, "_prepare_geometry", fake_prepare)
+    monkeypatch.setattr(rb, "_wsl_of_run", fake_wsl)
+    monkeypatch.setattr(rb, "_run_check_mesh", fake_check)
+    monkeypatch.setattr(rb, "WORK_ROOT", tmp_path)
+    monkeypatch.setattr(sb, "prepare_snappy_case", lambda *a, **k: None)
+
+    snappy = rc._run_snappy(tmp_path / "thin_gap.stl", "base")
+    assert snappy["errors"] == ["checkMesh timed out"]
+    rec = rc._record_from_bench("thin_gap", "snappy_base", snappy)
+    assert rec["timed_out"] is True
+    assert "timed_out" in rec["failed_thresholds"]
+    assert "fatal" in rec["failed_thresholds"]
+    assert rec["thresholds_pass"] is False
+
+    import polyfoammesh.core.gmsh_subprocess as gs
+
+    monkeypatch.setattr(gs, "run_gmsh_volume", lambda *a, **k: None)
+    gmsh = rc._run_gmsh_direct(tmp_path / "thin_gap.stl")
+    assert gmsh["errors"] == ["checkMesh timed out"]
+    rec = rc._record_from_bench("thin_gap", "gmsh_direct", gmsh)
+    assert rec["timed_out"] is True
+    assert "timed_out" in rec["failed_thresholds"]
+    assert rec["thresholds_pass"] is False
