@@ -171,7 +171,9 @@ byte-identical to the A-side:
   venturi 54 stars, 44 vs 15 pyramids); concave_bracket had zero candidates.
 
 VERDICT: **KILLED** (measured, not promoted). The keep-best gate did its
-job � no worse mesh was ever written � but the walk-level dissolution as
+job - no mesh failing closure/volume/pyramid non-regression was ever
+written (the written B-side mesh is byte-identical to the A-side) - but the
+walk-level dissolution as
 implemented does not produce closed merged cells on real geometry: the
 single-star cube fixture closes (1e-15), while real batches do not.
 
@@ -206,7 +208,3 @@ nf ≥ 3 arc split at non-feature vertices; add the keep-branch test (merged
 mesh actually written with the pyramid gate active); reuse the pyramid
 baseline instead of rebuilding it twice; keep the harness `warnings`
 propagation so future B-side records are self-evidencing.
-
-- [x] Fix implemented (walk-level dissolution, opt-in, default off)
-- [x] B-side measured (refused; no metric moved)
-- [x] Verdict: KILLED � not promoted; no default changed
