@@ -373,7 +373,7 @@ Lane scelta: **NON-ORTHO**. Primo bersaglio: **cluster hex** — groove1 75.98,
 slot1 77.28, thin_gap 73.75, mini_valve 72.58 contro gate 70, mentre snappy
 sta a 39.40–42.71 sulle stesse geometrie. Scelta perché 4 gate-flip in un solo
 percorso (vs 1 riga del peggio assoluto venturi/poly 146.41), tutte e 4
-falloano **solo** `non_ortho_max` → un solo fix porta hex 5/10 → 9/10, sopra
+falliscono **solo** `non_ortho_max` → un solo fix porta hex 5/10 → 9/10, sopra
 il 6/10 di entrambi gli snappy; 3 delle 4 righe sono fast tier.
 
 Predizione (scritta PRIMA di ogni esperimento in
