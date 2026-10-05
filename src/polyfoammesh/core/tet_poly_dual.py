@@ -1153,7 +1153,7 @@ class TetPolyDualConverter:
             # polyDualMesh semantics: ONE face per boundary vertex.
             self._build_boundary_collapsed(
                 P, xyz, pt_face, pt_edge, pt_vert, base_l,
-                bnd_by_patch, bown_by_patch,
+                bnd_by_patch, bown_by_patch, dissolve=dissolve,
             )
             self._log(
                 f"[poly 5/9] collapsed boundary: "
@@ -1350,7 +1350,7 @@ class TetPolyDualConverter:
 
     def _build_boundary_collapsed(
         self, P, xyz, pt_face, pt_edge, pt_vert, base_l,
-        bnd_by_patch, bown_by_patch,
+        bnd_by_patch, bown_by_patch, dissolve: dict[int, int] | None = None,
     ) -> None:
         """One dual boundary face per primal boundary vertex.
 
@@ -1397,16 +1397,12 @@ class TetPolyDualConverter:
                 else:
                     vert_out[v] = nrm.copy()
 
-        for n_done, v in enumerate(sorted(vert_edges)):
-            if n_done % 4096 == 0:
-                time.sleep(0)  # release the GIL — the Qt UI thread starves otherwise
-            e0 = vert_edges[v][0]
-            dual_face, face_patch, feat_idx = self._walk_boundary_vertex(
-                P, xyz, pt_face, pt_edge, vert_out, v, e0,
-            )
+        inverse: dict[int, list[int]] = {}
+        for v_diss, u in (dissolve or {}).items():
+            inverse.setdefault(u, []).append(v_diss)
+        self._last_dissolve_fallbacks = 0
 
-            cell = base_l[v]
-
+        def _emit(v, dual_face, face_patch, feat_idx, cell):
             def _patch_of(sub_positions: list[int]) -> int:
                 for k in sub_positions:
                     if face_patch[k] >= 0:
@@ -1422,7 +1418,7 @@ class TetPolyDualConverter:
                 pi = _patch_of(list(range(len(dual_face))))
                 bnd_by_patch[pi].append(dual_face)
                 bown_by_patch[pi].append(cell)
-                continue
+                return
 
             m = len(dual_face)
             if feat_vertex[v]:
@@ -1460,6 +1456,48 @@ class TetPolyDualConverter:
                     pi = _patch_of(pos)
                     bnd_by_patch[pi].append([dual_face[k] for k in pos])
                     bown_by_patch[pi].append(cell)
+
+        for n_done, v in enumerate(sorted(vert_edges)):
+            if n_done % 4096 == 0:
+                time.sleep(0)  # release the GIL — the Qt UI thread starves otherwise
+            if dissolve and v in dissolve:
+                continue  # absorbed into its survivor's polygon
+            e0 = vert_edges[v][0]
+            dual_face, face_patch, feat_idx = self._walk_boundary_vertex(
+                P, xyz, pt_face, pt_edge, vert_out, v, e0,
+            )
+            cell = base_l[v]
+
+            # Splice the dissolved neighbours' stars into this walk so no
+            # tiny polygon survives.  A refused splice (None) falls back to
+            # emitting the absorbed vertex's own polygon: valid mesh, the
+            # tiny face stays (never a corrupt union).
+            if inverse.get(v):
+                patch_by_pt = dict(zip(dual_face, face_patch))
+                feat_pts = {dual_face[k] for k in feat_idx}
+                for dv in inverse[v]:
+                    dv_face, dv_patch, dv_feat = self._walk_boundary_vertex(
+                        P, xyz, pt_face, pt_edge, vert_out, dv,
+                        vert_edges[dv][0],
+                    )
+                    merged = _splice_boundary_loops(dual_face, dv_face, xyz)
+                    if merged is None:
+                        self._last_dissolve_fallbacks += 1
+                        self._log(
+                            f"[poly 5/9] star dissolution: splice refused at "
+                            f"vertex {dv} — its polygon is kept separate"
+                        )
+                        _emit(dv, dv_face, dv_patch, dv_feat, cell)
+                        continue
+                    for pt, pat in zip(dv_face, dv_patch):
+                        patch_by_pt.setdefault(pt, pat)
+                    for k in dv_feat:
+                        feat_pts.add(dv_face[k])
+                    dual_face = merged
+                face_patch = [patch_by_pt[pt] for pt in dual_face]
+                feat_idx = [k for k, pt in enumerate(dual_face) if pt in feat_pts]
+
+            _emit(v, dual_face, face_patch, feat_idx, cell)
 
     # ------------------------------------------------------------------
     # P6: decide which vertex stars to split
@@ -2381,13 +2419,59 @@ def _dissolve_sanity(M) -> str | None:
     return None
 
 
-def _newell_area(xyz, ids) -> float:
+def _newell_vector(xyz, ids) -> np.ndarray:
+    """Newell vector (2 x signed area, direction = polygon normal)."""
     p = np.asarray([xyz[i] for i in ids], dtype=np.float64)
     n = np.zeros(3)
     for k in range(len(p)):
         j = (k + 1) % len(p)
         n += np.cross(p[k], p[j])
-    return 0.5 * float(np.linalg.norm(n))
+    return 0.5 * n
+
+
+def _newell_area(xyz, ids) -> float:
+    return float(np.linalg.norm(_newell_vector(xyz, ids)))
+
+
+def _loop_is_simple(xyz, ids) -> bool:
+    """True when the closed loop has no two non-adjacent edges crossing.
+
+    Projects onto the plane orthogonal to the Newell normal (valid for the
+    near-planar boundary polygons the walk produces) and runs an O(m^2)
+    segment-crossing test.  m is a vertex valence (single digits), so the
+    quadratic scan is free; a self-intersecting union (bowtie) is exactly
+    what the splice must refuse.
+    """
+    p = np.asarray([xyz[i] for i in ids], dtype=np.float64)
+    n = _newell_vector(xyz, ids)
+    nn = float(np.linalg.norm(n))
+    if nn < 1e-30:
+        return False
+    n = n / nn
+    t = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(n, t)
+    u = u / max(float(np.linalg.norm(u)), 1e-300)
+    v = np.cross(n, u)
+    c = p.mean(axis=0)
+    q = np.stack([(p - c) @ u, (p - c) @ v], axis=1)
+    m = len(q)
+
+    def _orient(a, b, cc) -> float:
+        return float((b[0] - a[0]) * (cc[1] - a[1]) - (b[1] - a[1]) * (cc[0] - a[0]))
+
+    for i in range(m):
+        a1, a2 = q[i], q[(i + 1) % m]
+        for j in range(i + 1, m):
+            if j == i or (j + 1) % m == i or (i + 1) % m == j:
+                continue
+            b1, b2 = q[j], q[(j + 1) % m]
+            d1 = _orient(b1, b2, a1)
+            d2 = _orient(b1, b2, a2)
+            d3 = _orient(a1, a2, b1)
+            d4 = _orient(a1, a2, b2)
+            if ((d1 > 0.0) != (d2 > 0.0)) and ((d3 > 0.0) != (d4 > 0.0)):
+                return False
+    return True
 
 
 def _splice_boundary_loops(a, b, xyz):
@@ -2459,9 +2543,18 @@ def _splice_boundary_loops(a, b, xyz):
         clean.pop()
     if len(clean) < 3 or len(set(clean)) != len(clean):
         return None
-    if abs(_newell_area(xyz, clean) - (_newell_area(xyz, a) + _newell_area(xyz, b))) > 1e-6 * max(
-        _newell_area(xyz, a) + _newell_area(xyz, b), 1e-30
-    ):
+    # The Newell VECTOR is exactly additive across a shared chain (the chain's
+    # cross products cancel between a and b because the chain is traversed in
+    # opposite directions).  Comparing vector sums — not per-polygon norms —
+    # is what makes the guard valid for NON-PLANAR adjacent polygons too
+    # (e.g. two cube-corner stars: their normals differ, so |N_a| + |N_b|
+    # would exceed |N_a + N_b| and reject a perfectly valid union).
+    n_sum = _newell_vector(xyz, a) + _newell_vector(xyz, b)
+    n_union = _newell_vector(xyz, clean)
+    scale = max(float(np.linalg.norm(n_sum)), 1e-30)
+    if float(np.linalg.norm(n_union - n_sum)) > 1e-6 * scale:
+        return None
+    if not _loop_is_simple(xyz, clean):
         return None
     return clean
 

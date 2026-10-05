@@ -186,3 +186,59 @@ def test_default_off_is_byte_identical(tmp_path, collapse):
     assert names, "the converter wrote no polyMesh files"
     for name in names:
         assert (poly_off / name).read_bytes() == (poly_explicit / name).read_bytes(), name
+
+
+def _boundary_face_count(case_dir: Path) -> int:
+    from polyfoammesh.core.foam_mesh_io import read_polymesh
+
+    _pts, faces, _own, neigh, _patches = read_polymesh(case_dir / "constant" / "polyMesh")
+    return len(faces) - len(neigh)
+
+
+def test_dissolution_splices_when_plan_forces_a_merge(tmp_path, monkeypatch):
+    """Forced plan {0: 1} on the cube: the two corner polygons must merge
+    into one (boundary face count drops by 1) and the mesh stays valid."""
+    pts, tets = _cube_case_points_tets()
+    case = build_tet_case(tmp_path / "splice", pts, tets)
+    monkeypatch.setattr(tpd, "_plan_star_dissolution", lambda P, f: {0: 1})
+    conv = tpd.TetPolyDualConverter(
+        case, log=lambda _m: None, collapse_smooth_edges=True,
+        dissolve_tiny_boundary_stars=1.0,
+    )
+    res = conv.run()
+    assert res.success, res.errors
+    assert res.n_dissolved_stars == 1
+    assert conv._last_dissolve_fallbacks == 0
+    assert getattr(res, "dissolve_warning", None) is None
+
+    case_ref = build_tet_case(tmp_path / "ref", pts, tets)
+    tpd.TetPolyDualConverter(
+        case_ref, log=lambda _m: None, collapse_smooth_edges=True,
+    ).run()
+    # both stars split into 3 sub-faces at the cube's feature edges; the union
+    # keeps 4 feature points (the shared edge's midpoint becomes interior), so
+    # the merged boundary has 2 fewer faces than the two separate stars
+    assert _boundary_face_count(case) == _boundary_face_count(case_ref) - 2
+
+
+def test_dissolution_falls_back_when_splice_refuses(tmp_path, monkeypatch):
+    """A refused splice must keep the absorbed polygon as a separate face
+    (count unchanged) and record the fallback - never a corrupt union."""
+    pts, tets = _cube_case_points_tets()
+    case = build_tet_case(tmp_path / "fallback", pts, tets)
+    monkeypatch.setattr(tpd, "_plan_star_dissolution", lambda P, f: {0: 1})
+    monkeypatch.setattr(tpd, "_splice_boundary_loops", lambda a, b, xyz: None)
+    conv = tpd.TetPolyDualConverter(
+        case, log=lambda _m: None, collapse_smooth_edges=True,
+        dissolve_tiny_boundary_stars=1.0,
+    )
+    res = conv.run()
+    assert res.success, res.errors
+    assert res.n_dissolved_stars == 1
+    assert conv._last_dissolve_fallbacks == 1
+
+    case_ref = build_tet_case(tmp_path / "ref2", pts, tets)
+    tpd.TetPolyDualConverter(
+        case_ref, log=lambda _m: None, collapse_smooth_edges=True,
+    ).run()
+    assert _boundary_face_count(case) == _boundary_face_count(case_ref)
