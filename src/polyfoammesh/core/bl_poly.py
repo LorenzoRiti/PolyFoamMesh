@@ -98,6 +98,7 @@ class PolyBoundaryLayerResult:
     growth_rate: float = 1.2
     total_thickness: float = 0.0       # absolute, metres (final, after clamp)
     n_wall_faces: int = 0
+    n_excluded_small_faces: int = 0
     wall_patches: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -717,6 +718,33 @@ def _cell_metrics(points, faces, owner, neighbour, n_cells, n_int):
     return v, closure, scale
 
 
+def _drop_small_base_faces(points, faces, n_int, sel, fraction):
+    """Drop selected boundary faces smaller than ``fraction * median``.
+
+    The size of a face is ``sqrt(Newell area)`` (a length, so the cutoff
+    scales like one); the median is taken over the whole selection BEFORE
+    dropping, so a single tiny face never drags the threshold down with
+    it.  ``sel`` lists boundary-local face ids.
+
+    Returns ``(kept, n_excluded, threshold)``.  ``_build`` needs no change
+    for the dropped faces: at every edge shared with an unselected face it
+    emits the prism side faces as boundary faces of the adjacent patch and
+    moves the shared wall vertices to the last layer (see
+    ``_select_faces``: "NO auto-close  -  every cell stays closed"), so
+    the cells under the dropped faces stay closed.
+    """
+    if not sel:
+        return list(sel), 0, 0.0
+    sizes = np.array([
+        float(np.sqrt(np.linalg.norm(_newell(points, faces[n_int + bi]))))
+        for bi in sel
+    ])
+    threshold = float(fraction) * float(np.median(sizes))
+    keep = sizes >= threshold
+    return ([bi for bi, k in zip(sel, keep) if k],
+            int((~keep).sum()), threshold)
+
+
 class PolyBoundaryLayerEngine:
     """Adds a prism boundary layer to an existing polyhedral polyMesh.
 
@@ -750,6 +778,7 @@ class PolyBoundaryLayerEngine:
         local_exclude_widen: int = 0,
         normal_method: str = "area_weighted",
         local_height_retry: bool = False,
+        min_base_face_fraction: float = 0.0,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -817,6 +846,16 @@ class PolyBoundaryLayerEngine:
           per-vertex serial retry was measured infeasible: thousands of
           candidate vertices x ~1 rebuild each). See
           notes/local_height_retry_reasoning.md.
+        - `min_base_face_fraction`: opt-in base-face size filter
+          (default 0.0 = off, byte-identical to the historical behaviour).
+          When > 0, right after `_select_faces` every selected face's
+          `sqrt(Newell area)` is compared with `fraction * median` of the
+          whole selection and smaller faces are dropped from the
+          extrusion set (count in `res.n_excluded_small_faces`, logged as
+          `[bl] excluded N small base faces (<fraction*median=…m)`).  The
+          terminator band around a dropped face is handled by `_build`
+          (NO auto-close - see `_select_faces`), so the cells under it
+          stay closed.  Must be >= 0 (raises ValueError otherwise).
         - `local_termination`: opt-in iterative local termination for
           geometries with concave defects (the reference valve).  Each
           attempt uses the binary layer-count mode (a face is either fully
@@ -868,6 +907,10 @@ class PolyBoundaryLayerEngine:
           convergence without changing any geometry parameter.  Only
           meaningful together with `local_termination`; ignored otherwise.
         """
+        if min_base_face_fraction < 0.0:
+            raise ValueError(
+                "min_base_face_fraction must be >= 0 (0 disables the filter)"
+            )
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
             first_height=float(first_height),
@@ -953,6 +996,16 @@ class PolyBoundaryLayerEngine:
         sel, used_patches = self._select_faces(
             faces, owner, patches, n_int, patch_names, apply_to_all,
         )
+        if sel and min_base_face_fraction > 0.0:
+            sel, n_small, cut = _drop_small_base_faces(
+                points, faces, n_int, sel, min_base_face_fraction,
+            )
+            if n_small:
+                res.n_excluded_small_faces = int(n_small)
+                self._log(
+                    f"[bl] excluded {n_small} small base faces "
+                    f"(<{min_base_face_fraction:g}*median={cut:.6g}m)"
+                )
         if not sel:
             res.errors.append("no selected faces")
             return res
