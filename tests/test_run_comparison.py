@@ -393,3 +393,68 @@ def test_run_single_passes_dual_config_to_poly(tmp_path, monkeypatch) -> None:
     assert seen_kwargs["dual_axis"] is True
     assert seen_kwargs["dual_planar_fix"] == "planarize"
     assert seen_kwargs["dual_worst_aspect"] == 5000.0
+
+
+def test_poly_merge_repair_defaults_off() -> None:
+    opts = rc._build_parser().parse_args(["--tier", "fast"])
+    assert opts.poly_merge_repair is False
+
+
+def test_poly_merge_repair_forwarded_to_child(tmp_path, monkeypatch) -> None:
+    """run_parent(..., poly_merge_repair=True) appends the flag to every child cmd."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None, **kw):
+        seen.append(list(cmd))
+
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        poly_merge_repair=True, _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    for cmd in seen:
+        assert "--poly-merge-repair" in cmd
+
+    # Default False must not change any existing behaviour: no flag appended.
+    seen.clear()
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    assert all("--poly-merge-repair" not in cmd for cmd in seen)
+
+
+def test_run_single_passes_merge_repair_to_poly(tmp_path, monkeypatch) -> None:
+    """The child's poly branch threads poly_merge_repair into the runner."""
+    import benchmarks.run_benchmarks as rb
+
+    seen_kwargs: dict = {}
+
+    def fake_poly(stl_path, **kw):
+        seen_kwargs.update(kw)
+        return {
+            "geometry": Path(stl_path).stem, "success": True,
+            "wall_time_s": 1.0, "cell_count": 1000, "max_non_ortho": 40.0,
+            "avg_non_ortho": 10.0, "max_skewness": 1.2,
+            "max_aspect_ratio": 25.0, "neg_cells": 0, "min_volume": 1e-5,
+            "errors": [], "warnings": [],
+        }
+
+    monkeypatch.setattr(rb, "_benchmark_poly_one", fake_poly)
+    rc.run_single(
+        "poly", tmp_path / "cylinder.stl", tmp_path / "out.json",
+        poly_merge_repair=True,
+    )
+    assert seen_kwargs["merge_repair"] is True
+
+    # Default: the kwarg is present and False (legacy behaviour unchanged).
+    seen_kwargs.clear()
+    rc.run_single("poly", tmp_path / "cylinder.stl", tmp_path / "out.json")
+    assert seen_kwargs["merge_repair"] is False
