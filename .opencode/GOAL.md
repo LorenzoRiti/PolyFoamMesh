@@ -347,8 +347,33 @@ scoped. Commit `1061a88`. Dettagli in
 VERDETTO: **pronto per il push.** L'albero è verde, i default invariati,
 ogni numero dichiarato ha una misura dietro e i limiti sono scritti
 nell'handoff §5 (gap aspect cilindro, soglia RAM misurata solo su hex,
-validazioni pesanti solo WSL). Leggi §5 prima di decidere: se uno di quei
+validazioni pesanti solo su WSL). Leggi §5 prima di decidere: se uno di quei
 limiti ti è inaccettabile sul pubblico, quello — e solo quello — blocca.
+
+## Avanzamento 2026-10-05 — Lane NON-ORTHO poly (dual-side): KILLED, onesto
+
+Correzione di rotta umana: il bersaglio della lane è il NOSTRO motore
+tet→poly (GMSH tet → dual + BL), non cfMesh. Diagnosi misurata (probe
+read-only, nessuna modifica): il dual da solo è a 51.9 (cube_duct, PASS) /
+74.0 (venturi) / 62.7 + 36 piramidi (concave_bracket); il BL lo sfonda a
+80.6 / 146.4 / 105.4, con prismi-sliver (V ~1e-12) generati dalle 83 facce
+di bordo del dual sotto 1e-6 m². Patch selection = no-op; decoupled_vertex
+non basta (85/81/89).
+
+Fix implementato opt-in: dissoluzione degli star di bordo minuscoli dentro
+la walk (default off, keep-best, 4 task + review indipendenti). Parte su
+tutte e tre le geometrie (171/97/163 star a frazione 0.5) ma OGNI build è
+rifiutato dal gate: closure rotta su cube_duct (2.94e-1) e concave (3.74e-2),
+piramidi 84 vs 15 su venturi; a frazione 0.25 idem. Nessuna metrica si muove
+e mai è stata scritta una mesh peggiore — il gate ha fatto il suo lavoro.
+
+VERDETTO: **KILLED, non promosso** (precedente: lane misurate e scartate).
+Prossimo passo scoped, a scelta umana: (a) correggere l'interazione
+multi-star nella splice (o restringere la dissoluzione ai casi provabili);
+(b) attaccare il dual di venturi (74.0) e le piramidi di concave con le leve
+già misurate (compactness/axis, wedge cells). Dettagli in
+`notes/poly_nonortho_reasoning.md` §B-side; piano e review in
+`docs/superpowers/plans/2026-10-05-poly-dual-boundary-star-dissolution.md`.
 
 ## Avanzamento 2026-10-05 — baseline vs snappy + prima lane NON-ORTHO
 

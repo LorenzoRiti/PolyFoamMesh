@@ -147,3 +147,40 @@ the MEDIAN boundary-star area (0 = off, byte-identical default).
 - [ ] Fix implemented (follow-up plan â€” needs human approval)
 - [ ] B-side measured
 - [ ] Verdict
+
+## B-side (with walk-level star dissolution, --poly-sliver-dissolve)
+
+Measured 2026-10-05 (commits ef0901d..3060e26; artefacts committed in 0bcf86e).
+
+| geometry | A-side NOmax | B-side NOmax | cells | wall s | pass |
+|---|---|---|---|---|---|
+| cube_duct | 80.64 | 80.64 | 18258 | 13.26 | FAIL (identical) |
+| venturi | 146.41 | 146.41 | 4732 | 7.92 | FAIL (identical) |
+| concave_bracket | 105.41 | 105.41 | 35097 | 39.82 | FAIL (identical) |
+
+The dissolution FIRED on all three geometries (171 / 97 / 163 sub-threshold
+stars at fraction 0.5) but EVERY build was REFUSED batch-wide by the
+keep-best gate, so the unmerged dual was kept and every metric is
+byte-identical to the A-side:
+
+- cube_duct: 'a cell is not closed' (relative closure 2.94e-1)
+- concave_bracket: 'a cell is not closed' (relative closure 3.74e-2)
+- venturi: 'pyramid non-regression failed (84 vs 15)' after 3 per-vertex
+  splice refusals
+- retry at fraction 0.25: same refusals (cube_duct 30 stars, closure 2.48e-1;
+  venturi 54 stars, 44 vs 15 pyramids); concave_bracket had zero candidates.
+
+VERDICT: **KILLED** (measured, not promoted). The keep-best gate did its
+job — no worse mesh was ever written — but the walk-level dissolution as
+implemented does not produce closed merged cells on real multi-star
+geometry: the single-star cube fixture closes (1e-15), while batches of
+97-171 dissolved stars with mixed splice/fallback paths do not. Failure
+modes scoped for a possible follow-up: (a) multi-star splice interaction
+(several dissolved vertices per survivor, chains of feature midpoints);
+(b) the union validity gate (_loop_is_simple) is projection-based and
+blind to collinear/touching edges on non-planar stars; (c) the merged
+cell can become non-convex even when the union is simple (pyramids).
+
+- [x] Fix implemented (walk-level dissolution, opt-in, default off)
+- [x] B-side measured (refused; no metric moved)
+- [x] Verdict: KILLED — not promoted; no default changed
