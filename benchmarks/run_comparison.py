@@ -314,7 +314,13 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def run_single(runner: str, stl_path: Path, out_path: Path, keep_case: bool = False) -> int:
+def run_single(
+    runner: str,
+    stl_path: Path,
+    out_path: Path,
+    keep_case: bool = False,
+    poly_sliver_dissolve: float = 0.0,
+) -> int:
     import benchmarks.run_benchmarks as rb
 
     name = stl_path.stem
@@ -330,6 +336,7 @@ def run_single(runner: str, stl_path: Path, out_path: Path, keep_case: bool = Fa
             gmsh_timeout_s=GMSH_TIMEOUT_S,
             gmsh_to_foam_timeout_s=GMSH_TO_FOAM_TIMEOUT_S,
             check_timeout_s=CHECK_TIMEOUT_S,
+            sliver_dissolve=poly_sliver_dissolve,
         )
         rec = _record_from_bench(name, runner, bench)
     elif runner == "gmsh_direct":
@@ -367,6 +374,7 @@ def run_parent(
     runners: list[str] | None,
     geometries: list[str] | None,
     keep: bool = False,
+    poly_sliver_dissolve: float = 0.0,
     _child_out_dir: Path | None = None,
     _write_results: bool = True,
 ) -> tuple[list[dict], int]:
@@ -389,6 +397,8 @@ def run_parent(
             ]
             if keep:
                 cmd.append("--keep")
+            if poly_sliver_dissolve > 0.0:
+                cmd += ["--poly-sliver-dissolve", str(poly_sliver_dissolve)]
             logger.info("RUN %s / %s (cap %ds)", spec.name, runner, RUN_TIMEOUT_S)
             try:
                 proc = subprocess.run(cmd, timeout=RUN_TIMEOUT_S, capture_output=True, text=True)
@@ -436,6 +446,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         "child mode: geometry name")
     p.add_argument("--out", help="child mode: record output path")
     p.add_argument("--keep", action="store_true")
+    p.add_argument("--poly-sliver-dissolve", type=float, default=0.0,
+                   help="opt-in: dissolve sub-threshold boundary stars on the "
+                        "poly runner (0 = off)")
     return p
 
 
@@ -451,11 +464,17 @@ def main(args: list[str] | None = None) -> int:
             logger.error("unknown geometry %r", geom)
             return 2
         try:
-            return run_single(opts.runner[0], geometry_path(spec), Path(opts.out), opts.keep)
+            return run_single(
+                opts.runner[0], geometry_path(spec), Path(opts.out), opts.keep,
+                poly_sliver_dissolve=opts.poly_sliver_dissolve,
+            )
         except ValueError as exc:
             logger.error("%s", exc)
             return 2
-    _, exit_code = run_parent(opts.tier, opts.runner, opts.geometry, opts.keep)
+    _, exit_code = run_parent(
+        opts.tier, opts.runner, opts.geometry, opts.keep,
+        poly_sliver_dissolve=opts.poly_sliver_dissolve,
+    )
     return exit_code
 
 

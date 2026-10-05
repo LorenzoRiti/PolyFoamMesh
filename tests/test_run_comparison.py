@@ -187,3 +187,64 @@ def test_check_mesh_timeout_marks_record_timed_out(tmp_path, monkeypatch) -> Non
     assert rec["timed_out"] is True
     assert "timed_out" in rec["failed_thresholds"]
     assert rec["thresholds_pass"] is False
+
+
+def test_poly_sliver_dissolve_defaults_off() -> None:
+    opts = rc._build_parser().parse_args(["--tier", "fast"])
+    assert opts.poly_sliver_dissolve == 0.0
+
+
+def test_poly_sliver_dissolve_forwarded_to_child(tmp_path, monkeypatch) -> None:
+    """run_parent(..., poly_sliver_dissolve=0.25) appends the flag to every child cmd."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None, **kw):
+        seen.append(list(cmd))
+
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        poly_sliver_dissolve=0.25, _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    for cmd in seen:
+        i = cmd.index("--poly-sliver-dissolve")
+        assert cmd[i + 1] == "0.25"
+
+    # Default 0.0 must not change any existing behaviour: flag not appended.
+    seen.clear()
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    assert all("--poly-sliver-dissolve" not in cmd for cmd in seen)
+
+
+def test_run_single_passes_dissolve_to_poly(tmp_path, monkeypatch) -> None:
+    """The child's poly branch threads poly_sliver_dissolve into the runner."""
+    import benchmarks.run_benchmarks as rb
+
+    seen_kwargs: dict = {}
+
+    def fake_poly(stl_path, **kw):
+        seen_kwargs.update(kw)
+        return {
+            "geometry": Path(stl_path).stem, "success": True,
+            "wall_time_s": 1.0, "cell_count": 1000, "max_non_ortho": 40.0,
+            "avg_non_ortho": 10.0, "max_skewness": 1.2,
+            "max_aspect_ratio": 25.0, "neg_cells": 0, "min_volume": 1e-5,
+            "errors": [], "warnings": [],
+        }
+
+    monkeypatch.setattr(rb, "_benchmark_poly_one", fake_poly)
+    rc.run_single(
+        "poly", tmp_path / "cylinder.stl", tmp_path / "out.json",
+        poly_sliver_dissolve=0.25,
+    )
+    assert seen_kwargs["sliver_dissolve"] == 0.25
