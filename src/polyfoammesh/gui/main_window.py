@@ -462,6 +462,21 @@ class MainWindow(QMainWindow):
         self._ribbon_btns["solver"].setToolTip("Configure solver, schemes, and turbulence model.")
         self._ribbon_btns["solver"].setAutoExclusive(False)
 
+        # Product decision 2026-10-06: these four are FUTURE features (we do
+        # not ship adaptive meshing, SAMR, BC editing or solver setup yet).
+        # Grey them out and make them non-clickable rather than opening
+        # half-built flows; the tooltip says they are coming. Nothing else
+        # re-enables these keys, so one shot here is enough.
+        for _key, _label in (
+            ("adaptive", "Adaptive meshing"),
+            ("samr", "Solve Adaptive (SAMR)"),
+            ("bc", "BC Editor"),
+            ("solver", "Solver Setup"),
+        ):
+            _btn = self._ribbon_btns[_key]
+            _btn.setEnabled(False)
+            _btn.setToolTip(f"{_label}: in arrivo in una prossima release.")
+
         self._ribbon_btns["fullauto"] = _make_ribbon_btn(
             "Full Auto", "run", self._on_full_auto, checkable=False,
         )
