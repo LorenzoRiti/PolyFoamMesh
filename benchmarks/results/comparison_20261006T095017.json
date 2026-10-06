@@ -1,0 +1,48 @@
+[
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-10-06T09:50:08",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 11.05,
+    "cell_count": 18053,
+    "max_non_ortho": 80.95,
+    "avg_non_ortho": 12.39,
+    "max_skewness": 4.49,
+    "max_aspect_ratio": 554.2,
+    "neg_cells": 0,
+    "min_volume": 4.72673e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-10-06T09:50:16",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 6.48,
+    "cell_count": 4651,
+    "max_non_ortho": 115.62,
+    "avg_non_ortho": 15.83,
+    "max_skewness": 4.02,
+    "max_aspect_ratio": 108.74,
+    "neg_cells": 0,
+    "min_volume": 1.79486e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  }
+]
