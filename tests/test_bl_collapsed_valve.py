@@ -6,7 +6,14 @@ collapse_volume_tolerance=0.10`` — the exact kwargs used by
 ``core/openfoam_runner.py``) the face-level exclusion cascade stalls a few
 pyramid violations above the input (FASE 7/8: 373-385 vs 370), while the
 ``decoupled_vertex`` mode closes at scale 0.6 with 4,008 of 42,130 wall
-faces excluded and 75,360 prism cells (5 builds, ~297 s).
+faces excluded and 76,052 prism cells (5 builds, ~297 s).
+
+The prism count was 75,360 before the drop_bnd units fix in ``_build``:
+``drop_bnd`` is keyed by boundary-LOCAL face ids while the membership
+test indexed the FILTERED selection by position, so with 4,008 excluded
+faces the old code flagged arbitrary faces (692 fewer prisms).  The fixed
+build drops the 96 genuinely flagged faces and keeps full stacks
+elsewhere.
 
 Deterministic numbers; engine gate only, no WSL required.  Marked slow:
 the collapsed conversion takes ~2 min and the BL ~5 min.
@@ -69,7 +76,9 @@ def test_collapsed_valve_vertex_exclusion_closes():
     assert r.stats.get("scale") == 0.6, r.stats
     assert r.stats.get("local_excluded_faces") == 4008, r.stats
     assert r.stats.get("local_termination_mode") == "decoupled_vertex"
-    assert r.n_prism_cells == 75360, r.n_prism_cells
+    # 76,052 after the drop_bnd units fix (was 75,360 with the position vs
+    # local-id mismatch flagging arbitrary faces); see module docstring.
+    assert r.n_prism_cells == 76052, r.n_prism_cells
     # the written mesh must carry the BL invariants
     from polyfoammesh.core import foam_mesh_io as fio
     points, faces, owner, neigh, patches = fio.read_polymesh(poly)
