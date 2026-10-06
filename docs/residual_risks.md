@@ -1280,6 +1280,31 @@ the properties that matter (triangulation truly eliminates non-planarity)
 still hold exactly; see `notes/smoothing_gate_fix_reasoning.md` for the
 full account. Fast suite green (1170 passed).
 
+## Boundary layer reale (2026-10-06)
+
+Limiti accettati dopo il lavoro "BL reali" (commit `d654cdb`, `8f4b0e4`,
+`2ea4191`; resoconto completo in `notes/bl_real_layers_reasoning.md`):
+
+- **Limite architetturale dello spessore**: lo stack non può superare la
+  profondità della prima cella dual (`support_d`, p50 2.35 mm sul Part2):
+  il motore cappa al numero di strati che il 90% dei vertici regge a
+  piena altezza e lo dichiara nel log. Per BL più spessi servono celle di
+  superficie più grosse (il warning lo suggerisce) o un BL che consuma
+  più strati di celle interne — cambio grande, non in questo rilascio.
+- **Viewer**: le celle prism non sono colorate diversamente dal core; la
+  visibilità del BL è affidata al log (mediana, copertura, primo strato
+  effettivo). Colorazione per tipo cella = follow-up.
+- **Chiusura concava automatica**: la catena standard → concava → h1/2 è
+  coperta dai test unitari ma non è stata rimisurata end-to-end su
+  groove1/slot1 con la nuova semantica standard (l'engine non è cambiato;
+  cambia l'ordine dei tentativi).
+- **Benchmark**: il 9/10 vs snappy è stato misurato con la vecchia
+  semantica BL (i casi concavi passavano anche col BL fallito); va
+  ri-validato col BL reale prima del rilascio.
+- **Tolleranza volume 5e-3**: la shell sotto le facce escluse è ceduta
+  by-design (peggiore misurato: 1.16e-3 sul Part2); un buco reale
+  fallisce prima il test di chiusura a 1e-8, che è il gate esatto.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.

@@ -502,3 +502,53 @@ Caveat onesto: multi_inlet, mini_valve e venturi passano col BL fallito
 celle). Resta solo dirty_cad (negativo condiviso, snappy fallisce pure).
 Dettagli in `notes/poly_edge_cap_reasoning.md` §Lane A; JSON
 `comparison_20261006T170414.json`.
+
+## Avanzamento 2026-10-06 (notte) - BL REALI sul percorso poly (commit d654cdb)
+
+Il BL poteva dire "OK" con un guscio INVISIBILE da 1 layer: il consistency
+fixpoint e' un MIN su tutta la parete connessa, quindi UN solo vertice a
+budget ridotto appiattisce ogni faccia a 1 layer - e la validazione lo
+accettava (volume conservato, checkMesh pulito). Sul Part2 dell'utente il
+"successo" era 1 layer x 0.49 mm (richiesti 14): inutile e invisibile.
+
+Fix committati (P0+P1+P2 core):
+- verita' nel result: istogramma layer per faccia + mediana pesata +
+  copertura; guardia: build valido ma flattenato (mediana 1 con n>=2
+  richiesti) RIFIUTATO, mai piu' "successo" finto;
+- cap mesh-aware (budget): n_layers limitato a cio' che il 90% dei vertici
+  regge a piena altezza (max_h = angle_fade*min(clamp*d, 0.5*edge_cap));
+- percorso standard robusto in semantica binaria (zero_concave): faccia =
+  stack pieno (compresso dove max_h morde) o esclusa; niente percolazione;
+- volumi esatti (centroid-fan) per positivita'/conservazione; tolleranza
+  5e-3 documenta la shell ceduta by-design sotto le facce droppate
+  (Part2: 1.16e-3);
+- fix unita' drop_bnd (id locali vs posizioni nella selezione filtrata):
+  con il filtro sliver attivo flaggava facce a caso.
+
+Verifica sul Part2 reale: 26.162 prismi, 2 layer su 100% di 13.081 facce
+(0.80 mm), checkMesh PASS (NOmax 58.5, skew 1.65, neg 0). Valve golden
+75.360 -> 76.052 prismi (scala 0.6 e 4.008 esclusioni invariate). Suite BL
+verde (81 test) + fast suite 1283 passed.
+
+Limite architetturale misurato: lo stack non puo' superare la profondita'
+della prima cella dual (support_d p50 2.35 mm sul Part2) -> per BL piu'
+spessi servono celle di superficie piu' grosse o un BL che consuma piu'
+strati di celle (cambio grande, prossimo programma). Restano da fare:
+colorazione viewer per tipo cella (visibilita' BL), ri-validazione del
+benchmark 9/10 con la nuova semantica, test col caso reale dalla GUI.
+ATTENZIONE: il working tree contiene reversioni NON committate dei fix GUI
+di 1a7827f (license -> Proprietary, wording cfMesh, dialog non
+theme-aware, voci experimental ripristinate) - verificarle con l'utente.
+
+## Avanzamento 2026-10-06 (notte, seguito) - chiusura concava automatica (commit 2ea4191)
+
+La checkbox "Chiusura avanzata per geometrie concave" e' stata RIMOSSA: la
+chiusura concava (local_termination=decoupled_vertex, H4) ora e' un
+FALLBACK AUTOMATICO della catena: standard robusto -> chiusura concava ->
+primo strato dimezzato. Cosi' si attiva solo dove serve davvero
+(groove1/slot1: il vecchio standard falliva, la LT li sblocca; valvola
+production) senza degradare i casi dove lo standard nuovo vince (era
+misurata una regressione quando la LT girava per prima). Il flag legacy
+'concaveClosure' resta solo per il merge repair post-BL (off di default,
+misurato in regressione su groove1). Guardia memoria (8M facce/1.5M celle)
+spostata sul retry della chiusura. Test aggiornati (13 verdi).

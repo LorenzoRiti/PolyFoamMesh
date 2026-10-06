@@ -5,6 +5,48 @@ Tutte le modifiche notevoli a PolyFoamMesh sono documentate qui.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e
 il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
+## [Non rilasciato]
+
+### Corretto
+
+- **Boundary layer reali (non più "successi" finti)**: il layer poteva
+  risultare valido ma invisibile (1 strato quando ne erano richiesti 14)
+  perché il fixpoint di consistenza è un minimo su tutta la parete
+  connessa: un solo vertice a budget ridotto appiattiva ogni faccia.
+  Ora un build valido ma appiattito viene rifiutato e il layer viene
+  costruito con il massimo numero di strati che la mesh regge a piena
+  altezza (`capped N -> k` nel log), con primo strato effettivo, mediana
+  e copertura riportati nel log. Sul caso reale Part2: 1 strato a y+
+  target esatto (h1 pieno) o 2 strati con h1 dimezzato, checkMesh PASS.
+- **Unità `drop_bnd`** (id faccia locali confrontati con posizioni nella
+  selezione filtrata): con il filtro sliver attivo ("BL robusto")
+  venivano flaggate facce arbitrarie; il golden del valve passa da
+  75.360 a 76.052 prismi (scala ed esclusioni invariate).
+- **Volume delle celle** misurato con triangolazione esatta dal centroide
+  (prima Newell/centroide, approssimato su facce non planari); la
+  tolleranza di conservazione (5e-3) documenta la shell ceduta
+  by-design sotto le facce escluse.
+- **Stack compressi silenziosamente**: il cap ora scatta anche quando
+  regge un solo strato a piena altezza (prima 14 strati venivano
+  compressi in ~1 mm con y+ sbagliato di 20x senza avviso).
+
+### Modificato
+
+- **Chiusura concava automatica**: il worker ritenta da solo
+  `decoupled_vertex` (H4) quando il percorso standard fallisce, poi
+  dimezza il primo strato. Si attiva dove serve (giunzioni concave:
+  groove1/slot1, valvola production) senza degradare i casi già gestiti
+  dallo standard. La guardia memoria (8M facce / 1.5M celle) protegge il
+  retry della chiusura.
+
+### Rimosso
+
+- Checkbox "Chiusura avanzata per geometrie concave (sperimentale)" dal
+  pannello Boundary Layers, `get_bl_concave_closure()` e la chiave
+  `concaveClosure` dal payload GUI. Il flag legacy resta solo per il
+  merge repair post-BL (off di default, misurato in regressione su
+  groove1).
+
 ## [2.2.0] - 2026-09-08
 
 ### Cambi di rottura (breaking)
