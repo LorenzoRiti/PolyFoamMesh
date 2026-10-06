@@ -115,17 +115,15 @@ def test_apply_all_checkbox_reaches_poly_bl_params(panel):
     assert panel.get_bl_params()["applyToAll"] is False
 
 
-def test_concave_closure_checkbox_off_by_default_and_reaches_bl_params(panel):
-    """Opt-in H4/decoupled_vertex checkbox: unchecked by default (existing
-    behaviour unchanged for anyone who doesn't touch it), and its state
-    reaches get_bl_params() under the 'concaveClosure' key that
-    openfoam_runner.py reads to set local_termination='decoupled_vertex'."""
+def test_concave_closure_checkbox_is_gone_and_not_in_bl_params(panel):
+    """2026-10-06: the concave closure is automatic now — the worker retries
+    local_termination='decoupled_vertex' by itself when the standard robust
+    path fails.  The GUI must no longer carry a checkbox (nor the legacy
+    'concaveClosure' key, which only the post-BL merge repair still reads)."""
     panel._bl_checkbox.setChecked(True)
-    assert panel.get_bl_concave_closure() is False
-    assert panel.get_bl_params()["concaveClosure"] is False
-    panel._bl_concave_closure.setChecked(True)
-    assert panel.get_bl_concave_closure() is True
-    assert panel.get_bl_params()["concaveClosure"] is True
+    assert not hasattr(panel, "_bl_concave_closure")
+    assert not hasattr(panel, "get_bl_concave_closure")
+    assert "concaveClosure" not in panel.get_bl_params()
 
 
 def test_reports_the_reynolds_number_to_the_user(panel):
