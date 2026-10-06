@@ -746,7 +746,8 @@ def _drop_small_base_faces(points, faces, n_int, sel, fraction):
             int((~keep).sum()), threshold)
 
 
-def _drop_small_base_edges(points, faces, n_int, sel, fraction):
+def _drop_small_base_edges(points, faces, n_int, sel, fraction,
+                           absolute_threshold: float | None = None):
     """Drop selected boundary faces whose SMALLEST edge is below
     ``fraction * median(smallest edges)``.
 
@@ -777,7 +778,10 @@ def _drop_small_base_edges(points, faces, n_int, sel, fraction):
             for k in range(m)
         ))
     mins = np.asarray(mins, dtype=np.float64)
-    threshold = float(fraction) * float(np.median(mins))
+    if absolute_threshold is not None:
+        threshold = float(absolute_threshold)
+    else:
+        threshold = float(fraction) * float(np.median(mins))
     keep = mins >= threshold
     return ([bi for bi, k in zip(sel, keep) if k],
             int((~keep).sum()), threshold)
@@ -818,6 +822,7 @@ class PolyBoundaryLayerEngine:
         local_height_retry: bool = False,
         min_base_face_fraction: float = 0.0,
         min_base_edge_fraction: float = 0.0,
+        min_base_edge_h1_factor: float = 0.0,
         edge_cap_percentile: float = 0.0,
         terminate_by_budget: bool = False,
     ) -> PolyBoundaryLayerResult:
@@ -968,6 +973,10 @@ class PolyBoundaryLayerEngine:
             raise ValueError(
                 "min_base_edge_fraction must be >= 0 (0 disables the filter)"
             )
+        if min_base_edge_h1_factor < 0.0:
+            raise ValueError(
+                "min_base_edge_h1_factor must be >= 0 (0 disables the filter)"
+            )
         if not 0.0 <= edge_cap_percentile <= 100.0:
             raise ValueError(
                 "edge_cap_percentile must be in [0, 100] "
@@ -1077,6 +1086,17 @@ class PolyBoundaryLayerEngine:
                 self._log(
                     f"[bl] excluded {n_edge} sliver-edge base faces "
                     f"(<{min_base_edge_fraction:g}*median={cut_e:.6g}m)"
+                )
+        if sel and min_base_edge_h1_factor > 0.0:
+            sel, n_edge_h1, cut_h1 = _drop_small_base_edges(
+                points, faces, n_int, sel, 0.0,
+                absolute_threshold=min_base_edge_h1_factor * res.first_height,
+            )
+            if n_edge_h1:
+                res.n_excluded_small_edges += int(n_edge_h1)
+                self._log(
+                    f"[bl] excluded {n_edge_h1} tiny-edge base faces "
+                    f"(<{min_base_edge_h1_factor:g}*h1={cut_h1:.6g}m)"
                 )
         if not sel:
             res.errors.append("no selected faces")

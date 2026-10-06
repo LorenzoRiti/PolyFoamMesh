@@ -631,6 +631,7 @@ def _benchmark_poly_one(
     bl_local_term: str = "off",
     bl_height_retry: bool = False,
     bl_budget_term: bool = False,
+    bl_edge_h1: float = 0.0,
     dual_smooth_iters: int = 3,
     dual_compact: bool = False,
     dual_axis: bool = False,
@@ -826,6 +827,7 @@ def _benchmark_poly_one(
                 ),
                 local_height_retry=bl_height_retry,
                 terminate_by_budget=bl_budget_term,
+                min_base_edge_h1_factor=bl_edge_h1,
             )
             stage_times["bl"] = round(time.perf_counter() - t0, 2)
             if bres.success:
