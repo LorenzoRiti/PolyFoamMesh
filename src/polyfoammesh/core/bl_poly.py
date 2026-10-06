@@ -779,6 +779,7 @@ class PolyBoundaryLayerEngine:
         normal_method: str = "area_weighted",
         local_height_retry: bool = False,
         min_base_face_fraction: float = 0.0,
+        edge_cap_percentile: float = 0.0,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -856,6 +857,18 @@ class PolyBoundaryLayerEngine:
           terminator band around a dropped face is handled by `_build`
           (NO auto-close - see `_select_faces`), so the cells under it
           stay closed.  Must be >= 0 (raises ValueError otherwise).
+        - `edge_cap_percentile`: opt-in robust inversion-clamp edge cap
+          (default 0.0 = off, byte-identical to the historical behaviour).
+          The per-vertex hard cap `0.5 * min_edge[w]` is the SMALLEST edge
+          among the wall vertex's incident wall faces, so on real duals a
+          few sliver boundary faces with tiny edges collapse the whole
+          local stack (venturi: min_edge 1.41e-4 -> stack capped at
+          7.05e-5, pancakes everywhere; measured `clamp_factor` 0.5/1.0/2.0
+          identical because `min_edge` binds).  When > 0, the cap uses the
+          p-th percentile of ALL edge lengths of the vertex's incident
+          wall faces instead of the minimum, so one sliver edge no longer
+          dictates the local thickness.  Must be in [0, 100] (raises
+          ValueError otherwise).
         - `local_termination`: opt-in iterative local termination for
           geometries with concave defects (the reference valve).  Each
           attempt uses the binary layer-count mode (a face is either fully
@@ -910,6 +923,11 @@ class PolyBoundaryLayerEngine:
         if min_base_face_fraction < 0.0:
             raise ValueError(
                 "min_base_face_fraction must be >= 0 (0 disables the filter)"
+            )
+        if not 0.0 <= edge_cap_percentile <= 100.0:
+            raise ValueError(
+                "edge_cap_percentile must be in [0, 100] "
+                "(0 keeps the historical min-edge cap)"
             )
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
@@ -1030,6 +1048,7 @@ class PolyBoundaryLayerEngine:
                 vertex_exclusions=(local_termination == "decoupled_vertex"),
                 normal_method=normal_method,
                 height_retry=local_height_retry,
+                edge_cap_percentile=edge_cap_percentile,
             )
 
         # fallback: progressively thinner layers AND tighter per-vertex
@@ -1042,6 +1061,7 @@ class PolyBoundaryLayerEngine:
         pre = self._build_precompute(
             points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
             concavity_criterion=concavity_criterion, normal_method=normal_method,
+            edge_cap_percentile=edge_cap_percentile,
         )
         for k, v in pre.get("dual_stats", {}).items():
             res.stats[k] = v
@@ -1303,7 +1323,8 @@ class PolyBoundaryLayerEngine:
                                local_exclude_widen: int = 0,
                                vertex_exclusions: bool = False,
                                normal_method: str = "area_weighted",
-                               height_retry: bool = False):
+                               height_retry: bool = False,
+                               edge_cap_percentile: float = 0.0):
         """Opt-in iterative local termination (see ``run`` docstring).
 
         Binary layer counts (``zero_concave``): a face keeps the full stack
@@ -1405,6 +1426,7 @@ class PolyBoundaryLayerEngine:
                     sel_cur, drop_bnd,
                     concavity_criterion=concavity_criterion,
                     normal_method=normal_method,
+                    edge_cap_percentile=edge_cap_percentile,
                 )
                 for k, v in pre.get("dual_stats", {}).items():
                     res.stats[k] = v
@@ -1562,12 +1584,15 @@ class PolyBoundaryLayerEngine:
     def _build_precompute(self, points, faces, owner, neighbour, patches,
                           n_int, sel, drop_bnd,
                           concavity_criterion: str = "angle_fade",
-                          normal_method: str = "area_weighted") -> dict:
+                          normal_method: str = "area_weighted",
+                          edge_cap_percentile: float = 0.0) -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
         vertices, per-vertex normals, the feature-aware angular fade (or the
-        ``dual_convexity`` dual-cell signal), the smallest incident wall-face
-        edge, the interior-support distance, and the edge/patch maps.
+        ``dual_convexity`` dual-cell signal), the inversion-clamp edge cap
+        (the smallest incident wall-face edge by default, or its
+        ``edge_cap_percentile``-th percentile when that opt-in is > 0),
+        the interior-support distance, and the edge/patch maps.
 
         ``concavity_criterion`` selects the concavity detector that drives
         the local layer termination: "angle_fade" (default, historical,
@@ -1586,6 +1611,11 @@ class PolyBoundaryLayerEngine:
         n_cells = int(max(owner.max(), neighbour.max())) + 1
         bnd = [n_int + bi for bi in sel]
         drop_bnd = drop_bnd or frozenset()
+        if not 0.0 <= edge_cap_percentile <= 100.0:
+            raise ValueError(
+                "edge_cap_percentile must be in [0, 100] "
+                "(0 keeps the historical min-edge cap)"
+            )
 
         # --- wall vertices -------------------------------------------------
         wv: dict[int, None] = {}
@@ -1698,6 +1728,7 @@ class PolyBoundaryLayerEngine:
         # non-convex around the concave CAD feature edges).
         angle_fade: dict[int, float] = {}
         min_edge: dict[int, float] = {}
+        edge_cap: dict[int, float] = {}
         dual_fade, dual_stats = None, {}
         if concavity_criterion == "dual_convexity":
             dual_fade, dual_stats = _dual_convexity_wall_fade(
@@ -1719,6 +1750,18 @@ class PolyBoundaryLayerEngine:
                     a, b = f[k], f[(k + 1) % len(f)]
                     f_edges.append(float(np.linalg.norm(pts[a] - pts[b])))
             min_edge[w] = min(f_edges) if f_edges else float("inf")
+            # Robust inversion-clamp edge cap (opt-in `edge_cap_percentile`):
+            # 0.0 (default) keeps the historical SMALLEST incident edge, so the
+            # result is byte-identical; > 0 takes the p-th percentile of ALL
+            # edge lengths of the vertex's incident wall faces instead, so a
+            # single sliver boundary face no longer collapses the local stack.
+            if edge_cap_percentile == 0.0 or not f_edges:
+                edge_cap[w] = min_edge[w]
+            else:
+                edge_cap[w] = float(np.percentile(
+                    np.asarray(f_edges, dtype=np.float64),
+                    edge_cap_percentile,
+                ))
             if dual_fade is not None:
                 angle_fade[w] = dual_fade[w]
                 continue
@@ -1852,6 +1895,7 @@ class PolyBoundaryLayerEngine:
             "wall_verts": wall_verts, "vert_faces": vert_faces,
             "wall_face_of": wall_face_of, "normals": normals,
             "angle_fade": angle_fade, "min_edge": min_edge,
+            "edge_cap": edge_cap,
             "support_d": support_d, "edge_sides": edge_sides,
             "bnd_edge_faces": bnd_edge_faces, "patch_of": patch_of,
             "n_wf": len(bnd), "n_bnd": n_bnd,
@@ -1864,12 +1908,16 @@ class PolyBoundaryLayerEngine:
                pyr_before: int = 0, drop_bnd=None, pre=None,
                concavity_criterion: str = "angle_fade",
                zero_concave: bool = False,
-               vertex_height_scale: dict[int, float] | None = None) -> dict:
+               vertex_height_scale: dict[int, float] | None = None,
+               edge_cap_percentile: float = 0.0) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
         (computed once per run and reused by the fallback loop); when None it
         is computed here, so direct callers keep working.
+        ``edge_cap_percentile`` is only used in that fallback (when ``pre``
+        is None); with ``pre`` given, the cap is whatever that precompute
+        was built with (see ``run(edge_cap_percentile=...)``).
 
         ``zero_concave`` (opt-in, experiment): faces flagged as concave
         (input pyramid violations) get ZERO layers instead of being floored
@@ -1888,6 +1936,7 @@ class PolyBoundaryLayerEngine:
             pre = self._build_precompute(
                 points, faces, owner, neighbour, patches, n_int, sel,
                 drop_bnd, concavity_criterion=concavity_criterion,
+                edge_cap_percentile=edge_cap_percentile,
             )
         pts = pre["pts"]
         n_pts = pre["n_pts"]
@@ -1897,7 +1946,9 @@ class PolyBoundaryLayerEngine:
         wall_face_of = pre["wall_face_of"]
         normals = pre["normals"]
         angle_fade = pre["angle_fade"]
-        min_edge = pre["min_edge"]
+        # pre["min_edge"] is still populated (compatibility); the clamp below
+        # uses the robust cap, which equals it when edge_cap_percentile=0.
+        edge_cap = pre["edge_cap"]
         support_d = pre["support_d"]
         edge_sides = pre["edge_sides"]
         bnd_edge_faces = pre["bnd_edge_faces"]
@@ -1916,9 +1967,11 @@ class PolyBoundaryLayerEngine:
             _gil_yield(wi, 64)
             d = support_d[w]
             # inversion guard (distance to interior) + feature fade (angular
-            # divergence) + hard cap on the smallest incident wall-face edge
+            # divergence) + hard cap on the incident wall-face edge length
+            # (`edge_cap`: the historical smallest edge, or the opt-in
+            # `edge_cap_percentile` robust cap - see `_build_precompute`)
             max_h[w] = angle_fade[w] * min(
-                clamp_factor * d, 0.5 * min_edge[w],
+                clamp_factor * d, 0.5 * edge_cap[w],
             )
             if vertex_height_scale:
                 max_h[w] *= vertex_height_scale.get(w, 1.0)

@@ -321,6 +321,7 @@ def run_single(
     keep_case: bool = False,
     poly_sliver_dissolve: float = 0.0,
     poly_bl_min_face: float = 0.0,
+    poly_bl_edge_cap_pct: float = 0.0,
     poly_dual_smooth_iters: int = 3,
     poly_dual_compact: bool = False,
     poly_dual_axis: bool = False,
@@ -345,6 +346,7 @@ def run_single(
             check_timeout_s=CHECK_TIMEOUT_S,
             sliver_dissolve=poly_sliver_dissolve,
             bl_min_face=poly_bl_min_face,
+            bl_edge_cap_pct=poly_bl_edge_cap_pct,
             dual_smooth_iters=poly_dual_smooth_iters,
             dual_compact=poly_dual_compact,
             dual_axis=poly_dual_axis,
@@ -390,6 +392,7 @@ def run_parent(
     keep: bool = False,
     poly_sliver_dissolve: float = 0.0,
     poly_bl_min_face: float = 0.0,
+    poly_bl_edge_cap_pct: float = 0.0,
     poly_dual_smooth_iters: int = 3,
     poly_dual_compact: bool = False,
     poly_dual_axis: bool = False,
@@ -422,6 +425,10 @@ def run_parent(
                 cmd += ["--poly-sliver-dissolve", str(poly_sliver_dissolve)]
             if poly_bl_min_face > 0.0:
                 cmd += ["--poly-bl-min-face", str(poly_bl_min_face)]
+            # Opt-in BL edge cap percentile: only forwarded when > 0, so a
+            # default run's child cmd is byte-identical to the pre-flag one.
+            if poly_bl_edge_cap_pct > 0.0:
+                cmd += ["--poly-bl-edge-cap-pct", str(poly_bl_edge_cap_pct)]
             # Dual-config opt-ins: append ONLY when they differ from the
             # defaults, so a default run's child cmd is byte-identical to
             # the pre-flag one.
@@ -492,6 +499,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poly-bl-min-face", type=float, default=0.0,
                    help="opt-in: drop BL base faces below this fraction of the "
                         "median face size on the poly runner (0 = off)")
+    p.add_argument("--poly-bl-edge-cap-pct", type=float, default=0.0,
+                   help="opt-in: BL inversion-clamp edge cap as the p-th "
+                        "percentile of a wall vertex's incident edge lengths "
+                        "on the poly runner (0 = off, the historical "
+                        "min-edge cap)")
     p.add_argument("--poly-dual-smooth-iters", type=int, default=3,
                    help="opt-in: dual smoother iterations on the poly runner "
                         "(default 3, the converter default)")
@@ -528,6 +540,7 @@ def main(args: list[str] | None = None) -> int:
                 opts.runner[0], geometry_path(spec), Path(opts.out), opts.keep,
                 poly_sliver_dissolve=opts.poly_sliver_dissolve,
                 poly_bl_min_face=opts.poly_bl_min_face,
+                poly_bl_edge_cap_pct=opts.poly_bl_edge_cap_pct,
                 poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
                 poly_dual_compact=opts.poly_dual_compact,
                 poly_dual_axis=opts.poly_dual_axis,
@@ -542,6 +555,7 @@ def main(args: list[str] | None = None) -> int:
         opts.tier, opts.runner, opts.geometry, opts.keep,
         poly_sliver_dissolve=opts.poly_sliver_dissolve,
         poly_bl_min_face=opts.poly_bl_min_face,
+        poly_bl_edge_cap_pct=opts.poly_bl_edge_cap_pct,
         poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
         poly_dual_compact=opts.poly_dual_compact,
         poly_dual_axis=opts.poly_dual_axis,
