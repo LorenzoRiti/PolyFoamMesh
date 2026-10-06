@@ -322,6 +322,9 @@ def run_single(
     poly_sliver_dissolve: float = 0.0,
     poly_bl_min_face: float = 0.0,
     poly_bl_min_edge: float = 0.0,
+    poly_bl_normal: str = "area_weighted",
+    poly_bl_local_term: str = "off",
+    poly_bl_height_retry: bool = False,
     poly_bl_edge_cap_pct: float = 0.0,
     poly_dual_smooth_iters: int = 3,
     poly_dual_compact: bool = False,
@@ -348,6 +351,9 @@ def run_single(
             sliver_dissolve=poly_sliver_dissolve,
             bl_min_face=poly_bl_min_face,
             bl_min_edge=poly_bl_min_edge,
+            bl_normal=poly_bl_normal,
+            bl_local_term=poly_bl_local_term,
+            bl_height_retry=poly_bl_height_retry,
             bl_edge_cap_pct=poly_bl_edge_cap_pct,
             dual_smooth_iters=poly_dual_smooth_iters,
             dual_compact=poly_dual_compact,
@@ -395,6 +401,9 @@ def run_parent(
     poly_sliver_dissolve: float = 0.0,
     poly_bl_min_face: float = 0.0,
     poly_bl_min_edge: float = 0.0,
+    poly_bl_normal: str = "area_weighted",
+    poly_bl_local_term: str = "off",
+    poly_bl_height_retry: bool = False,
     poly_bl_edge_cap_pct: float = 0.0,
     poly_dual_smooth_iters: int = 3,
     poly_dual_compact: bool = False,
@@ -430,6 +439,12 @@ def run_parent(
                 cmd += ["--poly-bl-min-face", str(poly_bl_min_face)]
             if poly_bl_min_edge > 0.0:
                 cmd += ["--poly-bl-min-edge", str(poly_bl_min_edge)]
+            if poly_bl_normal != "area_weighted":
+                cmd += ["--poly-bl-normal", poly_bl_normal]
+            if poly_bl_local_term != "off":
+                cmd += ["--poly-bl-local-term", poly_bl_local_term]
+            if poly_bl_height_retry:
+                cmd += ["--poly-bl-height-retry"]
             # Opt-in BL edge cap percentile: only forwarded when > 0, so a
             # default run's child cmd is byte-identical to the pre-flag one.
             if poly_bl_edge_cap_pct > 0.0:
@@ -507,6 +522,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poly-bl-min-edge", type=float, default=0.0,
                    help="opt-in: drop sliver-EDGE base faces from the BL "
                         "(fraction of the median min-edge; 0 = off)")
+    p.add_argument("--poly-bl-normal", default="area_weighted",
+                   choices=["area_weighted", "most_visible", "smoothed", "guided"],
+                   help="opt-in: BL extrusion normal method (default area_weighted)")
+    p.add_argument("--poly-bl-local-term", default="off",
+                   choices=["off", "decoupled", "decoupled_vertex"],
+                   help="opt-in: BL local termination mode (default off)")
+    p.add_argument("--poly-bl-height-retry", action="store_true",
+                   help="opt-in: short-stack retry before excluding (needs local term)")
     p.add_argument("--poly-bl-edge-cap-pct", type=float, default=0.0,
                    help="opt-in: BL inversion-clamp edge cap as the p-th "
                         "percentile of a wall vertex's incident edge lengths "
@@ -549,6 +572,9 @@ def main(args: list[str] | None = None) -> int:
                 poly_sliver_dissolve=opts.poly_sliver_dissolve,
                 poly_bl_min_face=opts.poly_bl_min_face,
                 poly_bl_min_edge=opts.poly_bl_min_edge,
+                poly_bl_normal=opts.poly_bl_normal,
+                poly_bl_local_term=opts.poly_bl_local_term,
+                poly_bl_height_retry=opts.poly_bl_height_retry,
                 poly_bl_edge_cap_pct=opts.poly_bl_edge_cap_pct,
                 poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
                 poly_dual_compact=opts.poly_dual_compact,
@@ -565,6 +591,9 @@ def main(args: list[str] | None = None) -> int:
         poly_sliver_dissolve=opts.poly_sliver_dissolve,
         poly_bl_min_face=opts.poly_bl_min_face,
         poly_bl_min_edge=opts.poly_bl_min_edge,
+        poly_bl_normal=opts.poly_bl_normal,
+        poly_bl_local_term=opts.poly_bl_local_term,
+        poly_bl_height_retry=opts.poly_bl_height_retry,
         poly_bl_edge_cap_pct=opts.poly_bl_edge_cap_pct,
         poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
         poly_dual_compact=opts.poly_dual_compact,
