@@ -625,6 +625,7 @@ def _benchmark_poly_one(
     check_timeout_s: int = TIMEOUT_S,
     sliver_dissolve: float = 0.0,
     bl_min_face: float = 0.0,
+    bl_min_edge: float = 0.0,
     bl_edge_cap_pct: float = 0.0,
     dual_smooth_iters: int = 3,
     dual_compact: bool = False,
@@ -808,6 +809,7 @@ def _benchmark_poly_one(
                 # Opt-in (harness --poly-bl-min-face): 0.0 keeps the engine
                 # default, i.e. the small-base-face filter completely off.
                 min_base_face_fraction=bl_min_face,
+                min_base_edge_fraction=bl_min_edge,
                 # Opt-in (harness --poly-bl-edge-cap-pct): 0.0 keeps the
                 # historical per-vertex min-edge inversion clamp.
                 edge_cap_percentile=bl_edge_cap_pct,

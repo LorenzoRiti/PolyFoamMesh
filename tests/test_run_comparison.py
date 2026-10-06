@@ -525,3 +525,55 @@ def test_run_single_passes_merge_repair_to_poly(tmp_path, monkeypatch) -> None:
     seen_kwargs.clear()
     rc.run_single("poly", tmp_path / "cylinder.stl", tmp_path / "out.json")
     assert seen_kwargs["merge_repair"] is False
+
+
+def test_poly_bl_min_edge_defaults_off():
+    opts = rc._build_parser().parse_args(["--tier", "fast"])
+    assert opts.poly_bl_min_edge == 0.0
+
+
+def test_poly_bl_min_edge_forwarded_to_child(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_run(cmd, timeout=None, **kw):
+        seen.append(cmd)
+        out = Path(cmd[cmd.index("--out") + 1])
+        geom = cmd[cmd.index("--geometry") + 1]
+        runner = cmd[cmd.index("--runner") + 1]
+        out.write_text(json.dumps(rc.make_record(
+            geom, runner, success=True, wall_time_s=1.0,
+            metrics={"cell_count": 10, "max_non_ortho": 10.0,
+                     "avg_non_ortho": 5.0, "max_skewness": 0.5,
+                     "max_aspect_ratio": 2.0, "neg_cells": 0,
+                     "min_volume": 1e-4},
+            errors=[], warnings=[],
+        )), encoding="utf-8")
+
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+    rc.run_parent(tier="fast", runners=["poly"], geometries=["cylinder"],
+                  poly_bl_min_edge=0.1, _child_out_dir=tmp_path,
+                  _write_results=False)
+    assert seen and all("--poly-bl-min-edge" in c for c in seen)
+    assert all(c[c.index("--poly-bl-min-edge") + 1] == "0.1" for c in seen)
+
+
+def test_run_single_passes_min_edge_to_poly(tmp_path, monkeypatch):
+    import benchmarks.run_benchmarks as rb
+    captured = {}
+
+    def fake_bench(stl_path, **kw):
+        captured.update(kw)
+        return {"geometry": Path(stl_path).stem, "success": True,
+                "wall_time_s": 1.0, "cell_count": 10, "max_non_ortho": 10.0,
+                "avg_non_ortho": 5.0, "max_skewness": 0.5,
+                "max_aspect_ratio": 2.0, "neg_cells": 0, "min_volume": 1e-4,
+                "errors": [], "warnings": []}
+
+    monkeypatch.setattr(rb, "_benchmark_poly_one", fake_bench)
+    rc.run_single("poly", Path("benchmarks/geometries/cylinder.stl"),
+                  tmp_path / "out.json", poly_bl_min_edge=0.1)
+    assert captured.get("bl_min_edge") == 0.1
