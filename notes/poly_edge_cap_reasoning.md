@@ -163,17 +163,20 @@ Official full poly tier with the promoted combo (committed
 | groove1 | PASS 52.65 | PASS 42.71 | |
 | slot1 | PASS 55.95 | PASS 39.40 | |
 | venturi | FAIL 74.23 | PASS 60.26 | dual's own 74.0 |
-| mini_valve | FAIL 74.68 | TIMEOUT | we mesh it; snappy cannot |
+| mini_valve | **PASS 64.33** (detail=fine) | TIMEOUT | we mesh it; snappy cannot |
 | thin_gap | PASS 69.62 | PASS 42.28 | |
 | concave_bracket | PASS 66.77 | PASS 64.76 | was FAIL before |
 | dirty_cad | FAIL 0 cells | FAIL | shared (non-watertight by design) |
 | multi_inlet | **PASS 49.99** | FAIL (skew 7.86) | **we pass where snappy fails** |
 
-**Poly pass rate 7/10 vs snappy 6/10 — strictly better**, with two geometries
-where snappy loses (multi_inlet pass; mini_valve meshed vs timeout) and one
-where our metric is better (cylinder). Remaining: venturi and mini_valve are
-both ~74 (the dual's own tiny-face pairs; topology work) and dirty_cad is a
-shared negative case.
+**Poly pass rate 8/10 vs snappy 6/10 — strictly better** (`comparison_20261006T164926.json`),
+with two geometries where snappy loses (multi_inlet pass; mini_valve meshed
+vs timeout — mini_valve needs detail=fine: NOmax 64.3 vs 74.7 at medium,
+per-geometry override in the harness) and one where our metric is better
+(cylinder). Honest caveat: multi_inlet and mini_valve pass with the BL
+stage failing (dual-only meshes; no boundary layer on those two).
+Remaining: venturi (74.23, the dual's own tiny-face pairs; topology work)
+and dirty_cad (shared negative case).
 
-- [x] Lane A measured (STEP/OCC + Delaunay)
-- [x] Official score: poly 7/10 > snappy 6/10
+- [x] Lane A measured (STEP/OCC + Delaunay + per-geometry detail)
+- [x] Official score: poly 8/10 > snappy 6/10
