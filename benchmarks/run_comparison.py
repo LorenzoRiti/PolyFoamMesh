@@ -21,7 +21,6 @@ import argparse
 import datetime
 import json
 import logging
-import os
 import shutil
 import subprocess
 import sys
@@ -206,7 +205,7 @@ def _run_gmsh_direct(stl_path: Path) -> dict:
             run_gmsh_volume(
                 _src,
                 case_dir / "mesh.msh",
-                detail=os.environ.get("BENCH_GMSH_DETAIL", "medium"),
+                detail=rb._gmsh_detail(stl_path),
                 user_lc=max_cell,
                 min_lc=min_cell,
                 timeout_s=GMSH_TIMEOUT_S,
