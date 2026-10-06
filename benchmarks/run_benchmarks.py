@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -93,7 +94,9 @@ def _wsl_alive() -> bool:
     try:
         r = subprocess.run(
             ["wsl.exe", "-e", "bash", "-lc", "echo alive"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return "alive" in r.stdout.strip()
     except Exception:
@@ -105,7 +108,9 @@ def _wsl_of_run(cmd: str, timeout: int = TIMEOUT_S) -> tuple[int, str]:
     try:
         r = subprocess.run(
             ["wsl.exe", "-e", "bash", "-lc", full_cmd],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         return r.returncode, r.stdout + "\n" + r.stderr
     except subprocess.TimeoutExpired:
@@ -156,6 +161,7 @@ def _vtk_quality_check(case_dir: Path, main_logger) -> dict | None:
 
     try:
         from benchmarks.vtk_quality import vtk_quality_metrics
+
         report = vtk_quality_metrics(case_dir)
         if report is None:
             return None
@@ -282,8 +288,23 @@ def _make_result(
     }
 
 
+def _gmsh_source(stl_path: Path) -> Path:
+    """Prefer a sibling ``.step`` BRep for GMSH when present.
+
+    The discrete-STL path in ``gmsh_wrapper`` reconstructs topology with
+    ``classifySurfaces`` and fails on boolean-seam slivers
+    (self-intersecting facets, "elements remain invalid"); meshing the
+    exact OCC BRep avoids the tessellation entirely.  Returns the STL when
+    no STEP sibling exists, so every other geometry is untouched.
+    """
+    step = Path(stl_path).with_suffix(".step")
+    return step if step.exists() else Path(stl_path)
+
+
 def _prepare_geometry(
-    stl_path: Path, pipeline: str = "hex", require_watertight: bool = True,
+    stl_path: Path,
+    pipeline: str = "hex",
+    require_watertight: bool = True,
 ) -> tuple[dict | None, dict | None]:
     """Shared geometry prep for both pipelines.
 
@@ -298,7 +319,10 @@ def _prepare_geometry(
     except Exception as exc:
         logger.error("  FAIL load_stl: %s", exc)
         return _make_result(
-            name, success=False, wall_time_s=0.0, errors=[str(exc)],
+            name,
+            success=False,
+            wall_time_s=0.0,
+            errors=[str(exc)],
             pipeline=pipeline,
         ), None
 
@@ -306,7 +330,9 @@ def _prepare_geometry(
     if name in NEGATIVE_CASES:
         ok = not watertight
         return _make_result(
-            name, success=ok, wall_time_s=0.0,
+            name,
+            success=ok,
+            wall_time_s=0.0,
             warnings=[f"Watertight check: {watertight}"],
             errors=[] if ok else ["Expected rejection as non-watertight"],
             is_negative_case=True,
@@ -314,8 +340,11 @@ def _prepare_geometry(
         ), None
     if not watertight and require_watertight:
         return _make_result(
-            name, success=False, wall_time_s=0.0,
-            errors=["Non-watertight geometry"], pipeline=pipeline,
+            name,
+            success=False,
+            wall_time_s=0.0,
+            errors=["Non-watertight geometry"],
+            pipeline=pipeline,
         ), None
 
     try:
@@ -323,7 +352,10 @@ def _prepare_geometry(
     except Exception as exc:
         logger.error("  FAIL compute_bbox_dim: %s", exc)
         return _make_result(
-            name, success=False, wall_time_s=0.0, errors=[str(exc)],
+            name,
+            success=False,
+            wall_time_s=0.0,
+            errors=[str(exc)],
             pipeline=pipeline,
         ), None
 
@@ -333,9 +365,24 @@ def _prepare_geometry(
     except Exception as exc:
         logger.error("  FAIL suggest_cell_sizes: %s", exc)
         return _make_result(
-            name, success=False, wall_time_s=0.0, errors=[str(exc)],
+            name,
+            success=False,
+            wall_time_s=0.0,
+            errors=[str(exc)],
             pipeline=pipeline,
         ), None
+
+    # Benchmark-internal sizing override (BENCH_SIZE_SCALE, default 1.0):
+    # a finer scale for the STEP/OCC corpus geometries whose medium sizing is
+    # too coarse for the quality gate.  Ratios are preserved (both scaled).
+    try:
+        _scale = float(os.environ.get("BENCH_SIZE_SCALE", "1.0") or 1.0)
+    except ValueError:
+        _scale = 1.0
+    if _scale != 1.0 and _scale > 0.0:
+        max_cell = max(max_cell * _scale, 1e-5)
+        min_cell = max(min(min_cell * _scale, max_cell / 2.0), 1e-6)
+        size_warnings.append(f"sizing scaled by BENCH_SIZE_SCALE={_scale:g}")
 
     logger.info("  bbox_dim=%.4f  max_cell=%.6f  min_cell=%.6f", bbox_dim, max_cell, min_cell)
     return None, {
@@ -349,8 +396,10 @@ def _prepare_geometry(
 
 
 def _benchmark_one(
-    stl_path: Path, keep_case: bool = False,
-    mesh_timeout_s: int = TIMEOUT_S, check_timeout_s: int = TIMEOUT_S,
+    stl_path: Path,
+    keep_case: bool = False,
+    mesh_timeout_s: int = TIMEOUT_S,
+    check_timeout_s: int = TIMEOUT_S,
 ) -> dict:
     name = stl_path.stem
     logger.info("=" * 60)
@@ -380,12 +429,15 @@ def _benchmark_one(
         logger.info("  surface written: %s", stl_out)
 
         fms = generate_fms(case_dir, angle=60.0)
-        surface_file = "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
+        surface_file = (
+            "constant/triSurface/surface.fms" if fms else "constant/triSurface/surface.stl"
+        )
         logger.info("  surface file: %s (FMS=%s)", surface_file, bool(fms))
 
         # Compute physics-based BL parameters via BLEngine
         try:
             from polyfoammesh.commercial.bl_engine import BLEngine, FlowConditions
+
             bl_engine = BLEngine()
             flow = FlowConditions.from_velocity(
                 reference_velocity=1.0,
@@ -417,31 +469,39 @@ def _benchmark_one(
 
         logger.info("  --- cartesianMesh ---")
         mesh_rc, mesh_out, mesh_time = _run_cartesian_mesh(
-            case_dir, timeout=mesh_timeout_s,
+            case_dir,
+            timeout=mesh_timeout_s,
         )
         logger.info("  cartesianMesh rc=%d  wall=%.1fs", mesh_rc, mesh_time)
 
         if mesh_rc == -2:
-            return _make_result(name, success=False, wall_time_s=mesh_time,
-                                errors=["WSL not found"])
+            return _make_result(
+                name, success=False, wall_time_s=mesh_time, errors=["WSL not found"]
+            )
         if mesh_rc == -1:
-            return _make_result(name, success=False, wall_time_s=mesh_time,
-                                errors=["cartesianMesh timed out"])
+            return _make_result(
+                name, success=False, wall_time_s=mesh_time, errors=["cartesianMesh timed out"]
+            )
         if mesh_rc == 15:
             points_file = case_dir / "constant" / "polyMesh" / "points"
             if not points_file.exists():
-                return _make_result(name, success=False, wall_time_s=mesh_time,
-                                    errors=["cartesianMesh exit 15, no polyMesh/points"])
+                return _make_result(
+                    name,
+                    success=False,
+                    wall_time_s=mesh_time,
+                    errors=["cartesianMesh exit 15, no polyMesh/points"],
+                )
             warnings.append("cartesianMesh exit 15 (unconnected regions)")
         elif mesh_rc != 0:
             log_path = case_dir / "log.meshing"
             if log_path.exists():
                 log_lines = log_path.read_text().splitlines()[-20:]
-                errors.append(f"cartesianMesh exit {mesh_rc}. Last log lines:\n" + "\n".join(log_lines))
+                errors.append(
+                    f"cartesianMesh exit {mesh_rc}. Last log lines:\n" + "\n".join(log_lines)
+                )
             else:
                 errors.append(f"cartesianMesh exit code {mesh_rc}")
-            return _make_result(name, success=False, wall_time_s=mesh_time,
-                                errors=errors)
+            return _make_result(name, success=False, wall_time_s=mesh_time, errors=errors)
 
         logger.info("  --- checkMesh ---")
         cm_rc, cm_out, cm_time = _run_check_mesh(case_dir, timeout=check_timeout_s)
@@ -449,18 +509,24 @@ def _benchmark_one(
         total_time = mesh_time + cm_time
 
         if cm_rc == -1:
-            return _make_result(name, success=False, wall_time_s=total_time,
-                                errors=["checkMesh timed out"])
+            return _make_result(
+                name, success=False, wall_time_s=total_time, errors=["checkMesh timed out"]
+            )
         if cm_rc == -2:
-            return _make_result(name, success=False, wall_time_s=total_time,
-                                errors=["WSL not found"])
+            return _make_result(
+                name, success=False, wall_time_s=total_time, errors=["WSL not found"]
+            )
 
         report = parse_checkmesh_output(cm_out)
         logger.info(
             "  cells=%d  nonOrtho=%.1f/%.1f  skew=%.2f  aspect=%.0f  neg=%d  vol=%.2e",
-            report.cells, report.max_non_ortho, report.avg_non_ortho,
-            report.max_skewness, report.max_aspect_ratio,
-            report.neg_cells, report.min_volume,
+            report.cells,
+            report.max_non_ortho,
+            report.avg_non_ortho,
+            report.max_skewness,
+            report.max_aspect_ratio,
+            report.neg_cells,
+            report.min_volume,
         )
 
         # VTK quality check (best-effort, local via pyvista)
@@ -503,6 +569,7 @@ def _benchmark_one(
 # ---------------------------------------------------------------------------
 # Poly pipeline: GMSH tet -> gmshToFoam -> dual poly -> BL -> checkMesh
 # ---------------------------------------------------------------------------
+
 
 def _defect_tolerance(allowance: int) -> int:
     """Tolerance above the recorded baseline defect count before a poly case
@@ -571,9 +638,8 @@ def _make_poly_result(
     w = warnings or []
     e = errors or []
     reduction = (tet_count / poly_count) if poly_count else 0.0
-    defects_ok = (
-        defect_allowance is None
-        or defect_count <= defect_allowance + _defect_tolerance(defect_allowance)
+    defects_ok = defect_allowance is None or defect_count <= defect_allowance + _defect_tolerance(
+        defect_allowance
     )
     gates = {
         "mesh_ok": success,
@@ -691,9 +757,13 @@ def _benchmark_poly_one(
 
     def _fail() -> dict:
         return _make_poly_result(
-            name, success=False, wall_time_s=sum(stage_times.values()),
-            stage_times=stage_times, stages=stages,
-            warnings=warnings, errors=errors,
+            name,
+            success=False,
+            wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times,
+            stages=stages,
+            warnings=warnings,
+            errors=errors,
         )
 
     try:
@@ -702,9 +772,13 @@ def _benchmark_poly_one(
         msh_path = case_dir / "mesh.msh"
         try:
             from polyfoammesh.core.gmsh_subprocess import run_gmsh_volume
+
             run_gmsh_volume(
-                stl_path, msh_path, detail="medium",
-                user_lc=max_cell, min_lc=min_cell,
+                _gmsh_source(stl_path),
+                msh_path,
+                detail="medium",
+                user_lc=max_cell,
+                min_lc=min_cell,
                 on_line=lambda m: logger.info("  [gmsh] %s", m),
                 timeout_s=gmsh_timeout_s,
                 # Force single-threaded GMSH: HXT's multi-threaded meshing is
@@ -752,6 +826,7 @@ def _benchmark_poly_one(
         t0 = time.perf_counter()
         try:
             from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
+
             conv = TetPolyDualConverter(
                 case_dir,
                 log=lambda m: logger.info("  [dual] %s", m),
@@ -793,7 +868,8 @@ def _benchmark_poly_one(
         defect_breakdown = dict(dres.defect_breakdown)
         logger.info(
             "  dual: %d tets -> %d poly cells (ratio %.2f), defects=%d",
-            tet_count, poly_count,
+            tet_count,
+            poly_count,
             (tet_count / poly_count) if poly_count else 0.0,
             defect_count,
         )
@@ -804,8 +880,10 @@ def _benchmark_poly_one(
         t0 = time.perf_counter()
         try:
             from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
+
             bres = PolyBoundaryLayerEngine(
-                case_dir, log=lambda m: logger.info("  [bl] %s", m),
+                case_dir,
+                log=lambda m: logger.info("  [bl] %s", m),
             ).run(
                 n_layers=POLY_BL_N_LAYERS,
                 first_height=POLY_BL_FIRST_HEIGHT_FRACTION * max_cell,
@@ -822,9 +900,7 @@ def _benchmark_poly_one(
                 # --poly-bl-height-retry): the engine defaults reproduce the
                 # historical BL byte-for-byte.
                 normal_method=bl_normal,
-                local_termination=(
-                    bl_local_term if bl_local_term != "off" else False
-                ),
+                local_termination=(bl_local_term if bl_local_term != "off" else False),
                 local_height_retry=bl_height_retry,
                 terminate_by_budget=bl_budget_term,
                 min_base_edge_h1_factor=bl_edge_h1,
@@ -836,7 +912,8 @@ def _benchmark_poly_one(
                 bl_thickness = bres.total_thickness
                 logger.info(
                     "  BL: %d prism cells, total thickness %.6g m",
-                    bl_prism_cells, bl_thickness,
+                    bl_prism_cells,
+                    bl_thickness,
                 )
             else:
                 stages["bl"] = False
@@ -866,17 +943,22 @@ def _benchmark_poly_one(
                 fcs = [list(f) for f in fcs]
                 n_int_m = len(nbr)
                 n_cells_m = int(max(own.max(), nbr.max())) + 1
-                fcs2, own2, nbr2, _n_int2, _n_cells2, patches2, rep = (
-                    repair_concave_cells_if_safe(
-                        pts, fcs, own, nbr, n_int_m, n_cells_m, patches,
-                    )
+                fcs2, own2, nbr2, _n_int2, _n_cells2, patches2, rep = repair_concave_cells_if_safe(
+                    pts,
+                    fcs,
+                    own,
+                    nbr,
+                    n_int_m,
+                    n_cells_m,
+                    patches,
                 )
                 if rep.get("applied"):
                     fio.write_polymesh(poly_dir, pts, fcs2, own2, nbr2, patches2)
                 n_concave = int(rep.get("concave_cells", 0))
                 n_fixed = (
                     n_concave - int(rep.get("candidates_unresolved", 0))
-                    if rep.get("applied") else 0
+                    if rep.get("applied")
+                    else 0
                 )
                 summary = f"merge repair: fixed {n_fixed} of {n_concave} concave cells"
                 if not rep.get("applied"):
@@ -907,9 +989,13 @@ def _benchmark_poly_one(
         report = parse_checkmesh_output(cm_out)
         logger.info(
             "  cells=%d  nonOrtho=%.1f/%.1f  skew=%.2f  aspect=%.0f  neg=%d  vol=%.2e",
-            report.cells, report.max_non_ortho, report.avg_non_ortho,
-            report.max_skewness, report.max_aspect_ratio,
-            report.neg_cells, report.min_volume,
+            report.cells,
+            report.max_non_ortho,
+            report.avg_non_ortho,
+            report.max_skewness,
+            report.max_aspect_ratio,
+            report.neg_cells,
+            report.min_volume,
         )
 
         allowance = (allowances or {}).get(name)
@@ -940,9 +1026,13 @@ def _benchmark_poly_one(
     except Exception as exc:
         logger.error("  UNEXPECTED ERROR: %s", exc)
         return _make_poly_result(
-            name, success=False, wall_time_s=sum(stage_times.values()),
-            stage_times=stage_times, stages=stages,
-            warnings=warnings, errors=[str(exc)],
+            name,
+            success=False,
+            wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times,
+            stages=stages,
+            warnings=warnings,
+            errors=[str(exc)],
         )
     finally:
         if not keep_case:
@@ -1013,7 +1103,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run benchmark suite")
     parser.add_argument("--keep", action="store_true", help="Keep case dirs for inspection")
     parser.add_argument(
-        "--pipeline", choices=["hex", "poly", "all"], default="hex",
+        "--pipeline",
+        choices=["hex", "poly", "all"],
+        default="hex",
         help="Which meshing pipeline to benchmark (default: hex)",
     )
     return parser
@@ -1049,7 +1141,9 @@ def main(args: list[str] | None = None) -> int:
                 result = _benchmark_one(stl_path, keep_case=opts.keep)
             else:
                 result = _benchmark_poly_one(
-                    stl_path, keep_case=opts.keep, allowances=allowances,
+                    stl_path,
+                    keep_case=opts.keep,
+                    allowances=allowances,
                 )
             results_by_pipeline[p].append(result)
 

@@ -10,6 +10,7 @@ Usage:
 
 import math
 import os
+import re
 import sys
 
 import cadquery as cq
@@ -37,6 +38,35 @@ def _export(mesh, filename, name=""):
     nf = mesh.faces.shape[0]
     print(f"  {filename:30s}  {nv:6,} verts  {nf:6,} faces")
     return path
+
+
+def _export_step(shape, filename: str) -> None:
+    """Export the CAD BRep next to the STL.
+
+    GMSH's discrete-STL path (classifySurfaces) chokes on boolean-seam
+    slivers (self-intersecting facets, "elements remain invalid"); the
+    harness prefers a sibling ``.step`` and meshes the exact OCC BRep
+    instead — see `run_benchmarks._gmsh_source`.
+
+    The export is made DETERMINISTIC: OpenCASCADE stamps the current time
+    into the STEP ``FILE_NAME`` header, so two identical exports differ
+    byte-wise.  `tests/test_generate_corpus.py` regenerates the corpus, so
+    without pinning the timestamp every test run dirties the tracked
+    ``.step`` files (and conflicts the pre-commit stash).
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    path = os.path.join(OUTPUT_DIR, filename)
+    cq.exporters.export(shape, path)
+    text = open(path, encoding="utf-8", errors="replace").read()
+    text = re.sub(
+        r"(FILE_NAME\('[^']*',')[^']*'",
+        r"\g<1>1970-01-01T00:00:00'",
+        text,
+        count=1,
+    )
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    print(f"  {filename:30s}  step BRep exported (timestamp pinned)")
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +110,7 @@ def _naca_0012_points(n=20):
     x = (1.0 - np.cos(beta)) / 2.0
     t = 0.12
     y = (t / 0.2) * (
-        0.2969 * np.sqrt(x)
-        - 0.1260 * x
-        - 0.3516 * x ** 2
-        + 0.2843 * x ** 3
-        - 0.1015 * x ** 4
+        0.2969 * np.sqrt(x) - 0.1260 * x - 0.3516 * x**2 + 0.2843 * x**3 - 0.1015 * x**4
     )
     y[0] = 0.0
     y[-1] = 0.0

@@ -35,8 +35,14 @@ for _p in (str(_SRC), str(_PROJECT)):
         sys.path.insert(0, _p)
 
 from benchmarks.corpus import (  # noqa: E402
-    ALL_RUNNERS, CORPUS, OUR_RUNNERS, RESULTS_DIR, RUN_TIMEOUT_S,
-    fast_tier, full_tier, geometry_path,
+    ALL_RUNNERS,
+    CORPUS,
+    OUR_RUNNERS,
+    RESULTS_DIR,
+    RUN_TIMEOUT_S,
+    fast_tier,
+    full_tier,
+    geometry_path,
 )
 from benchmarks.gates import passes_absolute_thresholds  # noqa: E402
 
@@ -93,7 +99,8 @@ def _record_from_bench(geometry: str, runner: str, bench: dict) -> dict:
     errors = list(bench.get("errors") or [])
     timed_out = any("timed out" in e.lower() for e in errors)
     return make_record(
-        geometry, runner,
+        geometry,
+        runner,
         success=bool(bench.get("success")),
         wall_time_s=float(bench.get("wall_time_s", 0.0)),
         metrics={
@@ -155,11 +162,18 @@ def _check_mesh_failure(rc: int) -> str:
 
 def _make_result_fail(name, errors, warnings, stage_times) -> dict:
     return {
-        "geometry": name, "success": False,
+        "geometry": name,
+        "success": False,
         "wall_time_s": sum(stage_times.values()),
-        "cell_count": 0, "max_non_ortho": 0.0, "avg_non_ortho": 0.0,
-        "max_skewness": 0.0, "max_aspect_ratio": 0.0, "neg_cells": 0,
-        "min_volume": 0.0, "errors": errors, "warnings": warnings,
+        "cell_count": 0,
+        "max_non_ortho": 0.0,
+        "avg_non_ortho": 0.0,
+        "max_skewness": 0.0,
+        "max_aspect_ratio": 0.0,
+        "neg_cells": 0,
+        "min_volume": 0.0,
+        "errors": errors,
+        "warnings": warnings,
     }
 
 
@@ -186,10 +200,15 @@ def _run_gmsh_direct(stl_path: Path) -> dict:
         t0 = time.perf_counter()
         try:
             from polyfoammesh.core.gmsh_subprocess import run_gmsh_volume
+
             run_gmsh_volume(
-                stl_path, case_dir / "mesh.msh", detail="medium",
-                user_lc=max_cell, min_lc=min_cell,
-                timeout_s=GMSH_TIMEOUT_S, threads=1,
+                rb._gmsh_source(stl_path),
+                case_dir / "mesh.msh",
+                detail="medium",
+                user_lc=max_cell,
+                min_lc=min_cell,
+                timeout_s=GMSH_TIMEOUT_S,
+                threads=1,
             )
             stages["gmsh_volume"] = True
         except Exception as exc:
@@ -219,14 +238,22 @@ def _run_gmsh_direct(stl_path: Path) -> dict:
             return _make_result_fail(name, errors, warnings, stage_times)
 
         from polyfoammesh.core.openfoam_runner import parse_checkmesh_output
+
         report = parse_checkmesh_output(cm_out)
         return {
-            "geometry": name, "pipeline": "gmsh_direct", "success": report.passed,
+            "geometry": name,
+            "pipeline": "gmsh_direct",
+            "success": report.passed,
             "wall_time_s": sum(stage_times.values()),
-            "cell_count": report.cells, "max_non_ortho": report.max_non_ortho,
-            "avg_non_ortho": report.avg_non_ortho, "max_skewness": report.max_skewness,
-            "max_aspect_ratio": report.max_aspect_ratio, "neg_cells": report.neg_cells,
-            "min_volume": report.min_volume, "errors": errors, "warnings": warnings,
+            "cell_count": report.cells,
+            "max_non_ortho": report.max_non_ortho,
+            "avg_non_ortho": report.avg_non_ortho,
+            "max_skewness": report.max_skewness,
+            "max_aspect_ratio": report.max_aspect_ratio,
+            "neg_cells": report.neg_cells,
+            "min_volume": report.min_volume,
+            "errors": errors,
+            "warnings": warnings,
         }
     except Exception as exc:
         errors.append(str(exc))
@@ -242,7 +269,9 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
 
     name = stl_path.stem
     early, ctx = rb._prepare_geometry(
-        stl_path, pipeline=f"snappy_{mode}", require_watertight=False,
+        stl_path,
+        pipeline=f"snappy_{mode}",
+        require_watertight=False,
     )
     if early is not None:
         return early
@@ -298,14 +327,21 @@ def _run_snappy(stl_path: Path, mode: str) -> dict:
             return _make_result_fail(name, errors, warnings, stage_times)
 
         from polyfoammesh.core.openfoam_runner import parse_checkmesh_output
+
         report = parse_checkmesh_output(cm_out)
         return {
-            "geometry": name, "success": report.passed,
+            "geometry": name,
+            "success": report.passed,
             "wall_time_s": sum(stage_times.values()),
-            "cell_count": report.cells, "max_non_ortho": report.max_non_ortho,
-            "avg_non_ortho": report.avg_non_ortho, "max_skewness": report.max_skewness,
-            "max_aspect_ratio": report.max_aspect_ratio, "neg_cells": report.neg_cells,
-            "min_volume": report.min_volume, "errors": errors, "warnings": warnings,
+            "cell_count": report.cells,
+            "max_non_ortho": report.max_non_ortho,
+            "avg_non_ortho": report.avg_non_ortho,
+            "max_skewness": report.max_skewness,
+            "max_aspect_ratio": report.max_aspect_ratio,
+            "neg_cells": report.neg_cells,
+            "min_volume": report.min_volume,
+            "errors": errors,
+            "warnings": warnings,
         }
     except Exception as exc:
         errors.append(str(exc))
@@ -340,13 +376,16 @@ def run_single(
     name = stl_path.stem
     if runner == "hex":
         bench = rb._benchmark_one(
-            stl_path, keep_case=keep_case,
-            mesh_timeout_s=HEX_MESH_TIMEOUT_S, check_timeout_s=CHECK_TIMEOUT_S,
+            stl_path,
+            keep_case=keep_case,
+            mesh_timeout_s=HEX_MESH_TIMEOUT_S,
+            check_timeout_s=CHECK_TIMEOUT_S,
         )
         rec = _record_from_bench(name, runner, bench)
     elif runner == "poly":
         bench = rb._benchmark_poly_one(
-            stl_path, keep_case=keep_case,
+            stl_path,
+            keep_case=keep_case,
             gmsh_timeout_s=GMSH_TIMEOUT_S,
             gmsh_to_foam_timeout_s=GMSH_TO_FOAM_TIMEOUT_S,
             check_timeout_s=CHECK_TIMEOUT_S,
@@ -378,8 +417,9 @@ def run_single(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(rec, indent=2), encoding="utf-8")
-    logger.info("record: %s/%s pass=%s cells=%d", name, runner,
-                rec["thresholds_pass"], rec["cell_count"])
+    logger.info(
+        "record: %s/%s pass=%s cells=%d", name, runner, rec["thresholds_pass"], rec["cell_count"]
+    )
     return 0 if rec["thresholds_pass"] else 1
 
 
@@ -389,7 +429,8 @@ def _kill_tree(pid: int) -> None:
         return
     subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
-        capture_output=True, timeout=15,
+        capture_output=True,
+        timeout=15,
     )
 
 
@@ -433,9 +474,15 @@ def run_parent(
         for runner in runner_list:
             out = child_dir / f"{spec.name}__{runner}.json"
             cmd = [
-                sys.executable, str(Path(__file__).resolve()),
-                "--single", "--runner", runner,
-                "--geometry", spec.name, "--out", str(out),
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--single",
+                "--runner",
+                runner,
+                "--geometry",
+                spec.name,
+                "--out",
+                str(out),
             ]
             if keep:
                 cmd.append("--keep")
@@ -483,16 +530,26 @@ def run_parent(
                     rec = json.loads(out.read_text("utf-8"))
                 else:
                     rec = make_record(
-                        spec.name, runner, success=False, wall_time_s=float(RUN_TIMEOUT_S),
-                        metrics={}, errors=[f"child exited {proc.returncode} without a record"],
-                        warnings=[], timed_out=True,
+                        spec.name,
+                        runner,
+                        success=False,
+                        wall_time_s=float(RUN_TIMEOUT_S),
+                        metrics={},
+                        errors=[f"child exited {proc.returncode} without a record"],
+                        warnings=[],
+                        timed_out=True,
                     )
             except subprocess.TimeoutExpired as exc:
                 _kill_tree(getattr(exc, "pid", 0))
                 rec = make_record(
-                    spec.name, runner, success=False, wall_time_s=float(RUN_TIMEOUT_S),
-                    metrics={}, errors=[f"hard timeout {RUN_TIMEOUT_S}s"],
-                    warnings=[], timed_out=True,
+                    spec.name,
+                    runner,
+                    success=False,
+                    wall_time_s=float(RUN_TIMEOUT_S),
+                    metrics={},
+                    errors=[f"hard timeout {RUN_TIMEOUT_S}s"],
+                    warnings=[],
+                    timed_out=True,
                 )
             records.append(rec)
 
@@ -514,60 +571,120 @@ def run_parent(
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="PolyFoamMesh vs snappy comparison")
     p.add_argument("--single", action="store_true", help="child mode: one run")
-    p.add_argument("--tier", choices=["fast", "full"], default="fast",
-                   help="parent mode: which tier to run (default: fast)")
-    p.add_argument("--runner", action="append", choices=list(ALL_RUNNERS),
-                   help="parent mode: restrict runners (repeatable)")
-    p.add_argument("--geometry", action="append",
-                   help="parent mode: restrict geometries (repeatable); "
-                        "child mode: geometry name")
+    p.add_argument(
+        "--tier",
+        choices=["fast", "full"],
+        default="fast",
+        help="parent mode: which tier to run (default: fast)",
+    )
+    p.add_argument(
+        "--runner",
+        action="append",
+        choices=list(ALL_RUNNERS),
+        help="parent mode: restrict runners (repeatable)",
+    )
+    p.add_argument(
+        "--geometry",
+        action="append",
+        help="parent mode: restrict geometries (repeatable); child mode: geometry name",
+    )
     p.add_argument("--out", help="child mode: record output path")
     p.add_argument("--keep", action="store_true")
-    p.add_argument("--poly-sliver-dissolve", type=float, default=0.0,
-                   help="opt-in: dissolve sub-threshold boundary stars on the "
-                        "poly runner (0 = off)")
-    p.add_argument("--poly-bl-min-face", type=float, default=0.0,
-                   help="opt-in: drop BL base faces below this fraction of the "
-                        "median face size on the poly runner (0 = off)")
-    p.add_argument("--poly-bl-min-edge", type=float, default=0.0,
-                   help="opt-in: drop sliver-EDGE base faces from the BL "
-                        "(fraction of the median min-edge; 0 = off)")
-    p.add_argument("--poly-bl-normal", default="area_weighted",
-                   choices=["area_weighted", "most_visible", "smoothed", "guided"],
-                   help="opt-in: BL extrusion normal method (default area_weighted)")
-    p.add_argument("--poly-bl-local-term", default="off",
-                   choices=["off", "decoupled", "decoupled_vertex"],
-                   help="opt-in: BL local termination mode (default off)")
-    p.add_argument("--poly-bl-height-retry", action="store_true",
-                   help="opt-in: short-stack retry before excluding (needs local term)")
-    p.add_argument("--poly-bl-budget-term", action="store_true",
-                   help="opt-in: terminate tight vertices by layer count at full size "
-                        "(no squeezed pancake stacks; excluded where h1 does not fit)")
-    p.add_argument("--poly-bl-edge-h1", type=float, default=0.0,
-                   help="opt-in: drop base faces whose smallest edge is below "
-                        "k*h1 (k here; 0 = off)")
-    p.add_argument("--poly-bl-edge-cap-pct", type=float, default=0.0,
-                   help="opt-in: BL inversion-clamp edge cap as the p-th "
-                        "percentile of a wall vertex's incident edge lengths "
-                        "on the poly runner (0 = off, the historical "
-                        "min-edge cap)")
-    p.add_argument("--poly-dual-smooth-iters", type=int, default=3,
-                   help="opt-in: dual smoother iterations on the poly runner "
-                        "(default 3, the converter default)")
-    p.add_argument("--poly-dual-compact", action="store_true",
-                   help="opt-in: enable compactness term in the dual smoother")
-    p.add_argument("--poly-dual-axis", action="store_true",
-                   help="opt-in: enable axis-balance term in the dual smoother")
-    p.add_argument("--poly-dual-planar-fix",
-                   choices=["none", "triangulate", "planarize"], default="none",
-                   help="opt-in: non-planar boundary face fix on the poly "
-                        "runner (default: none, the converter default)")
-    p.add_argument("--poly-dual-worst-aspect", type=float, default=0.0,
-                   help="opt-in: aspect-ratio threshold that makes the dual "
-                        "smoother target the worst cells (0 = off)")
-    p.add_argument("--poly-merge-repair", action="store_true",
-                   help="opt-in: run the concave-cell merge repair on the "
-                        "polyMesh after the BL stage (default: off)")
+    p.add_argument(
+        "--poly-sliver-dissolve",
+        type=float,
+        default=0.0,
+        help="opt-in: dissolve sub-threshold boundary stars on the poly runner (0 = off)",
+    )
+    p.add_argument(
+        "--poly-bl-min-face",
+        type=float,
+        default=0.0,
+        help="opt-in: drop BL base faces below this fraction of the "
+        "median face size on the poly runner (0 = off)",
+    )
+    p.add_argument(
+        "--poly-bl-min-edge",
+        type=float,
+        default=0.0,
+        help="opt-in: drop sliver-EDGE base faces from the BL "
+        "(fraction of the median min-edge; 0 = off)",
+    )
+    p.add_argument(
+        "--poly-bl-normal",
+        default="area_weighted",
+        choices=["area_weighted", "most_visible", "smoothed", "guided"],
+        help="opt-in: BL extrusion normal method (default area_weighted)",
+    )
+    p.add_argument(
+        "--poly-bl-local-term",
+        default="off",
+        choices=["off", "decoupled", "decoupled_vertex"],
+        help="opt-in: BL local termination mode (default off)",
+    )
+    p.add_argument(
+        "--poly-bl-height-retry",
+        action="store_true",
+        help="opt-in: short-stack retry before excluding (needs local term)",
+    )
+    p.add_argument(
+        "--poly-bl-budget-term",
+        action="store_true",
+        help="opt-in: terminate tight vertices by layer count at full size "
+        "(no squeezed pancake stacks; excluded where h1 does not fit)",
+    )
+    p.add_argument(
+        "--poly-bl-edge-h1",
+        type=float,
+        default=0.0,
+        help="opt-in: drop base faces whose smallest edge is below k*h1 (k here; 0 = off)",
+    )
+    p.add_argument(
+        "--poly-bl-edge-cap-pct",
+        type=float,
+        default=0.0,
+        help="opt-in: BL inversion-clamp edge cap as the p-th "
+        "percentile of a wall vertex's incident edge lengths "
+        "on the poly runner (0 = off, the historical "
+        "min-edge cap)",
+    )
+    p.add_argument(
+        "--poly-dual-smooth-iters",
+        type=int,
+        default=3,
+        help="opt-in: dual smoother iterations on the poly runner "
+        "(default 3, the converter default)",
+    )
+    p.add_argument(
+        "--poly-dual-compact",
+        action="store_true",
+        help="opt-in: enable compactness term in the dual smoother",
+    )
+    p.add_argument(
+        "--poly-dual-axis",
+        action="store_true",
+        help="opt-in: enable axis-balance term in the dual smoother",
+    )
+    p.add_argument(
+        "--poly-dual-planar-fix",
+        choices=["none", "triangulate", "planarize"],
+        default="none",
+        help="opt-in: non-planar boundary face fix on the poly "
+        "runner (default: none, the converter default)",
+    )
+    p.add_argument(
+        "--poly-dual-worst-aspect",
+        type=float,
+        default=0.0,
+        help="opt-in: aspect-ratio threshold that makes the dual "
+        "smoother target the worst cells (0 = off)",
+    )
+    p.add_argument(
+        "--poly-merge-repair",
+        action="store_true",
+        help="opt-in: run the concave-cell merge repair on the "
+        "polyMesh after the BL stage (default: off)",
+    )
     return p
 
 
@@ -584,7 +701,10 @@ def main(args: list[str] | None = None) -> int:
             return 2
         try:
             return run_single(
-                opts.runner[0], geometry_path(spec), Path(opts.out), opts.keep,
+                opts.runner[0],
+                geometry_path(spec),
+                Path(opts.out),
+                opts.keep,
                 poly_sliver_dissolve=opts.poly_sliver_dissolve,
                 poly_bl_min_face=opts.poly_bl_min_face,
                 poly_bl_min_edge=opts.poly_bl_min_edge,
@@ -605,7 +725,10 @@ def main(args: list[str] | None = None) -> int:
             logger.error("%s", exc)
             return 2
     _, exit_code = run_parent(
-        opts.tier, opts.runner, opts.geometry, opts.keep,
+        opts.tier,
+        opts.runner,
+        opts.geometry,
+        opts.keep,
         poly_sliver_dissolve=opts.poly_sliver_dissolve,
         poly_bl_min_face=opts.poly_bl_min_face,
         poly_bl_min_edge=opts.poly_bl_min_edge,
