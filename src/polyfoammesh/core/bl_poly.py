@@ -99,6 +99,7 @@ class PolyBoundaryLayerResult:
     total_thickness: float = 0.0       # absolute, metres (final, after clamp)
     n_wall_faces: int = 0
     n_excluded_small_faces: int = 0
+    n_excluded_small_edges: int = 0
     wall_patches: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -745,6 +746,43 @@ def _drop_small_base_faces(points, faces, n_int, sel, fraction):
             int((~keep).sum()), threshold)
 
 
+def _drop_small_base_edges(points, faces, n_int, sel, fraction):
+    """Drop selected boundary faces whose SMALLEST edge is below
+    ``fraction * median(smallest edges)``.
+
+    This is the criterion that matches the measured blocker: the per-vertex
+    inversion clamp is ``min(clamp_factor*d, 0.5*min_edge[w])`` where
+    ``min_edge[w]`` is the smallest edge among the vertex's incident wall
+    faces.  A single sliver boundary face (tiny edge, often with a
+    moderate AREA) therefore caps the WHOLE vertex stack at
+    ``0.5*min_edge`` and the consistency fixpoint floods the pancake to the
+    neighbourhood (measured: venturi stack capped at 7.05e-5 m, clamp_factor
+    inert).  Dropping the sliver faces BEFORE ``_build_precompute`` makes
+    ``min_edge[w]`` be computed from the retained faces only, so the clamp
+    stops binding and the prisms keep a proper height.
+
+    Returns ``(kept, n_excluded, threshold)``; ``sel`` lists boundary-local
+    face ids.  Terminator bands are handled by ``_build`` exactly as for
+    ``_drop_small_base_faces``.
+    """
+    if not sel:
+        return list(sel), 0, 0.0
+    mins = []
+    for bi in sel:
+        f = faces[n_int + bi]
+        pts = [points[v] for v in f]
+        m = len(pts)
+        mins.append(min(
+            float(np.linalg.norm(pts[(k + 1) % m] - pts[k]))
+            for k in range(m)
+        ))
+    mins = np.asarray(mins, dtype=np.float64)
+    threshold = float(fraction) * float(np.median(mins))
+    keep = mins >= threshold
+    return ([bi for bi, k in zip(sel, keep) if k],
+            int((~keep).sum()), threshold)
+
+
 class PolyBoundaryLayerEngine:
     """Adds a prism boundary layer to an existing polyhedral polyMesh.
 
@@ -779,6 +817,7 @@ class PolyBoundaryLayerEngine:
         normal_method: str = "area_weighted",
         local_height_retry: bool = False,
         min_base_face_fraction: float = 0.0,
+        min_base_edge_fraction: float = 0.0,
         edge_cap_percentile: float = 0.0,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
@@ -924,6 +963,10 @@ class PolyBoundaryLayerEngine:
             raise ValueError(
                 "min_base_face_fraction must be >= 0 (0 disables the filter)"
             )
+        if min_base_edge_fraction < 0.0:
+            raise ValueError(
+                "min_base_edge_fraction must be >= 0 (0 disables the filter)"
+            )
         if not 0.0 <= edge_cap_percentile <= 100.0:
             raise ValueError(
                 "edge_cap_percentile must be in [0, 100] "
@@ -1023,6 +1066,16 @@ class PolyBoundaryLayerEngine:
                 self._log(
                     f"[bl] excluded {n_small} small base faces "
                     f"(<{min_base_face_fraction:g}*median={cut:.6g}m)"
+                )
+        if sel and min_base_edge_fraction > 0.0:
+            sel, n_edge, cut_e = _drop_small_base_edges(
+                points, faces, n_int, sel, min_base_edge_fraction,
+            )
+            if n_edge:
+                res.n_excluded_small_edges = int(n_edge)
+                self._log(
+                    f"[bl] excluded {n_edge} sliver-edge base faces "
+                    f"(<{min_base_edge_fraction:g}*median={cut_e:.6g}m)"
                 )
         if not sel:
             res.errors.append("no selected faces")
