@@ -1,0 +1,24 @@
+[
+  {
+    "geometry": "concave_bracket",
+    "runner": "poly",
+    "timestamp": "2026-10-06T11:56:56",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 26.07,
+    "cell_count": 34206,
+    "max_non_ortho": 87.55,
+    "avg_non_ortho": 12.8,
+    "max_skewness": 3.25,
+    "max_aspect_ratio": 200.78,
+    "neg_cells": 0,
+    "min_volume": 2.51427e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  }
+]

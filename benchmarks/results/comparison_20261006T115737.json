@@ -1,0 +1,26 @@
+[
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-10-06T11:57:37",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 11.51,
+    "cell_count": 6181,
+    "max_non_ortho": 74.0,
+    "avg_non_ortho": 13.62,
+    "max_skewness": 4.02,
+    "max_aspect_ratio": 1087.37,
+    "neg_cells": 0,
+    "min_volume": 4.94581e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max",
+      "aspect_ratio_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  }
+]

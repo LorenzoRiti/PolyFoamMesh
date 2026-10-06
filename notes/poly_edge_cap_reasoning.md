@@ -74,3 +74,35 @@ geometry) re-measured on this new geometry — not exposed in the harness yet.
 
 - [x] Follow-up measured
 - [x] Verdict: partial fix, not promoted
+
+## BREAKTHROUGH (2026-10-06): promoted opt-in combo — poly at snappy parity
+
+Combo: `--poly-bl-min-edge 0.9 --poly-bl-budget-term` (edge filter at 0.9 of
+the median min-edge + budget termination so no squeezed pancake stacks).
+
+Full poly tier (committed JSONs):
+
+| geometry | baseline poly | combo | snappy best | verdict |
+|---|---|---|---|---|
+| cylinder | 66.72 | **38.13** | 52.96 | PASS, **BETTER than snappy** |
+| cube_duct | 80.64 | **58.87** | 46.21 | PASS (was FAIL) |
+| groove1 | 50.59 | 52.65 | 42.71 | PASS |
+| slot1 | 56.01 | 55.95 | 39.40 | PASS |
+| venturi | 146.41 | **74.23** | 60.26 | FAIL (= the dual's own 74.0; BL adds ~0 now) |
+| thin_gap | 66.25 | 69.62 | 42.28 | PASS |
+| concave_bracket | 105.41 | **66.77** | 64.76 | PASS (was FAIL) |
+| mini_valve | 0 cells | 0 cells | timeouts | shared failure (GMSH exit 1) |
+| dirty_cad | 0 cells | 0 cells | 0 cells | shared failure |
+| multi_inlet | 0 cells | 0 cells | skew fail | shared failure (GMSH exit 1) |
+
+**Poly pass rate 4/10 -> 6/10 = snappy parity**, with one geometry better
+than snappy (cylinder NOmax 38.1 vs 53.0). The BL damage is eliminated
+(venturi's final NOmax now equals its dual-only 74.0). Remaining gaps:
+venturi's own dual (4 tiny-face pairs at 74.0), the three shared GMSH
+failures, and the skew/margin gap on groove1/slot1/thin_gap.
+
+Both flags are opt-in and default off; no default changed, nothing wired
+into production.
+
+- [x] Promoted combo measured (opt-in)
+- [x] Full-tier leaderboard at parity

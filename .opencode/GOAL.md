@@ -464,3 +464,20 @@ minuscoli + celle di bordo sottili rendono i prismi pancake/sliver qualunque
 leva si giri. Serve un intervento topologico dual-side sul boundary (edge
 collapse/decimazione con rilassamento punti), non altri knob. Tutte le
 evidenze nelle note `poly_*_reasoning.md` e nei JSON committati.
+
+## Avanzamento 2026-10-06 — BREAKTHROUGH: poly a parità con snappy (opt-in)
+
+Continuando oltre i gate del piano (richiesta umana), due leve mirate hanno
+risolto il danno BL: filtro per **min-edge** delle facce base
+(`--poly-bl-min-edge 0.9`, commit a94737f) + **terminazione per budget**
+(`--poly-bl-budget-term`, 19286b3: i vertici stretti riducono i layer a
+piena dimensione invece di comprimere lo stack in pancake).
+
+Full tier poly con la combo: **6/10 PASS (era 4/10, snappy 6/10) = parità**,
+con **cylinder 38.13 vs snappy 52.96 (MEGLIO di snappy)**; cube_duct
+80.6→58.9 PASS, concave 105.4→66.8 PASS, venturi 146.4→74.2 (ora pari al
+dual-only: il BL non aggiunge più danno; resta il dual a 74.0). Restano i
+3 fallimenti condivisi (mini_valve/dirty_cad/multi_inlet, GMSH exit 1) e il
+margine skew su groove1/slot1/thin_gap. Tutto opt-in, default invariati,
+niente cablato in produzione. Dettagli in `notes/poly_edge_cap_reasoning.md`
+§BREAKTHROUGH.
