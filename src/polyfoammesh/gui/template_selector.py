@@ -16,7 +16,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
-from polyfoammesh.gui.design_tokens import NEUTRAL_50, NEUTRAL_300
+from polyfoammesh.gui.design_tokens import (
+    NEUTRAL_50,
+    NEUTRAL_300,
+    NEUTRAL_600,
+    NEUTRAL_900,
+)
 from polyfoammesh.gui.style import COLOR_ACCENT, COLOR_PASS, COLOR_TEXT_DIM
 
 logger = logging.getLogger(__name__)
@@ -63,10 +68,15 @@ class TemplateCard(QFrame):
         layout.addWidget(self._icon_label)
         self._name_label = QLabel(preset.metadata.name)
         self._name_label.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+        # The card background is NEUTRAL_50 (near-white) regardless of the
+        # app theme, so the text MUST be forced dark: without this the
+        # inherited (dark-theme) text colour is white -> white-on-white,
+        # unreadable cards (user-reported with a screenshot, 2026-10-06).
+        self._name_label.setStyleSheet(f"color:{NEUTRAL_900};")
         layout.addWidget(self._name_label)
         self._desc_label = QLabel(preset.metadata.description)
         self._desc_label.setWordWrap(True)
-        self._desc_label.setStyleSheet(f"color:{COLOR_TEXT_DIM}; font-size:10px;")
+        self._desc_label.setStyleSheet(f"color:{NEUTRAL_600}; font-size:10px;")
         layout.addWidget(self._desc_label)
         self._detail_label = QLabel(
             f"{preset.metadata.solver} / {preset.metadata.turbulence}"
