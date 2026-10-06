@@ -64,6 +64,15 @@ def _export_step(shape, filename: str) -> None:
         text,
         count=1,
     )
+    # The OpenCASCADE exporter also stamps a per-process instance counter
+    # into the product name ("Open CASCADE STEP translator 7.9 2"); pin it
+    # too or the same geometry exported in a different order/process
+    # differs byte-wise (the corpus-regeneration test exports all of them).
+    text = re.sub(
+        r"(Open CASCADE STEP translator [0-9.]+ )\d+",
+        r"\g<1>1",
+        text,
+    )
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     print(f"  {filename:30s}  step BRep exported (timestamp pinned)")
