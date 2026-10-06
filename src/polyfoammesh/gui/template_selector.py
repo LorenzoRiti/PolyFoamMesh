@@ -16,12 +16,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
-from polyfoammesh.gui.design_tokens import (
-    NEUTRAL_50,
-    NEUTRAL_300,
-    NEUTRAL_600,
-    NEUTRAL_900,
-)
 from polyfoammesh.gui.style import COLOR_ACCENT, COLOR_PASS, COLOR_TEXT_DIM
 
 logger = logging.getLogger(__name__)
@@ -55,9 +49,13 @@ class TemplateCard(QFrame):
         self._preset = preset
         self.setFrameShape(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
+        # Theme-aware card: palette(base) follows the applied light/dark
+        # palette, so the text (palette/text) is always readable.  The old
+        # hardcoded white background made white-on-white cards in dark mode
+        # (user-reported).
         self.setStyleSheet(
-            f"TemplateCard {{ background:{NEUTRAL_50}; border:1px solid {NEUTRAL_300}; "
-            "border-radius:8px; padding:12px; }"
+            "TemplateCard { background: palette(base); "
+            "border:1px solid palette(mid); border-radius:8px; padding:12px; }"
             "TemplateCard:hover { border:2px solid " + COLOR_ACCENT + "; }"
         )
         layout = QVBoxLayout(self)
@@ -72,11 +70,11 @@ class TemplateCard(QFrame):
         # app theme, so the text MUST be forced dark: without this the
         # inherited (dark-theme) text colour is white -> white-on-white,
         # unreadable cards (user-reported with a screenshot, 2026-10-06).
-        self._name_label.setStyleSheet(f"color:{NEUTRAL_900};")
+        self._name_label.setStyleSheet("color: palette(text);")
         layout.addWidget(self._name_label)
         self._desc_label = QLabel(preset.metadata.description)
         self._desc_label.setWordWrap(True)
-        self._desc_label.setStyleSheet(f"color:{NEUTRAL_600}; font-size:10px;")
+        self._desc_label.setStyleSheet("color: palette(text); font-size:10px;")
         layout.addWidget(self._desc_label)
         self._detail_label = QLabel(
             f"{preset.metadata.solver} / {preset.metadata.turbulence}"

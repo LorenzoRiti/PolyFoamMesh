@@ -305,10 +305,11 @@ APP_NAME         = "PolyFoamMesh"
 # about_dialog / branding / main_window / api.server all import APP_VERSION
 # from design_tokens. (noqa F401: re-export, not an unused import)
 from polyfoammesh._version import __version__ as APP_VERSION  # noqa: F401
-APP_DESCRIPTION  = "Commercial-grade cartesian mesh generator for OpenFOAM"
+APP_DESCRIPTION  = ("Polyhedral mesh generator for OpenFOAM - GMSH tet to dual poly "
+                    "with boundary layers; cfMesh/cartesianMesh optional")
 APP_VENDOR       = "PolyFoamMesh Project"
 APP_COPYRIGHT    = "© 2026 PolyFoamMesh"
 APP_DOMAIN       = "polyfoammesh.local"
-APP_WEBSITE      = "https://github.com/polyfoammesh"
-APP_LICENSE      = "Proprietary — All Rights Reserved"
+APP_WEBSITE      = "https://github.com/LorenzoRiti/PolyFoamMesh"
+APP_LICENSE      = "GPL-3.0-or-later"
 APP_BUILD_YEAR   = 2026

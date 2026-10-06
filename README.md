@@ -1,7 +1,9 @@
 # PolyFoamMesh
 
-**Preprocessore CFD open source per OpenFOAM** — combina GMSH + cfMesh in una
-GUI che genera mesh pronte per CFD senza scrivere dizionari OpenFOAM a mano.
+**Generatore di mesh poliedriche open source per OpenFOAM** — costruisce la
+mesh con GMSH (tetraedri) e il nostro motore **dual poly** con boundary layer,
+tutto da GUI. cfMesh/cartesianMesh resta disponibile come percorso
+alternativo, non è il primario.
 
 Licenza: [GPLv3](LICENSE) · [Licenze di terze parti](THIRD_PARTY_LICENSES.md) · [Come contribuire](CONTRIBUTING.md)
 
