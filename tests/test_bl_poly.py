@@ -971,19 +971,17 @@ def test_min_base_face_fraction_default_off():
     assert files_d == files_c, "default-off run must be byte-identical to control"
 
 
-def test_min_base_face_fraction_excludes_crafted_tiny_face():
-    """A boundary face ~100x smaller (linear size) than the rest of the
-    selection is dropped at `min_base_face_fraction=0.2`, is reported in
-    `n_excluded_small_faces`, and the run still validates and writes a
-    closed, positive-volume mesh (the terminator band around the dropped
-    face is handled by `_build` — no auto-close, every cell stays closed).
+def _craft_tiny_corner_face(case: Path) -> None:
+    """Cut a corner triangle of size median/100 off boundary face 0 of the
+    dual-cube fixture (the cut points are inserted into the two neighbouring
+    faces so the edge bookkeeping stays manifold), leaving a face of size
+    median/100 plus the rest of the original face.
 
-    The tiny face is crafted cheaply on the existing dual-cube fixture: a
-    small corner triangle is cut off boundary face 0 (the cut points are
-    inserted into the two neighbouring faces so the edge bookkeeping stays
-    manifold), leaving a face of size median/100 plus the rest of the
-    original face."""
-    case = _build_dual_case(WORK_ROOT / "cube_mbf_tiny")
+    Shared fixture for the `min_base_face_fraction` and `edge_cap_percentile`
+    tests: it puts ONE pair of sliver edges (~100x smaller than the rest) on
+    the incident wall vertices, which is exactly what the historical
+    `0.5 * min_edge` inversion clamp collapses.
+    """
     poly = case / "constant" / "polyMesh"
     points, faces, owner, neigh, patches = fio.read_polymesh(poly)
     n_int = len(neigh)
@@ -1043,6 +1041,19 @@ def test_min_base_face_fraction_excludes_crafted_tiny_face():
     assert sizes2[0] < 0.2 * med2, "crafted face must sit under the 0.2 cutoff"
     assert 50.0 < med2 / sizes2[0] < 500.0, med2 / sizes2[0]  # ~100x smaller
 
+
+def test_min_base_face_fraction_excludes_crafted_tiny_face():
+    """A boundary face ~100x smaller (linear size) than the rest of the
+    selection is dropped at `min_base_face_fraction=0.2`, is reported in
+    `n_excluded_small_faces`, and the run still validates and writes a
+    closed, positive-volume mesh (the terminator band around the dropped
+    face is handled by `_build` — no auto-close, every cell stays closed).
+
+    The tiny face is crafted cheaply on the existing dual-cube fixture (see
+    `_craft_tiny_corner_face`)."""
+    case = _build_dual_case(WORK_ROOT / "cube_mbf_tiny")
+    _craft_tiny_corner_face(case)
+
     logs: list[str] = []
     res = PolyBoundaryLayerEngine(case, log=logs.append).run(
         n_layers=2, first_height=1e-3, growth_rate=1.2, apply_to_all=True,
@@ -1051,7 +1062,7 @@ def test_min_base_face_fraction_excludes_crafted_tiny_face():
     assert res.success, (res.errors, res.warnings)
     assert res.n_excluded_small_faces >= 1
     assert any("small base faces" in m for m in logs), logs
-    _mesh_ok(poly)
+    _mesh_ok(case / "constant" / "polyMesh")
 
 
 def test_min_base_face_fraction_rejects_negative():
@@ -1060,6 +1071,109 @@ def test_min_base_face_fraction_rejects_negative():
     with pytest.raises(ValueError):
         eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
                 apply_to_all=True, min_base_face_fraction=-0.01)
+
+
+# ---------------------------------------------------------------------------
+# edge_cap_percentile: opt-in robust inversion-clamp edge cap (default off)
+# ---------------------------------------------------------------------------
+
+def test_edge_cap_percentile_default_off_identity():
+    """Default (argument absent) must be exactly `0.0`: the written polyMesh
+    is byte-identical to the control run that passes `0.0` explicitly, and
+    both report the SAME total thickness (the historical
+    `0.5 * min_edge` cap - 0.117851 m on this fixture)."""
+    case_default = _build_dual_case(WORK_ROOT / "cube_ecap_default")
+    case_control = _build_dual_case(WORK_ROOT / "cube_ecap_control")
+    res_default = PolyBoundaryLayerEngine(case_default, log=lambda m: None).run(
+        n_layers=2, first_height=0.1, growth_rate=1.2, apply_to_all=True,
+    )
+    res_control = PolyBoundaryLayerEngine(case_control, log=lambda m: None).run(
+        n_layers=2, first_height=0.1, growth_rate=1.2, apply_to_all=True,
+        edge_cap_percentile=0.0,
+    )
+    assert res_default.success, res_default.errors
+    assert res_control.success, res_control.errors
+    assert res_default.total_thickness == res_control.total_thickness
+    # historical value pinned: every wall vertex has min_edge 0.2357, so the
+    # stack stops at 0.5 * min_edge instead of the interior-support distance
+    assert res_default.total_thickness == pytest.approx(0.117851, rel=1e-4)
+    poly_d = case_default / "constant" / "polyMesh"
+    poly_c = case_control / "constant" / "polyMesh"
+    files_d = {p.name: p.read_bytes() for p in sorted(poly_d.iterdir()) if p.is_file()}
+    files_c = {p.name: p.read_bytes() for p in sorted(poly_c.iterdir()) if p.is_file()}
+    assert files_d.keys() == files_c.keys()
+    assert files_d == files_c, "default-off run must be byte-identical to control"
+
+
+def test_edge_cap_percentile_larger_total_thickness_than_default():
+    """`edge_cap_percentile=50` must produce a LARGER total stack thickness
+    than the default (historical min-edge) cap on the same fixture.
+
+    Measured on the dual cube: the historical `0.5 * min_edge` cap is what
+    bounds the stack (0.117851 m) while the interior-support budget would
+    allow up to 0.5 * d ~ 0.28 m, so the robust p-th-percentile cap of each
+    wall vertex's incident wall-face edge lengths lifts the stack to
+    0.218169 m - both runs validate at the requested scale."""
+    case_default = _build_dual_case(WORK_ROOT / "cube_ecap_pos_default")
+    case_p50 = _build_dual_case(WORK_ROOT / "cube_ecap_pos_p50")
+    res_default = PolyBoundaryLayerEngine(case_default, log=lambda m: None).run(
+        n_layers=2, first_height=0.1, growth_rate=1.2, apply_to_all=True,
+    )
+    res_p50 = PolyBoundaryLayerEngine(case_p50, log=lambda m: None).run(
+        n_layers=2, first_height=0.1, growth_rate=1.2, apply_to_all=True,
+        edge_cap_percentile=50.0,
+    )
+    assert res_default.success, res_default.errors
+    assert res_p50.success, (res_p50.errors, res_p50.warnings)
+    assert res_p50.total_thickness > res_default.total_thickness
+    assert res_default.total_thickness == pytest.approx(0.117851, rel=1e-4)
+    _mesh_ok(case_p50 / "constant" / "polyMesh")
+
+
+def test_edge_cap_percentile_relaxes_tiny_incident_edge_cap():
+    """On the crafted tiny-face fixture (one sliver boundary face ~100x
+    smaller than the rest, see `_craft_tiny_corner_face`) the historical
+    cap collapses the AFFECTED vertices (the sliver corner + the two cut
+    points) to the sliver edge, and `edge_cap_percentile=50` relaxes exactly
+    those caps (0.0 keeps them byte-identical to `min_edge`).
+
+    Note: a full BL run with the relaxed cap cannot validate on this
+    fixture - a released sliver vertex extrudes its sliver face above ~1x
+    its own min_edge and fails checkMesh's face-pyramid criterion at every
+    tested parameter scale - so the end-to-end thickness assertion lives in
+    `test_edge_cap_percentile_larger_total_thickness_than_default`."""
+    case = _build_dual_case(WORK_ROOT / "cube_ecap_sliver")
+    _craft_tiny_corner_face(case)
+    poly = case / "constant" / "polyMesh"
+    points, faces, owner, neigh, patches = fio.read_polymesh(poly)
+    n_int = len(neigh)
+    sel = list(range(len(faces) - n_int))
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    pre0 = eng._build_precompute(
+        points, faces, owner, neigh, patches, n_int, sel, frozenset(),
+        edge_cap_percentile=0.0)
+    pre50 = eng._build_precompute(
+        points, faces, owner, neigh, patches, n_int, sel, frozenset(),
+        edge_cap_percentile=50.0)
+    # affected vertices: the sliver corner + the two crafted cut points
+    v0 = int(faces[n_int][0])
+    cut_points = (len(points) - 2, len(points) - 1)
+    for w in (v0, *cut_points):
+        mn = pre0["min_edge"][w]
+        assert mn < 0.01, f"fixture must carry a tiny incident edge ({mn})"
+        assert pre0["edge_cap"][w] == mn  # 0.0 == historical min-edge cap
+        assert pre50["edge_cap"][w] > mn  # relaxed exactly on that region
+    # the rest of the wall keeps a real (non-sliver) min edge
+    assert max(pre0["min_edge"].values()) > 0.1
+
+
+def test_edge_cap_percentile_rejects_out_of_range():
+    case = _build_dual_case(WORK_ROOT / "cube_ecap_bad")
+    eng = PolyBoundaryLayerEngine(case, log=lambda m: None)
+    for bad in (150.0, -1.0, 100.5):
+        with pytest.raises(ValueError):
+            eng.run(n_layers=2, first_height=0.01, growth_rate=1.2,
+                    apply_to_all=True, edge_cap_percentile=bad)
 
 
 def test_bl_normal_method_guided_succeeds_on_healthy_cube():

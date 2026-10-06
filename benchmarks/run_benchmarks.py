@@ -625,6 +625,7 @@ def _benchmark_poly_one(
     check_timeout_s: int = TIMEOUT_S,
     sliver_dissolve: float = 0.0,
     bl_min_face: float = 0.0,
+    bl_edge_cap_pct: float = 0.0,
     dual_smooth_iters: int = 3,
     dual_compact: bool = False,
     dual_axis: bool = False,
@@ -642,6 +643,12 @@ def _benchmark_poly_one(
 
     ``bl_min_face`` is threaded to the BL engine as
     ``min_base_face_fraction`` (0.0 = off, the legacy behaviour).
+
+    ``bl_edge_cap_pct`` (harness ``--poly-bl-edge-cap-pct``, default 0.0) is
+    threaded to the BL engine as ``edge_cap_percentile``: 0.0 keeps the
+    historical per-vertex ``0.5 * min_edge`` inversion-clamp cap, > 0 uses the
+    p-th percentile of the vertex's incident wall-face edge lengths instead
+    (robust against sliver boundary faces).
 
     The ``dual_*`` options are the harness opt-ins for the dual smoother /
     non-planar-face fix (``--poly-dual-*``); their defaults keep the
@@ -801,6 +808,9 @@ def _benchmark_poly_one(
                 # Opt-in (harness --poly-bl-min-face): 0.0 keeps the engine
                 # default, i.e. the small-base-face filter completely off.
                 min_base_face_fraction=bl_min_face,
+                # Opt-in (harness --poly-bl-edge-cap-pct): 0.0 keeps the
+                # historical per-vertex min-edge inversion clamp.
+                edge_cap_percentile=bl_edge_cap_pct,
             )
             stage_times["bl"] = round(time.perf_counter() - t0, 2)
             if bres.success:

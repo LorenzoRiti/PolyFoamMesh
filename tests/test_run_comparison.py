@@ -311,6 +311,73 @@ def test_run_single_passes_bl_min_face_to_poly(tmp_path, monkeypatch) -> None:
     assert seen_kwargs["bl_min_face"] == 0.2
 
 
+def test_poly_bl_edge_cap_pct_defaults_off() -> None:
+    opts = rc._build_parser().parse_args(["--tier", "fast"])
+    assert opts.poly_bl_edge_cap_pct == 0.0
+
+
+def test_poly_bl_edge_cap_pct_forwarded_to_child(tmp_path, monkeypatch) -> None:
+    """run_parent(..., poly_bl_edge_cap_pct=50.0) appends the flag to every
+    child cmd; the default 0.0 forwards nothing (byte-identical child cmd)."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None, **kw):
+        seen.append(list(cmd))
+
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        poly_bl_edge_cap_pct=50.0, _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    for cmd in seen:
+        i = cmd.index("--poly-bl-edge-cap-pct")
+        assert cmd[i + 1] == "50.0"
+
+    # Default 0.0 must not change any existing behaviour: flag not appended.
+    seen.clear()
+    rc.run_parent(
+        tier="fast", runners=["hex"], geometries=["cylinder"],
+        _child_out_dir=tmp_path, _write_results=False,
+    )
+    assert seen
+    assert all("--poly-bl-edge-cap-pct" not in cmd for cmd in seen)
+
+
+def test_run_single_passes_bl_edge_cap_pct_to_poly(tmp_path, monkeypatch) -> None:
+    """The child's poly branch threads poly_bl_edge_cap_pct into the runner."""
+    import benchmarks.run_benchmarks as rb
+
+    seen_kwargs: dict = {}
+
+    def fake_poly(stl_path, **kw):
+        seen_kwargs.update(kw)
+        return {
+            "geometry": Path(stl_path).stem, "success": True,
+            "wall_time_s": 1.0, "cell_count": 1000, "max_non_ortho": 40.0,
+            "avg_non_ortho": 10.0, "max_skewness": 1.2,
+            "max_aspect_ratio": 25.0, "neg_cells": 0, "min_volume": 1e-5,
+            "errors": [], "warnings": [],
+        }
+
+    monkeypatch.setattr(rb, "_benchmark_poly_one", fake_poly)
+    rc.run_single(
+        "poly", tmp_path / "cylinder.stl", tmp_path / "out.json",
+        poly_bl_edge_cap_pct=50.0,
+    )
+    assert seen_kwargs["bl_edge_cap_pct"] == 50.0
+
+    # Default: the kwarg is present and 0.0 (engine keeps the min-edge cap).
+    seen_kwargs.clear()
+    rc.run_single("poly", tmp_path / "cylinder.stl", tmp_path / "out.json")
+    assert seen_kwargs["bl_edge_cap_pct"] == 0.0
+
+
 def test_poly_dual_config_defaults() -> None:
     """The five dual-config opts default to the converter's own defaults."""
     opts = rc._build_parser().parse_args(["--tier", "fast"])
