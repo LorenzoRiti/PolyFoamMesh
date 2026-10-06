@@ -1725,31 +1725,14 @@ class DualPolyWorker(QObject):
                     _cc_n_faces > 8_000_000 if _cc_n_faces > 0
                     else _cc_n_cells > 1_500_000
                 )
-                if bl.get("concaveClosure") and _cc_too_big:
-                    _cc_size = (
-                        f"~{_cc_n_faces:,} faces" if _cc_n_faces > 0
-                        else f"~{_cc_n_cells:,} cells"
-                    )
-                    _cc_lim = (
-                        "8M-face" if _cc_n_faces > 0 else "1.5M-cell"
-                    )
-                    self.log_line.emit(
-                        "[poly] WARN: Concave closure skipped — mesh has "
-                        f"{_cc_size}, above the {_cc_lim} safety "
-                        "limit (memory scales with faces; a real run at ~5M "
-                        "dual cells exhausted 32GB RAM and crashed the "
-                        "system). Continuing without it."
-                    )
-                elif bl.get("concaveClosure"):
-                    # Opt-in (GUI checkbox, default off): per-vertex local
-                    # termination (H4). Measured no-op on simple geometries,
-                    # closes the layer on the production-collapsed valve and
-                    # on tight geometries where the default path leaves gaps
-                    # — see docs/residual_risks.md "FASE 9".
-                    kw["local_termination"] = "decoupled_vertex"
-                    self.log_line.emit(
-                        "[poly] Concave closure (decoupled_vertex) enabled"
-                    )
+                # Concave closure (decoupled_vertex, H4) is no longer an
+                # opt-in FIRST choice: it is retried AUTOMATICALLY below when
+                # the standard robust path fails.  Running it first degraded
+                # quality on geometries the standard path already handles
+                # (the new binary budget semantics + mesh-aware cap), while
+                # it remains the only path that closes the layer on
+                # concave-junction meshes (groove1/slot1, see
+                # docs/residual_risks.md "FASE 9").
                 engine = PolyBoundaryLayerEngine(
                     self._case_dir,
                     log=self.log_line.emit,
@@ -1786,24 +1769,31 @@ class DualPolyWorker(QObject):
                     )
 
                 bres = _run_bl(kw)
-                # Fallback chain (2026-10-06). local termination is the most
-                # aggressive path and can fail validation on a thin margin
-                # (user case: volume not conserved 1.02e-3 vs the 1e-3
-                # tolerance); before giving up the BL entirely, retry the
-                # STANDARD path with the robust fixes still active.
-                kw_std = {
-                    k: v for k, v in kw.items() if k != "local_termination"
-                }
-                if (bres is None or not bres.success) and kw.get(
-                    "local_termination"
-                ):
-                    self.log_line.emit(
-                        "[poly] Local termination failed — retrying with the "
-                        "standard BL path (robust fixes still active)..."
-                    )
-                    retry = _run_bl(kw_std)
-                    if retry is not None and retry.success:
-                        bres = retry
+                # Fallback chain (2026-10-06): standard robust first (it now
+                # handles concave features on its own via the binary budget
+                # semantics and the mesh-aware cap), then the concave closure
+                # (decoupled_vertex, H4) — the only path that closes the
+                # layer on concave-junction meshes like groove1/slot1 — then
+                # a halved first layer below.  The size guard protects the
+                # closure attempt: memory scales with faces (a real ~5M-cell
+                # run exhausted 32GB RAM and crashed the system).
+                if bres is None or not bres.success:
+                    if _cc_too_big:
+                        self.log_line.emit(
+                            "[poly] WARN: concave closure fallback skipped — "
+                            "mesh above the faces-based safety limit "
+                            "(memory scales with faces). Continuing without it."
+                        )
+                    else:
+                        self.log_line.emit(
+                            "[poly] BL standard path failed — retrying with "
+                            "concave closure (decoupled_vertex)..."
+                        )
+                        retry = _run_bl(
+                            {**kw, "local_termination": "decoupled_vertex"}
+                        )
+                        if retry is not None and retry.success:
+                            bres = retry
                 # Last resort: halve the first-layer height. The per-vertex
                 # inversion guard rejects a stack that is taller than the
                 # dual's boundary cells can take, and the engine's own
@@ -1816,7 +1806,7 @@ class DualPolyWorker(QObject):
                     for frac in (0.5, 0.25):
                         if base_h <= 0.0:
                             break
-                        kw_h = {**kw_std, "first_height": base_h * frac}
+                        kw_h = {**kw, "first_height": base_h * frac}
                         self.log_line.emit(
                             "[poly] BL retry: first layer reduced "
                             f"{1.0 / frac:.0f}x ({base_h * frac:.4g} m) to "

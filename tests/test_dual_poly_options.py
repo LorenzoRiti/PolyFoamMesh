@@ -123,12 +123,12 @@ def _run_dual_poly_worker_with_bl(tmp_path, bl_params, captured_bl_kwargs):
         worker.run()
 
 
-def test_concave_closure_flag_sets_decoupled_vertex_local_termination(tmp_path):
-    """The opt-in GUI checkbox (params_panel.get_bl_params()['concaveClosure'])
-    must reach the production BL engine as local_termination='decoupled_vertex'
-    — the H4 mode measured to close the boundary layer on the
-    production-collapsed valve and on tight geometries where the default
-    path leaves gaps, see docs/residual_risks.md 'FASE 9'."""
+def test_concave_closure_flag_no_longer_forces_local_termination_first(tmp_path):
+    """2026-10-06: concave closure is an AUTOMATIC fallback now — the worker
+    runs the standard robust path first and retries
+    local_termination='decoupled_vertex' (H4) only when it fails.  The
+    legacy 'concaveClosure' flag must not change the first attempt's
+    kwargs; it only still controls the post-BL merge repair (next test)."""
     captured: dict = {}
     _run_dual_poly_worker_with_bl(
         tmp_path,
@@ -136,7 +136,7 @@ def test_concave_closure_flag_sets_decoupled_vertex_local_termination(tmp_path):
          "applyToAll": True, "concaveClosure": True},
         captured,
     )
-    assert captured.get("local_termination") == "decoupled_vertex"
+    assert "local_termination" not in captured
 
 
 def test_concave_closure_triggers_post_bl_merge_repair(tmp_path):
