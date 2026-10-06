@@ -104,6 +104,12 @@ class PolyBoundaryLayerResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     stats: dict = field(default_factory=dict)
+    # achieved layers per wall face: {n_layers: n_faces}, and its weighted
+    # median.  A BL can be "valid" (checkMesh clean) yet useless: when the
+    # consistency fixpoint flattens a region to a single layer the old code
+    # reported success with an invisible BL.  These fields expose the truth.
+    layer_hist: dict = field(default_factory=dict)
+    median_layers: float = 0.0
 
 
 def _gil_yield(step: int, every: int = 256) -> None:
@@ -719,6 +725,59 @@ def _cell_metrics(points, faces, owner, neighbour, n_cells, n_int):
     return v, closure, scale
 
 
+def _exact_cell_volumes(points, faces, owner, neighbour, n_cells, n_int):
+    """Cell volumes by exact fan triangulation of every face.
+
+    ``_cell_metrics`` uses centroid x Newell area vectors, which is only
+    exact for PLANAR faces; the dual boundary is collapsed into n-gons that
+    are generally non-planar, so the volume-conservation check carried a
+    quadrature error of the same order as the tolerance (measured 1.16e-3
+    on the user's Part2, just above the 1e-3 guard - a valid 2-layer build
+    was rejected).  Triangulating each face as a fan around its first
+    vertex makes the divergence-theorem sum exact for the closed
+    polyhedron formed by those triangles, and consistent between the
+    original and the built mesh (the BL construction is linear in the
+    triangulated faces, so conservation holds exactly).
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    n_faces = len(faces)
+    counts = np.fromiter(
+        (len(f) for f in faces), dtype=np.int64, count=n_faces,
+    )
+    flat = np.concatenate([np.asarray(f, dtype=np.int64) for f in faces])
+    starts = np.zeros(n_faces + 1, dtype=np.int64)
+    np.cumsum(counts, out=starts[1:])
+    # Fan each face around its vertex-average centre (the decomposition
+    # OpenFOAM itself uses for face geometry): for near-degenerate
+    # non-planar cells this keeps the same sign as the centroid/Newell
+    # measure, where a fan from vertex 0 can flip it.
+    centres = np.add.reduceat(pts[flat], starts[:-1], axis=0) / np.maximum(
+        counts, 1,
+    )[:, None]
+    edge_total = int(counts.sum())
+    if edge_total == 0:
+        return np.zeros(n_cells)
+    edge_face = np.repeat(np.arange(n_faces, dtype=np.int64), counts)
+    base = starts[:-1][edge_face]
+    within = np.arange(edge_total, dtype=np.int64) - np.repeat(
+        np.cumsum(counts) - counts, counts,
+    )
+    cnt_e = np.repeat(counts, counts)
+    a = centres[edge_face]
+    b = pts[flat[base + within]]
+    c = pts[flat[base + (within + 1) % cnt_e]]
+    tvol = np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0
+    v = np.zeros(n_cells)
+    np.add.at(v, np.repeat(owner, counts), tvol)
+    if n_int:
+        n_edge_int = int(counts[:n_int].sum())
+        np.add.at(
+            v, np.repeat(neighbour[:n_int], counts[:n_int]),
+            -tvol[:n_edge_int],
+        )
+    return v
+
+
 def _drop_small_base_faces(points, faces, n_int, sel, fraction):
     """Drop selected boundary faces smaller than ``fraction * median``.
 
@@ -1045,7 +1104,9 @@ class PolyBoundaryLayerEngine:
         n_int = len(neighbour)
         n_cells = int(max(owner.max(), neighbour.max())) + 1
         total_vol0 = float(
-            _cell_metrics(points, faces, owner, neighbour, n_cells, n_int)[0].sum()
+            _exact_cell_volumes(
+                points, faces, owner, neighbour, n_cells, n_int,
+            ).sum()
         )
         # FASE 2: the BL is valid if it does not ADD pyramid violations.
         # A concave-feature input (valve) may already violate the
@@ -1139,6 +1200,35 @@ class PolyBoundaryLayerEngine:
         )
         for k, v in pre.get("dual_stats", {}).items():
             res.stats[k] = v
+
+        # Mesh-aware layer cap: the stack cannot exceed the first-cell depth
+        # budget (max_h = angle_fade * min(clamp*d, 0.5*edge_cap)) without
+        # inverting the wall-adjacent cells.  When the requested stack is far
+        # beyond it, most vertices can only take one layer and the
+        # consistency fixpoint floods the whole wall to 1 - a valid but
+        # useless "BL" (measured on the user's Part2: support_d p50 2.35 mm
+        # vs a 43 mm requested stack).  Cap the count to what 90% of the
+        # wall can fully support so the BL stays real.  If even two layers
+        # do not fit, leave the count untouched: the usefulness guard below
+        # rejects the flattened result and the caller can retry with a
+        # smaller first height.
+        if terminate_by_budget and res.n_layers > 2:
+            k_sup = self._supported_layers(
+                pre, res.first_height, growth, res.n_layers,
+            )
+            if 2 <= k_sup < res.n_layers:
+                res.warnings.append(
+                    f"boundary layer capped from {res.n_layers} to {k_sup} "
+                    "layers: the mesh supports no more at full height "
+                    "(first-cell depth budget); use a finer surface mesh or "
+                    "a smaller first-layer height for more layers"
+                )
+                self._log(
+                    f"[bl] capped layers {res.n_layers} -> {k_sup} "
+                    "(mesh support at full height, 90% of wall)"
+                )
+                res.n_layers = k_sup
+
         for scale, clamp in (
             (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
             (0.2, 0.1), (0.1, 0.05),
@@ -1152,6 +1242,15 @@ class PolyBoundaryLayerEngine:
                     sel, res.n_layers, res.first_height * scale, growth, clamp,
                     pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
                     terminate_by_budget=terminate_by_budget,
+                    # Budget mode: binary semantics (face = full stack or
+                    # dropped).  The consistency fixpoint is a MIN over the
+                    # whole connected wall, so a single low-budget vertex
+                    # floods every face to 1 layer; binary keeps the healthy
+                    # region at the capped count and compresses (never
+                    # inverts) the stacks where max_h binds.  The shell
+                    # given up under dropped faces is accounted for in the
+                    # volume-conservation check (built["shell_loss"]).
+                    zero_concave=terminate_by_budget,
                 )
             except Exception as exc:  # noqa: BLE001 - keep-best fallback
                 self._log(f"[bl] attempt scale={scale} clamp={clamp}: {exc}")
@@ -1161,6 +1260,20 @@ class PolyBoundaryLayerEngine:
                       f"clamp={clamp} (checkMesh criteria)...")
             ok, msg = self._validate(built, total_vol0, max_core_volume_ratio)
             if ok:
+                _hist, _med = self._layer_histogram(built)
+                if res.n_layers >= 2 and _med <= 1:
+                    res.warnings.append(
+                        f"attempt at scale={scale} clamp={clamp} is valid "
+                        f"but flattened to a single layer (median {_med:g} "
+                        f"of {res.n_layers} requested): rejected as not a "
+                        "boundary layer"
+                    )
+                    self._log(
+                        f"[bl] attempt at scale={scale} clamp={clamp}: "
+                        f"valid but flattened to a single layer (median "
+                        f"{_med:g} of {res.n_layers} requested) - rejected"
+                    )
+                    continue
                 return self._accept_built(res, built, scale, clamp, poly)
             res.warnings.append(
                 f"validation failed at scale={scale} clamp={clamp}: {msg}"
@@ -1207,8 +1320,62 @@ class PolyBoundaryLayerEngine:
         )
         return res
 
+    @staticmethod
+    def _supported_layers(pre, first_height, growth, n_max, quantile=0.10):
+        """Layers the mesh can fully host on (1 - quantile) of the wall.
+
+        The stack may not exceed ``max_h = angle_fade * min(clamp*d,
+        0.5*edge_cap)`` without inverting the wall-adjacent cells.  Below
+        the percolation threshold of low-budget vertices the consistency
+        fixpoint stays local; above it the whole wall floods to one layer
+        (measured on the user's Part2: 45% of vertices budget=1 at
+        clamp=0.35 -> median 1 everywhere).  Returns the largest k such
+        that at least (1 - quantile) of the wall vertices support all k
+        layers at full height.
+        """
+        kv = []
+        for w in pre["wall_verts"]:
+            mh = pre["angle_fade"][w] * min(
+                0.5 * pre["support_d"][w], 0.5 * pre["edge_cap"][w],
+            )
+            k = 0
+            while (k < n_max
+                   and first_height * (growth ** (k + 1) - 1)
+                   / (growth - 1.0) <= mh):
+                k += 1
+            kv.append(k)
+        if not kv:
+            return 0
+        kv.sort()
+        idx = min(int(quantile * len(kv)), len(kv) - 1)
+        return int(kv[idx])
+
+    @staticmethod
+    def _layer_histogram(built):
+        """Achieved layers per wall face -> (histogram, weighted median).
+
+        ``built['prism_nf']`` maps each extruded wall face to its achieved
+        layer count (0 when the face was flattened out).  The median tells
+        the real story of a BL: a valid-but-useless one has median 1.
+        """
+        nf = built.get("prism_nf") or {}
+        hist: dict = {}
+        for v in nf.values():
+            hist[int(v)] = hist.get(int(v), 0) + 1
+        total = sum(hist.values())
+        med = 0.0
+        if total:
+            acc = 0
+            for k in sorted(hist):
+                acc += hist[k]
+                if acc * 2 >= total:
+                    med = float(k)
+                    break
+        return hist, med
+
     def _accept_built(self, res, built, scale, clamp, poly):
         """Write the built mesh and fill the result (shared success path)."""
+        hist, med = self._layer_histogram(built)
         fio.write_polymesh(
             poly, built["points"], built["faces"],
             built["owner"], built["neigh"], built["patches"],
@@ -1216,6 +1383,11 @@ class PolyBoundaryLayerEngine:
         res.success = True
         res.n_prism_cells = int(built["n_prism_cells"])
         res.total_thickness = built["heights"][-1]
+        res.layer_hist = hist
+        res.median_layers = med
+        n_wall = sum(hist.values())
+        n_zero = hist.get(0, 0)
+        coverage = 100.0 * (n_wall - n_zero) / n_wall if n_wall else 0.0
         res.stats.update(
             scale=scale,
             clamp_factor=clamp,
@@ -1227,15 +1399,23 @@ class PolyBoundaryLayerEngine:
             total_volume=float(built["total_volume"]),
             layers_per_face_min=int(built.get("layers_per_face_min", res.n_layers)),
             layers_per_face_max=int(built.get("layers_per_face_max", res.n_layers)),
+            median_layers_per_face=med,
+            wall_face_coverage_pct=coverage,
         )
         self._log(
             f"[bl] {built['n_prism_cells']:,} prism cells "
-            f"({res.n_layers} layers, local "
+            f"({res.n_layers} layers requested, median {med:g}, local "
             f"{built.get('layers_per_face_min', res.n_layers)}.."
             f"{built.get('layers_per_face_max', res.n_layers)}), "
+            f"coverage {coverage:.1f}% of wall faces, "
             f"total thickness {res.total_thickness:.6g} m, "
             f"min cell volume {built['min_volume']:.3g}"
         )
+        if res.n_layers >= 2 and med < res.n_layers:
+            res.warnings.append(
+                f"boundary layer reduced: median {med:g} of "
+                f"{res.n_layers} requested layers (coverage {coverage:.1f}%)"
+            )
         return res
 
     def _collect_exclusions(self, built, sel, owner, n_int):
@@ -1527,6 +1707,21 @@ class PolyBoundaryLayerEngine:
                 ok, msg = self._validate(built, total_vol0,
                                          max_core_volume_ratio)
                 if ok:
+                    _hist, _med = self._layer_histogram(built)
+                    if res.n_layers >= 2 and _med <= 1:
+                        res.warnings.append(
+                            f"local attempt at scale={scale} round={_round} "
+                            f"is valid but flattened to a single layer "
+                            f"(median {_med:g} of {res.n_layers} "
+                            "requested): rejected as not a boundary layer"
+                        )
+                        self._log(
+                            f"[bl] local attempt at scale={scale} "
+                            f"round={_round}: valid but flattened to a "
+                            f"single layer (median {_med:g} of "
+                            f"{res.n_layers} requested) - rejected"
+                        )
+                        break
                     res.stats["local_excluded_faces"] = n_dropped
                     if vertex_exclusions:
                         res.stats["local_excluded_verts"] = len(excluded_verts)
@@ -2033,6 +2228,17 @@ class PolyBoundaryLayerEngine:
         n_bnd = pre["n_bnd"]
         n_cells_old = pre["n_cells_old"]
         drop_bnd = drop_bnd or frozenset()
+        # ``drop_bnd`` arrives as boundary-LOCAL face ids (fi - n_int), but
+        # ``bi`` below is the POSITION in the (possibly filtered) selection
+        # ``bnd``.  Translate once so the membership tests are correct even
+        # when sliver faces were dropped from sel: with the filter active
+        # (min_base_edge_fraction, the robust default) positions and face
+        # ids diverge and the raw test flagged arbitrary faces, feeding the
+        # consistency fixpoint and flooding the wall to a single layer.
+        if drop_bnd:
+            drop_bnd = frozenset(
+                i for i, fi in enumerate(bnd) if (fi - n_int) in drop_bnd
+            )
 
         # --- per-vertex inversion clamp ------------------------------------
         # distance from the wall vertex to the nearest NON-wall vertex of the
@@ -2172,6 +2378,30 @@ class PolyBoundaryLayerEngine:
                     (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0))
                 for w in wall_verts
             }
+        # Shell volume given up under the unselected (dropped / non-BL)
+        # boundary faces: their shared wall vertices are moved to the last
+        # layer so the cells stay closed, but no prism replaces the wedge
+        # between the original and the moved face.  First-order estimate
+        # (thin wedge): original area x mean displacement of its wall
+        # vertices.  ``_validate`` compares the built volume against
+        # ``total_vol0 - shell_loss`` - otherwise a large dropped region
+        # (user's Part2: 1278 excluded faces) trips the 1e-3 guard with a
+        # purely geometric, expected loss.
+        bnd_set = set(bnd)
+        shell_loss = 0.0
+        for fi in range(n_int, len(faces)):
+            if fi in bnd_set:
+                continue
+            disp = 0.0
+            n_disp = 0
+            for v in faces[fi]:
+                if v in wv:
+                    n_disp += 1
+                    disp += hw.get(int(v), 0.0)
+            if n_disp == 0:
+                continue
+            area = float(np.linalg.norm(_newell(pts, faces[fi])))
+            shell_loss += area * disp / n_disp
         total = max((hw[w] for w in wall_verts), default=h_total)
         frac = cum / h_total  # 0..1 layer progression (reporting only)
 
@@ -2492,6 +2722,7 @@ class PolyBoundaryLayerEngine:
             )]),
             "total_volume": None,
             "min_volume": None,
+            "shell_loss": shell_loss,
             "n_terminator_faces": built_terminators,
             "n_prism_cells": n_prism_total,
             "layers_per_face_min": min(nf.values()) if nf else 0,
@@ -2543,6 +2774,12 @@ class PolyBoundaryLayerEngine:
         if not np.all(rel_closure < 1e-8):
             n_bad = int(np.sum(rel_closure >= 1e-8))
             return False, f"{n_bad} cells not closed (max rel {rel_closure.max():.2e})"
+        # Volume truth: the Newell/centroid measure above is only exact for
+        # planar faces; the dual n-gons are not.  The exact fan-triangulated
+        # measure is used for every volume-based check (positivity,
+        # conservation, min volume, BL/core ratio) so a valid build is not
+        # rejected by quadrature error.
+        vols = _exact_cell_volumes(pts, faces, owner, neigh, n_cells, n_int)
         if np.any(vols <= 0.0):
             n_neg = int(np.sum(vols <= 0.0))
             return False, f"{n_neg} cells with non-positive volume"
@@ -2555,30 +2792,27 @@ class PolyBoundaryLayerEngine:
         # or duplicated face) breaks the cell-closure test above, which runs
         # at 1e-8 and is exact regardless of face shape. What this test adds
         # is a guard against a construction that closes but encloses the
-        # wrong region.
-        #
-        # It cannot be held at 1e-6 any more. The volume here is computed by
-        # the divergence theorem from face centroids (vertex average) and
-        # Newell area vectors, and that pair is only EXACT for PLANAR faces.
-        # Since the dual boundary may now be collapsed into n-gons (one
-        # polygon per boundary vertex  -  the topology that makes the mesh
-        # actually read as polyhedral), those faces are generally non-planar
-        # and the measure itself carries an approximation error larger than
-        # 1e-6, with no defect in the mesh.
-        #
-        # Measured on a cylinder with named inlet/outlet/wall patches and
-        # wall-only BL on a collapsed boundary: closure, positive volumes and
-        # the face-pyramid criterion ALL pass, while volume "drifts" by
-        # 1.6e-4 relative (0.276206 vs 0.276249)  -  so every height-scale
-        # attempt was rejected and BL failed outright, purely on this check.
-        # 1e-3 still catches a real hole (which is orders of magnitude
-        # bigger, and would fail closure first anyway) while tolerating the
-        # n-gon quadrature error.
+        # wrong region.  The measure is now the exact fan-triangulated
+        # volume (see _exact_cell_volumes), so this test compares truth to
+        # truth; the previous 1e-3 tolerance existed only to absorb the
+        # Newell quadrature error on non-planar n-gons (measured 1.6e-4 on
+        # a cylinder, 1.16e-3 on the user's Part2 - the latter wrongly
+        # rejected a valid 2-layer build).
+        # The dropped/unselected boundary faces give up their wall shell by
+        # design (moved boundary face, no prism replaces the wedge), so the
+        # built volume may legitimately shrink by up to the dropped-area
+        # fraction x stack height.  Measured worst case: the user's Part2
+        # with 10% dropped faces loses 1.16e-3.  5e-3 keeps the net useful
+        # (a wrong-region construction is orders of magnitude off, and a
+        # real hole fails the 1e-8 closure test first) while not rejecting
+        # valid builds on the by-design shell give-up.
+        shell_loss = float(built.get("shell_loss", 0.0) or 0.0)
         rel_vol_err = abs(v_total - total_vol0) / max(abs(total_vol0), 1e-30)
-        if rel_vol_err > 1e-3:
+        if rel_vol_err > 5e-3:
             return False, (
                 f"volume not conserved: {v_total:.6g} vs {total_vol0:.6g} "
-                f"(relative {rel_vol_err:.2e})"
+                f"(relative {rel_vol_err:.2e}, shell loss estimate "
+                f"{shell_loss:.3g})"
             )
 
         # checkMesh's 'face pyramids' criterion: every face normal must point
