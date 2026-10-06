@@ -1,0 +1,27 @@
+[
+  {
+    "geometry": "concave_bracket",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:40:10",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 68.82,
+    "cell_count": 23756,
+    "max_non_ortho": 163.69,
+    "avg_non_ortho": 15.95,
+    "max_skewness": 48.36,
+    "max_aspect_ratio": 15.29,
+    "neg_cells": 0,
+    "min_volume": 1.88603e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  }
+]

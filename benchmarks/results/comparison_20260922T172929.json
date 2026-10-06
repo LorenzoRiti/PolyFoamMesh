@@ -1,0 +1,695 @@
+[
+  {
+    "geometry": "cylinder",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:20:18",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 2.92,
+    "cell_count": 4166,
+    "max_non_ortho": 52.83,
+    "avg_non_ortho": 12.32,
+    "max_skewness": 0.7,
+    "max_aspect_ratio": 6.17,
+    "neg_cells": 0,
+    "min_volume": 7.92628e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:20:26",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 4.91,
+    "cell_count": 8969,
+    "max_non_ortho": 66.72,
+    "avg_non_ortho": 10.85,
+    "max_skewness": 2.77,
+    "max_aspect_ratio": 97.23,
+    "neg_cells": 0,
+    "min_volume": 8.98307e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:20:31",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 2.31,
+    "cell_count": 8927,
+    "max_non_ortho": 60.61,
+    "avg_non_ortho": 22.61,
+    "max_skewness": 0.71,
+    "max_aspect_ratio": 6.17,
+    "neg_cells": 0,
+    "min_volume": 3.50039e-08,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:20:35",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.98,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: Checking initial mesh ...\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'minFaceWeight' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790090433641/bench_cylinder/system/snappyHexMeshDict/meshQualityControls\"\n\n\nfile: system/snappyHexMeshDict/meshQualityControls at line 80 to 90.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = double]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:20:39",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.52,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790090438293/bench_cylinder/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 35.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:20:47",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 3.46,
+    "cell_count": 10496,
+    "max_non_ortho": 64.86,
+    "avg_non_ortho": 14.47,
+    "max_skewness": 0.59,
+    "max_aspect_ratio": 4.39,
+    "neg_cells": 0,
+    "min_volume": 9.6625e-11,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:21:01",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 10.53,
+    "cell_count": 18258,
+    "max_non_ortho": 80.64,
+    "avg_non_ortho": 12.7,
+    "max_skewness": 4.92,
+    "max_aspect_ratio": 554.2,
+    "neg_cells": 0,
+    "min_volume": 2.75869e-13,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:21:05",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 2.22,
+    "cell_count": 18791,
+    "max_non_ortho": 71.67,
+    "avg_non_ortho": 23.0,
+    "max_skewness": 1.11,
+    "max_aspect_ratio": 8.72,
+    "neg_cells": 0,
+    "min_volume": 2.21989e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:21:10",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 2.41,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: Checking initial mesh ...\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'minFaceWeight' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790090468265/bench_cube_duct/system/snappyHexMeshDict/meshQualityControls\"\n\n\nfile: system/snappyHexMeshDict/meshQualityControls at line 80 to 90.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = double]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:21:15",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.5,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790090473620/bench_cube_duct/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 35.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:21:28",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 9.44,
+    "cell_count": 9768,
+    "max_non_ortho": 75.98,
+    "avg_non_ortho": 14.65,
+    "max_skewness": 2.09,
+    "max_aspect_ratio": 8.03,
+    "neg_cells": 0,
+    "min_volume": 2.75747e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:21:34",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 3.2,
+    "cell_count": 1002,
+    "max_non_ortho": 50.59,
+    "avg_non_ortho": 14.24,
+    "max_skewness": 3.67,
+    "max_aspect_ratio": 5.63,
+    "neg_cells": 0,
+    "min_volume": 7.50262e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:21:39",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 2.07,
+    "cell_count": 4012,
+    "max_non_ortho": 61.07,
+    "avg_non_ortho": 23.3,
+    "max_skewness": 1.05,
+    "max_aspect_ratio": 5.8,
+    "neg_cells": 0,
+    "min_volume": 1.3415e-09,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "groove1",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:21:45",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 3.1,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: Checking initial mesh ...\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'minFaceWeight' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790090502044/bench_groove1/system/snappyHexMeshDict/meshQualityControls\"\n\n\nfile: system/snappyHexMeshDict/meshQualityControls at line 80 to 90.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = double]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:21:48",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.28,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790090507482/bench_groove1/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 35.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:22:08",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 15.29,
+    "cell_count": 34019,
+    "max_non_ortho": 78.82,
+    "avg_non_ortho": 11.21,
+    "max_skewness": 2.25,
+    "max_aspect_ratio": 10.03,
+    "neg_cells": 0,
+    "min_volume": 1.89275e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:22:35",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 23.67,
+    "cell_count": 8681,
+    "max_non_ortho": 56.01,
+    "avg_non_ortho": 10.67,
+    "max_skewness": 3.59,
+    "max_aspect_ratio": 5.71,
+    "neg_cells": 0,
+    "min_volume": 1.09001e-11,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:22:41",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 2.82,
+    "cell_count": 38036,
+    "max_non_ortho": 65.58,
+    "avg_non_ortho": 22.64,
+    "max_skewness": 0.81,
+    "max_aspect_ratio": 6.87,
+    "neg_cells": 0,
+    "min_volume": 3.22904e-11,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "slot1",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:22:47",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 3.05,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: Checking initial mesh ...\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'minFaceWeight' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790090564017/bench_slot1/system/snappyHexMeshDict/meshQualityControls\"\n\n\nfile: system/snappyHexMeshDict/meshQualityControls at line 80 to 90.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = double]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:22:51",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.53,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790090569894/bench_slot1/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 35.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:23:00",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 3.88,
+    "cell_count": 18400,
+    "max_non_ortho": 53.34,
+    "avg_non_ortho": 14.36,
+    "max_skewness": 2.29,
+    "max_aspect_ratio": 5.53,
+    "neg_cells": 0,
+    "min_volume": 2.16248e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:23:13",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 9.53,
+    "cell_count": 4732,
+    "max_non_ortho": 146.41,
+    "avg_non_ortho": 16.11,
+    "max_skewness": 3.66,
+    "max_aspect_ratio": 108.74,
+    "neg_cells": 0,
+    "min_volume": 3.1777e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:23:21",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 6.39,
+    "cell_count": 10136,
+    "max_non_ortho": 73.91,
+    "avg_non_ortho": 24.29,
+    "max_skewness": 3.19,
+    "max_aspect_ratio": 11.65,
+    "neg_cells": 0,
+    "min_volume": 9.86827e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "venturi",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:23:26",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.98,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: Checking initial mesh ...\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'minFaceWeight' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790090604921/bench_venturi/system/snappyHexMeshDict/meshQualityControls\"\n\n\nfile: system/snappyHexMeshDict/meshQualityControls at line 80 to 90.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = double]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:23:31",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.6,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790090609851/bench_venturi/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 35.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:24:45",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 53.09,
+    "cell_count": 666976,
+    "max_non_ortho": 73.81,
+    "avg_non_ortho": 6.25,
+    "max_skewness": 2.16,
+    "max_aspect_ratio": 9.18,
+    "neg_cells": 0,
+    "min_volume": 6.36579e-15,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:26:33",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 103.85,
+    "cell_count": 27205,
+    "max_non_ortho": 66.25,
+    "avg_non_ortho": 17.79,
+    "max_skewness": 3.07,
+    "max_aspect_ratio": 10.54,
+    "neg_cells": 0,
+    "min_volume": 2.45861e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:26:40",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 4.8,
+    "cell_count": 109487,
+    "max_non_ortho": 65.84,
+    "avg_non_ortho": 22.68,
+    "max_skewness": 0.91,
+    "max_aspect_ratio": 7.3,
+    "neg_cells": 0,
+    "min_volume": 1.74054e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:29:21",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 158.26,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: Checking initial mesh ...\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'minFaceWeight' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790090803542/bench_thin_gap/system/snappyHexMeshDict/meshQualityControls\"\n\n\nfile: system/snappyHexMeshDict/meshQualityControls at line 80 to 90.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = double]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:29:28",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 2.71,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790090965926/bench_thin_gap/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 35.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  }
+]

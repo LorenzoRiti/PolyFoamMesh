@@ -428,3 +428,39 @@ non si attiva). A-side misurata e registrata:
 
 Il fix è un **piano da approvare** (follow-up): in questo turno ZERO modifiche
 al mesher, nessun default cambiato; si ferma qui e si riporta all'umano.
+
+
+## Avanzamento 2026-10-06 — Programma poly "beat snappy" (notturno): 4 fasi, tutte KILLED con causa radice trovata
+
+Eseguito il piano `docs/superpowers/plans/2026-10-05-poly-beat-snappy-program.md`
+(4 fasi + integrazione, 10 task, tutto opt-in, default invariati, nessun push).
+Risultato onesto: **nessuna leva promossa**, ma la diagnosi è ora completa e
+quantificata.
+
+- **Fase 1 — filtro facce base sliver** (`min_base_face_fraction`, 675ee33):
+  KILLED. Rimuove 140 facce ma cube_duct resta 80.61 e skew/aspect peggiorano
+  (7.77/181): le bande terminatrici fanno danno e la faccia da 80.6 non è un
+  seme sliver.
+- **Fase 2 — config dual** (compactness/axis/iterazioni/triangulate, 8cfae3a,
+  2ef8c1e): KILLED sul pipeline completo (no-op o peggio: il BL maschera
+  tutto). Isolamento dual-only: cube_duct NO 51.9→47.3 ma skew 3.93→4.59
+  (oltre gate); venturi/concave no-op. `triangulate` migliora lo skew di
+  cube_duct (4.92→2.74) ma distrugge venturi/concave (skew 30-48).
+- **Fase 3 — riparazione piramidi concave** (`--poly-merge-repair`, 25a8b39):
+  KILLED. concave fixed 68/81, NO 105→92.8; venturi 12/33, 146→136; ma
+  groove1 peggiora 50.6→65.8 (skew 5.5) — la regressione che il gate
+  in-process non vede. Regola "nessuna riga che passava può fallire" → no.
+- **Fase 4 — margini / clamp**: scoperta della causa radice. Il clamp
+  per-vertice `0.5 * min_edge[w]` (edge minimo delle facce di parete, ≈1.4e-4
+  su venturi) cappa l'intero stack a ~7e-5 m e il fixpoint inonda l'intera
+  shell di pancake; `clamp_factor` è inerte (0.5/1/2 identici) e `h1`×10 non
+  cambia nulla. Leva `edge_cap_percentile` (48966c1): KILLED — rilasciare gli
+  sliver fa fallire la validazione (cube_duct perde il BL del tutto, venturi
+  e concave invariati).
+
+**Conclusione per il futuro:** il divario con snappy non è nel dual (che su
+cube_duct passa da solo a 51.9) ma nel BL sul boundary collassato: edge
+minuscoli + celle di bordo sottili rendono i prismi pancake/sliver qualunque
+leva si giri. Serve un intervento topologico dual-side sul boundary (edge
+collapse/decimazione con rilassamento punti), non altri knob. Tutte le
+evidenze nelle note `poly_*_reasoning.md` e nei JSON committati.
