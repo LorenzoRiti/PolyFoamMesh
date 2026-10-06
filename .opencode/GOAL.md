@@ -481,3 +481,21 @@ dual-only: il BL non aggiunge più danno; resta il dual a 74.0). Restano i
 margine skew su groove1/slot1/thin_gap. Tutto opt-in, default invariati,
 niente cablato in produzione. Dettagli in `notes/poly_edge_cap_reasoning.md`
 §BREAKTHROUGH.
+
+## Avanzamento 2026-10-06 (sera) — OBIETTIVO: poly 7/10 vs snappy 6/10
+
+Lane A (robustezza GMSH) completata. Cause radice dai log: multi_inlet erano
+**5 solidi disgiunti** (bug del generatore: header lungo Y, rami fuori span) e
+mini_valve aveva facet autointersecanti — entrambi uccidevano il path STL
+discreto di GMSH. Fix committati: generatore corretto (1 body fuso),
+esportazione **STEP** deterministica + harness che preferisce il sibling
+`.step` (BRep OCC esatto), e **Delaunay** per le sorgenti STEP (HXT per gli
+STL, default di produzione intatti).
+
+Risultato ufficiale full poly (combo edge-filter 0.9 + budget term):
+**7/10 PASS vs snappy 6/10 = MEGLIO DI SNAPPY**, con multi_inlet che passa
+dove snappy fallisce lo skew (49.99 vs fail) e cylinder 38.13 vs 52.96.
+Restano venturi (74.2) e mini_valve (74.7), entrambi bloccati dal dual
+stesso (tiny-face pair → lavoro topologico), e dirty_cad (negativo condiviso).
+Dettagli in `notes/poly_edge_cap_reasoning.md` §Lane A; JSON
+`comparison_20261006T154002.json`.

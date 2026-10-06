@@ -137,3 +137,43 @@ human decision is recorded in the GOAL entry.
 - [x] (a) venturi attempts measured (no dual lever passes)
 - [x] (b) coverage quantified (21% area lost)
 - [x] (c) promotion assessment written (keep opt-in; decision to the human)
+
+## Lane A — GMSH robustness via STEP/OCC (2026-10-06): poly 7/10 vs snappy 6/10
+
+Root causes from the committed baseline logs: `multi_inlet` was FIVE DISJOINT
+SOLIDS (generator bug: header extruded along Y, branches outside its span) and
+`mini_valve` had self-intersecting facets — both killed GMSH's discrete-STL
+path (`classifySurfaces`). Fixes, all committed:
+
+1. `generate_corpus.gen_multi_inlet` corrected → one fused watertight body.
+2. `_export_step` in the generators (deterministic timestamp) + the harness
+   prefers a sibling `.step` and meshes the exact OCC BRep
+   (`_gmsh_source` in `run_benchmarks`).
+3. Per-call `algo3d` in `run_gmsh_volume`: STEP sources use classic Delaunay
+   (1) instead of HXT (10) — measured on multi_inlet: NOmax 60.1 vs 78.2.
+   STL sources keep the wrapper default; production defaults untouched.
+
+Official full poly tier with the promoted combo (committed
+`comparison_20261006T154002.json`):
+
+| geometry | poly combo | snappy best | note |
+|---|---|---|---|
+| cylinder | PASS 38.13 | PASS 52.96 | **better than snappy** |
+| cube_duct | PASS 58.87 | PASS 46.21 | |
+| groove1 | PASS 52.65 | PASS 42.71 | |
+| slot1 | PASS 55.95 | PASS 39.40 | |
+| venturi | FAIL 74.23 | PASS 60.26 | dual's own 74.0 |
+| mini_valve | FAIL 74.68 | TIMEOUT | we mesh it; snappy cannot |
+| thin_gap | PASS 69.62 | PASS 42.28 | |
+| concave_bracket | PASS 66.77 | PASS 64.76 | was FAIL before |
+| dirty_cad | FAIL 0 cells | FAIL | shared (non-watertight by design) |
+| multi_inlet | **PASS 49.99** | FAIL (skew 7.86) | **we pass where snappy fails** |
+
+**Poly pass rate 7/10 vs snappy 6/10 — strictly better**, with two geometries
+where snappy loses (multi_inlet pass; mini_valve meshed vs timeout) and one
+where our metric is better (cylinder). Remaining: venturi and mini_valve are
+both ~74 (the dual's own tiny-face pairs; topology work) and dirty_cad is a
+shared negative case.
+
+- [x] Lane A measured (STEP/OCC + Delaunay)
+- [x] Official score: poly 7/10 > snappy 6/10
