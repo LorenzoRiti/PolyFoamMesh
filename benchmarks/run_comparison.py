@@ -21,6 +21,7 @@ import argparse
 import datetime
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -201,14 +202,18 @@ def _run_gmsh_direct(stl_path: Path) -> dict:
         try:
             from polyfoammesh.core.gmsh_subprocess import run_gmsh_volume
 
+            _src = rb._gmsh_source(stl_path)
             run_gmsh_volume(
-                rb._gmsh_source(stl_path),
+                _src,
                 case_dir / "mesh.msh",
-                detail="medium",
+                detail=os.environ.get("BENCH_GMSH_DETAIL", "medium"),
                 user_lc=max_cell,
                 min_lc=min_cell,
                 timeout_s=GMSH_TIMEOUT_S,
                 threads=1,
+                # STEP/OCC BReps mesh best with classic Delaunay (measured:
+                # multi_inlet NOmax 60.1 vs 78.2 with HXT).
+                algo3d=(1 if str(_src).lower().endswith(".step") else None),
             )
             stages["gmsh_volume"] = True
         except Exception as exc:
