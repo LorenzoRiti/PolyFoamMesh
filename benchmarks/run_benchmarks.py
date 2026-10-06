@@ -773,10 +773,11 @@ def _benchmark_poly_one(
         try:
             from polyfoammesh.core.gmsh_subprocess import run_gmsh_volume
 
+            _src = _gmsh_source(stl_path)
             run_gmsh_volume(
-                _gmsh_source(stl_path),
+                _src,
                 msh_path,
-                detail="medium",
+                detail=os.environ.get("BENCH_GMSH_DETAIL", "medium"),
                 user_lc=max_cell,
                 min_lc=min_cell,
                 on_line=lambda m: logger.info("  [gmsh] %s", m),
@@ -786,6 +787,10 @@ def _benchmark_poly_one(
                 # BL scale flip that swung thin_gap skew 3.4 -> 19.3 between
                 # identical runs). A regression benchmark must be reproducible.
                 threads=1,
+                # STEP/OCC BReps mesh best with classic Delaunay (measured:
+                # multi_inlet gmsh_direct NOmax 60.1 vs 78.2 with HXT); the
+                # discrete-STL path keeps the wrapper default (HXT).
+                algo3d=(1 if str(_src).lower().endswith(".step") else None),
             )
             stages["gmsh_volume"] = True
         except Exception as exc:

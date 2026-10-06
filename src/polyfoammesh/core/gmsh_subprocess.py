@@ -43,6 +43,7 @@ def run_gmsh_volume(
     on_line: LogFn = _noop,
     timeout_s: int = 3600,
     threads: int = 0,
+    algo3d: int | None = None,
 ) -> dict:
     """Mesh *step_path* via gmsh_wrapper's ``volume`` CLI, returning its JSON.
 
@@ -73,6 +74,13 @@ def run_gmsh_volume(
     env["GMSH_SOLUTION_SIZE_FIELD"] = str(size_field_file) if size_field_file else ""
     if int(threads) > 0:
         env["GMSH_NUM_THREADS"] = str(int(threads))
+    if algo3d is not None:
+        # Per-call 3D algorithm override (1=Delaunay, 6=Frontal, 10=HXT),
+        # scoped to this subprocess so the process-wide default is untouched.
+        # The benchmark uses Delaunay for STEP/OCC BReps (HXT's discrete
+        # heuristics are unnecessary there and measurably worse: multi_inlet
+        # gmsh_direct NOmax 60.1 vs 78.2).
+        env["CFMESH_GMSH_ALGO3D"] = str(int(algo3d))
 
     last_err = ""
     for attempt in (1, 2):  # GMSH's OCC mesher intermittently dies natively
