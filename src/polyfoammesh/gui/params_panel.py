@@ -369,41 +369,33 @@ class ParamsPanel(QWidget):
         )
         bl_form.addRow(self._bl_concave_closure)
 
-        # 2026-10-06: the two measured BL quality fixes (benchmark combo:
-        # poly 9/10 vs snappy 6/10). Opt-in, unchecked by default: the edge
-        # filter drops sliver-EDGE base faces (0.9 x median) so the
-        # per-vertex inversion clamp stops capping every stack at the
-        # smallest sliver edge, and the budget termination reduces the layer
-        # count at FULL size instead of squeezing pancake stacks. Measured
-        # cost: on the gap geometries ~20% of wall AREA loses its prisms
-        # (venturi/cube_duct), so it stays a user choice, never a default.
-        self._bl_edge_filter = QCheckBox(
-            "BL robusto: filtro facce sliver (sperimentale)"
-        )
-        self._bl_edge_filter.setToolTip(
-            "Esclude dall'estrusione le facce di parete con spigolo "
-            "minuscolo (< 0.9 x mediana): sono loro a bloccare l'altezza "
-            "di TUTTA la pila di prismi (clamp di inversione 0.5*min_edge), "
-            "producendo prismi schiacciati e non-ortho fino a 146°. "
+        # 2026-10-06: ONE robust-BL flag bundles the two measured fixes
+        # (benchmark combo: poly 9/10 vs snappy 6/10). The edge filter drops
+        # sliver-EDGE base faces (0.9 x median) so the per-vertex inversion
+        # clamp stops capping every stack at the smallest sliver edge, and
+        # the budget termination reduces the layer count at FULL size instead
+        # of squeezing pancake stacks. Opt-in, unchecked by default: on
+        # geometries with many sliver faces ~20% of wall AREA loses its
+        # prisms, so it stays a user choice, never a default. The concave
+        # closure checkbox above is a DIFFERENT mechanism (per-vertex
+        # exclusions) and stays separate on purpose.
+        self._bl_robust = QCheckBox("BL robusto (consigliato, sperimentale)")
+        self._bl_robust.setToolTip(
+            "Attiva insieme i due fix del boundary layer misurati sul "
+            "benchmark (poly 9/10 vs snappy 6/10):\n"
+            "• filtro facce sliver: esclude dall'estrusione le facce di "
+            "parete con spigolo minuscolo (< 0.9 x mediana), che bloccano "
+            "l'altezza di TUTTA la pila (clamp 0.5*min_edge) e producono "
+            "prismi schiacciati/non-ortho fino a 146°;\n"
+            "• terminazione a budget: dove lo spazio non basta, riduce il "
+            "NUMERO di layer a dimensione piena invece di comprimere tutti "
+            "i layer in uno stack schiacciato.\n"
             "Misurato su checkMesh reale: cube_duct 80.6→58.9 (PASS), "
             "venturi 146→74, concave 105→66.8 (PASS). Costo: su geometrie "
             "con molte facce sliver ~20% dell'area di parete resta senza "
-            "prismi. Consigliato insieme alla terminazione a budget."
+            "prismi."
         )
-        bl_form.addRow(self._bl_edge_filter)
-
-        self._bl_budget_term = QCheckBox(
-            "BL robusto: terminazione a budget (sperimentale)"
-        )
-        self._bl_budget_term.setToolTip(
-            "Dove lo spazio disponibile non basta per l'intera pila, riduce "
-            "il NUMERO di layer alla dimensione piena invece di comprimere "
-            "tutti i layer in uno stack schiacciato (pancake). Insieme al "
-            "filtro sliver elimina i prismi degeneri del percorso poly; "
-            "dove nemmeno un layer entra, la faccia non viene estrusa "
-            "(banda terminatrice). Misurato: poly 9/10 vs snappy 6/10."
-        )
-        bl_form.addRow(self._bl_budget_term)
+        bl_form.addRow(self._bl_robust)
 
         # Physical inputs: the layer parameters above are derived from these
         # rather than guessed, which is how commercial meshers do it.
@@ -1083,13 +1075,12 @@ class ParamsPanel(QWidget):
             # opt-in, default False — see the checkbox above for context.
             "concaveClosure": self._bl_concave_closure.isChecked(),
             # 2026-10-06 BL quality fixes (poly path, opt-in, default off):
-            # minBaseEdgeFraction 0.9 drops sliver-edge base faces;
-            # terminateByBudget reduces layer counts at full size instead of
-            # squeezing pancake stacks.
+            # ONE flag bundles the sliver-edge base-face filter (0.9) and the
+            # budget termination; 0.0/False reproduce the historical path.
             "minBaseEdgeFraction": (
-                0.9 if self._bl_edge_filter.isChecked() else 0.0
+                0.9 if self._bl_robust.isChecked() else 0.0
             ),
-            "terminateByBudget": self._bl_budget_term.isChecked(),
+            "terminateByBudget": self._bl_robust.isChecked(),
         }
 
     def get_bl_apply_all(self) -> bool:
