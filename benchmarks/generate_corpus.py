@@ -122,14 +122,25 @@ def gen_dirty_cad() -> None:
 
 def gen_multi_inlet() -> None:
     """Manifold: main header (r=0.012, L=0.1 along X) + 3 branch inlets
-    (r=0.006, L=0.03 along Z) + 1 outlet stub (r=0.010, L=0.02 along X)."""
-    header = cq.Workplane("XZ").circle(0.012).extrude(0.1).translate((0.05, 0, 0))
-    b1 = cq.Workplane("XY").circle(0.006).extrude(0.03).translate((-0.03, 0, 0.006))
-    b2 = cq.Workplane("XY").circle(0.006).extrude(0.03).translate((0.0, 0, 0.006))
-    b3 = cq.Workplane("XY").circle(0.006).extrude(0.03).translate((0.03, 0, 0.006))
-    outlet = cq.Workplane("XZ").circle(0.010).extrude(0.02).translate((0.1, 0, 0))
+    (r=0.006, L=0.03 along Z) + 1 outlet stub (r=0.010, L=0.02 along X).
+
+    Fixed 2026-10-06: the header/outlet used Workplane("XZ") (extruded along
+    -Y) and the branches sat at x=-0.03/0/0.03 — all five solids were
+    DISJOINT (trimesh body_count=5), which is why GMSH reported "some
+    volumes of the BRep were not found" and HXT failed.  "YZ" extrudes
+    along +X; the branches now sit inside the header span x∈[0, 0.1].
+    """
+    header = cq.Workplane("YZ").circle(0.012).extrude(0.1)
+    b1 = cq.Workplane("XY").circle(0.006).extrude(0.03).translate((0.02, 0, 0.006))
+    b2 = cq.Workplane("XY").circle(0.006).extrude(0.03).translate((0.05, 0, 0.006))
+    b3 = cq.Workplane("XY").circle(0.006).extrude(0.03).translate((0.08, 0, 0.006))
+    outlet = cq.Workplane("YZ").circle(0.010).extrude(0.02).translate((0.1, 0, 0))
     body = header.union(b1).union(b2).union(b3).union(outlet)
     mesh = _cq_to_trimesh(body, tolerance=0.0005)
+    mesh.merge_vertices()
+    assert mesh.body_count == 1, (
+        f"multi_inlet union left {mesh.body_count} disjoint bodies"
+    )
     _export(mesh, "multi_inlet.stl", name="multi_inlet")
 
 
