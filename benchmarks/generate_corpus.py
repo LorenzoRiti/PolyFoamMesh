@@ -68,6 +68,7 @@ def gen_venturi() -> None:
         combined = combined.union(p)
     mesh = _cq_to_trimesh(combined, tolerance=0.0005)
     _export(mesh, "venturi.stl", name="venturi")
+    _export_step(combined, "venturi.step")
 
 
 def gen_mini_valve() -> None:
