@@ -819,6 +819,7 @@ class PolyBoundaryLayerEngine:
         min_base_face_fraction: float = 0.0,
         min_base_edge_fraction: float = 0.0,
         edge_cap_percentile: float = 0.0,
+        terminate_by_budget: bool = False,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -1130,6 +1131,7 @@ class PolyBoundaryLayerEngine:
                     points, faces, owner, neighbour, patches, n_int,
                     sel, res.n_layers, res.first_height * scale, growth, clamp,
                     pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
+                    terminate_by_budget=terminate_by_budget,
                 )
             except Exception as exc:  # noqa: BLE001 - keep-best fallback
                 self._log(f"[bl] attempt scale={scale} clamp={clamp}: {exc}")
@@ -1962,7 +1964,8 @@ class PolyBoundaryLayerEngine:
                concavity_criterion: str = "angle_fade",
                zero_concave: bool = False,
                vertex_height_scale: dict[int, float] | None = None,
-               edge_cap_percentile: float = 0.0) -> dict:
+               edge_cap_percentile: float = 0.0,
+               terminate_by_budget: bool = False) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -2059,17 +2062,20 @@ class PolyBoundaryLayerEngine:
             if mh <= 0.0:
                 nv0[w], hw0[w] = 0, 0.0
                 continue
-            if angle_fade[w] >= 0.5:
+            if angle_fade[w] >= 0.5 and not terminate_by_budget:
                 nv0[w] = n_layers
                 hw0[w] = min(cum[n_layers - 1], mh)
             else:
                 k = 0
                 while k < n_layers and cum[k] <= mh:
                     k += 1
-                if k == 0:
+                if k == 0 and not terminate_by_budget:
                     k = 1  # one clamped layer where even h1 does not fit
                 nv0[w] = k
-                hw0[w] = cum[k - 1] if cum[k - 1] <= mh else mh
+                if k == 0:
+                    hw0[w] = 0.0
+                else:
+                    hw0[w] = cum[k - 1] if cum[k - 1] <= mh else mh
         # per selected face: min over its vertices  -  the stack top needs
         # every vertex at layer n_f; n_f == 0 -> the face is NOT extruded
         # (handled as an unselected face below)

@@ -325,6 +325,7 @@ def run_single(
     poly_bl_normal: str = "area_weighted",
     poly_bl_local_term: str = "off",
     poly_bl_height_retry: bool = False,
+    poly_bl_budget_term: bool = False,
     poly_bl_edge_cap_pct: float = 0.0,
     poly_dual_smooth_iters: int = 3,
     poly_dual_compact: bool = False,
@@ -354,6 +355,7 @@ def run_single(
             bl_normal=poly_bl_normal,
             bl_local_term=poly_bl_local_term,
             bl_height_retry=poly_bl_height_retry,
+            bl_budget_term=poly_bl_budget_term,
             bl_edge_cap_pct=poly_bl_edge_cap_pct,
             dual_smooth_iters=poly_dual_smooth_iters,
             dual_compact=poly_dual_compact,
@@ -404,6 +406,7 @@ def run_parent(
     poly_bl_normal: str = "area_weighted",
     poly_bl_local_term: str = "off",
     poly_bl_height_retry: bool = False,
+    poly_bl_budget_term: bool = False,
     poly_bl_edge_cap_pct: float = 0.0,
     poly_dual_smooth_iters: int = 3,
     poly_dual_compact: bool = False,
@@ -445,6 +448,8 @@ def run_parent(
                 cmd += ["--poly-bl-local-term", poly_bl_local_term]
             if poly_bl_height_retry:
                 cmd += ["--poly-bl-height-retry"]
+            if poly_bl_budget_term:
+                cmd += ["--poly-bl-budget-term"]
             # Opt-in BL edge cap percentile: only forwarded when > 0, so a
             # default run's child cmd is byte-identical to the pre-flag one.
             if poly_bl_edge_cap_pct > 0.0:
@@ -530,6 +535,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="opt-in: BL local termination mode (default off)")
     p.add_argument("--poly-bl-height-retry", action="store_true",
                    help="opt-in: short-stack retry before excluding (needs local term)")
+    p.add_argument("--poly-bl-budget-term", action="store_true",
+                   help="opt-in: terminate tight vertices by layer count at full size "
+                        "(no squeezed pancake stacks; excluded where h1 does not fit)")
     p.add_argument("--poly-bl-edge-cap-pct", type=float, default=0.0,
                    help="opt-in: BL inversion-clamp edge cap as the p-th "
                         "percentile of a wall vertex's incident edge lengths "
@@ -575,6 +583,7 @@ def main(args: list[str] | None = None) -> int:
                 poly_bl_normal=opts.poly_bl_normal,
                 poly_bl_local_term=opts.poly_bl_local_term,
                 poly_bl_height_retry=opts.poly_bl_height_retry,
+                poly_bl_budget_term=opts.poly_bl_budget_term,
                 poly_bl_edge_cap_pct=opts.poly_bl_edge_cap_pct,
                 poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
                 poly_dual_compact=opts.poly_dual_compact,
@@ -594,6 +603,7 @@ def main(args: list[str] | None = None) -> int:
         poly_bl_normal=opts.poly_bl_normal,
         poly_bl_local_term=opts.poly_bl_local_term,
         poly_bl_height_retry=opts.poly_bl_height_retry,
+        poly_bl_budget_term=opts.poly_bl_budget_term,
         poly_bl_edge_cap_pct=opts.poly_bl_edge_cap_pct,
         poly_dual_smooth_iters=opts.poly_dual_smooth_iters,
         poly_dual_compact=opts.poly_dual_compact,
