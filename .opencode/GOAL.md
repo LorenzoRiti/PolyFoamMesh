@@ -493,11 +493,12 @@ esportazione **STEP** deterministica + harness che preferisce il sibling
 STL, default di produzione intatti).
 
 Risultato ufficiale full poly (combo edge-filter 0.9 + budget term):
-**8/10 PASS vs snappy 6/10 = MEGLIO DI SNAPPY**, con multi_inlet che passa
+**9/10 PASS vs snappy 6/10 = MEGLIO DI SNAPPY**, con multi_inlet che passa
 dove snappy fallisce lo skew (49.99 vs fail), mini_valve risolto con
-detail=fine (64.33 vs timeout di snappy) e cylinder 38.13 vs 52.96.
-Caveat onesto: multi_inlet e mini_valve passano col BL fallito (mesh
-dual-only, senza boundary layer). Resta venturi (74.2), bloccato dal dual
-stesso (tiny-face pair → lavoro topologico), e dirty_cad (negativo
-condiviso). Dettagli in `notes/poly_edge_cap_reasoning.md` §Lane A; JSON
-`comparison_20261006T164926.json`.
+detail=fine (64.33 vs timeout di snappy), venturi risolto esportando il suo
+STEP (74.2 → 43.28, path OCC/Delaunay) e cylinder 38.13 vs 52.96.
+Caveat onesto: multi_inlet, mini_valve e venturi passano col BL fallito
+(mesh dual-only, senza boundary layer; venturi è anche grossolana, 816
+celle). Resta solo dirty_cad (negativo condiviso, snappy fallisce pure).
+Dettagli in `notes/poly_edge_cap_reasoning.md` §Lane A; JSON
+`comparison_20261006T170414.json`.
