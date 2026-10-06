@@ -1694,6 +1694,13 @@ class DualPolyWorker(QObject):
                     n_layers=int(bl.get("nLayers", 5)),
                     first_height=float(bl.get("firstLayerThickness", 0.0)),
                     growth_rate=float(bl.get("thicknessRatio", 1.2)),
+                    # 2026-10-06 BL quality fixes (GUI checkboxes, opt-in):
+                    # the sliver-edge base-face filter and the budget
+                    # termination; 0.0/False reproduce the historical path.
+                    min_base_edge_fraction=float(
+                        bl.get("minBaseEdgeFraction", 0.0) or 0.0
+                    ),
+                    terminate_by_budget=bool(bl.get("terminateByBudget", False)),
                 )
                 _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
                 _cc_n_faces = int(
