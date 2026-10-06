@@ -180,3 +180,30 @@ failure is dirty_cad, where snappy also fails (shared negative case).
 
 - [x] Lane A measured (STEP/OCC + Delaunay + per-geometry detail)
 - [x] Official score: poly 9/10 > snappy 6/10
+
+## BL on the three STEP-passing geometries (2026-10-06): blocked by the dual
+
+multi_inlet, mini_valve and venturi pass the gate with the BL stage FAILING
+(dual-only meshes). Measured attempts to build the BL there:
+
+- `decoupled_vertex` + `height_retry`: venturi/multi_inlet still fail
+  ("no prism cells after local layer termination"); mini_valve BUILDS a BL
+  but quality collapses (NOmax 101.8, skew 16.2) — worse than dual-only 64.3.
+- finer sizing (detail=fine): no BL success anywhere; venturi regresses to
+  83.6 dual-only.
+- single-mode log on venturi (STEP): the budget termination yields ZERO
+  prisms at every scale — every wall vertex has `mh < h1`, i.e.
+  `angle_fade*min(clamp_factor*d, 0.5*edge_cap)` is below h1 everywhere.
+  The coarse STEP dual (816 cells) has tiny boundary edges (median
+  min-edge 3.8e-6 m) AND thin boundary cells.
+- `edge_cap_percentile` 50/100 (median/max edge instead of min) and a
+  sliver-ratio face filter (max_edge/min_edge > 20) do NOT change the
+  outcome: the binding term is the support distance `d` (thin dual boundary
+  cells), not the edge cap. Both experiments were measured, found
+  ineffective, and their code was reverted.
+
+Conclusion: building the BL on these meshes needs the dual-side topology
+fix (thicken the boundary cells / remove the tiny-edge boundary polygons) —
+the same class as the venturi tiny-face pairs. Gate-wise the three pass;
+for real CFD they still lack a boundary layer, which is the honest open
+item.
