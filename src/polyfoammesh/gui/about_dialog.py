@@ -28,9 +28,6 @@ from polyfoammesh.gui.design_tokens import (
     APP_WEBSITE,
     PRIMARY_600,
     ORANGE_500,
-    NEUTRAL_800,
-    NEUTRAL_600,
-    NEUTRAL_400,
 )
 
 
@@ -70,7 +67,7 @@ def _make_logo(size: int = 96) -> QPixmap:
 
 
 class AboutDialog(QDialog):
-    """Commercial-grade About dialog — ANSYS Workbench inspired."""
+    """Theme-aware About dialog - follows the application palette."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -78,9 +75,12 @@ class AboutDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(440)
         self.setMaximumWidth(480)
+        # Theme-aware: palette() roles follow the applied light/dark palette
+        # (2026-10-06: the hardcoded light island rendered as a broken mix of
+        # light background and dark-theme widgets in dark mode).
         self.setStyleSheet("""
-            QDialog { background:#f8f9fb; }
-            QLabel { color:#1e293b; }
+            QDialog { background: palette(window); }
+            QLabel { color: palette(text); }
             QPushButton { min-width:80px; }
         """)
 
@@ -120,12 +120,12 @@ class AboutDialog(QDialog):
         ver_font = QFont()
         ver_font.setPointSize(10)
         version.setFont(ver_font)
-        version.setStyleSheet(f"color: {NEUTRAL_600};")
+        version.setStyleSheet("color: palette(text);")
         title_box.addWidget(version)
 
         desc = QLabel(APP_DESCRIPTION)
         desc.setWordWrap(True)
-        desc.setStyleSheet(f"color: {NEUTRAL_800}; font-size:12px; margin-top:2px;")
+        desc.setStyleSheet("font-size:12px; margin-top:2px;")
         title_box.addWidget(desc)
         title_box.addStretch(1)
         header.addLayout(title_box, 1)
@@ -134,7 +134,7 @@ class AboutDialog(QDialog):
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#d4d8dd;")
+        sep.setStyleSheet("color: palette(mid);")
         content.addWidget(sep)
 
         # Build info grid
@@ -149,7 +149,7 @@ class AboutDialog(QDialog):
         # Separator
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
-        sep2.setStyleSheet("color:#d4d8dd;")
+        sep2.setStyleSheet("color: palette(mid);")
         content.addWidget(sep2)
 
         # Tech stack
@@ -158,7 +158,7 @@ class AboutDialog(QDialog):
             "trimesh · meshio · reportlab · OpenFOAM v2512"
         )
         tech.setWordWrap(True)
-        tech.setStyleSheet(f"color: {NEUTRAL_600}; font-size:11px;")
+        tech.setStyleSheet("color: palette(text); font-size:11px;")
         content.addWidget(tech)
 
         # System
@@ -168,7 +168,7 @@ class AboutDialog(QDialog):
             f"<b>OS:</b> {platform.system()} {platform.release()}"
         )
         sys_info.setTextFormat(Qt.RichText)
-        sys_info.setStyleSheet(f"color: {NEUTRAL_400}; font-size:10px;")
+        sys_info.setStyleSheet("color: palette(text); font-size:10px;")
         content.addWidget(sys_info)
 
         # Close button
@@ -195,5 +195,5 @@ class AboutDialog(QDialog):
     def _kv(key: str, value: str) -> QLabel:
         lbl = QLabel(f"<b>{key}:</b> {value}")
         lbl.setTextFormat(Qt.RichText)
-        lbl.setStyleSheet("color: #1e293b; font-size: 12px;")
+        lbl.setStyleSheet("font-size: 12px;")
         return lbl

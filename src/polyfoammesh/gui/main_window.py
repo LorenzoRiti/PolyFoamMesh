@@ -305,18 +305,6 @@ class MainWindow(QMainWindow):
         tm.addSeparator()
         tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
         tm.addSeparator()
-        # EXPERIMENTAL native cut-cell -> median dual (Fasi 1-6). Isolated
-        # here in Tools, not in the mesher combo: it was there before
-        # (commit 16e52e1) and confused users next to the CFD Poly GMSH
-        # path. Kept explicitly experimental/opt-in.
-        tm.addAction(
-            "Experimental: Native Poly (100% poly, nativo)...",
-            self._on_experimental_native_poly,
-        )
-        tm.addAction(
-            "Experimental: Native Poly — help",
-            self._on_experimental_native_poly_help,
-        )
 
     def _on_theme_change(self, mode: str) -> None:
         from polyfoammesh.gui.theme import apply_theme, set_theme_mode
