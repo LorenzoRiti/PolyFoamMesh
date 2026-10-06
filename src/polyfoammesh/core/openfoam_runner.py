@@ -1762,22 +1762,70 @@ class DualPolyWorker(QObject):
                 )
                 for line in notes:
                     self.log_line.emit(f"[poly] {line}")
+
+                def _run_bl(extra_kw):
+                    if apply_all:
+                        return engine.run(apply_to_all=True, **extra_kw)
+                    if patch_names is None:
+                        return None
+                    return engine.run(
+                        patch_names=patch_names, apply_to_all=False, **extra_kw,
+                    )
+
                 if apply_all:
                     self.log_line.emit(
                         "[poly] BL on ALL boundary patches "
                         "(override 'Apply BL to all patches' is on)"
                     )
-                    bres = engine.run(apply_to_all=True, **kw)
                 elif patch_names is None:
-                    bres = None
+                    pass
                 else:
                     self.log_line.emit(
                         "[poly] BL on wall patches only: "
                         f"{', '.join(sorted(patch_names))}"
                     )
-                    bres = engine.run(
-                        patch_names=patch_names, apply_to_all=False, **kw,
+
+                bres = _run_bl(kw)
+                # Fallback chain (2026-10-06). local termination is the most
+                # aggressive path and can fail validation on a thin margin
+                # (user case: volume not conserved 1.02e-3 vs the 1e-3
+                # tolerance); before giving up the BL entirely, retry the
+                # STANDARD path with the robust fixes still active.
+                kw_std = {
+                    k: v for k, v in kw.items() if k != "local_termination"
+                }
+                if (bres is None or not bres.success) and kw.get(
+                    "local_termination"
+                ):
+                    self.log_line.emit(
+                        "[poly] Local termination failed — retrying with the "
+                        "standard BL path (robust fixes still active)..."
                     )
+                    retry = _run_bl(kw_std)
+                    if retry is not None and retry.success:
+                        bres = retry
+                # Last resort: halve the first-layer height. The per-vertex
+                # inversion guard rejects a stack that is taller than the
+                # dual's boundary cells can take, and the engine's own
+                # fallback shrinks the clamp too (which does not help here).
+                # Measured on the user's Part2 case: h1 7.28e-4 failed at
+                # every scale, h1/2 succeeded (13,088 prisms, checkMesh
+                # PASS). The reduction is logged because it changes y+.
+                if bres is None or not bres.success:
+                    base_h = float(kw.get("first_height", 0.0) or 0.0)
+                    for frac in (0.5, 0.25):
+                        if base_h <= 0.0:
+                            break
+                        kw_h = {**kw_std, "first_height": base_h * frac}
+                        self.log_line.emit(
+                            "[poly] BL retry: first layer reduced "
+                            f"{1.0 / frac:.0f}x ({base_h * frac:.4g} m) to "
+                            "fit the dual boundary cells — y+ target moves."
+                        )
+                        retry = _run_bl(kw_h)
+                        if retry is not None and retry.success:
+                            bres = retry
+                            break
             except Exception as exc:  # noqa: BLE001 - keep the poly mesh
                 self.log_line.emit(f"[poly] WARN: boundary layers failed: {exc}")
                 bres = None
