@@ -627,6 +627,9 @@ def _benchmark_poly_one(
     bl_min_face: float = 0.0,
     bl_min_edge: float = 0.0,
     bl_edge_cap_pct: float = 0.0,
+    bl_normal: str = "area_weighted",
+    bl_local_term: str = "off",
+    bl_height_retry: bool = False,
     dual_smooth_iters: int = 3,
     dual_compact: bool = False,
     dual_axis: bool = False,
@@ -813,6 +816,14 @@ def _benchmark_poly_one(
                 # Opt-in (harness --poly-bl-edge-cap-pct): 0.0 keeps the
                 # historical per-vertex min-edge inversion clamp.
                 edge_cap_percentile=bl_edge_cap_pct,
+                # Opt-in (harness --poly-bl-normal / --poly-bl-local-term /
+                # --poly-bl-height-retry): the engine defaults reproduce the
+                # historical BL byte-for-byte.
+                normal_method=bl_normal,
+                local_termination=(
+                    bl_local_term if bl_local_term != "off" else False
+                ),
+                local_height_retry=bl_height_retry,
             )
             stage_times["bl"] = round(time.perf_counter() - t0, 2)
             if bres.success:
