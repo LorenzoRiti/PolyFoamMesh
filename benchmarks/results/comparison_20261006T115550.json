@@ -1,0 +1,22 @@
+[
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-10-06T11:55:50",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 6.93,
+    "cell_count": 11908,
+    "max_non_ortho": 58.87,
+    "avg_non_ortho": 10.29,
+    "max_skewness": 3.93,
+    "max_aspect_ratio": 554.2,
+    "neg_cells": 0,
+    "min_volume": 7.88171e-12,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  }
+]
