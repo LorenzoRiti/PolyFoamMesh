@@ -19,7 +19,7 @@ import numpy as np
 import trimesh
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from generate_geometries import _cq_to_trimesh, _export  # noqa: E402
+from generate_geometries import _cq_to_trimesh, _export, _export_step  # noqa: E402
 
 
 def gen_cylinder() -> None:
@@ -83,8 +83,10 @@ def gen_mini_valve() -> None:
     disc = cq.Workplane("XY").circle(0.024).extrude(0.006).translate((0, 0, 0.037))
     port1 = cq.Workplane("XY").circle(0.008).extrude(0.05).translate((0.02, 0, 0.0))
     port2 = cq.Workplane("XY").circle(0.008).extrude(0.05).translate((-0.02, 0, 0.03))
-    mesh = _cq_to_trimesh(body.cut(disc).cut(port1).cut(port2), tolerance=0.0005)
+    valve = body.cut(disc).cut(port1).cut(port2)
+    mesh = _cq_to_trimesh(valve, tolerance=0.0005)
     _export(mesh, "mini_valve.stl", name="mini_valve")
+    _export_step(valve, "mini_valve.step")
 
 
 def gen_concave_bracket() -> None:
@@ -96,10 +98,7 @@ def gen_concave_bracket() -> None:
     base = cq.Workplane("XY").box(0.08, 0.04, 0.012)
     upright = cq.Workplane("XY").box(0.012, 0.04, 0.06).translate((-0.034, 0, 0.03))
     body = base.union(upright)
-    fillet = (
-        cq.Workplane("XY").circle(0.004).extrude(0.06)
-        .translate((-0.028, -0.018, 0.006))
-    )
+    fillet = cq.Workplane("XY").circle(0.004).extrude(0.06).translate((-0.028, -0.018, 0.006))
     mesh = _cq_to_trimesh(body.union(fillet), tolerance=0.0005)
     _export(mesh, "concave_bracket.stl", name="concave_bracket")
 
@@ -115,7 +114,9 @@ def gen_dirty_cad() -> None:
     radial = np.hypot(centres[:, 0], centres[:, 1])
     hole = on_top & (radial < 0.015)
     mesh = trimesh.Trimesh(
-        vertices=mesh.vertices, faces=mesh.faces[~hole], process=False,
+        vertices=mesh.vertices,
+        faces=mesh.faces[~hole],
+        process=False,
     )
     _export(mesh, "dirty_cad.stl", name="dirty_cad")
 
@@ -138,10 +139,9 @@ def gen_multi_inlet() -> None:
     body = header.union(b1).union(b2).union(b3).union(outlet)
     mesh = _cq_to_trimesh(body, tolerance=0.0005)
     mesh.merge_vertices()
-    assert mesh.body_count == 1, (
-        f"multi_inlet union left {mesh.body_count} disjoint bodies"
-    )
+    assert mesh.body_count == 1, f"multi_inlet union left {mesh.body_count} disjoint bodies"
     _export(mesh, "multi_inlet.stl", name="multi_inlet")
+    _export_step(body, "multi_inlet.step")
 
 
 def main() -> int:
