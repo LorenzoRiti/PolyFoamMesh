@@ -106,3 +106,34 @@ into production.
 
 - [x] Promoted combo measured (opt-in)
 - [x] Full-tier leaderboard at parity
+
+## (a) venturi, (b) wall coverage, (c) promotion assessment (2026-10-06)
+
+**(a) Venturi's remaining 74.0 is the DUAL's own max.** Tried on the dual
+only: `median_faces=True` (71.80, but skew 4.744), +compact/axis
+(71.86/4.82), +planarize (71.23/5.14), smooth_iters 20, planarize alone —
+none passes (gate needs NO<70 AND skew<4). The four tiny-face pairs need the
+topology fix (the dissolution lane), not another knob.
+
+**(b) Wall coverage of the promoted combo** (`--poly-bl-min-edge 0.9`):
+venturi 700/2059 faces excluded (34.0%), **21.0% of wall AREA lost** (79.0%
+covered); cube_duct 1052/2808 faces (37.5%), 18.3% area lost (81.7%
+covered). An absolute criterion (edge < k*h1, k=2..10) would exclude only
+0.05-0.29% of the area — but it does NOT reproduce the quality win
+(measured `--poly-bl-edge-h1 10`: cube_duct 79.4, venturi 115.6 vs 58.9/74.2
+with the relative filter). The excluded ELONGATED faces are the real
+carriers of the residual damage, so the ~20% coverage cost is intrinsic to
+this filter family, not an artefact of the threshold.
+
+**(c) Promotion assessment:** the combo reaches snappy parity (6/10) at a
+~20% wall-coverage cost. For CFD that is a real physics cost (missing
+near-wall resolution on a fifth of the wall), so it should NOT become a
+default silently. Recommendation: keep both flags opt-in; promote only
+after either (i) a validation-driven filter (exclude only faces whose
+prisms actually fail validation) reproduces the quality win at much lower
+coverage cost, or (ii) the human explicitly accepts the trade-off. The
+human decision is recorded in the GOAL entry.
+
+- [x] (a) venturi attempts measured (no dual lever passes)
+- [x] (b) coverage quantified (21% area lost)
+- [x] (c) promotion assessment written (keep opt-in; decision to the human)
