@@ -134,16 +134,14 @@ def test_reports_the_reynolds_number_to_the_user(panel):
     assert "Re=" in text and "y+" in text
 
 
-def test_bl_robust_fixes_checkboxes_off_by_default_and_reach_bl_params(panel):
-    """2026-10-06 BL quality fixes (sliver-edge filter + budget
-    termination): unchecked by default, and their state reaches
+def test_bl_robust_checkbox_off_by_default_and_reaches_bl_params(panel):
+    """2026-10-06: ONE robust-BL flag bundles the sliver-edge filter and
+    the budget termination; unchecked by default, and its state reaches
     get_bl_params() under the keys openfoam_runner.DualPolyWorker reads."""
     panel._bl_checkbox.setChecked(True)
-    assert panel._bl_edge_filter.isChecked() is False
-    assert panel._bl_budget_term.isChecked() is False
+    assert panel._bl_robust.isChecked() is False
     assert panel.get_bl_params()["minBaseEdgeFraction"] == 0.0
     assert panel.get_bl_params()["terminateByBudget"] is False
-    panel._bl_edge_filter.setChecked(True)
-    panel._bl_budget_term.setChecked(True)
+    panel._bl_robust.setChecked(True)
     assert panel.get_bl_params()["minBaseEdgeFraction"] == 0.9
     assert panel.get_bl_params()["terminateByBudget"] is True
