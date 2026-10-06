@@ -1212,16 +1212,16 @@ class PolyBoundaryLayerEngine:
         # do not fit, leave the count untouched: the usefulness guard below
         # rejects the flattened result and the caller can retry with a
         # smaller first height.
-        if terminate_by_budget and res.n_layers > 2:
+        if terminate_by_budget and res.n_layers > 1:
             k_sup = self._supported_layers(
                 pre, res.first_height, growth, res.n_layers,
             )
-            if 2 <= k_sup < res.n_layers:
+            if 1 <= k_sup < res.n_layers:
                 res.warnings.append(
                     f"boundary layer capped from {res.n_layers} to {k_sup} "
-                    "layers: the mesh supports no more at full height "
-                    "(first-cell depth budget); use a finer surface mesh or "
-                    "a smaller first-layer height for more layers"
+                    "layer(s): the mesh supports no more at full height "
+                    "(first-cell depth budget); use a coarser surface mesh "
+                    "for more layers or a smaller first-layer height"
                 )
                 self._log(
                     f"[bl] capped layers {res.n_layers} -> {k_sup} "
@@ -1383,6 +1383,12 @@ class PolyBoundaryLayerEngine:
         res.success = True
         res.n_prism_cells = int(built["n_prism_cells"])
         res.total_thickness = built["heights"][-1]
+        heights = built["heights"]
+        h_eff = float(heights[1]) if len(heights) > 1 else 0.0
+        h_req = res.first_height * scale if scale > 0 else res.first_height
+        res.stats["first_layer_effective_m"] = h_eff
+        if h_req > 0.0:
+            res.stats["first_layer_ratio"] = h_eff / h_req
         res.layer_hist = hist
         res.median_layers = med
         n_wall = sum(hist.values())
@@ -1408,6 +1414,7 @@ class PolyBoundaryLayerEngine:
             f"{built.get('layers_per_face_min', res.n_layers)}.."
             f"{built.get('layers_per_face_max', res.n_layers)}), "
             f"coverage {coverage:.1f}% of wall faces, "
+            f"first layer {h_eff:.3g} m (requested {h_req:.3g}), "
             f"total thickness {res.total_thickness:.6g} m, "
             f"min cell volume {built['min_volume']:.3g}"
         )
@@ -1415,6 +1422,13 @@ class PolyBoundaryLayerEngine:
             res.warnings.append(
                 f"boundary layer reduced: median {med:g} of "
                 f"{res.n_layers} requested layers (coverage {coverage:.1f}%)"
+            )
+        if res.first_height > 0.0 and h_eff < 0.5 * res.first_height:
+            res.warnings.append(
+                f"first layer {h_eff:.3g} m is "
+                f"{100.0 * h_eff / res.first_height:.0f}% of the requested "
+                f"{res.first_height:.3g} m: the y+ target is off by the "
+                "same factor"
             )
         return res
 
