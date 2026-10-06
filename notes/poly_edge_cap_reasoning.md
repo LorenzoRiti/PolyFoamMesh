@@ -45,3 +45,32 @@ fix is a dual-side boundary topology change, not another clamp knob.
 - [x] Discovery recorded
 - [x] B-side measured
 - [x] Verdict: KILLED (not promoted)
+
+## Follow-up (same night): sliver-EDGE base-face filter (`min_base_edge_fraction`, commit a94737f)
+
+Targets the measured `0.5*min_edge[w]` clamp directly: drop selected faces
+whose smallest edge is below `fraction * median(min edges)`, BEFORE
+`_build_precompute`, so `min_edge[w]` is computed from the RETAINED faces
+and the clamp stops binding. Harness flag `--poly-bl-min-edge`.
+
+| geometry | baseline | edge=0.2 | edge=0.5 |
+|---|---|---|---|
+| cube_duct | 80.64 | 80.95 | **72.46** |
+| venturi | 146.41 | 115.62 | **116.15** |
+| concave_bracket | 105.41 | 105.41 | 62.66 (*BL fails entirely: not a promotion) |
+
+Mechanism check (BL-only probe): venturi stack thickness 7.05e-5 -> 5.25e-4
+m (the full 5-layer stack), the pancake flooding is GONE; clamp_factor
+remains inert. Worst-face localization on the filtered venturi: the max
+moved from tiny sliver faces to a NORMAL-size face (3.1e-5 m², |d| 3.3e-3)
+between two prism-scale cells — the remaining damage class is prism-vs-core
+geometry at feature edges, not tiny bases.
+
+VERDICT: real partial mechanism fix (pancakes eliminated, NOmax −30 on
+venturi, −8 on cube_duct), NOT promoted (no row reaches the gate; concave
+only "passes" by losing the BL). Next lever: the normal/termination family
+(`most_visible` / `decoupled_vertex`, measured 85 on the OLD pancake
+geometry) re-measured on this new geometry — not exposed in the harness yet.
+
+- [x] Follow-up measured
+- [x] Verdict: partial fix, not promoted
