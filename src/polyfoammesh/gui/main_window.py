@@ -476,6 +476,12 @@ class MainWindow(QMainWindow):
             _btn = self._ribbon_btns[_key]
             _btn.setEnabled(False)
             _btn.setToolTip(f"{_label}: in arrivo in una prossima release.")
+            # Grey the label down so it is obvious at a glance that the
+            # button cannot be used yet (the theme's disabled state alone
+            # still read as too white on the ribbon).
+            _btn.setStyleSheet(
+                f"QToolButton:disabled {{ color: {COLOR_TEXT_DISABLED}; }}"
+            )
 
         self._ribbon_btns["fullauto"] = _make_ribbon_btn(
             "Full Auto", "run", self._on_full_auto, checkable=False,
