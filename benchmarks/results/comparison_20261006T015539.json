@@ -1,0 +1,24 @@
+[
+  {
+    "geometry": "groove1",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:55:38",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 3.05,
+    "cell_count": 1002,
+    "max_non_ortho": 50.59,
+    "avg_non_ortho": 14.24,
+    "max_skewness": 3.67,
+    "max_aspect_ratio": 5.63,
+    "neg_cells": 0,
+    "min_volume": 7.50262e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  }
+]

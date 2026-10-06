@@ -1,0 +1,144 @@
+[
+  {
+    "geometry": "cylinder",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:53:14",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 4.24,
+    "cell_count": 8969,
+    "max_non_ortho": 66.72,
+    "avg_non_ortho": 10.85,
+    "max_skewness": 2.77,
+    "max_aspect_ratio": 97.23,
+    "neg_cells": 0,
+    "min_volume": 8.98307e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "merge repair: fixed 0 of 0 concave cells (no candidate merges found)"
+    ],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:53:26",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 9.07,
+    "cell_count": 18258,
+    "max_non_ortho": 80.64,
+    "avg_non_ortho": 12.7,
+    "max_skewness": 4.92,
+    "max_aspect_ratio": 554.2,
+    "neg_cells": 0,
+    "min_volume": 2.75869e-13,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "merge repair: fixed 0 of 0 concave cells (no candidate merges found)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:53:31",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 3.04,
+    "cell_count": 989,
+    "max_non_ortho": 65.78,
+    "avg_non_ortho": 14.86,
+    "max_skewness": 5.5,
+    "max_aspect_ratio": 5.63,
+    "neg_cells": 0,
+    "min_volume": 7.50262e-10,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged",
+      "merge repair: fixed 13 of 15 concave cells"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:53:46",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 13.34,
+    "cell_count": 8681,
+    "max_non_ortho": 56.01,
+    "avg_non_ortho": 10.67,
+    "max_skewness": 3.59,
+    "max_aspect_ratio": 5.71,
+    "neg_cells": 0,
+    "min_volume": 1.09001e-11,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged",
+      "merge repair: fixed 0 of 12 concave cells (rejected: skewness violations increased (0 -> 1))"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:53:56",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 7.14,
+    "cell_count": 4720,
+    "max_non_ortho": 136.22,
+    "avg_non_ortho": 16.18,
+    "max_skewness": 3.66,
+    "max_aspect_ratio": 108.74,
+    "neg_cells": 0,
+    "min_volume": 3.1777e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "merge repair: fixed 12 of 33 concave cells"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:55:06",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 67.93,
+    "cell_count": 27205,
+    "max_non_ortho": 66.25,
+    "avg_non_ortho": 17.79,
+    "max_skewness": 3.07,
+    "max_aspect_ratio": 10.54,
+    "neg_cells": 0,
+    "min_volume": 2.45861e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged",
+      "merge repair: fixed 0 of 363 concave cells (rejected: skewness violations increased (0 -> 5))"
+    ],
+    "_raw_success": false
+  }
+]

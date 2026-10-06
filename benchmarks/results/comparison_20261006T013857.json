@@ -1,0 +1,50 @@
+[
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:38:40",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 29.7,
+    "cell_count": 33148,
+    "max_non_ortho": 83.51,
+    "avg_non_ortho": 15.96,
+    "max_skewness": 2.74,
+    "max_aspect_ratio": 1939.69,
+    "neg_cells": 0,
+    "min_volume": 2.21359e-14,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "aspect_ratio_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-10-06T01:38:56",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 13.84,
+    "cell_count": 2673,
+    "max_non_ortho": 117.57,
+    "avg_non_ortho": 17.22,
+    "max_skewness": 30.53,
+    "max_aspect_ratio": 4.52,
+    "neg_cells": 0,
+    "min_volume": 6.11993e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  }
+]

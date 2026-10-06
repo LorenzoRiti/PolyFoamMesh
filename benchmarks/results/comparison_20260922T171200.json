@@ -1,0 +1,713 @@
+[
+  {
+    "geometry": "cylinder",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:08:31",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.4,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "cells_produced"
+    ],
+    "errors": [
+      "cartesianMesh exit code 1"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:08:37",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 4.04,
+    "cell_count": 8969,
+    "max_non_ortho": 66.72,
+    "avg_non_ortho": 10.85,
+    "max_skewness": 2.77,
+    "max_aspect_ratio": 97.23,
+    "neg_cells": 0,
+    "min_volume": 8.98307e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:08:42",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 2.1,
+    "cell_count": 8927,
+    "max_non_ortho": 60.61,
+    "avg_non_ortho": 22.61,
+    "max_skewness": 0.71,
+    "max_aspect_ratio": 6.17,
+    "neg_cells": 0,
+    "min_volume": 3.50039e-08,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:08:45",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.0,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed:     0\t396\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'allowFreeStandingZoneFaces' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790089724252/bench_cylinder/system/snappyHexMeshDict/castellatedMeshControls\"\n\n\nfile: system/snappyHexMeshDict/castellatedMeshControls at line 14 to 33.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = bool]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cylinder",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:08:48",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.29,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790089727446/bench_cylinder/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 34.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:08:51",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.42,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "cells_produced"
+    ],
+    "errors": [
+      "cartesianMesh exit code 1"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:09:05",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 11.23,
+    "cell_count": 18258,
+    "max_non_ortho": 80.64,
+    "avg_non_ortho": 12.7,
+    "max_skewness": 4.92,
+    "max_aspect_ratio": 554.2,
+    "neg_cells": 0,
+    "min_volume": 2.75869e-13,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max",
+      "skewness_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:09:09",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 2.23,
+    "cell_count": 18791,
+    "max_non_ortho": 71.67,
+    "avg_non_ortho": 23.0,
+    "max_skewness": 1.11,
+    "max_aspect_ratio": 8.72,
+    "neg_cells": 0,
+    "min_volume": 2.21989e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:09:13",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.94,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed:     0\t1331\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'allowFreeStandingZoneFaces' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790089752097/bench_cube_duct/system/snappyHexMeshDict/castellatedMeshControls\"\n\n\nfile: system/snappyHexMeshDict/castellatedMeshControls at line 14 to 33.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = bool]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "cube_duct",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:09:17",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.48,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790089755685/bench_cube_duct/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 34.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:09:20",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.37,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "cells_produced"
+    ],
+    "errors": [
+      "cartesianMesh exit code 1"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:09:25",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 3.14,
+    "cell_count": 1002,
+    "max_non_ortho": 50.59,
+    "avg_non_ortho": 14.24,
+    "max_skewness": 3.67,
+    "max_aspect_ratio": 5.63,
+    "neg_cells": 0,
+    "min_volume": 7.50262e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:09:29",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 1.53,
+    "cell_count": 4012,
+    "max_non_ortho": 61.07,
+    "avg_non_ortho": 23.3,
+    "max_skewness": 1.05,
+    "max_aspect_ratio": 5.8,
+    "neg_cells": 0,
+    "min_volume": 1.3415e-09,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "groove1",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:09:32",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.91,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed:     0\t396\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'allowFreeStandingZoneFaces' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790089771225/bench_groove1/system/snappyHexMeshDict/castellatedMeshControls\"\n\n\nfile: system/snappyHexMeshDict/castellatedMeshControls at line 14 to 33.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = bool]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "groove1",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:09:35",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.27,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790089774137/bench_groove1/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 34.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:09:38",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.38,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "cells_produced"
+    ],
+    "errors": [
+      "cartesianMesh exit code 1"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:09:55",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 14.78,
+    "cell_count": 8681,
+    "max_non_ortho": 56.01,
+    "avg_non_ortho": 10.67,
+    "max_skewness": 3.59,
+    "max_aspect_ratio": 5.71,
+    "neg_cells": 0,
+    "min_volume": 1.09001e-11,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:09:59",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 2.4,
+    "cell_count": 38036,
+    "max_non_ortho": 65.58,
+    "avg_non_ortho": 22.64,
+    "max_skewness": 0.81,
+    "max_aspect_ratio": 6.87,
+    "neg_cells": 0,
+    "min_volume": 3.22904e-11,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "slot1",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:10:02",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.95,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed:     0\t1430\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'allowFreeStandingZoneFaces' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790089801708/bench_slot1/system/snappyHexMeshDict/castellatedMeshControls\"\n\n\nfile: system/snappyHexMeshDict/castellatedMeshControls at line 14 to 33.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = bool]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "slot1",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:10:06",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.31,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790089804763/bench_slot1/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 34.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:10:09",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.38,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "cells_produced"
+    ],
+    "errors": [
+      "cartesianMesh exit code 1"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:10:19",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 7.18,
+    "cell_count": 4732,
+    "max_non_ortho": 146.41,
+    "avg_non_ortho": 16.11,
+    "max_skewness": 3.66,
+    "max_aspect_ratio": 108.74,
+    "neg_cells": 0,
+    "min_volume": 3.1777e-12,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:10:25",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 4.55,
+    "cell_count": 10136,
+    "max_non_ortho": 73.91,
+    "avg_non_ortho": 24.29,
+    "max_skewness": 3.19,
+    "max_aspect_ratio": 11.65,
+    "neg_cells": 0,
+    "min_volume": 9.86827e-11,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "non_ortho_max"
+    ],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "venturi",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:10:28",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.9,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed:     0\t396\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'allowFreeStandingZoneFaces' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790089827700/bench_venturi/system/snappyHexMeshDict/castellatedMeshControls\"\n\n\nfile: system/snappyHexMeshDict/castellatedMeshControls at line 14 to 33.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = bool]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "venturi",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:10:31",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.24,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790089830525/bench_venturi/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 34.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "hex",
+    "timestamp": "2026-09-22T17:10:34",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 0.37,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "cells_produced"
+    ],
+    "errors": [
+      "cartesianMesh exit code 1"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "poly",
+    "timestamp": "2026-09-22T17:11:46",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 70.12,
+    "cell_count": 27205,
+    "max_non_ortho": 66.25,
+    "avg_non_ortho": 17.79,
+    "max_skewness": 3.07,
+    "max_aspect_ratio": 10.54,
+    "neg_cells": 0,
+    "min_volume": 2.45861e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [
+      "BL failed: could not insert a valid boundary layer (all height scales failed validation); mesh left unchanged"
+    ],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "gmsh_direct",
+    "timestamp": "2026-09-22T17:11:52",
+    "success": true,
+    "timed_out": false,
+    "wall_time_s": 3.81,
+    "cell_count": 109487,
+    "max_non_ortho": 65.84,
+    "avg_non_ortho": 22.68,
+    "max_skewness": 0.91,
+    "max_aspect_ratio": 7.3,
+    "neg_cells": 0,
+    "min_volume": 1.74054e-10,
+    "thresholds_pass": true,
+    "failed_thresholds": [],
+    "errors": [],
+    "warnings": [],
+    "_raw_success": true
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "snappy_base",
+    "timestamp": "2026-09-22T17:11:56",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.61,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed:     0\t42592\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nEntry 'allowFreeStandingZoneFaces' not found in dictionary \"/mnt/c/cfmesh_bench/cmp_snappy_1790089914612/bench_thin_gap/system/snappyHexMeshDict/castellatedMeshControls\"\n\n\nfile: system/snappyHexMeshDict/castellatedMeshControls at line 14 to 33.\n\n    From bool Foam::dictionary::readEntry(const Foam::word&, T&, Foam::keyType::option, Foam::IOobjectOption::readOption) const [with T = bool]\n    in file ./src/OpenFOAM/lnInclude/dictionaryTemplates.C at line 327.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [],
+    "_raw_success": false
+  },
+  {
+    "geometry": "thin_gap",
+    "runner": "snappy_expert",
+    "timestamp": "2026-09-22T17:12:00",
+    "success": false,
+    "timed_out": false,
+    "wall_time_s": 1.82,
+    "cell_count": 0,
+    "max_non_ortho": 0.0,
+    "avg_non_ortho": 0.0,
+    "max_skewness": 0.0,
+    "max_aspect_ratio": 0.0,
+    "neg_cells": 0,
+    "min_volume": 0.0,
+    "thresholds_pass": false,
+    "failed_thresholds": [
+      "fatal",
+      "cells_produced"
+    ],
+    "errors": [
+      "snappyHexMesh failed: \nReading features.\n\n\n--> FOAM FATAL IO ERROR: (openfoam-2512)\nCould not open \"/mnt/c/cfmesh_bench/cmp_snappy_1790089918229/bench_thin_gap/constant/triSurface/surface.eMesh\"\n\nfile: system/snappyHexMeshDict/castellatedMeshControls/features at line 34.\n\n    From void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)\n    in file refinementFeatures/refinementFeatures.C at line 118.\n\nFOAM exiting\n\n"
+    ],
+    "warnings": [
+      "surfaceFeatureExtract exit 1 (non-fatal)"
+    ],
+    "_raw_success": false
+  }
+]
