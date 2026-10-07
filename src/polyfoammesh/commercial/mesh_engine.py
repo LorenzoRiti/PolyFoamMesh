@@ -100,7 +100,7 @@ ALGORITHM_ROBUSTNESS: dict[MeshingAlgorithm, int] = {
 ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
     MeshingAlgorithm.CARTESIAN_HEX: {
         "label": "Cartesian Hex (cfMesh)",
-        "description": "Hex-dominant cartesian, migliore qualità, richiede WSL2",
+        "description": "Hex-dominant cartesian, best quality, requires WSL2",
         "requires_wsl": True,
         "cell_types": "hex-dominant",
         "best_for": "geometrie watertight, volumi interni",
@@ -111,7 +111,7 @@ ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
         "description": "Poliedrico CVT (Centroidal Voronoi Tessellation), non richiede WSL",
         "requires_wsl": False,
         "cell_types": "polyhedral",
-        "best_for": "mesh poliedrica qualità Star-CCM+, nessun WSL necessario",
+        "best_for": "polyhedral mesh, Star-CCM+ quality, no WSL required",
         "quality_rank": 2,
     },
     MeshingAlgorithm.POLYHEDRAL: {
@@ -159,15 +159,15 @@ ALGORITHM_INFO: dict[MeshingAlgorithm, dict[str, Any]] = {
         "description": "Post-mesh adattamento anisotropo basato su curvatura + metriche",
         "requires_wsl": True,
         "cell_types": "anisotropic tetrahedral",
-        "best_for": "miglioramento qualità post-mesh, boundary layer refinement",
+        "best_for": "post-mesh quality improvement, boundary layer refinement",
         "quality_rank": 1,
     },
     MeshingAlgorithm.POLY_AGGREGATED: {
         "label": "Polyhedral Aggregated (Star-CCM+ style)",
-        "description": "Tet mesh + aggregazione poliedrica, 3-5x meno celle, qualità superiore",
+        "description": "Tet mesh + polyhedral aggregation, 3-5x fewer cells, superior quality",
         "requires_wsl": False,
         "cell_types": "polyhedral",
-        "best_for": "CFD di qualità con meno celle, boundary layer integrati",
+        "best_for": "quality CFD with fewer cells, integrated boundary layers",
         "quality_rank": 1,
     },
 }

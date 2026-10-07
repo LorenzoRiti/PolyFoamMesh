@@ -218,7 +218,7 @@ class ParamsPanel(QWidget):
         self._patch_list.setMinimumHeight(40)
         self._patch_list.setMaximumHeight(120)
         patch_layout.addWidget(self._patch_list)
-        self._patch_placeholder = QLabel("Nessuna patch — carica una geometria")
+        self._patch_placeholder = QLabel("No patches — load a geometry")
         self._patch_placeholder.setAlignment(Qt.AlignCenter)
         self._patch_placeholder.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         self._patch_placeholder.setVisible(True)
@@ -251,7 +251,7 @@ class ParamsPanel(QWidget):
         detail_group = QGroupBox("Mesh Fineness")
         detail_layout = QVBoxLayout(detail_group)
         detail_caption = QLabel(
-            "Dimensioni della mesh finale (⚠ celle totali indicativo):"
+            "Final mesh size (⚠ total cell count is approximate):"
         )
         detail_caption.setWordWrap(True)
         detail_caption.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
@@ -262,8 +262,8 @@ class ParamsPanel(QWidget):
         self._detail_slider.setTickPosition(QSlider.TicksBelow)
         self._detail_slider.setTickInterval(2)
         self._detail_slider.setToolTip(
-            "Controlla la dimensione della mesh finale da ~10K a ~20M celle.\n"
-            "Questo unico controllo guida cell size, target celle e qualità."
+            "Controls the final mesh size from ~10K to ~20M cells.\n"
+            "This single control drives cell size, cell target and quality."
         )
         self._detail_label = QLabel("")
         self._detail_label.setAlignment(Qt.AlignCenter)
@@ -286,15 +286,14 @@ class ParamsPanel(QWidget):
         # (predictable, no local refinement) — the Advanced tab's Cell
         # Sizes become editable in this mode.
         self._adaptive_sizing_check = QCheckBox(
-            "Rifinitura automatica (curvatura, spigoli, strettoie) — consigliato"
+            "Automatic refinement (curvature, edges, narrow gaps) — recommended"
         )
         self._adaptive_sizing_check.setChecked(True)
         self._adaptive_sizing_check.setToolTip(
-            "ON: infittisce automaticamente vicino a curve piccole, "
-            "strettoie e superfici curve, entro i limiti dello slider Mesh "
-            "Fineness.\nOFF: dimensione di cella uniforme e letterale "
-            "(nessuna rifinitura locale) — 'Cell Sizes' nella scheda "
-            "Advanced diventa modificabile."
+            "ON: automatically refines near small curves, narrow gaps and "
+            "curved surfaces, within the Mesh Fineness slider limits.\n"
+            "OFF: uniform, literal cell size (no local refinement) — "
+            "'Cell Sizes' on the Advanced tab becomes editable."
         )
         self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
         detail_layout.addWidget(self._adaptive_sizing_check)
@@ -333,7 +332,7 @@ class ParamsPanel(QWidget):
         self._bl_thick.setDecimals(6)
         self._bl_thick.setToolTip(
             "First-layer thickness as a fraction of the max cell size. "
-            "Use 'Calcola strati dalla fisica (y+)' to derive it."
+            "Use 'Compute layers from physics (y+)' to derive it."
         )
         bl_form.addRow("First Layer (× cell):", self._bl_thick)
         self._bl_exp = QDoubleSpinBox()
@@ -361,21 +360,21 @@ class ParamsPanel(QWidget):
         # prisms, so it stays a user choice, never a default. The concave
         # closure checkbox above is a DIFFERENT mechanism (per-vertex
         # exclusions) and stays separate on purpose.
-        self._bl_robust = QCheckBox("BL robusto (consigliato, sperimentale)")
+        self._bl_robust = QCheckBox("Robust boundary layer (recommended, experimental)")
         self._bl_robust.setToolTip(
-            "Attiva insieme i due fix del boundary layer misurati sul "
-            "benchmark (poly 9/10 vs snappy 6/10):\n"
-            "• filtro facce sliver: esclude dall'estrusione le facce di "
-            "parete con spigolo minuscolo (< 0.9 x mediana), che bloccano "
-            "l'altezza di TUTTA la pila (clamp 0.5*min_edge) e producono "
-            "prismi schiacciati/non-ortho fino a 146°;\n"
-            "• terminazione a budget: dove lo spazio non basta, riduce il "
-            "NUMERO di layer a dimensione piena invece di comprimere tutti "
-            "i layer in uno stack schiacciato.\n"
-            "Misurato su checkMesh reale: cube_duct 80.6→58.9 (PASS), "
-            "venturi 146→74, concave 105→66.8 (PASS). Costo: su geometrie "
-            "con molte facce sliver ~20% dell'area di parete resta senza "
-            "prismi."
+            "Enables the two boundary-layer fixes measured on the benchmark "
+            "(poly 9/10 vs snappy 6/10):\n"
+            "• sliver-face filter: excludes wall faces with a tiny edge "
+            "(< 0.9 x median) from extrusion, which otherwise cap the height "
+            "of the WHOLE stack (0.5*min_edge clamp) and produce squashed, "
+            "non-orthogonal prisms up to 146°;\n"
+            "• budget termination: where space is insufficient, reduces the "
+            "NUMBER of layers at full size instead of compressing every layer "
+            "into a squashed stack.\n"
+            "Measured on a real checkMesh: cube_duct 80.6→58.9 (PASS), "
+            "venturi 146→74, concave 105→66.8 (PASS). Cost: on geometries "
+            "with many sliver faces ~20% of the wall AREA is left without "
+            "prisms."
         )
         bl_form.addRow(self._bl_robust)
 
@@ -386,12 +385,12 @@ class ParamsPanel(QWidget):
         self._bl_velocity.setValue(10.0)
         self._bl_velocity.setDecimals(3)
         self._bl_velocity.setSuffix(" m/s")
-        self._bl_velocity.setToolTip("Velocità caratteristica del flusso (free-stream o media).")
+        self._bl_velocity.setToolTip("Characteristic flow velocity (free-stream or mean).")
         bl_form.addRow("Velocity:", self._bl_velocity)
 
         self._bl_fluid = QComboBox()
         self._bl_fluid.addItems(["Air (20°C)", "Water (20°C)"])
-        self._bl_fluid.setToolTip("Determina la viscosità cinematica usata per il numero di Reynolds.")
+        self._bl_fluid.setToolTip("Determines the kinematic viscosity used for the Reynolds number.")
         bl_form.addRow("Fluid:", self._bl_fluid)
 
         self._bl_wall_treatment = QComboBox()
@@ -400,15 +399,15 @@ class ParamsPanel(QWidget):
             "Wall-resolved (y+ ≈ 1)",
         ])
         self._bl_wall_treatment.setToolTip(
-            "Wall functions: meno celle, adatto a k-epsilon.\n"
-            "Wall-resolved: primo strato molto sottile, richiesto da k-omega SST e LES."
+            "Wall functions: fewer cells, suited to k-epsilon.\n"
+            "Wall-resolved: very thin first layer, required by k-omega SST and LES."
         )
         bl_form.addRow("Wall treatment:", self._bl_wall_treatment)
 
-        self._btn_bl_auto = QPushButton("Calcola strati dalla fisica (y+)")
+        self._btn_bl_auto = QPushButton("Compute layers from physics (y+)")
         self._btn_bl_auto.setToolTip(
-            "Deriva nLayers, spessore del primo strato e rapporto di crescita da "
-            "Reynolds e dal target y+, invece di indovinarli."
+            "Derives nLayers, first-layer thickness and growth ratio from "
+            "Reynolds and the y+ target, instead of guessing them."
         )
         self._btn_bl_auto.clicked.connect(self._on_bl_auto_compute)
         bl_form.addRow(self._btn_bl_auto)
@@ -451,30 +450,30 @@ class ParamsPanel(QWidget):
             return btn
 
         _add_mesher_btn(
-            "Cartesian cfMesh  (richiede WSL2)",
+            "Cartesian cfMesh  (requires WSL2)",
             "cfmesh",
-            "cartesianMesh via WSL2/OpenFOAM — hex-dominant, la qualit"
-            "\u00e0 pi\u00f9 alta. RICHIEDE WSL2/OpenFOAM installato.\n"
-            "Opzionale: abilita 'Convert to polyhedral mesh' (Advanced) per\n"
-            "convertire l'hex-dominant in poliedrico (polyDualMesh).\n"
-            "Il dual di una mesh cartesiana resta molto regolare/a griglia\n"
-            "(celle di bordo ~99% quadrilateri).",
+            "cartesianMesh via WSL2/OpenFOAM — hex-dominant, the highest "
+            "quality. REQUIRES WSL2/OpenFOAM installed.\n"
+            "Optional: enable 'Convert to polyhedral mesh' (Advanced) to\n"
+            "convert the hex-dominant mesh to polyhedral (polyDualMesh).\n"
+            "The dual of a cartesian mesh stays very regular/grid-like\n"
+            "(boundary cells ~99% quadrilaterals).",
             checked=True,
         )
         _add_mesher_btn(
             "Polymesh  (poly, no-WSL)",
             "gmsh_direct_poly",
-            "Mesh poliedrica del nostro mesher Polymesh: barycentric-dual\n"
-            "rebuild — 100% di copertura poliedrica, conteggio celle ~5.5x\n"
-            "inferiore (stile STAR-CCM+). Ideale per CFD. Nessun WSL\n"
-            "richiesto. Funziona meglio con input STEP/CAD reale.",
+            "Polyhedral mesh from our Polymesh mesher: barycentric-dual\n"
+            "rebuild — 100% polyhedral coverage, ~5.5x lower cell count\n"
+            "(STAR-CCM+ style). Ideal for CFD. No WSL required.\n"
+            "Works best with real STEP/CAD input.",
             checked=False,
         )
         _add_mesher_btn(
             "FEM Tetra  (GMSH, no-WSL)",
             "gmsh_direct",
-            "Mesh tetraedrica GMSH pura, nessun WSL richiesto.\n"
-            "Per solver FEM nativi tet. Nessuna conversione poliedrica.",
+            "Pure GMSH tetrahedral mesh, no WSL required.\n"
+            "For native tet FEM solvers. No polyhedral conversion.",
         )
         mesh_layout.addWidget(mesher_group)
         self._bl_group = bl_group
@@ -494,19 +493,27 @@ class ParamsPanel(QWidget):
         # automatica" + the cfMesh mesher choice in main_window.py, which
         # is the actual single control this comment always said it should
         # be.
-        self._refine_list_label = QLabel("Manual refinement zones (box/sphere):")
+        self._refine_list_label = QLabel("Refinement zones (sphere / box) — select one to edit its level:")
         refine_layout.addWidget(self._refine_list_label)
-        self._refine_placeholder = QLabel("Nessun raffinamento — aggiungi usando il pulsante +")
+        self._refine_placeholder = QLabel(
+            "No refinement zones yet.\n"
+            "Click + to add a sphere (pick a point in the 3D view or type "
+            "coordinates), or ▣ Box 3D to add a box you size in the viewer."
+        )
+        self._refine_placeholder.setWordWrap(True)
         self._refine_placeholder.setStyleSheet("color: gray; font-style: italic; padding: 4px;")
         refine_layout.addWidget(self._refine_placeholder)
         self._refine_list = QListWidget()
-        self._refine_list.setMaximumHeight(80)
+        self._refine_list.setMaximumHeight(90)
         self._refine_list.setVisible(False)
         refine_layout.addWidget(self._refine_list)
         refine_btn_row = QHBoxLayout()
         self._add_refine_btn = QPushButton("+")
         self._add_refine_btn.setMaximumWidth(32)
-        self._add_refine_btn.setToolTip("Add a manual refinement zone (opens dialog)")
+        self._add_refine_btn.setToolTip(
+            "Add a sphere refinement zone: pick a point in the 3D view "
+            "or type its coordinates."
+        )
         self._add_refine_btn.clicked.connect(self._on_add_refinement)
         self._remove_refine_btn = QPushButton("−")
         self._remove_refine_btn.setMaximumWidth(32)
@@ -526,26 +533,25 @@ class ParamsPanel(QWidget):
         refine_btn_row.addStretch()
         refine_layout.addLayout(refine_btn_row)
 
-        # Per-selected-zone refinement LEVEL (1..6). Applies to both spheres
-        # and boxes; for boxes it is THE user choice (size comes from it).
+        # Per-selected-zone refinement LEVEL (1..6). It is THE user choice for
+        # box zones (their cell size is derived from it); sphere zones carry
+        # an explicit cell size instead, so the spin is disabled for them.
         level_row = QHBoxLayout()
-        level_row.addWidget(QLabel("Livello:"))
+        level_row.addWidget(QLabel("Level:"))
         self._refine_level_spin = QSpinBox()
         self._refine_level_spin.setRange(1, 6)
         self._refine_level_spin.setValue(2)
         self._refine_level_spin.setToolTip(
-            "Livello di raffinamento della zona selezionata:\n"
-            "  1 = dimensione base (nessun raffinamento extra)\n"
-            "  2 = metà celle\n"
-            "  3 = un quarto delle celle\n"
-            "  ... ogni livello dimezza la dimensione precedente"
+            "Refinement level of the selected box zone:\n"
+            "  1 = base size (no extra refinement)\n"
+            "  2 = half cells\n"
+            "  3 = quarter cells\n"
+            "  ... each level halves the previous size"
         )
         self._refine_level_spin.valueChanged.connect(self._on_refine_level_changed)
         self._refine_level_spin.setEnabled(False)
         level_row.addWidget(self._refine_level_spin)
-        self._refine_level_hint = QLabel(
-            "1=base 2=metà 3=¼ 4=⅛ …"
-        )
+        self._refine_level_hint = QLabel("1=base 2=half 3=¼ 4=⅛ …")
         self._refine_level_hint.setStyleSheet("color: gray; font-size: 10px;")
         level_row.addWidget(self._refine_level_hint)
         level_row.addStretch()
@@ -563,9 +569,8 @@ class ParamsPanel(QWidget):
         adv_layout = QVBoxLayout(adv_tab)
 
         exp_label = QLabel(
-            "Experimental — queste funzioni sono ancora in fase di "
-            "ottimizzazione e potrebbero non funzionare con tutte le "
-            "geometrie o configurazioni."
+            "Experimental — these features are still being optimized and may "
+            "not work with all geometries or configurations."
         )
         exp_label.setWordWrap(True)
         exp_label.setStyleSheet(
@@ -595,7 +600,7 @@ class ParamsPanel(QWidget):
         # Cell sizes are derived from the Mesh Fineness slider (single
         # control). They are shown here read-only so the user always sees
         # what sizes the slider set — never edited by hand.
-        mesh_group = QGroupBox("Cell Sizes (derivati dallo slider)")
+        mesh_group = QGroupBox("Cell Sizes (derived from the slider)")
         mesh_form = QFormLayout(mesh_group)
         self._max_cell = QDoubleSpinBox()
         self._max_cell.setRange(1e-10, 100.0)
@@ -604,7 +609,7 @@ class ParamsPanel(QWidget):
         self._max_cell.setDecimals(10)
         self._max_cell.setSuffix(" m")
         self._max_cell.setReadOnly(True)
-        self._max_cell.setToolTip("Derivato automaticamente dallo slider Mesh Fineness.")
+        self._max_cell.setToolTip("Derived automatically from the Mesh Fineness slider.")
         mesh_form.addRow("Max Cell Size:", self._max_cell)
 
         self._min_cell = QDoubleSpinBox()
@@ -614,7 +619,7 @@ class ParamsPanel(QWidget):
         self._min_cell.setDecimals(10)
         self._min_cell.setSuffix(" m")
         self._min_cell.setReadOnly(True)
-        self._min_cell.setToolTip("Derivato automaticamente dallo slider Mesh Fineness.")
+        self._min_cell.setToolTip("Derived automatically from the Mesh Fineness slider.")
         mesh_form.addRow("Min Cell Size:", self._min_cell)
 
         self._cell_est_label = QLabel("Cells: --")
@@ -673,19 +678,19 @@ class ParamsPanel(QWidget):
         openmp_row = QHBoxLayout()
         self._openmp_combo = QComboBox()
         self._openmp_combo.addItems([
-            "Bilanciato (fisici, consigliato)",
-            "Conservativo (fisici/2)",
-            "Aggressivo (logici)",
+            "Balanced (physical, recommended)",
+            "Conservative (physical/2)",
+            "Aggressive (logical)",
             "Custom...",
         ])
         self._openmp_combo.setToolTip(
-            "Controlla quante thread OpenMP usa cfMesh per il calcolo parallelo.\n\n"
-            "• Bilanciato: usa tutti i core fisici (consigliato)\n"
-            "• Conservativo: metà dei core fisici (meno memoria, più lento)\n"
-            "• Aggressivo: tutti i core logici, inclusi hyperthread\n"
-            "• Custom: imposta manualmente il numero di thread\n\n"
-            "Ogni thread consuma memoria, quindi modi più aggressivi "
-            "possono causare OOM su mesh grandi."
+            "Controls how many OpenMP threads cfMesh uses for parallel computation.\n\n"
+            "• Balanced: uses all physical cores (recommended)\n"
+            "• Conservative: half the physical cores (less memory, slower)\n"
+            "• Aggressive: all logical cores, including hyperthreads\n"
+            "• Custom: manually set the number of threads\n\n"
+            "Each thread consumes memory, so more aggressive modes can cause "
+            "OOM on large meshes."
         )
         self._openmp_combo.currentTextChanged.connect(self._on_openmp_mode_changed)
         openmp_row.addWidget(QLabel("Thread mode:"))
@@ -696,7 +701,7 @@ class ParamsPanel(QWidget):
         self._openmp_spin.setValue(max(1, cpu_n // 2))
         self._openmp_spin.setSuffix(" threads")
         self._openmp_spin.setEnabled(False)
-        self._openmp_spin.setToolTip("Numero di thread OpenMP da utilizzare (modalità Custom).")
+        self._openmp_spin.setToolTip("Number of OpenMP threads to use (Custom mode).")
         openmp_row.addWidget(self._openmp_spin)
         openmp_group_layout.addLayout(openmp_row)
         adv_layout.addWidget(openmp_group)
@@ -738,14 +743,6 @@ class ParamsPanel(QWidget):
         adv_layout.addStretch()
         self._adv_tab = adv_tab
         self._tabs.addTab(adv_tab, "Advanced")
-
-        qual_tab = QWidget()
-        qual_layout = QVBoxLayout(qual_tab)
-        self._quality_label = QLabel("No quality data yet. Run a mesh first.")
-        self._quality_label.setWordWrap(True)
-        qual_layout.addWidget(self._quality_label)
-        qual_layout.addStretch()
-        self._tabs.addTab(qual_tab, "Quality")
 
         # "Quick Mesh" (auto-suggest sizes + run, for a first pass / less
         # experienced users) lives only in the ribbon now — it used to be
@@ -822,16 +819,16 @@ class ParamsPanel(QWidget):
         self._max_cell.setReadOnly(checked)
         self._min_cell.setReadOnly(checked)
         self._max_cell.setToolTip(
-            "Derivato automaticamente dallo slider Mesh Fineness."
+            "Derived automatically from the Mesh Fineness slider."
             if checked else
-            "Dimensione di cella massima (modalità manuale — rifinitura "
-            "automatica disattivata)."
+            "Maximum cell size (manual mode — automatic refinement "
+            "disabled)."
         )
         self._min_cell.setToolTip(
-            "Derivato automaticamente dallo slider Mesh Fineness."
+            "Derived automatically from the Mesh Fineness slider."
             if checked else
-            "Dimensione di cella minima (modalità manuale — rifinitura "
-            "automatica disattivata)."
+            "Minimum cell size (manual mode — automatic refinement "
+            "disabled)."
         )
 
     # Kinematic viscosity at 20 °C, m²/s.
@@ -848,7 +845,7 @@ class ParamsPanel(QWidget):
         if not self._suggest_meshes:
             QMessageBox.information(
                 self, "No Geometry",
-                "Carica prima una geometria: serve la lunghezza caratteristica.",
+                "Load a geometry first: the characteristic length is required.",
             )
             return
 
@@ -871,7 +868,7 @@ class ParamsPanel(QWidget):
             params = BLEngine().calculate_from_flow(flow)
         except Exception as e:
             logger.exception("Boundary-layer physics calculation failed")
-            QMessageBox.warning(self, "Calcolo non riuscito", str(e))
+            QMessageBox.warning(self, "Calculation failed", str(e))
             return
 
         # meshDict takes the first layer as a fraction of the max cell size.
@@ -891,17 +888,17 @@ class ParamsPanel(QWidget):
         note = ""
         if params.n_layers > self._bl_n_layers.maximum():
             note = (
-                f"  ⚠ La fisica richiede {params.n_layers} strati, "
-                f"limitati a {self._bl_n_layers.maximum()}."
+                f"  ⚠ Physics requires {params.n_layers} layers, "
+                f"limited to {self._bl_n_layers.maximum()}."
             )
         if abs(clamped - fraction) > 1e-12:
-            note += "  ⚠ Primo strato limitato dal range del campo."
+            note += "  ⚠ First layer clamped to the field range."
 
         msg = (
             f"Re={flow.reynolds_number:.3g} · y+ target={params.target_yplus} · "
-            f"primo strato={params.first_layer_height:.3g} m · "
-            f"{params.n_layers} strati · crescita {params.growth_rate:.2f} · "
-            f"spessore totale={params.total_thickness:.4g} m (L={length:.3g} m){note}"
+            f"first layer={params.first_layer_height:.3g} m · "
+            f"{params.n_layers} layers · growth {params.growth_rate:.2f} · "
+            f"total thickness={params.total_thickness:.4g} m (L={length:.3g} m){note}"
         )
         self._bl_info.setText(msg)
         self.suggestion_completed.emit(f"[bl] {msg}")
@@ -1076,7 +1073,7 @@ class ParamsPanel(QWidget):
     _CELL_TARGET_MAX = 20_000_000
     _CELL_TARGET_BUCKETS = 20
 
-    _DETAIL_LABELS = ["Molto Grossolana", "Grossolana", "Media", "Fine", "Molto Fine"]
+    _DETAIL_LABELS = ["Very Coarse", "Coarse", "Medium", "Fine", "Very Fine"]
     _DETAIL_MAP = {0: "very_coarse", 1: "coarse", 2: "medium", 3: "fine", 4: "very_fine"}
 
     def _slider_to_cells(self, value: int) -> int:
@@ -1101,21 +1098,21 @@ class ParamsPanel(QWidget):
         name = self._DETAIL_LABELS[self._DETAIL_INDEX[detail]]
         if estimate is None:
             self._detail_label.setText(
-                f"{name} · cap ~{self._cells_label(cells)} celle"
+                f"{name} · cap ~{self._cells_label(cells)} cells"
             )
             if hasattr(self, "_cell_est_label"):
                 self._cell_est_label.setText(
-                    "Stima geometrica: carica una geometria valida"
+                    "Geometric estimate: load a valid geometry"
                 )
         else:
             lo, nominal, hi = estimate
             self._detail_label.setText(
                 f"{name} · cap ~{self._cells_label(cells)} · "
-                f"stima ~{self._cells_label(nominal)} celle"
+                f"estimate ~{self._cells_label(nominal)} cells"
             )
             if hasattr(self, "_cell_est_label"):
                 self._cell_est_label.setText(
-                    f"Stima geometrica: ~{nominal:,} celle "
+                    f"Geometric estimate: ~{nominal:,} cells "
                     f"(range {lo:,}-{hi:,})"
                 )
 
@@ -1338,10 +1335,10 @@ class ParamsPanel(QWidget):
         if not ok:
             return
         entry = {"centre": (cx, cy, cz), "radius": radius, "cell_size": cell_size}
-        label = f"Box ({cx:.3f},{cy:.3f},{cz:.3f}) r={radius:.3f} cs={cell_size:.5f}"
-        item = QListWidgetItem(label)
+        item = QListWidgetItem("")
         item.setData(Qt.UserRole, entry)
         self._refine_list.addItem(item)
+        self._refine_list.setCurrentItem(item)
         self._refresh_refine_placeholder()
 
     def add_refinement_from_pick(self, cx: float, cy: float, cz: float):
@@ -1356,10 +1353,10 @@ class ParamsPanel(QWidget):
         if not ok:
             return
         entry = {"centre": (cx, cy, cz), "radius": radius, "cell_size": cell_size}
-        label = f"Pick ({cx:.3f},{cy:.3f},{cz:.3f}) r={radius:.3f} cs={cell_size:.5f}"
-        item = QListWidgetItem(label)
+        item = QListWidgetItem("")
         item.setData(Qt.UserRole, entry)
         self._refine_list.addItem(item)
+        self._refine_list.setCurrentItem(item)
         self._refresh_refine_placeholder()
 
     def _on_remove_refinement(self):
@@ -1369,23 +1366,72 @@ class ParamsPanel(QWidget):
             self._refresh_refine_placeholder()
 
     def _refresh_refine_placeholder(self):
+        self._refresh_zone_labels()
         has_items = self._refine_list.count() > 0
         self._refine_placeholder.setVisible(not has_items)
         self._refine_list.setVisible(has_items)
 
+    @staticmethod
+    def _zone_is_box(data: dict) -> bool:
+        """A zone is a box either by explicit type or by carrying extents."""
+        return data.get("type") == "box" or "xmin" in data
+
+    @staticmethod
+    def _fmt_zone_size(metres: float) -> str:
+        """Human-readable size for zone labels (mm, the usual zone scale)."""
+        try:
+            value = float(metres)
+        except (TypeError, ValueError):
+            return "?"
+        return f"{value * 1000.0:.4g} mm"
+
+    def _refresh_zone_labels(self) -> None:
+        """Rewrite each row as a readable, numbered label.
+
+        Only the display text/tooltip changes: the dict stored under
+        ``Qt.UserRole`` (the payload returned by ``get_manual_refinements``
+        and emitted via ``refinements_changed``) is left untouched.
+        """
+        box_idx = sphere_idx = 0
+        for i in range(self._refine_list.count()):
+            item = self._refine_list.item(i)
+            data = item.data(Qt.UserRole)
+            if not isinstance(data, dict):
+                continue
+            if self._zone_is_box(data):
+                box_idx += 1
+                level = int(data.get("level", 2))
+                size = data.get("cell_size", 0.0)
+                item.setText(
+                    f"Box {box_idx} · level {level} · {self._fmt_zone_size(size)}"
+                )
+                item.setToolTip(
+                    f"Box zone {box_idx} — level {level} → cell size "
+                    f"{self._fmt_zone_size(size)}.\n"
+                    "Drag the arrows on the box in the 3D view to resize it."
+                )
+            elif "centre" in data:
+                sphere_idx += 1
+                radius = data.get("radius", 0.0)
+                size = data.get("cell_size", 0.0)
+                item.setText(
+                    f"Sphere {sphere_idx} · radius "
+                    f"{self._fmt_zone_size(radius)} · size "
+                    f"{self._fmt_zone_size(size)}"
+                )
+                item.setToolTip(
+                    f"Sphere zone {sphere_idx} — radius "
+                    f"{self._fmt_zone_size(radius)}, target cell size "
+                    f"{self._fmt_zone_size(size)}."
+                )
+
     # --- 3D refinement boxes -------------------------------------------------
     def add_refinement_box(self, box: dict) -> None:
         """Add a box entry to the manual-refinement list."""
-        from polyfoammesh.core.refinement_boxes import label_for
         box = dict(box)
         box.setdefault("type", "box")
-        item = QListWidgetItem(label_for(box))
+        item = QListWidgetItem("")
         item.setData(Qt.UserRole, box)
-        item.setToolTip(
-            f"Level {int(box.get('level', 2))} -> cell size "
-            f"{box.get('cell_size', 0):.5g} m. Trascina le frecce nel viewer "
-            "per dimensionarlo."
-        )
         self._refine_list.addItem(item)
         self._refresh_refine_placeholder()
         self._refine_list.setCurrentItem(item)
@@ -1393,7 +1439,6 @@ class ParamsPanel(QWidget):
 
     def set_refinement_boxes(self, boxes: list) -> None:
         """Replace the stored box entries after a viewer drag (same order)."""
-        from polyfoammesh.core.refinement_boxes import label_for
         box_items = [i for i in range(self._refine_list.count())
                      if isinstance(self._refine_list.item(i).data(Qt.UserRole), dict)
                      and self._refine_list.item(i).data(Qt.UserRole).get("type") == "box"]
@@ -1402,45 +1447,41 @@ class ParamsPanel(QWidget):
         for idx, box in zip(box_items, boxes):
             item = self._refine_list.item(idx)
             item.setData(Qt.UserRole, dict(box))
-            item.setText(label_for(box))
-            item.setToolTip(
-                f"Level {int(box.get('level', 2))} -> cell size "
-                f"{box.get('cell_size', 0):.5g} m"
-            )
+        self._refresh_zone_labels()
         # keep the level spin in sync if the selected item was edited
         self._on_refine_selection_changed()
 
     def _on_refine_selection_changed(self) -> None:
         item = self._refine_list.currentItem()
-        if item is None:
-            self._refine_level_spin.setEnabled(False)
-            return
-        data = item.data(Qt.UserRole)
+        data = item.data(Qt.UserRole) if item is not None else None
         if not isinstance(data, dict):
             self._refine_level_spin.setEnabled(False)
+            self._refine_level_hint.setText("Select a zone to edit its level")
             return
-        lvl = int(data.get("level", 2))
-        self._refine_level_spin.blockSignals(True)
-        self._refine_level_spin.setValue(lvl)
-        self._refine_level_spin.blockSignals(False)
-        self._refine_level_spin.setEnabled(True)
+        if self._zone_is_box(data):
+            self._refine_level_spin.blockSignals(True)
+            self._refine_level_spin.setValue(int(data.get("level", 2)))
+            self._refine_level_spin.blockSignals(False)
+            self._refine_level_spin.setEnabled(True)
+            self._refine_level_hint.setText("1=base 2=half 3=¼ 4=⅛ …")
+        else:
+            # Sphere zones carry an explicit cell size, not a level.
+            self._refine_level_spin.setEnabled(False)
+            self._refine_level_hint.setText("Sphere zones use their own cell size")
 
     def _on_refine_level_changed(self, level: int) -> None:
         item = self._refine_list.currentItem()
         if item is None:
             return
         data = item.data(Qt.UserRole)
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or not self._zone_is_box(data):
             return
         base = float(data.get("base_size") or 0.01)
-        from polyfoammesh.core.refinement_boxes import label_for, box_cell_size
+        from polyfoammesh.core.refinement_boxes import box_cell_size
         data["level"] = int(level)
         data["cell_size"] = box_cell_size(int(level), base)
         item.setData(Qt.UserRole, data)
-        item.setText(label_for(data))
-        item.setToolTip(
-            f"Level {int(level)} -> cell size {data['cell_size']:.5g} m"
-        )
+        self._refresh_zone_labels()
         # Notify the caller (main window) so the viewer label can refresh.
         self.refinements_changed.emit(self.get_manual_refinements())
 
@@ -1507,9 +1548,9 @@ class ParamsPanel(QWidget):
 
     def get_openmp_params(self) -> tuple[str, int | None]:
         text = self._openmp_combo.currentText()
-        if "Conservativo" in text:
+        if "Conservative" in text:
             return ("conservative", None)
-        if "Aggressivo" in text:
+        if "Aggressive" in text:
             return ("aggressive", None)
         if "Custom" in text:
             return ("custom", self._openmp_spin.value())

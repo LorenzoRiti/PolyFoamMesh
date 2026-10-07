@@ -80,7 +80,8 @@ class AboutDialog(QDialog):
         # light background and dark-theme widgets in dark mode).
         self.setStyleSheet("""
             QDialog { background: palette(window); }
-            QLabel { color: palette(text); }
+            QLabel { color: palette(window-text); background: transparent; }
+            QFrame { background: transparent; }
             QPushButton { min-width:80px; }
         """)
 
@@ -120,7 +121,7 @@ class AboutDialog(QDialog):
         ver_font = QFont()
         ver_font.setPointSize(10)
         version.setFont(ver_font)
-        version.setStyleSheet("color: palette(text);")
+        version.setStyleSheet("color: palette(window-text);")
         title_box.addWidget(version)
 
         desc = QLabel(APP_DESCRIPTION)
@@ -158,7 +159,7 @@ class AboutDialog(QDialog):
             "trimesh · meshio · reportlab · OpenFOAM v2512"
         )
         tech.setWordWrap(True)
-        tech.setStyleSheet("color: palette(text); font-size:11px;")
+        tech.setStyleSheet("color: palette(window-text); font-size:11px;")
         content.addWidget(tech)
 
         # System
@@ -168,7 +169,7 @@ class AboutDialog(QDialog):
             f"<b>OS:</b> {platform.system()} {platform.release()}"
         )
         sys_info.setTextFormat(Qt.RichText)
-        sys_info.setStyleSheet("color: palette(text); font-size:10px;")
+        sys_info.setStyleSheet("color: palette(window-text); font-size:10px;")
         content.addWidget(sys_info)
 
         # Close button

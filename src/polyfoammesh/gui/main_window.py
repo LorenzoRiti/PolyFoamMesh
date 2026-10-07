@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QSizePolicy,
     QSplitter,
     QToolBar,
     QToolButton,
@@ -78,13 +79,13 @@ from polyfoammesh.core.openfoam_runner import (
 from polyfoammesh.core.stl_writer import export_surface_file
 from polyfoammesh.core.workflow import MeshingWorkflow, Status, Step
 from polyfoammesh.gui.constants import MAX_RECENT_STEP_FILES, MAX_STEP_FILE_BYTES
-from polyfoammesh.gui.design_tokens import APP_VERSION, STATUS_READY
+from polyfoammesh.gui.design_tokens import APP_VERSION
 from polyfoammesh.gui.log_panel import LogPanel
 from polyfoammesh.gui.log_tags import Tag
 from polyfoammesh.gui.params_panel import ParamsPanel
 from polyfoammesh.gui.quality_panel import QualityPanel
 from polyfoammesh.gui.settings_migration import AppSettings
-from polyfoammesh.gui.style import COLOR_DANGER, COLOR_PASS, COLOR_TEXT_DISABLED
+from polyfoammesh.gui.style import COLOR_DANGER, COLOR_TEXT_DISABLED
 from polyfoammesh.gui.task_runner import FunctionWorker, TaskManager
 from polyfoammesh.gui.viewer_widget import ViewerWidget
 from polyfoammesh.octopoda_local import octo
@@ -201,6 +202,9 @@ class MainWindow(QMainWindow):
         self._params.cancel_meshing.connect(self._on_cancel_meshing)
         self._params.suggestion_completed.connect(
             lambda msg: self._log.append_log(msg)
+        )
+        self._params.suggestion_completed.connect(
+            self._on_suggestion_completed_workflow
         )
         self._viewer.distance_measured.connect(
             lambda msg: self._log.append_log(f"[measure] {msg}")
@@ -411,6 +415,16 @@ class MainWindow(QMainWindow):
         # looking at a different tab, there was no visible way to stop it.
         # This mirrors that same cancel action in the ribbon itself, always
         # reachable regardless of which tab is showing.
+        # The prominent "Full Auto" call-to-action used to anchor the right
+        # end of the ribbon. With it gone, a pair of expanding spacers keeps
+        # the bar looking intentional: the Cancel control (shown only while
+        # a run is active) sits centred between the action group and the
+        # settings group instead of floating next to Quick/Adaptive.
+        _cancel_spacer_left = QWidget()
+        _cancel_spacer_left.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred
+        )
+        ribbon.addWidget(_cancel_spacer_left)
         self._ribbon_btns["cancel"] = _make_ribbon_btn(
             "Cancel", "cancel", self._on_cancel_meshing, checkable=False,
         )
@@ -423,6 +437,11 @@ class MainWindow(QMainWindow):
             f"border:1px solid {COLOR_DANGER}; border-radius:4px; padding:4px 16px; "
             "font-weight:700; }"
         )
+        _cancel_spacer_right = QWidget()
+        _cancel_spacer_right.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred
+        )
+        ribbon.addWidget(_cancel_spacer_right)
         ribbon.addSeparator()
         # Simple by default (just cell sizes + Generate Mesh); toggling
         # this reveals boundary layers, mesher choice, and the
@@ -463,7 +482,7 @@ class MainWindow(QMainWindow):
         ):
             _btn = self._ribbon_btns[_key]
             _btn.setEnabled(False)
-            _btn.setToolTip(f"{_label}: in arrivo in una prossima release.")
+            _btn.setToolTip(f"{_label}: coming in a future release.")
             # Grey the label down so it is obvious at a glance that the
             # button cannot be used yet (the theme's disabled state alone
             # still read as too white on the ribbon).
@@ -471,19 +490,6 @@ class MainWindow(QMainWindow):
                 f"QToolButton:disabled {{ color: {COLOR_TEXT_DISABLED}; }}"
             )
 
-        self._ribbon_btns["fullauto"] = _make_ribbon_btn(
-            "Full Auto", "run", self._on_full_auto, checkable=False,
-        )
-        fullauto = self._ribbon_btns["fullauto"]
-        fullauto.setAutoExclusive(False)
-        fullauto.setStyleSheet(
-            f"QToolButton {{ background:{COLOR_PASS}; color:white; border:1px solid green; "
-            "border-radius:4px; padding:4px 16px; font-weight:700; }"
-            f"QToolButton:hover {{ background:{STATUS_READY}; }}"
-        )
-        fullauto.setToolTip(
-            "Geometry -> Mesh -> BC -> Solver Setup -> Run — all in one click."
-        )
         self.addToolBar(Qt.TopToolBarArea, ribbon)
         self._ribbon = ribbon
 
@@ -532,17 +538,25 @@ class MainWindow(QMainWindow):
         # heart of "senza impazzimenti": the user always sees the single next
         # action, and never has to guess which button is safe to press.
         self._workflow = MeshingWorkflow()
+        # Transient per-stage failure overlays. The model has no "failed"
+        # state, so failures are layered on top of it here and cleared by
+        # the next successful transition of that stage.
+        self._wf_errors: set[str] = set()
         self._wf_hint = QLabel()
         self._wf_hint.setWordWrap(True)
-        self._wf_hint.setStyleSheet("padding: 6px 8px; font-size: 11px;")
+        self._wf_hint.setStyleSheet("padding: 2px 8px 6px 8px; font-size: 11px;")
         self._wf_hint.setMinimumWidth(180)
+        hint_title = QLabel("Next action")
+        hint_title.setStyleSheet(
+            "padding: 6px 8px 0 8px; font-size: 10px; font-weight: bold;"
+        )
 
         container = QWidget()
         v = QVBoxLayout(container)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         v.addWidget(tree)
-        v.addWidget(QLabel("Next step:"))
+        v.addWidget(hint_title)
         v.addWidget(self._wf_hint)
         v.addStretch()
 
@@ -565,11 +579,14 @@ class MainWindow(QMainWindow):
         Status.DONE: "✓",
         Status.WARNING: "⚠",
     }
+    _WF_ERROR_ICON = "✗"
 
     def _refresh_workflow(self, **flags) -> None:
         """Update the workflow model from *flags* and repaint the dock.
 
-        Kept defensive: any missing widget just means the dock isn't built yet.
+        This is the single source of truth for BOTH the tree icons and the
+        "what to do next" hint, so the two can never drift apart. Kept
+        defensive: any missing widget just means the dock isn't built yet.
         """
         wf = getattr(self, "_workflow", None)
         if wf is None:
@@ -578,30 +595,111 @@ class MainWindow(QMainWindow):
             if hasattr(wf, key):
                 setattr(wf, key, value)
 
+        # BOUNDARY_LAYERS is optional and its checkbox lives in the params
+        # panel (no dedicated signal), so mirror it here on every repaint —
+        # the tree then shows the real BL result instead of a stale "ready".
+        params = getattr(self, "_params", None)
+        if params is not None and wf.geometry_loaded:
+            with contextlib.suppress(Exception):
+                wf.bl_configured = bool(params.get_bl_enabled())
+
+        errors = getattr(self, "_wf_errors", set())
         for step, item_key in self._WF_STEP_ITEMS.items():
             item = getattr(self, "_wf_items", {}).get(item_key)
             if item is None:
                 continue
-            icon = self._WF_STATUS_ICON.get(wf.status_of(step), "○")
+            if item_key in errors:
+                icon = self._WF_ERROR_ICON
+            else:
+                icon = self._WF_STATUS_ICON.get(wf.status_of(step), "○")
             label = item.text(0)[3:] if len(item.text(0)) > 3 else item.text(0)
             item.setText(0, f"{icon}  {label}")
 
         if getattr(self, "_wf_hint", None) is not None:
-            done, total = wf.progress()
-            self._wf_hint.setText(f"[{done}/{total}]  {wf.next_action()}")
+            self._wf_hint.setText(self._workflow_hint(wf))
+
+    def _workflow_hint(self, wf) -> str:
+        """One concrete, always-current line telling the user what to do.
+
+        Idle, in-progress, finished and error states each get their own
+        wording, driven by the same state as the tree.
+        """
+        errors = getattr(self, "_wf_errors", set())
+        if "generate" in errors:
+            return (
+                "Meshing failed — check the log, then adjust the cell sizes "
+                "or geometry and press Generate Mesh again."
+            )
+        if "quality" in errors:
+            return (
+                "Quality check failed — review the Quality panel, then adjust "
+                "the mesh settings and re-run."
+            )
+        if not wf.geometry_loaded:
+            return "Load a STEP or STL geometry to begin."
+        done, total = wf.progress()
+        return f"[{done}/{total}]  {wf.next_action()}"
 
     def _on_workflow_item_clicked(self, item: QTreeWidgetItem, col: int):
         stage = item.data(0, Qt.UserRole).get("stage", "")
-        tab_map = {"geometry": 0, "mesh_settings": 1, "advanced": 2, "generate_mesh": 1, "quality_check": 3}
+        tab_map = {"geometry": 0, "mesh_settings": 1, "advanced": 2, "generate_mesh": 1, "quality_check": 1}
         idx = tab_map.get(stage, 0)
         self._params.set_current_tab(idx)
 
     def _set_workflow_stage(self, stage: str, status: str):
-        if stage in self._wf_items:
-            item = self._wf_items[stage]
-            status_map = {"ready": "✅", "active": "▶", "pending": "○", "error": "✗", "done": "✓"}
-            icon_text = status_map.get(status, "○")
-            item.setText(0, f"{icon_text}  {item.text(0)[3:]}")
+        """Adapter used by the many pipeline call sites.
+
+        "done" advances the model so the tree and the hint stay coherent;
+        "error" adds a transient failure overlay; "active"/"ready" just
+        repaint (the model already derives the actionable step). It no
+        longer paints icons directly — doing so used to fight
+        ``_refresh_workflow`` and made the checkmarks jump around.
+        """
+        if stage not in getattr(self, "_wf_items", {}):
+            return
+        wf = getattr(self, "_workflow", None)
+        if wf is None:
+            return
+        errors = getattr(self, "_wf_errors", None)
+        if errors is None:
+            self._wf_errors = errors = set()
+        errors.discard(stage)
+        if status == "error":
+            errors.add(stage)
+            if stage == "quality":
+                wf.quality_passed = False
+        elif status == "done":
+            if stage == "generate":
+                wf.mesh_generated = True
+            elif stage == "quality":
+                wf.quality_passed = True
+            elif stage == "geometry":
+                wf.geometry_loaded = True
+        self._refresh_workflow()
+
+    def _on_param_changed_workflow(self, key: str, _value: object) -> None:
+        """Cell-size edits confirm the SIZING step once geometry exists."""
+        if key != "cell_sizes":
+            return
+        wf = getattr(self, "_workflow", None)
+        # Ignore setting restores / edits made before a geometry is loaded —
+        # they are not a sizing decision for the mesh about to be generated.
+        if wf is None or not wf.geometry_loaded:
+            return
+        self._refresh_workflow(sizing_ready=True)
+
+    def _on_suggestion_completed_workflow(self, msg: str) -> None:
+        """Auto-Suggest of cell sizes is an explicit sizing confirmation.
+
+        ``suggestion_completed`` is also emitted by the boundary-layer y+
+        calculator ("[bl] ..."), which must not advance SIZING.
+        """
+        if not str(msg).startswith("[suggest]"):
+            return
+        wf = getattr(self, "_workflow", None)
+        if wf is None or not wf.geometry_loaded:
+            return
+        self._refresh_workflow(sizing_ready=True)
 
     # ------------------------------------------------------------------
     # UI
@@ -633,6 +731,7 @@ class MainWindow(QMainWindow):
         self._params.reset_all.connect(self._on_reset)
         self._params.load_step_requested.connect(self._on_load_step)
         self._params.pick_refinement_requested.connect(self._on_pick_refinement)
+        self._params.param_changed.connect(self._on_param_changed_workflow)
         self._viewer.refinement_point_picked.connect(self._on_refinement_point_picked)
         self._params.add_box_requested.connect(self._on_add_refinement_box)
         self._params.refinements_changed.connect(self._on_refinements_changed)
@@ -755,8 +854,6 @@ class MainWindow(QMainWindow):
         """Load a CAD shape: classify/tessellate/heal in a background task
         so big CAD files never freeze the UI, then apply on the GUI thread."""
         self._original_shape = shape
-        self._set_workflow_stage("geometry", "done")
-        self._set_workflow_stage("mesh", "active")
         self._status.showMessage("Classifying faces...")
 
         def work(worker):
@@ -802,8 +899,6 @@ class MainWindow(QMainWindow):
 
     def _load_stl_async(self, path: str):
         """Load an STL file in a background task (big STLs are heavy)."""
-        self._set_workflow_stage("geometry", "done")
-        self._set_workflow_stage("mesh", "active")
         self._status.showMessage("Loading STL...")
 
         def work(worker):
@@ -860,7 +955,10 @@ class MainWindow(QMainWindow):
         self._log.append_log(
             f"{Tag.GEOM} Domain: {dx:.3f} \u00d7 {dy:.3f} \u00d7 {dz:.3f} m"
         )
-        self._refresh_workflow(geometry_loaded=True, sizing_ready=True)
+        # A freshly loaded geometry starts a new sizing decision: SIZING is
+        # actionable again until the user confirms sizes (or presses
+        # Generate Mesh, which confirms them implicitly).
+        self._refresh_workflow(geometry_loaded=True, sizing_ready=False)
         self._start_watertight_check(self._unscaled_meshes)
 
     def _prepare_surface_with_features(self) -> str:
@@ -908,20 +1006,20 @@ class MainWindow(QMainWindow):
         if est_cells >= budget_cells:
             hours = est_seconds / 3600.0
             msg = (
-                f"<b>Mesh oltre la memoria disponibile</b><br><br>"
-                f"La stima è di ~{est_cells:,} celle, ma questo computer può "
-                f"gestirne ~{budget_cells:,} (limite RAM).<br><br>"
-                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
-                "Il motore di mesh gira in WSL2, che ha un tetto di memoria "
-                "proprio: oltre questo limite il sistema operativo uccide il "
-                "processo (OOM killer) e il meshing crasha.<br><br>"
-                "<b>Suggerimenti:</b><br>"
-                "• Usa un livello di dettaglio più grossolano (es. Media o Grossolana)<br>"
-                "• Riduci la dimensione massima della cella nel pannello Advanced<br>"
-                "• Aumenta la memoria di WSL2: <code>wsl --set-memory Ubuntu 32G</code> "
-                "poi riavvia WSL"
+                f"<b>Mesh exceeds available memory</b><br><br>"
+                f"The estimate is ~{est_cells:,} cells, but this computer can "
+                f"handle ~{budget_cells:,} (RAM limit).<br><br>"
+                f"Cell sizes: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
+                "The meshing engine runs in WSL2, which has its own memory "
+                "ceiling: beyond this limit the operating system kills the "
+                "process (OOM killer) and meshing crashes.<br><br>"
+                "<b>Suggestions:</b><br>"
+                "• Use a coarser detail level (e.g. Medium or Coarse)<br>"
+                "• Reduce the maximum cell size in the Advanced panel<br>"
+                "• Increase WSL2 memory: <code>wsl --set-memory Ubuntu 32G</code> "
+                "then restart WSL"
             )
-            QMessageBox.critical(self, "Mesh Troppo Grande", msg)
+            QMessageBox.critical(self, "Mesh Too Large", msg)
             return False
 
         if est_cells < self.LARGE_MESH_CELLS and est_seconds < self.LARGE_MESH_SECONDS:
@@ -932,22 +1030,22 @@ class MainWindow(QMainWindow):
 
         if est_cells >= budget_cells * 0.5:
             msg = (
-                f"<b>Mesh molto grande:</b> ~{est_cells:,} celle "
-                f"(~{hours:.1f} ore stimate).<br><br>"
-                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
-                "Questa mesh potrebbe richiedere più di 8 GB di RAM e diverse ore.<br>"
-                "Assicurati che WSL2 abbia memoria sufficiente "
-                "(esegui <code>wsl --set-memory Ubuntu {'quantità'}</code> in PowerShell).<br><br>"
-                "Procedere?"
+                f"<b>Very large mesh:</b> ~{est_cells:,} cells "
+                f"(~{hours:.1f} hours estimated).<br><br>"
+                f"Cell sizes: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
+                "This mesh may require more than 8 GB of RAM and several hours.<br>"
+                "Make sure WSL2 has enough memory "
+                "(run <code>wsl --set-memory Ubuntu {'quantity'}</code> in PowerShell).<br><br>"
+                "Continue?"
             )
         else:
             msg = (
-                f"<b>Mesh grande:</b> ~{est_cells:,} celle "
+                f"<b>Large mesh:</b> ~{est_cells:,} cells "
                 f"(~{minutes:.0f} min).<br><br>"
-                f"Dimensioni cella: max={max_cell:.4g} m, min={min_cell:.4g} m.<br>"
-                "Aumentare la dimensione minima (o scegliere un livello di dettaglio "
-                "più grossolano) riduce molto il tempo.<br><br>"
-                "Procedere comunque?"
+                f"Cell sizes: max={max_cell:.4g} m, min={min_cell:.4g} m.<br>"
+                "Increasing the minimum cell size (or choosing a coarser detail "
+                "level) greatly reduces the time.<br><br>"
+                "Continue anyway?"
             )
 
         reply = QMessageBox.question(
@@ -1225,36 +1323,35 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------
-    # EXPERIMENTAL native poly mesher: cut-cell nativo -> dual (Fasi 1-6)
+    # EXPERIMENTAL native poly mesher: native cut-cell -> dual (Phases 1-6)
     # ------------------------------------------------------------------
 
     def _on_experimental_native_poly_help(self):
-        """Explain the experimental native mesher (Fasi 1-6)."""
+        """Explain the experimental native mesher (Phases 1-6)."""
         from PySide6.QtWidgets import QMessageBox
 
         QMessageBox.information(
-            self, "Native Poly (sperimentale)",
-            "Mesher sperimentale nativo (algoritmo nostro, puro Python, "
-            "Fasi 1-6):\n\n"
-            "1. cut-cell castellated dalla tessellazione CAD (core/native_mesher.py)\n"
-            "2. dual mediano -> mesh 100% poliedrica (core/hex_poly_dual.py), "
-            "con smoothing quality-driven\n\n"
-            "Nessun mesher esterno per generare (algoritmo nostro, puro "
-            "Python); WSL usato solo dalla validazione checkMesh.\n\n"
-            "Limiti noti (misurati):\n"
-            "- funziona bene su superfici curve (es. sfera);\n"
-            "- su pareti parallele alla griglia (es. venturi) il dual puo' fallire: "
-            "serve lo snapping (non ancora implementato per quel caso);\n"
-            "- refinement locale su un dettaglio piccolo interno: non c'e' "
-            "(serve un vero octree, non implementato — solo la banda di "
-            "margine attorno al pezzo puo' essere graduata);\n"
-            "- lo strato limite (boundary layer) e' solo un calcolo di "
-            "raccomandazione (y+/spessore), non vengono ancora inserite "
-            "celle prismatiche;\n"
-            "- la qualita' (skewness/non-ortho) del dual nativo e' in "
-            "genere peggiore di quella del dual Polymesh (barycentric).\n\n"
-            "Il mesh cut-cell viene conservato in "
-            "constant/polyMesh_hex_native; il mesh 100% poly e' in "
+            self, "Native Poly (experimental)",
+            "Native experimental mesher (our own algorithm, pure Python, "
+            "Phases 1-6):\n\n"
+            "1. castellation cut-cell from the CAD tessellation (core/native_mesher.py)\n"
+            "2. median dual -> 100% polyhedral mesh (core/hex_poly_dual.py), "
+            "with quality-driven smoothing\n\n"
+            "No external mesher is used to generate (our own algorithm, pure "
+            "Python); WSL is only used by the checkMesh validation.\n\n"
+            "Known limits (measured):\n"
+            "- works well on curved surfaces (e.g. a sphere);\n"
+            "- on walls parallel to the grid (e.g. a venturi) the dual can fail: "
+            "it needs snapping (not yet implemented for that case);\n"
+            "- local refinement of a small internal detail: not available "
+            "(it needs a real octree, not implemented — only the margin "
+            "band around the part can be graded);\n"
+            "- the boundary layer is only a recommendation calculation "
+            "(y+/thickness); prismatic cells are not inserted yet;\n"
+            "- the native dual's quality (skewness/non-ortho) is generally "
+            "worse than the Polymesh dual (barycentric).\n\n"
+            "The cut-cell mesh is kept in "
+            "constant/polyMesh_hex_native; the 100% poly mesh is in "
             "constant/polyMesh.",
         )
 
@@ -1294,10 +1391,10 @@ class MainWindow(QMainWindow):
         # it done up front and label the mesher explicitly.
         self._current_mesher_type = "native_poly"
         self._poly_was_converted = True
-        self._poly_converter_name = "hex_poly_dual (nativo)"
+        self._poly_converter_name = "hex_poly_dual (native)"
         self._poly_fallback_active = False
         self._log.append_log(
-            "[native-poly] cut-cell nativo -> dual 100% poly (sperimentale)...")
+            "[native-poly] native cut-cell -> 100% poly dual (experimental)...")
         self._status.showMessage("native-poly: cut-cell + dual ...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = self._resolve_case_root()
@@ -1351,9 +1448,9 @@ class MainWindow(QMainWindow):
             self, "_native_poly_start_time", time.time())
         if result.success:
             self._log.append_log(
-                f"[native-poly] DONE: {result.n_cells:,} celle 100% poly "
+                f"[native-poly] DONE: {result.n_cells:,} cells 100% poly "
                 f"({result.n_hex_cells:,} hex + {result.n_cut_cells:,} cut "
-                f"primali) in {elapsed:.1f}s — "
+                f"primal) in {elapsed:.1f}s — "
                 f"skew={result.max_skewness:.2f} "
                 f"nonOrtho={result.max_non_ortho:.1f}° "
                 f"defects={result.defects}"
@@ -1361,8 +1458,8 @@ class MainWindow(QMainWindow):
             if result.bl_recommendation:
                 bl = result.bl_recommendation
                 self._log.append_log(
-                    f"[native-poly] BL sizing (raccomandazione, celle non "
-                    f"inserite): {bl.get('n_layers')} layer, primo "
+                    f"[native-poly] BL sizing (recommendation, cells not "
+                    f"inserted): {bl.get('n_layers')} layers, first "
                     f"{bl.get('first_layer_height'):.3g} m"
                 )
             self._status.showMessage(
@@ -1548,11 +1645,47 @@ class MainWindow(QMainWindow):
 
     @Slot(float, float, float)
     def _on_refinement_point_picked(self, x: float, y: float, z: float):
-        """Handle a picked point: add refinement zone at that location."""
-        self._params.add_refinement_from_pick(x, y, z)
+        """Handle a picked point: add a refinement BOX centred there.
+
+        Picking is the quick "refine around here" gesture. It drops a
+        drag-editable box at the picked point (level 2 by default) and
+        immediately renders it with its sizing gizmo, so the user edits the
+        box on the spot instead of getting an invisible legacy sphere zone.
+        """
+        if not self._meshes:
+            self._log.append_log(
+                f"{Tag.WARN} Load a geometry before picking a refinement point."
+            )
+            return
+        from polyfoammesh.core.refinement_boxes import suggest_box, apply_level
+        level = 2
+        base = self._refinement_box_base_size()
+        lo, hi = self._mesh_bbox()
+        if lo is not None and hi is not None:
+            box = suggest_box(
+                tuple(lo), tuple(hi), fraction=0.25, level=level, base_size=base
+            )
+            half = [
+                (box["xmax"] - box["xmin"]) / 2.0,
+                (box["ymax"] - box["ymin"]) / 2.0,
+                (box["zmax"] - box["zmin"]) / 2.0,
+            ]
+        else:
+            half = [max(base * 4.0, 1e-4)] * 3
+        box.update({
+            "type": "box",
+            "xmin": x - half[0], "xmax": x + half[0],
+            "ymin": y - half[1], "ymax": y + half[1],
+            "zmin": z - half[2], "zmax": z + half[2],
+        })
+        box["base_size"] = base
+        box = apply_level(box, level, base)
+        self._params.add_refinement_box(box)
         self._log.append_log(
-            f"{Tag.GEOM} Refinement zone at ({x:.4f}, {y:.4f}, {z:.4f})"
+            f"{Tag.GEOM} Refinement box L{level} centred at "
+            f"({x:.4f}, {y:.4f}, {z:.4f}) — drag its handles to resize."
         )
+        self._refresh_box_viewer()
 
     # --- 3D refinement boxes -------------------------------------------------
     def _refinement_boxes(self) -> list:
@@ -1612,12 +1745,12 @@ class MainWindow(QMainWindow):
         base = self._refinement_box_base_size()
         level, ok = QInputDialog.getInt(
             self, "Box Refinement Level",
-            "Livello di raffinamento:\n"
-            "  1 = dimensione base (nessun raffinamento extra)\n"
-            "  2 = meta delle celle\n"
-            "  3 = un quarto delle celle\n"
-            "  ... ogni livello dimezza la dimensione precedente\n\n"
-            "Poi trascina le maniglie sul box nel viewer per dimensionarlo.",
+            "Refinement level:\n"
+            "  1 = base size (no extra refinement)\n"
+            "  2 = half the cells\n"
+            "  3 = a quarter of the cells\n"
+            "  ... each level halves the previous cell size\n\n"
+            "Then drag the handles on the box in the viewer to size it.",
             2, 1, 6, 1,
         )
         if not ok:
@@ -1634,7 +1767,7 @@ class MainWindow(QMainWindow):
             self._params.add_refinement_box(box)
             self._log.append_log(
                 f"[refine] added box L{level} -> cell size "
-                f"{box['cell_size']:.5g} m - trascina il box nel viewer"
+                f"{box['cell_size']:.5g} m — drag the box in the viewer"
             )
             self._refresh_box_viewer()
         except Exception as exc:  # noqa: BLE001
@@ -1701,6 +1834,7 @@ class MainWindow(QMainWindow):
             self._kill_wsl_processes()
         # Back to a blank workflow — the hint returns to "load a geometry".
         self._workflow = MeshingWorkflow()
+        self._wf_errors = set()
         self._refresh_workflow()
         self._meshes = []
         self._unscaled_meshes = []
@@ -1802,6 +1936,11 @@ class MainWindow(QMainWindow):
                 "A meshing job is already running. Please wait for it to finish.",
             )
             return
+
+        # Pressing Generate Mesh is itself the confirmation that sizing is
+        # settled — advance the guided workflow and clear a stale error.
+        self._set_workflow_stage("generate", "active")
+        self._refresh_workflow(sizing_ready=True)
 
         mesher_type = self._params.get_mesher_type()
         if mesher_type == "auto":
@@ -2711,47 +2850,47 @@ class MainWindow(QMainWindow):
             free_disk = _free_disk_gb(self._resolve_case_root())
             if free_ram < 5.0:
                 self._log.append_log(
-                    f"{Tag.ERROR} RAM libera insufficiente ({free_ram:.1f} GB) — "
-                    "GMSH avrebbe saturato il sistema e bloccato l'app."
+                    f"{Tag.ERROR} Insufficient free RAM ({free_ram:.1f} GB) — "
+                    "GMSH would have saturated the system and blocked the app."
                 )
                 QMessageBox.critical(
-                    self, "Memoria insufficiente",
-                    f"RAM libera: {free_ram:.1f} GB (serve almeno 5 GB).\n\n"
-                    "GMSH volume meshing avrebbe fatto impallare il sistema.\n"
-                    "Chiudi altre applicazioni, oppure riduci la memoria "
-                    "riservata a WSL2 (file .wslconfig) e riprova.",
+                    self, "Insufficient Memory",
+                    f"Free RAM: {free_ram:.1f} GB (at least 5 GB required).\n\n"
+                    "GMSH volume meshing would have stalled the system.\n"
+                    "Close other applications, or reduce the memory "
+                    "reserved for WSL2 (.wslconfig file) and try again.",
                 )
                 self._params.set_all_enabled(True)
                 return
             if free_disk < 1.0:
                 self._log.append_log(
-                    f"{Tag.ERROR} Disco insufficiente ({free_disk:.1f} GB liberi) "
-                    "— il file .msh non ci starebbe."
+                    f"{Tag.ERROR} Insufficient disk space ({free_disk:.1f} GB free) "
+                    "— the .msh file would not fit."
                 )
                 QMessageBox.critical(
-                    self, "Disco pieno",
-                    f"Spazio libero su disco: {free_disk:.1f} GB (serve almeno 1 GB).\n\n"
-                    "Libera spazio e riprova.",
+                    self, "Disk Full",
+                    f"Free disk space: {free_disk:.1f} GB (at least 1 GB required).\n\n"
+                    "Free up space and try again.",
                 )
                 self._params.set_all_enabled(True)
                 return
             if free_ram < 10.0 or free_disk < 3.0:
                 warnings = []
                 if free_ram < 10.0:
-                    warnings.append(f"RAM libera: {free_ram:.1f} GB")
+                    warnings.append(f"Free RAM: {free_ram:.1f} GB")
                 if free_disk < 3.0:
-                    warnings.append(f"disco libero: {free_disk:.1f} GB")
+                    warnings.append(f"Free disk: {free_disk:.1f} GB")
                 ret = QMessageBox.warning(
-                    self, "Risorse limitate",
-                    "Risorse basse prima del meshing GMSH:\n\n"
+                    self, "Limited Resources",
+                    "Low resources before GMSH meshing:\n\n"
                     + "\n".join(f"• {w}" for w in warnings)
-                    + "\n\nIl meshing può saturare il sistema e rallentare "
-                    "o bloccare l'app. Continuare comunque?",
+                    + "\n\nMeshing may saturate the system and slow down "
+                    "or freeze the app. Continue anyway?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
                 if ret != QMessageBox.Yes:
-                    self._log.append_log(f"{Tag.CANCELLED} Meshing GMSH annullato dall'utente.")
+                    self._log.append_log(f"{Tag.CANCELLED} GMSH meshing cancelled by the user.")
                     self._params.set_all_enabled(True)
                     return
                 # Continue with a reduced thread budget to keep the OS alive.
@@ -2759,8 +2898,8 @@ class MainWindow(QMainWindow):
                     os.environ["GMSH_NUM_THREADS"] = "4"
                     self._low_ram_gmsh_threads = True
                     self._log.append_log(
-                        f"{Tag.WARN} RAM bassa: GMSH limitato a 4 thread per "
-                        "mantenere il sistema reattivo."
+                        f"{Tag.WARN} Low RAM: GMSH limited to 4 threads to "
+                        "keep the system responsive."
                     )
         except Exception as exc:
             # A probe failure must never block meshing.
@@ -2917,7 +3056,7 @@ class MainWindow(QMainWindow):
         if not ctx["bl_retried"] and ctx["bl_params"] and ctx["n_layers"] > 0:
             ctx["bl_retried"] = True
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
-            self._log_substitution("Riprovo senza boundary layer.")
+            self._log_substitution("Retrying without boundary layers.")
             # Fase 3 P3.3: reuse the exact parameters of the first attempt
             # (snapshot in ctx) instead of re-reading the spinboxes.
             w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
@@ -2958,7 +3097,7 @@ class MainWindow(QMainWindow):
                 f"detail level ({next_detail})."
             )
             self._log_substitution(
-                "Riprovo con raffinamento ridotto (dettaglio più grossolano)."
+                "Retrying with reduced refinement (coarser detail)."
             )
             w2 = GmshVolumeWorker(
                 ctx["step_path"], ctx["msh_path"], next_detail,
@@ -3354,7 +3493,7 @@ class MainWindow(QMainWindow):
             "falling back to single-core meshing for this run."
         )
         self._log_substitution(
-            "Passato a mesh seriale (single-core): risorse insufficienti per MPI."
+            "Switched to serial meshing (single-core): insufficient resources for MPI."
         )
         QMessageBox.information(
             self, "Parallel Meshing Fallback",
@@ -3656,6 +3795,11 @@ class MainWindow(QMainWindow):
         if not poly_points.exists():
             self._log.append_log(f"{Tag.WARN} checkMesh: no mesh in constant/polyMesh.")
             return
+        # A mesh now exists in constant/polyMesh. The cfMesh path advances
+        # the workflow in _on_meshing_finished; the GMSH/autopoly/native
+        # paths all funnel through here, so advance it for every path.
+        self._set_workflow_stage("generate", "done")
+        self._set_workflow_stage("quality", "active")
         logger.info("Launching checkMesh for case_dir=%s", self._case_dir)
         self._checkmesh_run_id = self._run_id
         w = CheckMeshWorker(self._case_dir, self._of_config)
@@ -3841,8 +3985,8 @@ class MainWindow(QMainWindow):
                 f"({self._params.get_detail_level()})"
             )
             self._log_substitution(
-                "Qualità insufficiente: sostituito l'algoritmo con un "
-                "passaggio più grossolano."
+                "Insufficient quality: swapped the algorithm for a "
+                "coarser pass."
             )
             self._run_id += 1
             # Confirmed live root cause of a "poly never happens on retry"
@@ -4226,8 +4370,8 @@ class MainWindow(QMainWindow):
                     f"{Tag.FIX} Boundary layers failed — disabling BL and retrying."
                 )
                 self._log_substitution(
-                    "Algoritmo sostituito: boundary layer disattivato "
-                    "(fallisce su questa geometria)."
+                    "Algorithm swapped: boundary layers disabled "
+                    "(they fail on this geometry)."
                 )
                 self._params.set_bl_enabled(False)
                 try:
@@ -4551,21 +4695,13 @@ class MainWindow(QMainWindow):
         solver.configure(cfg)
         solver.write_all(self._case_dir, patches)
         self._log.append_log(
-            "[solver] Setup complete: simpleFoam, kOmegaSST, bilanciato"
+            "[solver] Setup complete: simpleFoam, kOmegaSST, balanced"
         )
         QMessageBox.information(
             self, "Solver Setup",
             f"Solver configuration written to {self._case_dir / 'system'}"
         )
         self._set_workflow_stage("quality", "done")
-
-    def _on_full_auto(self):
-        if not self._meshes:
-            QMessageBox.warning(self, "No Geometry", "Load a geometry first.")
-            return
-        self._log.append_log("[fullauto] Starting Full Auto pipeline...")
-        self._set_workflow_stage("generate", "active")
-        self._on_quick_mesh()
 
     def _on_template_selector(self):
         from polyfoammesh.gui.template_selector import TemplateSelectorDialog

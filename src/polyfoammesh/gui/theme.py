@@ -87,10 +87,10 @@ QTabWidget::pane { border:1px solid #d4d8dd; border-radius:4px; background:#ffff
 QTabBar::tab { background:#f0f2f5; border:1px solid #d4d8dd; padding:6px 14px; margin-right:2px; border-radius:3px 3px 0 0; }
 QTabBar::tab:selected { background:#ffffff; border-bottom-color:#ffffff; color:#d97757; font-weight:600; }
 QTabBar::tab:hover { background:#fbede6; }
-QLabel[role="status-pass"]   { background:#27ae60; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
-QLabel[role="status-warn"]   { background:#f39c12; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
-QLabel[role="status-fail"]   { background:#e74c3c; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
-QLabel[role="status-neutral"]{ background:#95a5a6; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-pass"]   { background:#27ae60; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-warn"]   { background:#f39c12; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-fail"]   { background:#e74c3c; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-neutral"]{ background:#95a5a6; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
 """
 
 _EMBEDDED_DARK = """\
@@ -147,12 +147,29 @@ QTabBar::tab:selected { background:#232323; border-bottom-color:#232323; color:#
 QTabBar::tab:hover { background:#3f3f3f; }
 QTableWidget { background:#232323; border:1px solid #3f3f3f; gridline-color:#2a2a2a; color:#e5e5e5; }
 QTableWidget::item:selected { background:#d97757; }
-QLabel[role="status-pass"]   { background:#27ae60; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
-QLabel[role="status-warn"]   { background:#f39c12; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
-QLabel[role="status-fail"]   { background:#e74c3c; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
-QLabel[role="status-neutral"]{ background:#95a5a6; color:#ffffff; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-pass"]   { background:#27ae60; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-warn"]   { background:#f39c12; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-fail"]   { background:#e74c3c; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
+QLabel[role="status-neutral"]{ background:#95a5a6; color:#1a1a1a; padding:2px 10px; border-radius:4px; font-weight:700; font-size:10px; }
 QLabel[role="workflow-title"] { font-weight:700; color:#e37222; font-size:11px; padding:4px 8px; }
 QLabel[role="section-header"] { font-weight:600; color:#e2916f; font-size:10px; padding:2px 0; }
+"""
+
+
+# ---------------------------------------------------------------------------
+# Palette fix-ups appended to whichever QSS is active (disk or embedded).
+#
+# The theme QSS sets an opaque `QWidget { background-color: ... }` for the
+# whole app.  QLabel is a plain QWidget subclass, so every label inherited an
+# opaque plate of the generic widget background.  A label sitting on a dialog
+# (palette(window)) or a card (palette(base)) therefore painted a mismatched
+# rectangle — the "light islands" / mixed colours reported when switching
+# themes.  This fix-up clears label/surface backgrounds so they show their
+# real container.  The role-based status pills are attribute selectors
+# (`QLabel[role="..."]`), which are more specific and keep their own fill.
+# ---------------------------------------------------------------------------
+_PALETTE_FIXUPS = """\
+QLabel { background: transparent; }
 """
 
 
@@ -266,7 +283,7 @@ def apply_theme(app: QApplication | None = None) -> str:
             logger.debug("theme: colorSchemeChanged wiring failed", exc_info=True)
 
     qss = _load_qss(mgr._resolved_mode)
-    app.setStyleSheet(qss)
+    app.setStyleSheet(qss + _PALETTE_FIXUPS)
     _apply_qpalette(app, mgr._resolved_mode)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)

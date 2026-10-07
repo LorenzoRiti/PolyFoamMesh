@@ -72,7 +72,7 @@ def test_slider_label_uses_geometry_estimate_when_volume_is_available(panel):
     panel.set_suggest_meshes([trimesh.creation.box(extents=[1.0, 1.0, 1.0])])
     panel._detail_slider.setValue(20)
     assert "cap ~20.0M" in panel._detail_label.text()
-    assert "stima ~" in panel._detail_label.text()
+    assert "estimate ~" in panel._detail_label.text()
     assert "range" in panel._cell_est_label.text()
 
 

@@ -33,14 +33,17 @@ PATCH_COLORS = [
     (0.16, 0.50, 0.73),
 ]
 
-VIEW_MODES = ["CAD Surfaces", "Volume Mesh", "Surface + Edges"]
+VIEW_MODES = ["Surface", "Surface with Edges", "Wireframe"]
+
+_MESH_COLOR = (0.86, 0.88, 0.91)
+_HIGHLIGHT_COLOR = (1.0, 0.84, 0.0)
 
 _MAX_CLIP_FACES = 50_000
 
 BACKGROUNDS = {
     "White": ((1.0, 1.0, 1.0), "black"),
     "Dark": ((0.18, 0.18, 0.18), "white"),
-    "Black": ((0.05, 0.05, 0.05), "white"),
+    "Black": ((0.12, 0.12, 0.14), "white"),
     "ParaView": ((0.32, 0.34, 0.43), "white"),
 }
 
@@ -599,6 +602,8 @@ class ViewerWidget(QWidget):
         self._measure_points: list = []
         self._measure_actors: list = []
         self._highlighted_actor = None
+        self._showing_cad: bool = True
+        self._pending_vtu_mode: str = "surface_edges"
         self._mesh_display_in_progress: bool = False
         self._mesh_retry_count: int = 0
         self._mesh_retry_max: int = 3
@@ -620,7 +625,10 @@ class ViewerWidget(QWidget):
         self._view_selector.addItems(VIEW_MODES)
         self._view_selector.setCurrentIndex(-1)
         self._view_selector.setEnabled(False)
-        self._view_selector.setToolTip("Switch between CAD surfaces, volume mesh (wireframe), or surface with edges.")
+        self._view_selector.setToolTip(
+            "Representation applied to whatever is displayed: Surface, "
+            "Surface with Edges, or Wireframe."
+        )
         self._view_selector.currentIndexChanged.connect(self._on_view_changed)
         toolbar.addWidget(self._view_selector)
 
@@ -652,18 +660,6 @@ class ViewerWidget(QWidget):
         self._measure_check.setToolTip("Click two points to measure distance between them.")
         self._measure_check.toggled.connect(self._on_measure_toggled)
         toolbar.addWidget(self._measure_check)
-
-        toolbar.addSpacing(8)
-
-        toolbar.addWidget(QLabel("Decimazione:"))
-        self._decimate_combo = QComboBox()
-        self._decimate_combo.addItems(["Auto", "Metà", "Completa"])
-        self._decimate_combo.setCurrentText("Auto")
-        self._decimate_combo.setToolTip(
-            "Auto: decima solo oltre ~2M celle (al 20%). Metà: decima sempre "
-            "alla metà. Completa: mostra la mesh intera senza decimare."
-        )
-        toolbar.addWidget(self._decimate_combo)
 
         self._stats_label = QLabel("")
         self._stats_label.setStyleSheet(
@@ -740,25 +736,42 @@ class ViewerWidget(QWidget):
         return "white" if self._is_dark_bg() else "gray"
 
     def highlight_patch(self, patch_name: str):
-        """Highlight a picked patch by changing its color in the display."""
+        """Highlight a picked patch with a bright, clearly outlined color."""
         if self._plotter is None:
             return
         self._plotter.clear()
         ec = self._edge_color()
+        mode = self._current_mode()
         self._pvdata_to_name.clear()
         for i, mesh in enumerate(self._cad_meshes):
             name = mesh.metadata.get("name", f"patch_{i}")
-            color = PATCH_COLORS[i % len(PATCH_COLORS)]
-            if name == patch_name:
-                color = (1.0, 0.84, 0.0)
+            picked = name == patch_name
+            color = _HIGHLIGHT_COLOR if picked else PATCH_COLORS[i % len(PATCH_COLORS)]
             pd = _trimesh_to_pydata(mesh, color)
-            actor = self._plotter.add_mesh(
-                pd, scalars="color", rgb=True, show_edges=True,
-                edge_color=ec, label=name,
-            )
+            kwargs = dict(scalars="color", rgb=True, label=name, smooth_shading=True)
+            if mode == "Wireframe":
+                kwargs.update(
+                    style="wireframe",
+                    line_width=2.5 if picked else 1.0,
+                )
+            else:
+                kwargs.update(
+                    style="surface",
+                    show_edges=True,
+                    edge_color="red" if picked else ec,
+                    line_width=2.5 if picked else 1.0,
+                )
+            actor = self._plotter.add_mesh(pd, **kwargs)
             self._pvdata_to_name[actor.GetAddressAsString("")] = name
-        self._plotter.view_isometric()
         self._plotter.render()
+
+    def _disable_picking_safely(self):
+        if self._plotter is None:
+            return
+        try:
+            self._plotter.disable_picking()
+        except Exception:
+            pass
 
     def _on_pick_toggled(self, checked: bool):
         if not self._plotter_ready:
@@ -768,6 +781,7 @@ class ViewerWidget(QWidget):
             self._measure_check.setChecked(False)
             self._measure_check.blockSignals(False)
             self._clear_measure_actors()
+            self._disable_picking_safely()
             try:
                 self._plotter.enable_mesh_picking(
                     callback=self._on_mesh_picked,
@@ -779,10 +793,7 @@ class ViewerWidget(QWidget):
             except Exception as exc:
                 logger.warning("enable_mesh_picking failed: %s", exc)
         else:
-            try:
-                self._plotter.disable_picking()
-            except Exception:
-                pass
+            self._disable_picking_safely()
 
     def _on_measure_toggled(self, checked: bool):
         if not self._plotter_ready:
@@ -793,45 +804,62 @@ class ViewerWidget(QWidget):
             self._pick_check.blockSignals(False)
             self._measure_points = []
             self._clear_measure_actors()
+            self._disable_picking_safely()
             try:
-                self._plotter.enable_point_picking(
+                # enable_surface_point_picking uses a vtkCellPicker, so the
+                # callback always receives a real world-space point on the
+                # surface of whatever is displayed (CAD or mesh, any
+                # representation). The previous enable_point_picking call
+                # passed use_marker=True, which PyVista 0.48 forwards to
+                # add_mesh -> TypeError -> the pick callback never ran.
+                self._plotter.enable_surface_point_picking(
                     callback=self._on_point_picked,
                     show_message=False,
-                    color="red",
-                    point_size=10,
-                    use_marker=True,
+                    show_point=False,
                     left_clicking=True,
+                    picker="cell",
                 )
             except Exception as exc:
-                logger.warning("enable_point_picking failed: %s", exc)
+                logger.warning("enable_surface_point_picking failed: %s", exc)
                 self._measure_check.blockSignals(True)
                 self._measure_check.setChecked(False)
                 self._measure_check.blockSignals(False)
         else:
             self._measure_points = []
             self._clear_measure_actors()
-            try:
-                self._plotter.disable_picking()
-            except Exception:
-                pass
+            self._disable_picking_safely()
+
+    def _marker_radius(self) -> float:
+        """A point-marker radius scaled to the current scene size."""
+        try:
+            b = self._plotter.bounds
+            diag = (
+                (b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2
+            ) ** 0.5
+            if diag > 0:
+                return diag * 0.006
+        except Exception:
+            pass
+        return 0.01
 
     def _on_point_picked(self, point):
-        import numpy as np
-        pt = np.array(point[:3])
-        self._measure_points.append(pt)
+        pt = np.asarray(point, dtype=np.float64)[:3]
         if self._plotter is None:
             return
+        radius = self._marker_radius()
+        self._measure_points.append(pt)
         sphere = self._plotter.add_mesh(
-            pv.Sphere(radius=(getattr(self._cad_meshes[0], 'scale', 1.0) if self._cad_meshes else 1.0) * 0.01,  # âœ… F-010
-                      center=pt),
-            color="red",
+            pv.Sphere(radius=radius, center=pt),
+            color="red", pickable=False,
+            name=f"_measure_point_{len(self._measure_actors)}",
         )
         self._measure_actors.append(sphere)
-        if len(self._measure_points) == 2:
-            p1, p2 = self._measure_points
+        self._plotter.render()
+        if len(self._measure_points) >= 2:
+            p1, p2 = self._measure_points[-2], self._measure_points[-1]
             dist = float(np.linalg.norm(p2 - p1))
             line = self._plotter.add_lines(
-                np.array([p1, p2]), color="yellow", width=2,
+                np.array([p1, p2]), color="yellow", width=3,
             )
             self._measure_actors.append(line)
             label = self._plotter.add_text(
@@ -839,8 +867,10 @@ class ViewerWidget(QWidget):
                 position="upper_right",
                 font_size=14,
                 color="yellow",
+                name=f"_measure_label_{len(self._measure_actors)}",
             )
             self._measure_actors.append(label)
+            self._plotter.render()
             self.distance_measured.emit(f"Distance: {dist:.4f} m")
             self._measure_points = []
 
@@ -869,14 +899,16 @@ class ViewerWidget(QWidget):
         self._measure_check.setChecked(False)
         self._measure_check.blockSignals(False)
         self._clear_measure_actors()
+        self._disable_picking_safely()
         try:
-            self._plotter.enable_point_picking(
+            self._plotter.enable_surface_point_picking(
                 callback=self._on_refinement_point_picked,
                 show_message=False,
+                show_point=False,
                 color="cyan",
                 point_size=12,
-                use_marker=True,
-                picker="point",
+                left_clicking=True,
+                picker="cell",
             )
         except Exception as exc:
             logger.warning("start_refinement_pick failed: %s", exc)
@@ -884,21 +916,17 @@ class ViewerWidget(QWidget):
 
     def _on_refinement_point_picked(self, point):
         """Handle a point pick in refinement mode: emit coordinates and exit."""
-        import numpy as np
-        pt = np.array(point[:3])
+        pt = np.asarray(point, dtype=np.float64)[:3]
         # Show a visual marker at the picked point
-        if self._plotter and self._cad_meshes:
-            r = max(getattr(self._cad_meshes[0], 'scale', 1.0) * 0.02, 0.005)
+        if self._plotter is not None:
+            r = self._marker_radius()
             self._plotter.add_mesh(
                 pv.Sphere(radius=r, center=pt),
-                color="cyan", opacity=0.7,
+                color="cyan", opacity=0.7, pickable=False,
             )
             self._plotter.render()
         self._refinement_pick_active = False
-        try:
-            self._plotter.disable_picking()
-        except Exception:
-            pass
+        self._disable_picking_safely()
         self.refinement_point_picked.emit(float(pt[0]), float(pt[1]), float(pt[2]))
 
     def show_refinement_zones(self, zones: list):
@@ -945,54 +973,114 @@ class ViewerWidget(QWidget):
         else:
             logger.debug("Picked actor addr=%s not in mapping", addr)
 
+    def _current_mode(self) -> str:
+        idx = self._view_selector.currentIndex()
+        if 0 <= idx < len(VIEW_MODES):
+            return VIEW_MODES[idx]
+        return "Surface" if getattr(self, "_showing_cad", True) else "Surface with Edges"
+
     def _on_view_changed(self, index: int):
         if index < 0 or not self._plotter_ready:
             return
-        try:
-            self._plotter.disable_picking()
-            self._pick_check.blockSignals(True)
-            self._pick_check.setChecked(False)
-            self._pick_check.blockSignals(False)
-        except Exception:
-            pass
+        self._disable_picking_safely()
+        self._pick_check.blockSignals(True)
+        self._pick_check.setChecked(False)
+        self._pick_check.blockSignals(False)
         self._view_selector.blockSignals(True)
         try:
-            mode = VIEW_MODES[index]
-            if mode == "CAD Surfaces":
-                self._display_cad()
-            elif mode == "Volume Mesh":
-                self._display_mesh()
-            elif mode == "Surface + Edges":
-                self._display_surface_edges()
+            self._render_current_mode()
         finally:
             self._view_selector.blockSignals(False)
+
+    def _render_current_mode(self):
+        """Render whatever is currently shown (CAD or mesh) using the
+        representation selected in the "Display" combo."""
+        if self._plotter is None:
+            return
+        if getattr(self, "_showing_cad", True) and self._cad_meshes:
+            self._display_cad()
+            return
+        if not self._mesh_case_dir:
+            if self._cad_meshes:
+                self._display_cad()
+            return
+        mode = self._current_mode()
+        if mode == "Wireframe":
+            self._display_mesh()
+        elif mode == "Surface with Edges":
+            self._display_surface_edges()
+        else:
+            self._display_mesh_surface()
 
     def _redisplay_current(self):
         if self._plotter is None:
             return
-        idx = self._view_selector.currentIndex()
-        if idx >= 0:
-            self._on_view_changed(idx)
+        if self._view_selector.currentIndex() < 0:
+            return
+        self._render_current_mode()
 
     def _on_section_toggled(self, checked: bool):
         self._section_enabled = checked
         if self._plotter is None or not self._plotter_ready:
             return
-        total_faces = sum(len(m.faces) for m in self._cad_meshes)
-        if self._section_enabled and total_faces > _MAX_CLIP_FACES:
-            self._log_clip_too_big(total_faces)
-            self._section_check.blockSignals(True)
-            self._section_check.setChecked(False)
-            self._section_check.blockSignals(False)
-            self._section_enabled = False
-            return
+        if self._section_enabled and getattr(self, "_showing_cad", True):
+            total_faces = sum(len(m.faces) for m in self._cad_meshes)
+            if total_faces > _MAX_CLIP_FACES:
+                self._log_clip_too_big(total_faces)
+                self._section_check.blockSignals(True)
+                self._section_check.setChecked(False)
+                self._section_check.blockSignals(False)
+                self._section_enabled = False
+                return
         self._redisplay_current()
 
     def _log_clip_too_big(self, n_faces: int) -> None:
         logger.warning(
-            "Section Cut disabled: geometry has %d faces (cap=%d). "
-            "Decimate the CAD or remove internal patches to enable.",
+            "Section Cut disabled: CAD geometry has %d faces (cap=%d). "
+            "Reduce the CAD tessellation to enable.",
             n_faces, _MAX_CLIP_FACES,
+        )
+
+    @staticmethod
+    def _section_clip_args(bounds) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Return (normal, origin) for the section plane, centred on bounds."""
+        origin = (
+            (bounds[0] + bounds[1]) * 0.5,
+            (bounds[2] + bounds[3]) * 0.5,
+            (bounds[4] + bounds[5]) * 0.5,
+        )
+        return (1.0, 0.0, 0.0), origin
+
+    def _clip_dataset(self, dataset, normal, origin):
+        """Clip ``dataset`` with an explicit plane, keeping the geometry on
+        one side. Falls back to the unclipped dataset on any failure so a
+        section toggle can never blank the view."""
+        try:
+            clipped = dataset.clip(
+                normal=normal, origin=origin, invert=True, crinkle=False,
+            )
+            if getattr(clipped, "n_points", 0) > 0:
+                return clipped
+        except Exception as exc:
+            logger.warning("Section clip failed: %s", exc)
+        return dataset
+
+    def _apply_section_clip(self, dataset):
+        if not self._section_enabled or dataset is None:
+            return dataset
+        normal, origin = self._section_clip_args(dataset.bounds)
+        return self._clip_dataset(dataset, normal, origin)
+
+    @staticmethod
+    def _combined_bounds(datasets):
+        """Union of the bounds of several datasets, or None if all empty."""
+        bounds = [d.bounds for d in datasets if getattr(d, "n_points", 0) > 0]
+        if not bounds:
+            return None
+        return (
+            min(b[0] for b in bounds), max(b[1] for b in bounds),
+            min(b[2] for b in bounds), max(b[3] for b in bounds),
+            min(b[4] for b in bounds), max(b[5] for b in bounds),
         )
 
     def _build_combined_pvdata(self) -> pv.PolyData | None:
@@ -1025,37 +1113,43 @@ class ViewerWidget(QWidget):
             return
         self._plotter.clear()
         ec = self._edge_color()
+        mode = self._current_mode()
+        self._pvdata_to_name.clear()
 
         if self._section_enabled:
             combined = self._build_combined_pvdata()
             if combined is not None:
-                # add_mesh_clip_box() in the installed PyVista version has no
-                # `bounds` kwarg â€” passing one (as this used to) raises a
-                # TypeError on every toggle, silently killing Section Cut.
-                # Omit it: this places a full, draggable box widget the user
-                # can resize/move to clip interactively, matching the
-                # "interactive clipping plane" tooltip.
-                self._plotter.add_mesh_clip_box(
-                    combined,
-                    scalars="color",
-                    rgb=True,
-                    show_edges=True,
-                    edge_color=ec,
-                    crinkle=False,
-                )
+                combined = self._apply_section_clip(combined)
+                kwargs = dict(scalars="color", rgb=True, smooth_shading=True)
+                if mode == "Wireframe":
+                    kwargs.update(style="wireframe", line_width=1.0)
+                elif mode == "Surface with Edges":
+                    kwargs.update(
+                        style="surface", show_edges=True,
+                        edge_color=ec, line_width=1.0,
+                    )
+                else:
+                    kwargs.update(style="surface")
+                self._plotter.add_mesh(combined, **kwargs)
             self._plotter.view_isometric()
             self._plotter.render()
             return
 
-        self._pvdata_to_name.clear()
         for i, mesh in enumerate(self._cad_meshes):
             name = mesh.metadata.get("name", f"patch_{i}")
             color = PATCH_COLORS[i % len(PATCH_COLORS)]
             pd = _trimesh_to_pydata(mesh, color)
-            actor = self._plotter.add_mesh(
-                pd, scalars="color", rgb=True, show_edges=True,
-                edge_color=ec, label=name,
-            )
+            kwargs = dict(scalars="color", rgb=True, label=name, smooth_shading=True)
+            if mode == "Wireframe":
+                kwargs.update(style="wireframe", line_width=1.0)
+            elif mode == "Surface with Edges":
+                kwargs.update(
+                    style="surface", show_edges=True,
+                    edge_color=ec, line_width=1.0,
+                )
+            else:
+                kwargs.update(style="surface")
+            actor = self._plotter.add_mesh(pd, **kwargs)
             self._pvdata_to_name[actor.GetAddressAsString("")] = name
         self._plotter.view_isometric()
         self._plotter.render()
@@ -1173,25 +1267,36 @@ class ViewerWidget(QWidget):
         self._show_mesh_too_large("Display pipeline timed out (>90s)")
 
     def _display_mesh(self):
-        """Render the mesh (foamToVTK + PyVista), guarded by a 90s safety
-        timeout that falls back to the 'use ParaView' message if the
-        pipeline hangs (e.g. OpenGL issues on this machine)."""
+        """Render the whole internal volume as a wireframe ("Wireframe")."""
+        self._begin_mesh_display("internal", "Loading mesh (Wireframe)...")
+
+    def _display_surface_edges(self):
+        """Render the mesh boundary as a filled surface with edges
+        (ParaView's "Surface with Edges")."""
+        self._begin_mesh_display(
+            "surface_edges", "Loading Surface with Edges...",
+        )
+
+    def _display_mesh_surface(self):
+        """Render the mesh boundary as a smooth, edge-free surface."""
+        self._begin_mesh_display("surface", "Loading Surface...")
+
+    def _begin_mesh_display(self, vtu_mode: str, message: str):
+        """Start the mesh display pipeline for the given representation,
+        guarded by a 90s safety timeout that falls back to the 'use
+        ParaView' message if the pipeline hangs."""
         if self._plotter is None or not self._mesh_case_dir:
             return
         if getattr(self, "_mesh_display_in_progress", False):
-            logger.debug("_display_mesh already in progress â€” skipping duplicate call")
+            logger.debug("%s already in progress — skipping duplicate call", vtu_mode)
             return
         self._mesh_display_in_progress = True
-        if self._section_enabled:
-            self._display_mesh_section()
-            self._mesh_display_in_progress = False
-            return
+        self._pending_vtu_mode = vtu_mode
         # Show "Loading..." immediately, then chain async operations
         try:
             self._plotter.clear()
             self._plotter.add_text(
-                "Loading mesh...",
-                color=self._text_color, font_size=14,
+                message, color=self._text_color, font_size=14,
             )
             self._plotter.render()
         except Exception as exc:
@@ -1200,80 +1305,10 @@ class ViewerWidget(QWidget):
         self._start_display_timeout(90)
         QTimer.singleShot(0, self._step_vtu_for_mesh)
 
-    def _display_surface_edges(self):
-        """Render the mesh with filled surfaces and visible edges (like
-        ParaView 'Surface with Edges'). Uses the internal volume VTU
-        with style='surface' and show_edges=True."""
-        if self._plotter is None or not self._mesh_case_dir:
-            return
-        if getattr(self, "_mesh_display_in_progress", False):
-            logger.debug("_display_surface_edges already in progress â€” skipping")
-            return
-        self._mesh_display_in_progress = True
-        # Show "Loading..." immediately
-        try:
-            self._plotter.clear()
-            self._plotter.add_text(
-                "Loading Surface + Edges...",
-                color=self._text_color, font_size=14,
-            )
-            self._plotter.render()
-        except Exception as exc:
-            logger.error("Plotter failed to show loading message: %s", exc)
-
-        self._start_display_timeout(90)
-        QTimer.singleShot(0, self._step_vtu_for_surface_edges)
-
-    def _step_vtu_for_surface_edges(self):
-        """Step 1: ensure VTU exists, then load with surface+edges style."""
-        self._do_step_vtu(
-            on_vtu_ready=lambda ok: QTimer.singleShot(0, self._do_load_surface_edges),
-        )
-
-    def _do_load_surface_edges(self, _unused: bool = False):
-        """Load the internal volume mesh and render as surface with edges."""
-        self._mesh_display_in_progress = False
-        self._cancel_display_timeout()
-        case_dir = Path(self._mesh_case_dir) if self._mesh_case_dir else None
-        if case_dir is None:
-            return
-
-        # Try internal volume VTU first
-        vtk_dir = case_dir / "VTK_view"
-        internal_vtu = None
-        if vtk_dir.exists():
-            candidates = _find_internal_vtu(case_dir)
-            if candidates:
-                internal_vtu = candidates[0]
-
-        if internal_vtu is not None:
-            # Heavy read + decimate in a background task; render on GUI thread.
-            self._load_internal_vtu_async(internal_vtu, "surface_edges")
-            return
-
-        # Fallback: boundary patches with edges
-        self._load_patches_async()
-
-    def _display_mesh_section(self):
-        self._plotter.clear()
-        self._plotter.add_text(
-            "Loading mesh for section cut...",
-            color=self._text_color, font_size=12,
-        )
-        self._plotter.render()
-
-        QTimer.singleShot(0, self._step_vtu_for_section)
-
     def _step_vtu_for_mesh(self):
-        """Step 1: ensure VTU exists (async QProcess if needed), then load patches."""
+        """Step 1: ensure VTU exists (async QProcess if needed), then load."""
         self._do_step_vtu(
             on_vtu_ready=lambda ok: QTimer.singleShot(0, self._step_mesh_patches),
-        )
-
-    def _step_vtu_for_section(self):
-        """Step 1: ensure VTU exists (async QProcess if needed), then show section."""
-        self._do_step_vtu(
-            on_vtu_ready=lambda ok: QTimer.singleShot(0, self._step_section_display),
         )
 
     def _do_step_vtu(self, on_vtu_ready: callable) -> None:
@@ -1328,37 +1363,23 @@ class ViewerWidget(QWidget):
             return
         QTimer.singleShot(0, lambda: self._do_load_patches(False))
 
-    def _step_section_display(self):
-        """Step 2: load internal volume grid and show section cut."""
-        if self._plotter is None:
-            return
-        QTimer.singleShot(0, self._do_show_section)
-
-    def _do_show_section(self):
-        if self._plotter is None:
-            return
-        # Heavy load (foamToVTK + VTU read) runs in a background task.
-        self._load_section_async()
-
     @staticmethod
     def _prepare_internal_vtu_grid(grid, mode: str):
         """Reduce the full-volume grid read from internal.vtu to what the
-        given view mode should actually render.
+        given representation should actually render.
 
-        "surface_edges" ("Surface + Edges") must show ONLY the outer
-        boundary of the poly mesh — not every internal cell edge of the
-        whole volume. Before this, both "Volume Mesh" and "Surface + Edges"
-        loaded the SAME full internal.vtu and wireframed the entire volume,
-        so a poly mesh with any real cell count looked like solid static
-        from outside: every internal edge of every cell was superimposed in
-        screen space, regardless of how well-graded the mesh actually was.
-        extract_surface() on an UnstructuredGrid is VTK's vtkGeometryFilter
-        — it keeps the true outer polygon faces (a poly cell's pentagon
-        face stays a pentagon) without triangulating them, so the
-        "style=wireframe to avoid looking like tet" rendering trick still
-        applies, now on just the boundary.
+        "surface_edges" and "surface" must show ONLY the outer boundary of
+        the poly mesh — not every internal cell edge of the whole volume.
+        Before this, the surface views loaded the SAME full internal.vtu
+        and wireframed the entire volume, so a poly mesh with any real cell
+        count looked like solid static from outside: every internal edge of
+        every cell was superimposed in screen space, regardless of how well
+        graded the mesh actually was. extract_surface() on an
+        UnstructuredGrid is VTK's vtkGeometryFilter — it keeps the true
+        outer polygon faces (a poly cell's pentagon face stays a pentagon)
+        without triangulating them.
 
-        "internal" ("Volume Mesh") is returned unchanged — it exists
+        "internal" ("Wireframe") is returned unchanged — it exists
         specifically to inspect internal structure.
 
         algorithm="dataset_surface" is pinned explicitly: PyVista warns
@@ -1366,7 +1387,7 @@ class ViewerWidget(QWidget):
         behaviour change here would be exactly the kind of "why does the
         mesh look different now" regression this fix exists to prevent.
         """
-        if mode == "surface_edges":
+        if mode in ("surface_edges", "surface"):
             return grid.extract_surface(algorithm="dataset_surface")
         return grid
 
@@ -1399,42 +1420,33 @@ class ViewerWidget(QWidget):
             show_dec = payload["show_dec"]
             ec = self._edge_color()
             try:
+                dataset = self._apply_section_clip(grid)
                 self._plotter.clear()
-                # "internal" (Volume Mesh) renders every internal cell edge
+                # "internal" (Wireframe) renders every internal cell edge
                 # of the WHOLE volume on purpose — that view exists to see
                 # through the mesh. A filled/shaded surface there would hide
                 # the interior it's meant to show, so it stays a bare
                 # wireframe (lines only, no fill).
                 if mode == "internal":
                     self._plotter.add_mesh(
-                        grid, style="wireframe", color="lightgray",
+                        dataset, style="wireframe", color=_MESH_COLOR,
                         show_edges=True, edge_color=ec,
-                        line_width=0.5 if not show_dec else 0.7,
+                        line_width=0.6 if not show_dec else 0.8,
                         opacity=1.0,
                     )
-                else:  # surface_edges: ParaView's "Surface With Edges"
-                    # A bare wireframe (lines only, no shading) of a boundary
-                    # mesh with any real face count reads as unreadable
-                    # static — there is no fill to give depth/orientation
-                    # cues, just overlapping line segments. style="surface"
-                    # with show_edges=True is the actual ParaView "Surface
-                    # With Edges" representation: a shaded fill with the
-                    # TRUE polygon edges outlined on top. This does NOT
-                    # reintroduce the "looks like tet" problem the wireframe
-                    # was originally chosen to avoid: `grid` here is already
-                    # the boundary-only PolyData from _prepare_internal_vtu_
-                    # grid's extract_surface(), whose cells are the real
-                    # n-gon faces (a poly cell's pentagon face stays a
-                    # pentagon — verified in test_viewer_surface_only.py).
-                    # VTK's edge overlay is drawn from that real polygon
-                    # boundary; the GPU fanning it triangulates internally
-                    # to rasterize the fill does not add visible diagonal
-                    # edges — only the actual polygon outline is drawn.
+                else:
+                    # ParaView "Surface"/"Surface With Edges": a shaded
+                    # fill with the TRUE polygon edges outlined on top
+                    # when requested. `grid` is already the boundary-only
+                    # PolyData from _prepare_internal_vtu_grid, whose cells
+                    # are the real n-gon faces (verified in
+                    # test_viewer_surface_only.py).
                     self._plotter.add_mesh(
-                        grid, style="surface", show_edges=True,
-                        edge_color=ec, color="lightgray",
-                        line_width=0.5 if not show_dec else 0.7,
-                        opacity=1.0, lighting=True,
+                        dataset, style="surface",
+                        show_edges=(mode == "surface_edges"),
+                        edge_color=ec, color=_MESH_COLOR,
+                        line_width=0.6 if not show_dec else 0.8,
+                        opacity=1.0, lighting=True, smooth_shading=True,
                     )
                 if show_dec:
                     self._plotter.add_text(
@@ -1463,7 +1475,8 @@ class ViewerWidget(QWidget):
 
     def _load_patches_async(self, mode: str = "patches") -> None:
         """Read boundary patches (foamToVTK VTP files or manual parser) in
-        a background task; render on the GUI thread when ready."""
+        a background task; render on the GUI thread when ready. Used as a
+        fallback when the internal volume VTU isn't available."""
         case_dir = self._mesh_case_dir
 
         def work(worker):
@@ -1483,19 +1496,38 @@ class ViewerWidget(QWidget):
             )
             threshold, target = self._decimation_settings()
             show_decimated = total_faces > threshold
+            repr_mode = getattr(self, "_pending_vtu_mode", "surface_edges")
             try:
                 self._plotter.clear()
                 ec = self._edge_color()
+                normal, origin = None, None
+                if self._section_enabled:
+                    bounds = self._combined_bounds(patches.values())
+                    if bounds is not None:
+                        normal, origin = self._section_clip_args(bounds)
                 for _i, (name, pd) in enumerate(patches.items()):
                     if show_decimated:
                         try:
                             pd = pd.decimate_pro(target)
                         except Exception:
                             pass
-                    self._plotter.add_mesh(
-                        pd, scalars="color", rgb=True,
-                        show_edges=not show_decimated, edge_color=ec, label=name,
+                    if normal is not None:
+                        pd = self._clip_dataset(pd, normal, origin)
+                    kwargs = dict(
+                        scalars="color", rgb=True, label=name,
+                        smooth_shading=(repr_mode != "internal"),
                     )
+                    if repr_mode == "internal":
+                        kwargs.update(
+                            style="wireframe", show_edges=True, edge_color=ec,
+                        )
+                    elif repr_mode == "surface_edges":
+                        kwargs.update(
+                            style="surface", show_edges=True, edge_color=ec,
+                        )
+                    else:
+                        kwargs.update(style="surface")
+                    self._plotter.add_mesh(pd, **kwargs)
                 if show_decimated:
                     self._plotter.add_text(
                         f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
@@ -1520,62 +1552,21 @@ class ViewerWidget(QWidget):
             heartbeat_timeout_s=600.0,
         )
 
-    def _load_section_async(self) -> None:
-        """Build the internal volume VTU (foamToVTK) + read it in a
-        background task, then show the section cut on the GUI thread."""
-        case_dir = Path(self._mesh_case_dir) if self._mesh_case_dir else None
-        if case_dir is None:
-            return
-
-        def work(worker):
-            vtu_path = build_internal_volume_vtu(case_dir)
-            if vtu_path is None:
-                return None
-            return pv.read(str(vtu_path))
-
-        def on_done(_name, grid):
-            self._mesh_display_in_progress = False
-            self._cancel_display_timeout()
-            ec = self._edge_color()
-            self._plotter.clear()
-            if grid is not None:
-                self._plotter.add_mesh_clip_box(
-                    grid, show_edges=True, edge_color=ec, crinkle=False,
-                )
-            else:
-                self._plotter.add_text(
-                    "Internal mesh unavailable (foamToVTK failed â€” see log)",
-                    color=self._text_color, font_size=10,
-                )
-            self._plotter.view_isometric()
-            self._plotter.render()
-
-        def on_failed(_name, msg):
-            self._mesh_display_in_progress = False
-            self._cancel_display_timeout()
-            logger.warning("Section load failed: %s", msg)
-
-        self._vtk_tasks.submit(
-            "vtk_display", FunctionWorker(work),
-            on_finished=on_done, on_failed=on_failed,
-            heartbeat_timeout_s=600.0,
-        )
-
     def _do_load_patches(self, _unused: bool = False):
-        """Load and display the mesh.
+        """Load and display the mesh for the pending representation.
 
-        Preference: the internal volume cells (internal.vtu â€” the actual
-        3D polyhedral cells after tetâ†’poly) rendered as a full wireframe,
-        which makes the polyhedral structure visible with no tetrahedra.
-        Falls back to the boundary surface patches (2D, look identical
-        for tet and poly) only when the volume VTU isn't available.
+        Preference: the internal volume cells (internal.vtu — the actual
+        3D polyhedral cells after tet→poly). "Wireframe" renders the whole
+        volume as lines; "Surface"/"Surface with Edges" render only the
+        boundary. Falls back to the boundary surface patches when the
+        volume VTU isn't available.
         """
         self._mesh_display_in_progress = False
         case_dir = Path(self._mesh_case_dir) if self._mesh_case_dir else None
         if case_dir is None:
             return
 
-        # --- Preferred: internal 3D cells (polyhedral wireframe) ----------
+        # --- Preferred: internal 3D cells ----------------------------------
         vtk_dir = case_dir / "VTK_view"
         internal_vtu = None
         if vtk_dir.exists():
@@ -1585,7 +1576,9 @@ class ViewerWidget(QWidget):
         if internal_vtu is not None:
             # Reading + decimating a big internal.vtu runs in a background
             # task; the plotter (GUI thread only) renders when it's ready.
-            self._load_internal_vtu_async(internal_vtu, "internal")
+            self._load_internal_vtu_async(
+                internal_vtu, getattr(self, "_pending_vtu_mode", "surface_edges"),
+            )
             return
 
         # --- Fallback: boundary surface patches ----------------------------
@@ -1655,13 +1648,15 @@ class ViewerWidget(QWidget):
 
     def show_cad(self, meshes: list[trimesh.Trimesh]):
         self._cad_meshes = list(meshes)
+        self._showing_cad = True
         if not self._plotter_ready:
             return
         self._view_selector.setEnabled(True)
         self._view_selector.blockSignals(True)
         self._view_selector.setCurrentIndex(-1)
         self._view_selector.blockSignals(False)
-        self._view_selector.setCurrentIndex(0)
+        # CAD default representation is "Surface".
+        self._view_selector.setCurrentIndex(VIEW_MODES.index("Surface"))
         if self._plotter:
             self._plotter.reset_camera()
 
@@ -1676,17 +1671,10 @@ class ViewerWidget(QWidget):
     DECIMATE_TARGET = 0.2
 
     def _decimation_settings(self) -> tuple[float, float]:
-        """Return (threshold, target) for the current "Decimazione" combo.
-
-        Auto: decimate only above DECIMATE_THRESHOLD, to DECIMATE_TARGET.
-        Metà: always decimate to half (threshold 0, target 0.5).
-        Completa: never decimate (threshold inf, target 1.0).
-        """
-        mode = self._decimate_combo.currentText()
-        if mode == "Metà":
-            return 0.0, 0.5
-        if mode == "Completa":
-            return float("inf"), 1.0
+        """Return the fixed "Auto" decimation policy: decimate only above
+        DECIMATE_THRESHOLD, to DECIMATE_TARGET. The user-facing combo was
+        removed, so this always yields the Auto behaviour and the real
+        mesh file is never touched."""
         return float(self.DECIMATE_THRESHOLD), float(self.DECIMATE_TARGET)
 
     def _load_stats_async(self, case_dir: Path):
@@ -1722,33 +1710,23 @@ class ViewerWidget(QWidget):
         (e.g. mesh too large).  Called via QTimer.singleShot from show_mesh()
         so the stats label paints before the heavy VTK pipeline starts.
 
-        Dispatches on the selector's CURRENT index instead of always
-        calling _display_mesh(). This used to be hardcoded to
-        _display_mesh() (the full internal-volume wireframe, "Volume
-        Mesh"), even though show_mesh() sets the selector to "Surface +
-        Edges" right before scheduling this call. The dropdown showed
-        "Surface + Edges" while the mesh actually rendered was always
-        the full internal wireframe - every internal cell edge of the
-        whole volume, tets/poly cells all visible through the surface -
-        exactly the "internal tets still visible" symptom: fixing
-        _display_surface_edges()'s OWN rendering (extract_surface +
-        style=surface) had no effect because that method was never
-        being called on the initial post-meshing display, only on a
-        manual dropdown switch. Called directly (not via
-        _on_view_changed) to keep the existing "do not double-trigger"
-        guarantee from the comment above show_mesh()'s setCurrentIndex
-        call.
+        Dispatches on the representation currently selected in the
+        "Display" combo so the rendered mesh matches the dropdown, and
+        routes to the CAD path when CAD is what is being shown.
         """
         if not self._view_selector.isEnabled():
             return
-        idx = self._view_selector.currentIndex()
-        mode = VIEW_MODES[idx] if idx >= 0 else "Volume Mesh"
-        if mode == "Surface + Edges":
-            self._display_surface_edges()
-        elif mode == "CAD Surfaces":
+        if getattr(self, "_showing_cad", False) and getattr(self, "_cad_meshes", None):
             self._display_cad()
-        else:
+            return
+        idx = self._view_selector.currentIndex()
+        mode = VIEW_MODES[idx] if 0 <= idx < len(VIEW_MODES) else "Surface with Edges"
+        if mode == "Wireframe":
             self._display_mesh()
+        elif mode == "Surface":
+            self._display_mesh_surface()
+        else:
+            self._display_surface_edges()
 
     def show_mesh(self, case_dir: Path | str):
         """Show mesh â€” always regenerates VTU from current polyMesh.
@@ -1759,6 +1737,7 @@ class ViewerWidget(QWidget):
         """
         try:
             self._mesh_case_dir = str(case_dir)
+            self._showing_cad = False
             self._cancel_display_timeout()
             self._mesh_display_in_progress = False
             self._mesh_retry_count = 0
@@ -1797,14 +1776,14 @@ class ViewerWidget(QWidget):
                 self._stats_label.setText("Mesh ready â€” usa Strumenti > Launch ParaView")
             self._view_selector.setEnabled(True)
             # A completed meshing run must switch away from the CAD surface
-            # view to the ParaView-style "Surface + Edges" mesh view â€” filled
-            # surfaces with visible edges, the standard readable mesh display.
-            # Leaving index 0 selected made the finished mesh look like an
-            # opaque/translucent CAD overlay even though the mesh existed.
-            # Block the signal here because the deferred render below is the
-            # single display request for this new case.
+            # view to the ParaView-style "Surface with Edges" mesh view —
+            # filled surfaces with visible edges, the standard readable mesh
+            # display. Leaving the CAD "Surface" selected made the finished
+            # mesh look like an opaque/translucent CAD overlay even though
+            # the mesh existed. Block the signal here because the deferred
+            # render below is the single display request for this new case.
             self._view_selector.blockSignals(True)
-            self._view_selector.setCurrentIndex(VIEW_MODES.index("Surface + Edges"))
+            self._view_selector.setCurrentIndex(VIEW_MODES.index("Surface with Edges"))
             self._view_selector.blockSignals(False)
             # Actually render the mesh (deferred so the stats label above
             # paints first). _delayed_display_mesh no-ops if the view
@@ -1816,6 +1795,8 @@ class ViewerWidget(QWidget):
     def clear(self):
         self._cad_meshes = []
         self._mesh_case_dir = ""
+        self._showing_cad = True
+        self._pending_vtu_mode = "surface_edges"
         self._pvdata_to_name.clear()
         self._stats_label.setText("")
         self._mesh_display_in_progress = False
@@ -1833,10 +1814,7 @@ class ViewerWidget(QWidget):
         self._clear_measure_actors()
         if not self._plotter_ready:
             return
-        try:
-            self._plotter.disable_picking()
-        except Exception:
-            pass
+        self._disable_picking_safely()
         self._view_selector.setEnabled(False)
         self._plotter.clear()
         self._plotter.show_axes()
