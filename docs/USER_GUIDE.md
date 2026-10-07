@@ -82,8 +82,16 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)).
+- **Reuse cached mesh when inputs are unchanged (skip GMSH)**: reuses the
+  tet mesh from a previous run with identical sizing (a SHA256 fingerprint
+  of the geometry and sizing inputs; BL settings that shape the mesh are
+  part of it), skipping the whole GMSH stage - the slowest one. Manage the
+  cache with `Tools > Clear mesh cache`. A cache hit is logged as
+  `[cache] reusing cached tet mesh (...)`.
 - **Generate Mesh** (`Ctrl+R`): starts the run. While running, the
   dedicated red **Cancel** (under "Reset All") stops it.
+- Every run logs one `[poly] stage times: dual ... | BL precompute ... |
+  BL build ...` line so you always know where the time went.
 - If the actual cell count deviates a lot from the budget, the app
   performs ONE automatic size correction (logged as
   `[gmsh] budget correction: ...`) before giving the mesh.
@@ -161,9 +169,14 @@ Toolbar controls (left to right):
   centre so you can look inside. Works in every representation; toggle off to
   remove it.
 - **Select Patch**: click a boundary patch to highlight it (solid highlight)
-  and log its name - useful to identify inlets/outlets/walls.
+  and log its name - useful to identify inlets/outlets/walls. Clicking the
+  empty background clears the selection.
 - **Measure**: click two points (on CAD or mesh) to get the distance in
-  metres; markers and a line are drawn and the value is logged.
+  metres; numbered markers and a line are drawn, a summary overlay lists
+  every measurement, and unchecking the tool (or `Clear`) removes them.
+- **Show BL**: colours the boundary-layer prism cells orange over the grey
+  core (works with `surface_N` meshes via geometric wall inference), so a
+  sub-millimetre layer is actually visible.
 
 Mouse: left-drag rotates, middle-drag pans, wheel zooms. `Box 3D` refinement
 zones are edited directly with their gizmo in the viewer.
@@ -186,6 +199,14 @@ Boundary layers are inserted by the poly mesher (CFD Poly path). In the
 - **Robust boundary layer (recommended)**: drops sliver base faces and lets
   the engine cap the stack to what the mesh can actually hold. Use it for
   real parts.
+- **Calibrate from simulation**: after a solve, point this at the case
+  directory: the app reads the real `yPlus` (or `wallShearStress`) field
+  directly (no WSL needed), computes area-weighted statistics over the
+  wall patches (inferred geometrically, so it works with `surface_N` and
+  closed/external geometries), warns when a single first layer cannot hit
+  the target everywhere (y+ spread > 3x) and proposes the first layer for
+  your target y+ - one click to apply. This removes the flat-plate
+  correlation error on real flows.
 - **Mesh/BL consistency hint**: the panel compares the requested stack
   with the wall cell size the current mesh will produce and tells you if
   it fits or gets compressed. **Fit BL to mesh** adapts the first layer
