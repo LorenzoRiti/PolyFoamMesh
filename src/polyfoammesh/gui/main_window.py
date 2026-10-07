@@ -209,6 +209,9 @@ class MainWindow(QMainWindow):
         self._viewer.distance_measured.connect(
             lambda msg: self._log.append_log(f"[measure] {msg}")
         )
+        self._viewer.measure_hint.connect(
+            lambda msg: self._log.append_log(f"[measure] {msg}")
+        )
 
         self._status.showMessage("Checking OpenFOAM environment...")
         QTimer.singleShot(100, self._start_deferred_wsl_check)
@@ -1612,6 +1615,11 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_face_picked(self, patch_name: str):
+        if not self._viewer.is_showing_cad():
+            # A loaded case mesh has no CAD geometry to rename; the viewer
+            # has already synced the patch-list selection. Just acknowledge.
+            self._log.append_log(f"{Tag.PATCH} Selected '{patch_name}'.")
+            return
         new_name, ok = QInputDialog.getText(
             self, f"Rename Patch '{patch_name}'",
             "New patch name:", text=patch_name,

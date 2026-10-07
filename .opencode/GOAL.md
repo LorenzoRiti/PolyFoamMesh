@@ -575,3 +575,23 @@ Corsie parallele completate e verificate una per una (ruff + test + diff):
 - CHANGELOG [Non rilasciato] aggiornato con Aggiunto/Corretto/Rimosso GUI.
 - residual_risks: sezione 'GUI release polish' (section cut statica, QSS
   hex residui, viewer senza colorazione BL, tab Quality rimossa).
+
+## Avanzamento 2026-10-07 - BL COMPLETI (copertura 100%)
+
+Diagnosi sul run reale dell'utente (gmsh_direct_20261007_091301, 279.894
+celle): la patch parete surface_2 aveva copertura BL 95.0% (5.883 facce
+senza BL) -> "i bl vengono estrusi solo in parte". Causa: la semantica
+binaria scartava le facce su vertici concavi (fade<0.5) o a budget zero.
+
+Fix: COMPLETE-COVERAGE POLICY nel percorso standard (bl_poly._build):
+- zero_concave=True SEMPRE nel loop standard (non solo in modalita'
+  budget): niente flooding del fixpoint, niente riduzione per-vertice;
+- si scartano SOLO le facce con difetto d'input (drop_bnd); i vertici
+  concavi/budget-zero tengono la faccia con stack COMPRESSO (sottile ma
+  presente) + floor di altezza minima per non degenerare.
+Verifica (config utente: n=6, h1=9mm, robust off, solo surface_2) sul
+Part2 dual: surface_2 coverage 100.0% (era 95%), 86.154 prismi, 6 layer
+su 14.359 facce, checkMesh PASS (NOmax 70.15, skew 1.741, neg 0).
+Warning onesto nel log: primo strato compresso al 2% del richiesto
+(mesh troppo fine per y+30: serve mesh di superficie piu' grossa).
+Suite BL 58 verdi senza aggiornare golden.

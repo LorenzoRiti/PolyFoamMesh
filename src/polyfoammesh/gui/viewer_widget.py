@@ -10,14 +10,20 @@ import pyvista as pv
 import trimesh
 from PySide6.QtCore import QProcess, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from polyfoammesh.gui.design_tokens import WARNING_LIGHT
 from polyfoammesh.gui.task_runner import FunctionWorker, TaskManager
 
 logger = logging.getLogger(__name__)
@@ -46,6 +52,60 @@ BACKGROUNDS = {
     "Black": ((0.12, 0.12, 0.14), "white"),
     "ParaView": ((0.32, 0.34, 0.43), "white"),
 }
+
+
+def _format_distance(metres: float) -> str:
+    """Distance in the unit a human reads at a glance: mm below 1 m.
+
+    The signal and logs always carry metres; only the on-screen overlay is
+    switched to mm, so a 12 mm gap reads "12.000 mm" instead of "0.012 m".
+    """
+    if abs(metres) < 1.0:
+        return f"{metres * 1000.0:.3f} mm"
+    return f"{metres:.3f} m"
+
+
+#: Canonical patch role -> the five labels the patch panel shows.
+_PATCH_TYPE_BY_ROLE = {
+    "inlet": "inlet",
+    "outlet": "outlet",
+    "symmetry": "symmetry",
+    "empty": "symmetry",
+    "wall": "wall",
+}
+
+
+def detect_patch_type(name: str, patch_type: str = "") -> str:
+    """Auto-detected patch type: wall / inlet / outlet / symmetry / other.
+
+    Reuses the project's single wall-detection classifier
+    (``core.patch_roles.match_role`` — see its module docstring) and falls
+    back to the ``type`` recorded in the case boundary file, which the mesher
+    writes from ``meshdict_gen.infer_patch_type`` / ``case_setup``. No new
+    heuristic is introduced here.
+    """
+    from polyfoammesh.core.patch_roles import match_role
+
+    role = match_role(name)
+    if role in _PATCH_TYPE_BY_ROLE:
+        return _PATCH_TYPE_BY_ROLE[role]
+    recorded = (patch_type or "").lower()
+    if recorded in ("symmetryplane", "symmetry", "empty"):
+        return "symmetry"
+    if recorded == "wall":
+        return "wall"
+    return "other"
+
+
+def _patch_type_map(case_dir: Path) -> dict[str, str]:
+    """name -> boundary-file ``type`` for a case polyMesh (best effort)."""
+    try:
+        from polyfoammesh.core.boundary_reader import parse_boundary
+
+        boundary = Path(case_dir) / "constant" / "polyMesh" / "boundary"
+        return {p.name: p.patch_type for p in parse_boundary(boundary)}
+    except Exception:
+        return {}
 
 
 def _trimesh_to_pydata(mesh: trimesh.Trimesh, color: tuple[float, float, float]) -> pv.PolyData:
@@ -585,6 +645,7 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
 class ViewerWidget(QWidget):
     face_picked = Signal(str)
     distance_measured = Signal(str)
+    measure_hint = Signal(str)
     refinement_point_picked = Signal(float, float, float)
     refinement_boxes_changed = Signal(object)
 
@@ -601,6 +662,10 @@ class ViewerWidget(QWidget):
         self._section_enabled: bool = False
         self._measure_points: list = []
         self._measure_actors: list = []
+        self._measurements: list[tuple[str, float]] = []
+        self._measure_index: int = 0
+        self._mesh_patches: dict[str, pv.PolyData] = {}
+        self._patch_names: list[str] = []
         self._highlighted_actor = None
         self._showing_cad: bool = True
         self._pending_vtu_mode: str = "surface_edges"
@@ -661,6 +726,12 @@ class ViewerWidget(QWidget):
         self._measure_check.toggled.connect(self._on_measure_toggled)
         toolbar.addWidget(self._measure_check)
 
+        self._measure_clear_btn = QPushButton("Clear")
+        self._measure_clear_btn.setToolTip("Remove all measurements and their markers.")
+        self._measure_clear_btn.setEnabled(False)
+        self._measure_clear_btn.clicked.connect(self._clear_measurements)
+        toolbar.addWidget(self._measure_clear_btn)
+
         self._stats_label = QLabel("")
         self._stats_label.setStyleSheet(
             "font-size: 11px; padding: 2px 8px; background: rgba(0,0,0,30); border-radius: 3px;"
@@ -669,6 +740,15 @@ class ViewerWidget(QWidget):
 
         toolbar.addStretch()
         self._layout.addLayout(toolbar)
+
+        self._build_patch_panel()
+        self._measure_summary = QLabel(self)
+        self._measure_summary.setTextFormat(Qt.PlainText)
+        self._measure_summary.setStyleSheet(
+            f"background: rgba(0, 0, 0, 170); color: {WARNING_LIGHT}; padding: 6px 8px; "
+            "border: 1px solid rgba(255, 255, 255, 60); border-radius: 4px;"
+        )
+        self._measure_summary.setVisible(False)
 
         QTimer.singleShot(0, self._init_vtk)
 
@@ -691,9 +771,38 @@ class ViewerWidget(QWidget):
             self._layout.addWidget(self._plotter)
             self._plotter_ready = True
             self._apply_background(self._bg_selector.currentText())
+            QTimer.singleShot(0, self._position_measure_summary)
         except Exception as exc:
             logger.error("Failed to initialize VTK plotter: %s", exc)
             self._add_no_viewer_label(f"Errore: {exc}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "_measure_summary", None) is not None:
+            self._position_measure_summary()
+
+    def _build_patch_panel(self):
+        """Compact BaramMesh-style patch list, docked under the viewer toolbar."""
+        self._patch_panel = QWidget()
+        layout = QVBoxLayout(self._patch_panel)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+        layout.addWidget(QLabel("Patches"))
+        self._patch_table = QTableWidget(0, 3)
+        self._patch_table.setHorizontalHeaderLabels(["Name", "Faces", "Type"])
+        self._patch_table.verticalHeader().setVisible(False)
+        self._patch_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._patch_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._patch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._patch_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._patch_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._patch_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._patch_table.setMaximumHeight(140)
+        self._patch_table.setMinimumHeight(60)
+        self._patch_table.itemSelectionChanged.connect(self._on_patch_row_selected)
+        layout.addWidget(self._patch_table)
+        self._patch_panel.setVisible(False)
+        self._layout.addWidget(self._patch_panel)
 
     def _add_no_viewer_label(self, msg: str = ""):
         """Add a label explaining that 3D viewer is unavailable."""
@@ -736,8 +845,17 @@ class ViewerWidget(QWidget):
         return "white" if self._is_dark_bg() else "gray"
 
     def highlight_patch(self, patch_name: str):
-        """Highlight a picked patch with a bright, clearly outlined color."""
+        """Highlight a picked patch with a bright, clearly outlined color.
+
+        Works in both representations: the CAD surface (per-patch
+        ``_cad_meshes``) and a loaded case mesh (per-patch boundary patches
+        held in ``_mesh_patches``). The camera is never reset — the call is
+        a plain clear+redraw, so selecting a patch row leaves the view put.
+        """
         if self._plotter is None:
+            return
+        if not self._showing_cad and self._mesh_patches:
+            self._highlight_mesh_patch(patch_name)
             return
         self._plotter.clear()
         ec = self._edge_color()
@@ -765,6 +883,36 @@ class ViewerWidget(QWidget):
             self._pvdata_to_name[actor.GetAddressAsString("")] = name
         self._plotter.render()
 
+    def _highlight_mesh_patch(self, patch_name: str | None):
+        """Redraw the loaded boundary patches with one highlighted.
+
+        ``patch_name=None`` draws every patch unhighlighted — used when
+        Select Patch mode is turned on so the per-patch geometry exists for
+        picking. Actors are registered in ``_pvdata_to_name`` so a 3D click
+        maps back to a patch name (and then to a table row).
+        """
+        self._plotter.clear()
+        ec = self._edge_color()
+        mode = self._current_mode()
+        self._pvdata_to_name.clear()
+        for i, (name, pd) in enumerate(self._mesh_patches.items()):
+            picked = name == patch_name
+            color = _HIGHLIGHT_COLOR if picked else PATCH_COLORS[i % len(PATCH_COLORS)]
+            data = pd.copy()
+            data.cell_data["color"] = np.tile(color, (data.n_cells, 1))
+            kwargs = dict(scalars="color", rgb=True, label=name, smooth_shading=True)
+            if mode == "Wireframe":
+                kwargs.update(style="wireframe", line_width=2.5 if picked else 1.0)
+            else:
+                kwargs.update(
+                    style="surface", show_edges=True,
+                    edge_color="red" if picked else ec,
+                    line_width=2.5 if picked else 1.0,
+                )
+            actor = self._plotter.add_mesh(data, **kwargs)
+            self._pvdata_to_name[actor.GetAddressAsString("")] = name
+        self._plotter.render()
+
     def _disable_picking_safely(self):
         if self._plotter is None:
             return
@@ -780,8 +928,15 @@ class ViewerWidget(QWidget):
             self._measure_check.blockSignals(True)
             self._measure_check.setChecked(False)
             self._measure_check.blockSignals(False)
-            self._clear_measure_actors()
+            self._measure_points = []
             self._disable_picking_safely()
+            if self._plotter is not None:
+                self._plotter.unsetCursor()
+            # A loaded case mesh shows the internal volume as a single actor,
+            # which carries no per-patch identity to pick. Draw the boundary
+            # patches so a 3D click can be mapped back to a table row.
+            if not self._showing_cad and self._mesh_patches:
+                self._highlight_mesh_patch(None)
             try:
                 self._plotter.enable_mesh_picking(
                     callback=self._on_mesh_picked,
@@ -803,7 +958,6 @@ class ViewerWidget(QWidget):
             self._pick_check.setChecked(False)
             self._pick_check.blockSignals(False)
             self._measure_points = []
-            self._clear_measure_actors()
             self._disable_picking_safely()
             try:
                 # enable_surface_point_picking uses a vtkCellPicker, so the
@@ -819,15 +973,21 @@ class ViewerWidget(QWidget):
                     left_clicking=True,
                     picker="cell",
                 )
+                self._plotter.setCursor(Qt.CrossCursor)
             except Exception as exc:
                 logger.warning("enable_surface_point_picking failed: %s", exc)
                 self._measure_check.blockSignals(True)
                 self._measure_check.setChecked(False)
                 self._measure_check.blockSignals(False)
+                return
+            self.measure_hint.emit(
+                "Click two points on the model to measure; Clear removes all."
+            )
         else:
             self._measure_points = []
-            self._clear_measure_actors()
             self._disable_picking_safely()
+            if self._plotter is not None:
+                self._plotter.unsetCursor()
 
     def _marker_radius(self) -> float:
         """A point-marker radius scaled to the current scene size."""
@@ -848,31 +1008,52 @@ class ViewerWidget(QWidget):
             return
         radius = self._marker_radius()
         self._measure_points.append(pt)
-        sphere = self._plotter.add_mesh(
+        marker = self._plotter.add_mesh(
             pv.Sphere(radius=radius, center=pt),
             color="red", pickable=False,
             name=f"_measure_point_{len(self._measure_actors)}",
         )
-        self._measure_actors.append(sphere)
-        self._plotter.render()
+        self._measure_actors.append(marker)
         if len(self._measure_points) >= 2:
             p1, p2 = self._measure_points[-2], self._measure_points[-1]
             dist = float(np.linalg.norm(p2 - p1))
+            self._measure_index += 1
+            label = f"D{self._measure_index}"
             line = self._plotter.add_lines(
                 np.array([p1, p2]), color="yellow", width=3,
             )
             self._measure_actors.append(line)
-            label = self._plotter.add_text(
-                f"{dist:.4f} m",
-                position="upper_right",
-                font_size=14,
-                color="yellow",
-                name=f"_measure_label_{len(self._measure_actors)}",
-            )
-            self._measure_actors.append(label)
+            # Anchor the tag just off the midpoint, staggered by measurement
+            # index, so successive labels never sit on the line or each other.
+            try:
+                b = self._plotter.bounds
+                diag = (
+                    (b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2
+                ) ** 0.5
+            except Exception:
+                diag = 1.0
+            offset = np.array([
+                0.0, 0.0, diag * (0.03 + 0.02 * ((self._measure_index - 1) % 5)),
+            ])
+            try:
+                tag = self._plotter.add_point_labels(
+                    [(p1 + p2) / 2.0 + offset],
+                    [f"{label}: {_format_distance(dist)}"],
+                    font_size=11,
+                    text_color="yellow",
+                    always_visible=True,
+                    name=f"_measure_label_{self._measure_index}",
+                )
+                self._measure_actors.append(tag)
+            except Exception as exc:
+                logger.debug("add_point_labels failed: %s", exc)
+            self._measurements.append((label, dist))
+            self._update_measure_summary()
             self._plotter.render()
-            self.distance_measured.emit(f"Distance: {dist:.4f} m")
+            self.distance_measured.emit(f"{label}: {dist:.4f} m")
             self._measure_points = []
+        else:
+            self._plotter.render()
 
     def _clear_measure_actors(self):
         if self._plotter:
@@ -882,6 +1063,116 @@ class ViewerWidget(QWidget):
                 except Exception:
                     pass
         self._measure_actors = []
+
+    def _clear_measurements(self):
+        """Clear every measurement: markers, tags and the summary overlay."""
+        self._measure_points = []
+        self._clear_measure_actors()
+        self._measurements = []
+        self._measure_index = 0
+        self._update_measure_summary()
+        if self._plotter is not None:
+            self._plotter.render()
+
+    def _update_measure_summary(self):
+        if not self._measurements:
+            self._measure_summary.setVisible(False)
+            self._measure_clear_btn.setEnabled(False)
+            return
+        self._measure_summary.setText(
+            "\n".join(
+                f"{label}: {_format_distance(value)}"
+                for label, value in self._measurements
+            )
+        )
+        self._measure_summary.setVisible(True)
+        self._measure_clear_btn.setEnabled(True)
+        self._position_measure_summary()
+
+    def _position_measure_summary(self):
+        if not self._measurements or self._plotter is None:
+            return
+        self._measure_summary.adjustSize()
+        g = self._plotter.geometry()
+        x = g.x() + g.width() - self._measure_summary.width() - 12
+        y = g.y() + 12
+        self._measure_summary.move(max(0, x), max(0, y))
+        self._measure_summary.raise_()
+
+    # ------------------------------------------------------------------
+    # Patch list panel (BaramMesh-style): name / faces / auto type.
+    # Row <-> 3D highlight stay in sync through highlight_patch() and
+    # face_picked; neither path resets the camera.
+    # ------------------------------------------------------------------
+    def _populate_patch_panel(self, entries: list[tuple[str, int, str]]):
+        self._patch_table.blockSignals(True)
+        self._patch_table.setRowCount(0)
+        self._patch_names = []
+        for name, n_faces, ptype in entries:
+            row = self._patch_table.rowCount()
+            self._patch_table.insertRow(row)
+            self._patch_table.setItem(row, 0, QTableWidgetItem(name))
+            faces_item = QTableWidgetItem(f"{int(n_faces):,}")
+            faces_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._patch_table.setItem(row, 1, faces_item)
+            self._patch_table.setItem(row, 2, QTableWidgetItem(ptype))
+            self._patch_names.append(name)
+        self._patch_table.blockSignals(False)
+        self._patch_panel.setVisible(bool(entries))
+
+    def _clear_patch_panel(self):
+        self._patch_table.blockSignals(True)
+        self._patch_table.setRowCount(0)
+        self._patch_table.blockSignals(False)
+        self._patch_names = []
+        self._patch_panel.setVisible(False)
+
+    def _select_patch_row(self, patch_name: str):
+        """Select the row for *patch_name* without re-triggering highlight."""
+        if patch_name not in self._patch_names:
+            return
+        row = self._patch_names.index(patch_name)
+        if row == self._patch_table.currentRow():
+            return
+        self._patch_table.blockSignals(True)
+        self._patch_table.setCurrentCell(row, 0)
+        self._patch_table.blockSignals(False)
+
+    def _on_patch_row_selected(self):
+        row = self._patch_table.currentRow()
+        if 0 <= row < len(self._patch_names):
+            self.highlight_patch(self._patch_names[row])
+
+    def _reload_patch_panel_async(self):
+        """Load the case boundary patches (background) and fill the panel."""
+        case_dir = self._mesh_case_dir
+        if not case_dir:
+            self._clear_patch_panel()
+            return
+
+        def work(worker):
+            return read_openfoam_mesh_patches(case_dir), _patch_type_map(Path(case_dir))
+
+        def on_done(_name, payload):
+            patches, types = payload
+            if not patches:
+                self._mesh_patches = {}
+                self._clear_patch_panel()
+                return
+            self._mesh_patches = dict(patches)
+            self._populate_patch_panel([
+                (name, int(pd.n_cells), detect_patch_type(name, types.get(name, "")))
+                for name, pd in patches.items()
+            ])
+
+        def on_failed(_name, msg):
+            logger.debug("Patch panel load failed: %s", msg)
+
+        self._vtk_tasks.submit(
+            "patch_panel", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
 
     def start_refinement_pick(self):
         """Enter refinement-pick mode: click a point on the mesh to set
@@ -898,7 +1189,7 @@ class ViewerWidget(QWidget):
         self._measure_check.blockSignals(True)
         self._measure_check.setChecked(False)
         self._measure_check.blockSignals(False)
-        self._clear_measure_actors()
+        self._measure_points = []
         self._disable_picking_safely()
         try:
             self._plotter.enable_surface_point_picking(
@@ -969,9 +1260,14 @@ class ViewerWidget(QWidget):
         name = self._pvdata_to_name.get(addr)
         if name is not None:
             logger.info("Picked patch '%s'", name)
+            self._select_patch_row(name)
             self.face_picked.emit(name)
         else:
             logger.debug("Picked actor addr=%s not in mapping", addr)
+
+    def is_showing_cad(self) -> bool:
+        """True while the CAD surface is the displayed geometry."""
+        return bool(getattr(self, "_showing_cad", True))
 
     def _current_mode(self) -> str:
         idx = self._view_selector.currentIndex()
@@ -1456,6 +1752,7 @@ class ViewerWidget(QWidget):
                     )
                 self._plotter.view_isometric()
                 self._plotter.render()
+                self._reload_patch_panel_async()
             except Exception as exc:
                 logger.error("Plotter display failed (internal VTU): %s", exc)
                 self._show_mesh_too_large(f"Errore display: {exc}")
@@ -1494,6 +1791,12 @@ class ViewerWidget(QWidget):
                 "Loaded %d mesh patches (%d total faces) for %s",
                 len(patches), total_faces, case_dir,
             )
+            self._mesh_patches = dict(patches)
+            types = _patch_type_map(Path(case_dir))
+            self._populate_patch_panel([
+                (name, int(pd.n_cells), detect_patch_type(name, types.get(name, "")))
+                for name, pd in patches.items()
+            ])
             threshold, target = self._decimation_settings()
             show_decimated = total_faces > threshold
             repr_mode = getattr(self, "_pending_vtu_mode", "surface_edges")
@@ -1527,7 +1830,8 @@ class ViewerWidget(QWidget):
                         )
                     else:
                         kwargs.update(style="surface")
-                    self._plotter.add_mesh(pd, **kwargs)
+                    actor = self._plotter.add_mesh(pd, **kwargs)
+                    self._pvdata_to_name[actor.GetAddressAsString("")] = name
                 if show_decimated:
                     self._plotter.add_text(
                         f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
@@ -1649,6 +1953,12 @@ class ViewerWidget(QWidget):
     def show_cad(self, meshes: list[trimesh.Trimesh]):
         self._cad_meshes = list(meshes)
         self._showing_cad = True
+        self._mesh_patches = {}
+        entries = []
+        for i, mesh in enumerate(self._cad_meshes):
+            name = mesh.metadata.get("name", f"patch_{i}")
+            entries.append((name, len(mesh.faces), detect_patch_type(name)))
+        self._populate_patch_panel(entries)
         if not self._plotter_ready:
             return
         self._view_selector.setEnabled(True)
@@ -1738,6 +2048,8 @@ class ViewerWidget(QWidget):
         try:
             self._mesh_case_dir = str(case_dir)
             self._showing_cad = False
+            self._mesh_patches = {}
+            self._clear_patch_panel()
             self._cancel_display_timeout()
             self._mesh_display_in_progress = False
             self._mesh_retry_count = 0
@@ -1795,6 +2107,7 @@ class ViewerWidget(QWidget):
     def clear(self):
         self._cad_meshes = []
         self._mesh_case_dir = ""
+        self._mesh_patches = {}
         self._showing_cad = True
         self._pending_vtu_mode = "surface_edges"
         self._pvdata_to_name.clear()
@@ -1810,8 +2123,8 @@ class ViewerWidget(QWidget):
         self._measure_check.blockSignals(True)
         self._measure_check.setChecked(False)
         self._measure_check.blockSignals(False)
-        self._measure_points = []
-        self._clear_measure_actors()
+        self._clear_measurements()
+        self._clear_patch_panel()
         if not self._plotter_ready:
             return
         self._disable_picking_safely()
