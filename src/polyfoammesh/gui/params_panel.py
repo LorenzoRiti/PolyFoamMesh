@@ -10,12 +10,9 @@ import trimesh  # ✅ F-017
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (
-    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -31,8 +28,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -318,45 +313,13 @@ class ParamsPanel(QWidget):
         self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
         detail_layout.addWidget(self._adaptive_sizing_check)
 
-        # Surface resolution: how tightly the mesh follows CAD curvature,
-        # independent of the cell budget. Default Medium == the historical
-        # curvature angular error, so leaving it alone changes nothing. Only
-        # meaningful while automatic refinement is on (the field it scales is
-        # only built in that path).
-        surf_row = QHBoxLayout()
-        surf_row.addWidget(QLabel("Surface resolution:"))
-        self._surface_resolution = QComboBox()
-        self._surface_resolution.addItems(["Coarse", "Medium", "Fine", "Very fine"])
-        self._surface_resolution.setCurrentText("Medium")
-        self._surface_resolution.setToolTip(
-            "How tightly the mesh follows CAD curvature: finer = smaller cells "
-            "on curved surfaces (independent of the cell budget)."
-        )
-        self._surface_resolution.setEnabled(self._adaptive_sizing_check.isChecked())
-        self._surface_resolution.currentTextChanged.connect(
-            lambda _t: self._refresh_bl_hint()
-        )
-        self._adaptive_sizing_check.toggled.connect(
-            self._surface_resolution.setEnabled
-        )
-        surf_row.addWidget(self._surface_resolution)
-        surf_row.addStretch()
-        detail_layout.addLayout(surf_row)
-
-        # Performance: reuse a previously meshed tet mesh when the sizing
-        # inputs are unchanged, skipping the whole (minutes-long) GMSH stage.
-        # Only the boundary layer / solver setup is re-applied downstream.
-        # Default ON; a cache miss / corrupt entry falls back to a full run.
-        self._reuse_cache_check = QCheckBox(
-            "Reuse cached mesh when inputs are unchanged (skip GMSH)"
-        )
-        self._reuse_cache_check.setChecked(True)
-        self._reuse_cache_check.setToolTip(
-            "Reuses the tet mesh from a previous run with identical sizing; "
-            "only the boundary layer / solver setup is re-applied. Saves the "
-            "whole GMSH stage."
-        )
-        detail_layout.addWidget(self._reuse_cache_check)
+        # Surface resolution and mesh-cache reuse are AUTOMATIC now (user
+        # request: no knobs for things the app should just do): the mesher
+        # always uses the historical "Medium" curvature resolution and
+        # always reuses a cached tet mesh when the sizing inputs are
+        # unchanged. The engine parameters still exist
+        # (gmsh_wrapper surface_resolution / mesh_cache), the UI does not
+        # expose them. See get_surface_resolution / get_reuse_cached_mesh.
         mesh_layout.addWidget(detail_group)
 
         self._bbox_dim = 1.0
@@ -472,16 +435,6 @@ class ParamsPanel(QWidget):
         self._btn_bl_auto.clicked.connect(self._on_bl_auto_compute)
         bl_form.addRow(self._btn_bl_auto)
 
-        self._btn_bl_calibrate = QPushButton("Calibrate from simulation...")
-        self._btn_bl_calibrate.setToolTip(
-            "Read the REAL wall y+ from a solved case (yPlus, or wallShearStress "
-            "as fallback) and propose the exact first layer for the target y+. "
-            "Works on any geometry: it uses the measured, area-weighted wall data "
-            "instead of the flat-plate correlation."
-        )
-        self._btn_bl_calibrate.clicked.connect(self._on_bl_calibrate)
-        bl_form.addRow(self._btn_bl_calibrate)
-
         # The physics-derived first layer is stored in METRES, not only as a
         # fraction of max cell: max cell changes with the detail slider and
         # the adaptive sizing, and a stored fraction silently rescaled the
@@ -489,6 +442,9 @@ class ParamsPanel(QWidget):
         # -> 6.1 um, y+ target 30 -> ~0.2 achieved).
         self._bl_first_layer_abs: float | None = None
         self._bl_thick_updating = False
+        # True once the user edits the BL values by hand: suppresses the
+        # automatic y+ recompute so manual values are never overwritten.
+        self._bl_user_manual = False
         self._bl_thick.valueChanged.connect(self._on_bl_thick_edited)
         # Physics inputs: recompute silently after a compute so the derived
         # parameters never go stale (velocity 10 -> 1 m/s used to keep the
@@ -509,20 +465,10 @@ class ParamsPanel(QWidget):
         # when the stack exceeds the ~0.34 * wall-cell inversion budget (beyond
         # that the first layer gets compressed). Live: refreshes on any BL
         # parameter or cell-size change.
-        self._bl_fit_note = ""
         self._bl_stack_hint = QLabel("")
         self._bl_stack_hint.setWordWrap(True)
         self._bl_stack_hint.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         bl_form.addRow(self._bl_stack_hint)
-
-        self._btn_bl_fit = QPushButton("Fit BL to mesh")
-        self._btn_bl_fit.setToolTip(
-            "Adjusts the first-layer thickness (keeping the expansion ratio) so "
-            "the BL stack fits within the estimated wall cell size, avoiding a "
-            "compressed first layer."
-        )
-        self._btn_bl_fit.clicked.connect(self._on_fit_bl_clicked)
-        bl_form.addRow(self._btn_bl_fit)
 
         self._bl_form_widget = QWidget()
         self._bl_form_widget.setLayout(bl_form)
@@ -949,6 +895,15 @@ class ParamsPanel(QWidget):
 
     def _on_bl_toggled(self, checked: bool):
         self._bl_form_widget.setVisible(checked)
+        # AUTOMATIC y+ calculation: enabling the boundary layer derives the
+        # layers from the flow conditions on the spot - no button press.  A
+        # user who edited the values by hand keeps them (_bl_user_manual).
+        if (
+            checked
+            and not getattr(self, "_bl_user_manual", False)
+            and self._suggest_meshes
+        ):
+            self._on_bl_auto_compute()
 
     def _estimated_wall_cell_size(self) -> float:
         """Best available proxy for the automatic mesh's wall cell size.
@@ -980,7 +935,7 @@ class ParamsPanel(QWidget):
         if getattr(self, "_bl_thick_updating", False):
             return
         self._bl_first_layer_abs = None
-        self._bl_fit_note = ""
+        self._bl_user_manual = True
         self._refresh_bl_hint()
 
     def _on_bl_physics_inputs_changed(self, *_args) -> None:
@@ -1019,59 +974,9 @@ class ParamsPanel(QWidget):
             compressed = max_stack / stack * 100.0
             self._bl_stack_hint.setText(
                 f"BL stack {stack_mm:.4g} mm; mesh wall cells ~{y_mm:.4g} mm "
-                f"-> compressed to ~{compressed:.0f}% of the requested stack "
-                f"(inversion budget ~{budget_mm:.4g} mm). Use 'Fit BL to mesh'."
+                f"-> the engine compresses the stack to ~{compressed:.0f}% "
+                f"(inversion budget ~{budget_mm:.4g} mm)."
             )
-        if self._bl_fit_note:
-            self._bl_stack_hint.setText(
-                self._bl_stack_hint.text() + "\n" + self._bl_fit_note
-            )
-
-    def _on_fit_bl_clicked(self) -> None:
-        """Resize the stack to ~0.3x the estimated wall cell size, keeping ratio.
-
-        Solves ``target = h1 * (r^n - 1)/(r - 1)`` for h1 with the current
-        expansion ratio, reducing nLayers only if the required first layer
-        would fall below the field's own precision floor.
-        """
-        y = self._estimated_wall_cell_size()
-        target_stack = 0.3 * y
-        r = self._bl_exp.value()
-        max_cell = max(self._max_cell.value(), 1e-12)
-        min_fraction = self._bl_thick.minimum()
-
-        def _h1_for(nn: int) -> float:
-            if nn <= 0:
-                return 0.0
-            geom = nn if abs(r - 1.0) < 1e-9 else (r ** nn - 1.0) / (r - 1.0)
-            return target_stack / geom if geom > 0 else 0.0
-
-        n = self._bl_n_layers.value()
-        while n > 1 and _h1_for(n) / max_cell < min_fraction:
-            n -= 1
-        new_h1 = _h1_for(n)
-        old_h1 = self._bl_first_layer()
-        new_fraction = min(
-            max(new_h1 / max_cell, min_fraction), self._bl_thick.maximum()
-        )
-        self._bl_n_layers.setValue(n)
-        self._bl_thick_updating = True
-        try:
-            self._bl_thick.setValue(new_fraction)
-        finally:
-            self._bl_thick_updating = False
-        # The fitted first layer becomes the authoritative ABSOLUTE value.
-        self._bl_first_layer_abs = new_h1
-
-        # y+ scales (approximately) linearly with the first-layer height, so
-        # report the expected shift rather than claiming a new absolute y+.
-        factor = (new_h1 / old_h1) if old_h1 > 0 else 1.0
-        self._bl_fit_note = (
-            f"Fit applied: first layer {old_h1 * 1000.0:.4g} -> "
-            f"{new_h1 * 1000.0:.4g} mm ({n} layers) — wall y+ scales ~x{factor:.2f}."
-        )
-        self._refresh_bl_hint()
-        self.suggestion_completed.emit(f"[bl] {self._bl_fit_note}")
 
     def _on_adaptive_sizing_toggled(self, checked: bool):
         """Adaptive ON: Max/Min Cell Size are read-only DISPLAY of what the
@@ -1150,6 +1055,7 @@ class ParamsPanel(QWidget):
         # reference, but the run uses the absolute value, so a later change
         # of max cell (detail slider / adaptive sizing) cannot rescale it.
         self._bl_first_layer_abs = params.first_layer_height
+        self._bl_user_manual = False
         self._bl_thick_updating = True
         try:
             self._bl_thick.setValue(clamped)
@@ -1200,128 +1106,6 @@ class ParamsPanel(QWidget):
             self, "Select a solved OpenFOAM case directory", start
         )
         return chosen or ""
-
-    def _on_bl_calibrate(self):
-        """Recover the real first layer from a solved case's wall y+ data."""
-        from polyfoammesh.core.solver_calibration import (
-            calibrate_from_case,
-            proposed_first_layer,
-        )
-
-        case_dir = self._bl_case_dir()
-        if not case_dir:
-            return
-        h1_used = self._bl_first_layer()
-        fluid = self._bl_fluid.currentText()
-        nu = self._FLUID_NU.get(fluid, 1.5e-5)
-        rho = self._FLUID_RHO.get(fluid, 1.2)
-        target = self._bl_target_yplus()
-
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            result = calibrate_from_case(
-                case_dir, h1_used=h1_used, nu=nu, rho=rho, fluid=fluid
-            )
-        finally:
-            QApplication.restoreOverrideCursor()
-
-        if not result.ok:
-            QMessageBox.warning(self, "Calibration failed", result.error)
-            return
-
-        proposed = proposed_first_layer(target, h1_used, result, nu)
-        if proposed is None:
-            QMessageBox.warning(
-                self, "Calibration failed",
-                "Could not compute a proposed first layer from the measured y+.",
-            )
-            return
-
-        self._show_calibration_dialog(result, h1_used, target, nu, proposed)
-
-    def _show_calibration_dialog(
-        self, result, h1_used: float, target: float, nu: float, proposed: float
-    ) -> None:
-        """Per-patch table + proposal, with Apply/Cancel."""
-        from polyfoammesh.core.solver_calibration import proposed_first_layer
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Calibrate first layer from simulation")
-        layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel(
-            f"Case: {result.case_dir}\n"
-            f"Time {result.time_name} · field {result.field} · "
-            f"rho {result.rho:.4g} kg/m³"
-        ))
-
-        table = QTableWidget(len(result.patches), 5)
-        table.setHorizontalHeaderLabels(
-            ["Patch", "Area (m²)", "Mean y+", "p10", "p90"]
-        )
-        for row, stat in enumerate(result.patches):
-            table.setItem(row, 0, QTableWidgetItem(stat.name))
-            table.setItem(row, 1, QTableWidgetItem(f"{stat.area:.6g}"))
-            table.setItem(row, 2, QTableWidgetItem(f"{stat.mean_yplus:.4g}"))
-            table.setItem(row, 3, QTableWidgetItem(f"{stat.p10:.4g}"))
-            table.setItem(row, 4, QTableWidgetItem(f"{stat.p90:.4g}"))
-        table.resizeColumnsToContents()
-        layout.addWidget(table)
-
-        layout.addWidget(QLabel(
-            f"Overall area-weighted mean y+ = {result.mean_yplus:.4g} "
-            f"(p10 {result.p10:.4g} / p90 {result.p90:.4g})"
-        ))
-        if not result.single_h1_reaches_all:
-            warn = QLabel(
-                f"y+ varies x{result.spread_ratio:.1f} across the wall: a single "
-                "first layer cannot hit the target everywhere; the proposal uses "
-                "the area-weighted mean."
-            )
-            warn.setWordWrap(True)
-            warn.setStyleSheet(metric_label(COLOR_DANGER, FS_METRIC))
-            layout.addWidget(warn)
-        for note in getattr(result, "notes", []) or []:
-            note_label = QLabel(note)
-            note_label.setWordWrap(True)
-            note_label.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
-            layout.addWidget(note_label)
-
-        form = QFormLayout()
-        current = QDoubleSpinBox()
-        current.setRange(1e-9, 10.0)
-        current.setDecimals(9)
-        current.setSingleStep(1e-6)
-        current.setSuffix(" m")
-        current.setValue(h1_used)
-        form.addRow("Current first layer:", current)
-        proposed_label = QLabel(f"{proposed:.6g} m")
-        form.addRow(f"Proposed first layer (y+ {target:g}):", proposed_label)
-        layout.addLayout(form)
-
-        def _recompute(*_args) -> None:
-            p = proposed_first_layer(target, current.value(), result, nu)
-            proposed_label.setText("n/a" if p is None else f"{p:.6g} m")
-
-        current.valueChanged.connect(_recompute)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Apply | QDialogButtonBox.Cancel
-        )
-        buttons.button(QDialogButtonBox.Apply).setText("Apply")
-        applied: dict[str, float | None] = {"h1": None}
-
-        def _apply() -> None:
-            p = proposed_first_layer(target, current.value(), result, nu)
-            if p is not None:
-                applied["h1"] = p
-                dlg.accept()
-
-        buttons.button(QDialogButtonBox.Apply).clicked.connect(_apply)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-
-        if dlg.exec() == QDialog.Accepted and applied["h1"]:
-            self._apply_bl_calibration(applied["h1"], result)
 
     def _apply_bl_calibration(self, proposed_h1: float, result=None) -> None:
         """Make the proposed first layer the authoritative ABSOLUTE value.
@@ -1501,22 +1285,36 @@ class ParamsPanel(QWidget):
     def get_bl_apply_all(self) -> bool:
         return self._bl_apply_all.isChecked()
 
-    def get_surface_resolution(self) -> str:
-        """Selected curvature-following preset ("Coarse".."Very fine").
+    #: Curvature resolution derived from the Detail slider (AUTOMATIC): the
+    #: single user control drives both the cell budget and how tightly the
+    #: mesh follows curvature - no second knob.
+    _DETAIL_SURFACE_RESOLUTION = {
+        "very_coarse": "Coarse",
+        "coarse": "Coarse",
+        "medium": "Medium",
+        "fine": "Fine",
+        "very_fine": "Very fine",
+    }
 
-        Only meaningful when automatic refinement is on; callers pass it to
-        gmsh_wrapper and it defaults to the historical "Medium" when absent.
+    def get_surface_resolution(self) -> str:
+        """Curvature-following preset derived from the Detail slider.
+
+        The slider already tells the app how fine the user wants the mesh;
+        the curvature resolution follows it automatically (very coarse /
+        coarse -> Coarse, medium -> Medium, fine / very fine -> Fine / Very
+        fine).  Callers pass it to gmsh_wrapper, which scales the curvature
+        angular error accordingly.
         """
-        if not hasattr(self, "_surface_resolution"):
-            return "medium"
-        return self._surface_resolution.currentText()
+        try:
+            key = str(self.get_detail_level()).lower().replace(" ", "_")
+        except Exception:
+            key = "medium"
+        return self._DETAIL_SURFACE_RESOLUTION.get(key, "Medium")
 
     def get_reuse_cached_mesh(self) -> bool:
-        """Whether a cached tet mesh may be reused when sizing is unchanged."""
-        return (
-            getattr(self, "_reuse_cache_check", None) is not None
-            and self._reuse_cache_check.isChecked()
-        )
+        """Mesh-cache reuse is AUTOMATIC (no user knob): a cached tet mesh
+        is reused whenever the sizing inputs are unchanged."""
+        return True
 
     def get_bl_wall_size_floor(self) -> float:
         """Wall cell-size floor (metres) coupling the BL stack to the mesh.
@@ -2093,8 +1891,8 @@ class ParamsPanel(QWidget):
         s.setValue("params/detail_slider", self._detail_slider.value())
         s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
         s.setValue("params/unit", self._unit_selector.currentText())
-        s.setValue("params/surface_resolution", self._surface_resolution.currentText())
-        s.setValue("params/reuse_cached_mesh", self._reuse_cache_check.isChecked())
+        # surface_resolution / reuse_cached_mesh are AUTOMATIC now (derived
+        # from the slider / always on): nothing to persist.
         s.setValue("ui/expert_mode", self._expert_mode)
 
     def restore_params(self, s):
@@ -2108,12 +1906,6 @@ class ParamsPanel(QWidget):
         unit = s.value("params/unit", None)
         if unit is not None:
             self._unit_selector.setCurrentText(unit)
-        surf = s.value("params/surface_resolution", None)
-        if surf is not None and str(surf) in ("Coarse", "Medium", "Fine", "Very fine"):
-            self._surface_resolution.setCurrentText(str(surf))
-        reuse = s.value("params/reuse_cached_mesh", None, type=bool)
-        if reuse is not None:
-            self._reuse_cache_check.setChecked(bool(reuse))
         expert = s.value("ui/expert_mode", None, type=bool)
         if expert is not None:
             self.set_expert_mode(bool(expert))

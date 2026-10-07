@@ -38,11 +38,11 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   "Linux (from source)" in INSTALL.md/.it.md. Comportamento Windows
   verificato **byte-identico** (18/18 controlli su comandi e script
   generati).
-- **Cache della mesh tet (salta GMSH)**: quando gli input che determinano
-  la mesh non cambiano, il `.msh` di un run precedente viene riusato
-  (fingerprint SHA256, copia nella nuova case dir, stessa continuazione
-  della pipeline) saltando l'intero stadio GMSH — il più lento. Checkbox
-  nel tab Mesh (ON di default, persistita), "Clear mesh cache" nel menu
+- **Cache della mesh tet (salta GMSH) — AUTOMATICA**: quando gli input
+  che determinano la mesh non cambiano, il `.msh` di un run precedente
+  viene riusato (fingerprint SHA256, copia nella nuova case dir, stessa
+  continuazione della pipeline) saltando l'intero stadio GMSH — il più
+  lento. Nessuna checkbox: è sempre attiva. "Clear mesh cache" nel menu
   Tools, prune automatico (5 voci / 2 GB), tutto fail-soft. **Nota di
   correttezza**: lo stadio GMSH "cuoce" il layout degli strati vicino
   alla parete nel `.msh` (campo BoundaryLayer da nLayers/spessore/
@@ -50,17 +50,6 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   input fanno parte del fingerprint, quindi cambiare i parametri BL
   invalida la cache (giusto); le altre impostazioni BL (apply-to-all,
   filtri, budget) restano escluse.
-- **Calibrazione y+ dalla simulazione**: nuovo bottone nel pannello BL
-  ("Calibrate from simulation"): legge `yPlus` (o `wallShearStress`) dal
-  caso risolto con parsing diretto (senza WSL/foamToVTK), calcola le
-  statistiche **pesate per area** sulle patch wall (ruoli inferiti
-  geometricamente: funziona anche con nomi `surface_N`, e con geometrie
-  chiuse/esterne via fallback per tipo/nome), mostra tabella per-patch
-  (media/p10/p90), avvisa quando un singolo primo strato non può centrare
-  il target ovunque (spread > 3x) e propone il nuovo primo strato
-  `h1_usato × y+target / y+medio`, applicabile con un click. Verificato
-  sul caso reale BaramFlow: y+ medio 0.0955 = identico al log del solver,
-  proposta 1.92 mm per y+ 30.
 - **Visibilità del boundary layer nel viewer**: checkbox "Show BL" che
   classifica le celle prisma (seed dalle facce wall + test di forma +
   flood multi-strato) e colora i BL in arancione sul core grigio.
@@ -209,6 +198,16 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Modificato
 
+- **Niente più pulsanti per cose che l'app deve fare da sola** (richiesta
+  utente): rimossi "Calibrate from simulation" (il modulo di calibrazione
+  resta interno), "Fit BL to mesh" (la compressione dello stack la
+  gestisce il motore e il log la dichiara), il combo "Surface resolution"
+  (ora **derivato automaticamente dallo slider Detail**: very
+  coarse/coarse → Coarse, medium → Medium, fine/very fine → Fine/Very
+  fine) e la checkbox della cache mesh (sempre attiva). Il calcolo y+ è
+  **automatico**: parte all'attivazione del BL e si aggiorna quando
+  cambiano Velocity/Fluido/Wall treatment; un edit manuale dei valori
+  viene rispettato (nessuna sovrascrittura).
 - **Lista mesher**: **Polymesh è il percorso di default** (prima
   Cartesian cfMesh, che resta come alternativa); il pulsante
   "FEM Tetra (GMSH)" è stato **rimosso** (nicchia che duplicava lo stadio

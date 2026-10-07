@@ -70,24 +70,20 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   cap.
 - **Automatic refinement (curvature, edges, narrow gaps)**: when on, the
   mesh follows the CAD geometry (exact curvature, sharp edges, narrow
-  passages) within the cell budget.
-  - **Surface resolution** (Coarse / Medium / Fine / Very fine): how
-    tightly the mesh follows curved surfaces, independent of the budget.
-    Medium is the historical default.
+  passages) within the cell budget. How tightly it follows curvature is
+  derived automatically from the Detail slider - there is no second knob.
 - **Mesher choice**:
+  - **Polymesh (poly)**: the default path - GMSH tetrahedra -> polyhedral
+    dual (STAR-CCM+ style topology) with boundary layers. No WSL needed.
   - **Quick Mesh** (`Ctrl+M`): one click, parameters auto-suggested.
-  - **CFD Poly (GMSH, no WSL)**: GMSH tetrahedra -> polyhedral dual
-    (STAR-CCM+ style topology) with optional boundary layers. No WSL needed.
-  - **FEM Tetra (GMSH, no WSL)**: pure tetrahedral mesh for FEM solvers.
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)).
-- **Reuse cached mesh when inputs are unchanged (skip GMSH)**: reuses the
-  tet mesh from a previous run with identical sizing (a SHA256 fingerprint
-  of the geometry and sizing inputs; BL settings that shape the mesh are
-  part of it), skipping the whole GMSH stage - the slowest one. Manage the
-  cache with `Tools > Clear mesh cache`. A cache hit is logged as
-  `[cache] reusing cached tet mesh (...)`.
+- **Mesh cache (automatic)**: a tet mesh from a previous run with
+  identical sizing is reused, skipping the whole GMSH stage - the slowest
+  one. No setting to manage; a hit is logged as
+  `[cache] reusing cached tet mesh (...)`. Clear it from
+  `Tools > Clear mesh cache` if needed.
 - **Generate Mesh** (`Ctrl+R`): starts the run. While running, the
   dedicated red **Cancel** (under "Reset All") stops it.
 - Every run logs one `[poly] stage times: dual ... | BL precompute ... |
@@ -109,9 +105,9 @@ Manual control for when Quick Mesh is not enough:
   - `-` removes the selected zone.
   - The **level** spin box (1-6) applies to the selected zone; the list shows
     each zone as `Box 1 - level 2 - 12.0 mm`.
-- **Boundary Layer** (see the dedicated section below): enable, patches,
-  layers, growth, y+ calculator, robust mode, and the mesh/BL consistency
-  hint with the **Fit BL to mesh** button.
+- **Boundary Layer** (see the dedicated section below): enable it and the
+  layers are derived from the flow conditions automatically; patches,
+  growth, robust mode and the mesh/BL consistency hint stay available.
 - **Per-face sizing** and **multi-region** options for CHT/FSI cases.
 
 ## Patches
@@ -199,21 +195,16 @@ Boundary layers are inserted by the poly mesher (CFD Poly path). In the
 - **Robust boundary layer (recommended)**: drops sliver base faces and lets
   the engine cap the stack to what the mesh can actually hold. Use it for
   real parts.
-- **Calibrate from simulation**: after a solve, point this at the case
-  directory: the app reads the real `yPlus` (or `wallShearStress`) field
-  directly (no WSL needed), computes area-weighted statistics over the
-  wall patches (inferred geometrically, so it works with `surface_N` and
-  closed/external geometries), warns when a single first layer cannot hit
-  the target everywhere (y+ spread > 3x) and proposes the first layer for
-  your target y+ - one click to apply. This removes the flat-plate
-  correlation error on real flows.
+- **Everything is automatic**: enabling the boundary layer computes the
+  layers from the flow conditions on the spot, and the values update
+  themselves when you change Velocity / Fluid / Wall treatment. Edit the
+  numbers by hand if you want to - the app then leaves them alone.
 - **Mesh/BL consistency hint**: the panel compares the requested stack
   with the wall cell size the current mesh will produce and tells you if
-  it fits or gets compressed. **Fit BL to mesh** adapts the first layer
-  (and layer count) to the mesh so the stack is hosted without heavy
-  compression - it reports the resulting y+ shift. When boundary layers
-  are enabled, the mesher also enforces a minimum wall cell size (the
-  stack divided by 3, capped at 10% of the model size), logged as
+  it fits or gets compressed; the engine compresses the stack by itself
+  when needed and the log states it. When boundary layers are enabled,
+  the mesher also enforces a minimum wall cell size (the stack divided
+  by 3, capped at 10% of the model size), logged as
   `[gmsh] BL wall size floor: ...`.
 
 What the log tells you after a run (always read these lines):
