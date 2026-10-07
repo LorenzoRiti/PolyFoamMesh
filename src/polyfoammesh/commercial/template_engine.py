@@ -116,12 +116,12 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="Internal Flow",
-            description="Flusso interno in condotti, pipe, valvole — simpleFoam, kOmegaSST",
+            description="Internal flow in ducts, pipes and valves — simpleFoam, kOmegaSST",
             category="internal_flow",
             icon="pipe",
             solver="simpleFoam",
             turbulence="kOmegaSST",
-            tags=["interno", "tubo", "condotto", "RANS"],
+            tags=["internal", "pipe", "duct", "RANS"],
         ),
         max_cell_ratio=0.04,
         min_cell_ratio=0.004,
@@ -131,12 +131,12 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="External Aerodynamics",
-            description="Aerodinamica esterna: ala, fusoliera, veicolo — simpleFoam, kOmegaSST",
+            description="External aerodynamics: wing, fuselage, vehicle — simpleFoam, kOmegaSST",
             category="external_aero",
             icon="airfoil",
             solver="simpleFoam",
             turbulence="kOmegaSST",
-            tags=["esterno", "aero", "ala", "veicolo", "RANS"],
+            tags=["external", "aero", "wing", "vehicle", "RANS"],
         ),
         max_cell_ratio=0.06,
         min_cell_ratio=0.003,
@@ -147,12 +147,12 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="Conjugate Heat Transfer",
-            description="Scambio termico fluido-solido — chtMultiRegionFoam, kOmegaSST",
+            description="Fluid-solid heat transfer — chtMultiRegionFoam, kOmegaSST",
             category="cht",
             icon="thermal",
             solver="chtMultiRegionFoam",
             turbulence="kOmegaSST",
-            tags=["CHT", "termico", "fluido-solido", "accoppiato"],
+            tags=["CHT", "thermal", "fluid-solid", "coupled"],
         ),
         max_cell_ratio=0.04,
         min_cell_ratio=0.005,
@@ -163,12 +163,12 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="Multi-Phase (VOF)",
-            description="Flusso bifase con interfaccia libera: onda, dam break — interFoam",
+            description="Two-phase flow with free surface: wave, dam break — interFoam",
             category="multiphase",
             icon="waves",
             solver="interFoam",
             turbulence="kEpsilon",
-            tags=["multifase", "VOF", "interfaccia", "libero"],
+            tags=["multiphase", "VOF", "interface", "free-surface"],
         ),
         max_cell_ratio=0.03,
         min_cell_ratio=0.002,
@@ -180,12 +180,12 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="Moving Body (Overset)",
-            description="Corpo in movimento: pistone, profilo oscillante — overPimpleDyMFoam",
+            description="Moving body: piston, oscillating airfoil — overPimpleDyMFoam",
             category="moving_body",
             icon="move",
             solver="overPimpleDyMFoam",
             turbulence="kOmegaSST",
-            tags=["overset", "moving", "6DOF", "oscillante"],
+            tags=["overset", "moving", "6DOF", "oscillating"],
         ),
         max_cell_ratio=0.04,
         min_cell_ratio=0.004,
@@ -197,12 +197,12 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="Combustion",
-            description="Combustione in camera: reactingFoam, EDC — reactingFoam",
+            description="In-chamber combustion — reactingFoam, EDC",
             category="combustion",
             icon="flame",
             solver="reactingFoam",
             turbulence="kEpsilon",
-            tags=["combustione", "reagente", "fiamma", "EDC"],
+            tags=["combustion", "reacting", "flame", "EDC"],
         ),
         max_cell_ratio=0.03,
         min_cell_ratio=0.002,
@@ -214,7 +214,7 @@ _BUILTIN_PRESETS: list[TemplatePreset] = [
     TemplatePreset(
         metadata=TemplateMetadata(
             name="Heat Transfer (Solid)",
-            description="Conduzione termica in solido: laplacianFoam",
+            description="Thermal conduction in solids: laplacianFoam",
             category="conjugate_ht",
             icon="thermometer",
             solver="laplacianFoam",

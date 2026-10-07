@@ -96,7 +96,10 @@ def test_parallel_fallback_emits_substitution_notice(qapp, monkeypatch):
 
     text = stub._log.toPlainText()
     assert "[SUBSTITUTED]" in text
-    assert "Passato a mesh seriale (single-core): risorse insufficienti per MPI." in text
+    assert (
+        "Switched to serial meshing (single-core): insufficient resources "
+        "for MPI."
+    ) in text
     # The original WARN is kept alongside the substitution notice.
     assert "Parallel meshing failed (timeout)" in text
     assert stub._runner.run.called

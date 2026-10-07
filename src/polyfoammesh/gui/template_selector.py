@@ -16,7 +16,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
-from polyfoammesh.gui.style import COLOR_ACCENT, COLOR_PASS, COLOR_TEXT_DIM
+from polyfoammesh.gui.style import (
+    COLOR_ACCENT,
+    muted_text_color,
+    success_text_color,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,7 @@ class TemplateCard(QFrame):
             "TemplateCard { background: palette(base); "
             "border:1px solid palette(mid); border-radius:8px; padding:12px; }"
             "TemplateCard:hover { border:2px solid " + COLOR_ACCENT + "; }"
+            "TemplateCard QLabel { background: transparent; }"
         )
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
@@ -66,20 +71,22 @@ class TemplateCard(QFrame):
         layout.addWidget(self._icon_label)
         self._name_label = QLabel(preset.metadata.name)
         self._name_label.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
-        # The card background is NEUTRAL_50 (near-white) regardless of the
-        # app theme, so the text MUST be forced dark: without this the
-        # inherited (dark-theme) text colour is white -> white-on-white,
-        # unreadable cards (user-reported with a screenshot, 2026-10-06).
-        self._name_label.setStyleSheet("color: palette(text);")
+        # Text uses palette roles so the card stays readable in both themes
+        # (the card background follows palette(base) — light or dark).
+        self._name_label.setStyleSheet("color: palette(window-text);")
         layout.addWidget(self._name_label)
         self._desc_label = QLabel(preset.metadata.description)
         self._desc_label.setWordWrap(True)
-        self._desc_label.setStyleSheet("color: palette(text); font-size:10px;")
+        self._desc_label.setStyleSheet(
+            f"color:{muted_text_color()}; font-size:10px;"
+        )
         layout.addWidget(self._desc_label)
         self._detail_label = QLabel(
             f"{preset.metadata.solver} / {preset.metadata.turbulence}"
         )
-        self._detail_label.setStyleSheet(f"color:{COLOR_PASS}; font-size:9px;")
+        self._detail_label.setStyleSheet(
+            f"color:{success_text_color()}; font-size:9px; font-weight:600;"
+        )
         layout.addWidget(self._detail_label)
         layout.addStretch()
 
@@ -95,6 +102,13 @@ class TemplateSelectorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("New Case from Template")
         self.setMinimumSize(640, 500)
+        # Palette-driven surfaces: the dialog follows palette(window) and
+        # labels are transparent so they never paint the generic widget
+        # background as a mismatched plate over the dialog/cards.
+        self.setStyleSheet(
+            "QDialog { background: palette(window); }"
+            "QLabel { background: transparent; color: palette(window-text); }"
+        )
 
         layout = QVBoxLayout(self)
         header = QLabel("Choose a case template")
@@ -103,13 +117,16 @@ class TemplateSelectorDialog(QDialog):
 
         sub = QLabel("Each template pre-configures geometry, mesh, BC, and solver for a specific case type.")
         sub.setWordWrap(True)
-        sub.setStyleSheet(f"color:{COLOR_TEXT_DIM};")
+        sub.setStyleSheet(f"color:{muted_text_color()};")
         layout.addWidget(sub)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         self._grid = QGridLayout(container)
         self._grid.setSpacing(12)
         scroll.setWidget(container)

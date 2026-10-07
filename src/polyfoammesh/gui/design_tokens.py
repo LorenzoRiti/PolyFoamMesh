@@ -111,6 +111,13 @@ ERROR_LIGHT   = "#ef4444"
 INFO          = "#2563eb"
 INFO_LIGHT    = "#60a5fa"
 
+# Accessible success *foreground* colors on a neutral surface (e.g. white /
+# #262626 card or dialog).  The plain SUCCESS green is a fill color and has
+# poor text contrast on white, so surfaces that render success as text pick
+# the theme-appropriate variant via style.success_text_color().
+SUCCESS_TEXT_LIGHT = "#166534"   # green-800 — AA on white (~6.0:1)
+SUCCESS_TEXT_DARK  = SUCCESS_LIGHT  # #22c55e — AA on #262626 (~5.2:1)
+
 # ---------------------------------------------------------------------------
 # Semantic palette: light mode
 # ---------------------------------------------------------------------------

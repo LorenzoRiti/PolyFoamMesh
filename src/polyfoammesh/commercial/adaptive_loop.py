@@ -2349,7 +2349,7 @@ def export_quality_report_json(
         )
     if eval_.max_non_orthogonality > NON_ORTHO_THRESHOLD:
         recommendations.append(
-            f"Non-ortogonalità elevata ({eval_.max_non_orthogonality:.1f}°): "
+            f"High non-orthogonality ({eval_.max_non_orthogonality:.1f}°): "
             f"ridurre strati BL o applicare CVT smoothing"
         )
     if eval_.n_neg_volume > 0:
@@ -2368,7 +2368,7 @@ def export_quality_report_json(
             f"raffinamento localizzato raccomandato"
         )
     if not recommendations:
-        recommendations.append("Qualità mesh accettabile — nessuna correzione necessaria")
+        recommendations.append("Mesh quality acceptable - no correction needed")
 
     return {
         "success": result.success,
