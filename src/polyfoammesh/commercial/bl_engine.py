@@ -128,19 +128,32 @@ class BLEngine:
 
     def calculate_from_flow(
         self, flow: FlowConditions, growth_rate: float = 1.2,
+        flow_type: str = "flat_plate",
     ) -> BLParameters:
         """Calculate BL parameters from flow conditions and target y+.
 
-        Uses the flat-plate boundary layer correlation:
-            y+ = y * u_tau / nu
-            Cf = 0.027 / Re_x^(1/7)  (turbulent, 1/7th power law)
-            u_tau = U_ref * sqrt(Cf/2)
+        y+ = y * u_tau / nu, u_tau = U_ref * sqrt(Cf/2), with the skin
+        friction correlation chosen by the FLOW TYPE - the same choice the
+        standard online y+ calculators make:
+
+        - ``"flat_plate"`` (external flows): Cf = 0.027 / Re^(1/7)
+          (turbulent flat plate, 1/7th power law).  *flow.reference_length*
+          must be the plate length.
+        - ``"pipe"`` (internal flows): Blasius Cf = 0.079 / Re^0.25 for
+          Re < 1e5, and the 1/5-power pipe law Cf = 0.046 / Re^0.2 above.
+          *flow.reference_length* must be the hydraulic diameter
+          (the inlet's equivalent diameter for a pipe/nozzle).
+
+        Using the pipe correlation with the inlet diameter instead of the
+        flat-plate one with the bounding box is what makes internal-flow
+        cases (tubes, nozzles, valves) land close to the solver's real y+.
 
         Args:
-            flow: free-stream conditions; build it with
+            flow: free-stream/mean conditions; build it with
                 ``FlowConditions.from_velocity`` unless you know Re directly.
             growth_rate: layer-to-layer expansion, clamped to [1.05, 1.5].
                 The layer COUNT is derived from it and the 99% BL thickness.
+            flow_type: ``"flat_plate"`` (default) or ``"pipe"``.
         """
         model = _TURBULENCE_MODELS.get(flow.turbulence_model, _TURBULENCE_MODELS["kOmegaSST"])
         target_yplus = model["yplus_target"]
@@ -149,8 +162,17 @@ class BLEngine:
         if Re <= 0:
             raise ValueError(f"Reynolds number must be positive, got {Re}")
 
-        # Skin friction coefficient (turbulent flat plate)
-        Cf = 0.027 / (Re ** (1.0 / 7.0))
+        if str(flow_type).lower() in ("pipe", "internal", "channel"):
+            # Turbulent PIPE friction (internal-flow standard): Blasius
+            # Cf = 0.079 Re^-0.25 for 4e3 < Re < 1e5; the 1/5-power law
+            # Cf = 0.046 Re^-0.2 above.
+            if Re < 1.0e5:
+                Cf = 0.079 / (Re ** 0.25)
+            else:
+                Cf = 0.046 / (Re ** 0.2)
+        else:
+            # Turbulent flat plate (external flows): 1/7th power law.
+            Cf = 0.027 / (Re ** (1.0 / 7.0))
         u_tau = flow.reference_velocity * math.sqrt(Cf / 2.0)
 
         if u_tau <= 0:
