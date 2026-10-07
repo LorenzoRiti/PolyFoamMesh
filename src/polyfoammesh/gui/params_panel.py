@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
-from pathlib import Path
 
 import trimesh  # ✅ F-017
 from PySide6.QtCore import Qt, Signal
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -1004,13 +1003,49 @@ class ParamsPanel(QWidget):
     # Kinematic viscosity at 20 °C, m²/s.
     _FLUID_NU = {"Air (20°C)": 1.5e-5, "Water (20°C)": 1.0e-6}
 
+    def _bl_flow_length_and_type(self) -> tuple[float, str]:
+        """(characteristic length, flow type) for the y+ calculation.
+
+        AUTOMATIC, from the same patch classifier the rest of the app uses:
+
+        - the CAD has both an inlet and an outlet patch -> INTERNAL flow:
+          length = the inlet's equivalent diameter sqrt(4A/pi), which is the
+          hydraulic length the pipe friction correlations need;
+        - otherwise -> EXTERNAL flow: length = the bounding-box dimension,
+          used with the flat-plate correlation.
+
+        This is what makes a tube/nozzle case land close to the solver's
+        real y+ instead of the flat-plate estimate over the whole bbox.
+        """
+        try:
+            from polyfoammesh.core.patch_roles import match_role
+
+            inlet_area = 0.0
+            has_outlet = False
+            for m in self._suggest_meshes or []:
+                role = match_role(str(m.metadata.get("name", ""))) or ""
+                if role == "inlet":
+                    inlet_area += float(m.area)
+                elif role == "outlet":
+                    has_outlet = True
+            if inlet_area > 0.0 and has_outlet:
+                diameter = (4.0 * inlet_area / math.pi) ** 0.5
+                if diameter > 0.0:
+                    return diameter, "pipe"
+        except Exception:  # noqa: BLE001 - fall back to the flat plate
+            logger.debug("flow-type inference failed", exc_info=True)
+        from polyfoammesh.core.geometry import compute_bbox_dim
+
+        return compute_bbox_dim(self._suggest_meshes), "flat_plate"
+
     def _on_bl_auto_compute(self):
         """Derive boundary-layer parameters from flow physics.
 
-        Replaces hand-guessed layer counts with the standard flat-plate
-        correlation (Cf -> u_tau -> y1 from the y+ target, layer count from the
-        99% BL thickness) — the same calculation commercial meshers expose as a
-        "y+ calculator".
+        AUTOMATIC and flow-type aware: internal flows (inlet + outlet
+        patches present) use the pipe friction correlation with the inlet's
+        equivalent diameter; external flows use the flat-plate correlation
+        with the bounding-box length.  Same basis as the standard online y+
+        calculators, so the numbers match theirs for the same inputs.
         """
         if not self._suggest_meshes:
             QMessageBox.information(
@@ -1020,9 +1055,8 @@ class ParamsPanel(QWidget):
             return
 
         from polyfoammesh.commercial.bl_engine import BLEngine, FlowConditions
-        from polyfoammesh.core.geometry import compute_bbox_dim
 
-        length = compute_bbox_dim(self._suggest_meshes)
+        length, flow_type = self._bl_flow_length_and_type()
         velocity = self._bl_velocity.value()
         nu = self._FLUID_NU.get(self._bl_fluid.currentText(), 1.5e-5)
         resolved = "resolved" in self._bl_wall_treatment.currentText().lower()
@@ -1035,7 +1069,7 @@ class ParamsPanel(QWidget):
                 kinematic_viscosity=nu,
                 turbulence_model=model,
             )
-            params = BLEngine().calculate_from_flow(flow)
+            params = BLEngine().calculate_from_flow(flow, flow_type=flow_type)
         except Exception as e:
             logger.exception("Boundary-layer physics calculation failed")
             QMessageBox.warning(self, "Calculation failed", str(e))
@@ -1074,13 +1108,13 @@ class ParamsPanel(QWidget):
         if abs(clamped - fraction) > 1e-12:
             note += "  ⚠ First layer clamped to the field range."
 
+        kind = "pipe/Blasius" if flow_type == "pipe" else "flat plate"
         msg = (
-            f"Re={flow.reynolds_number:.3g} · y+ target={params.target_yplus} · "
+            f"Re={flow.reynolds_number:.3g} ({kind}, L={length:.3g} m) · "
+            f"y+ target={params.target_yplus} · "
             f"first layer={params.first_layer_height:.3g} m (absolute) · "
             f"{params.n_layers} layers · growth {params.growth_rate:.2f} · "
-            f"total thickness={params.total_thickness:.4g} m (L={length:.3g} m){note}"
-            "  [flat-plate estimate: on curved/internal flows the achieved "
-            "y+ can differ ~2-4x]"
+            f"total thickness={params.total_thickness:.4g} m{note}"
         )
         self._bl_info.setText(msg)
         self.suggestion_completed.emit(f"[bl] {msg}")
@@ -1095,17 +1129,6 @@ class ParamsPanel(QWidget):
         if m:
             return float(m.group(1))
         return 1.0 if "resolved" in text.lower() else 30.0
-
-    def _bl_case_dir(self) -> str:
-        """Known case directory, or ask the user for a solved case."""
-        case_dir = (self._case_dir or "").strip()
-        if case_dir and Path(case_dir).is_dir():
-            return case_dir
-        start = case_dir or os.path.expanduser("~")
-        chosen = QFileDialog.getExistingDirectory(
-            self, "Select a solved OpenFOAM case directory", start
-        )
-        return chosen or ""
 
     def _apply_bl_calibration(self, proposed_h1: float, result=None) -> None:
         """Make the proposed first layer the authoritative ABSOLUTE value.

@@ -98,3 +98,53 @@ def test_velocity_change_recomputes_after_a_compute():
     # h1 ~ 1/(U * sqrt(Cf)) with Cf ~ Re^(-1/7) ~ U^(-1/7): the ratio is
     # 10^(13/14), not exactly 10.
     assert h_one / h_ten == pytest.approx(10.0 ** (13.0 / 14.0), rel=0.02)
+
+
+def test_engine_pipe_correlation_matches_standard_calculators():
+    """Internal flows: Blasius (Re<1e5) / 1/5-power pipe law above.
+
+    Hand-computed reference values - the same correlations the standard
+    online y+ calculators use for pipe flows.
+    """
+    engine = BLEngine()
+
+    # Re = U*D/nu = 1*0.01/1e-6 = 1e4 -> Blasius Cf = 0.079/Re^0.25 = 0.0079
+    flow = FlowConditions.from_velocity(
+        reference_velocity=1.0, reference_length=0.01,
+        kinematic_viscosity=1e-6, turbulence_model="kEpsilon",
+    )
+    p = engine.calculate_from_flow(flow, flow_type="pipe")
+    u_tau = 1.0 * math.sqrt(0.0079 / 2.0)
+    assert p.first_layer_height == pytest.approx(30.0 * 1e-6 / u_tau, rel=1e-4)
+
+    # Re = 1e5 -> Cf = 0.046/Re^0.2 = 0.0046
+    flow2 = FlowConditions.from_velocity(
+        reference_velocity=1.0, reference_length=0.1,
+        kinematic_viscosity=1e-6, turbulence_model="kEpsilon",
+    )
+    p2 = engine.calculate_from_flow(flow2, flow_type="pipe")
+    u_tau2 = 1.0 * math.sqrt(0.0046 / 2.0)
+    assert p2.first_layer_height == pytest.approx(30.0 * 1e-6 / u_tau2, rel=1e-4)
+
+
+def test_flow_type_inference_pipe_vs_flat_plate():
+    """Internal flows (inlet+outlet patches) use the inlet equivalent
+    diameter and the pipe correlation; external ones the bbox."""
+    panel = ParamsPanel()
+    inlet = trimesh.creation.box(extents=[0.1, 0.1, 0.01])
+    inlet.metadata["name"] = "inlet"
+    outlet = trimesh.creation.box(extents=[0.1, 0.1, 0.01])
+    outlet.metadata["name"] = "outlet"
+    wall = trimesh.creation.box(extents=[0.2, 0.2, 0.01])
+    wall.metadata["name"] = "wall"
+
+    panel.set_suggest_meshes([inlet, outlet, wall])
+    length, flow_type = panel._bl_flow_length_and_type()
+    assert flow_type == "pipe"
+    assert length == pytest.approx(
+        math.sqrt(4.0 * float(inlet.area) / math.pi), rel=1e-6
+    )
+
+    panel.set_suggest_meshes([wall])
+    _length2, flow_type2 = panel._bl_flow_length_and_type()
+    assert flow_type2 == "flat_plate"
