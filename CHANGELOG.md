@@ -47,6 +47,19 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **y+ / primo strato del boundary layer (errore in catena, caso reale)**:
+  il calcolo fisico era corretto (flat-plate, k-epsilon y+ 30) ma il
+  pannello salvava il primo strato solo come **frazione di `max cell`**;
+  quando `max cell` cambiava (slider/adaptive, 0.171→0.0122) la stessa
+  frazione produceva un primo strato **14× più piccolo** (85.8 µm → 6.1
+  µm nel log) e nella simulazione y+ reale ~0.09 invece di 30. Ora il
+  valore calcolato è memorizzato in **metri (assoluto)** ed è quello che
+  va al motore; la frazione resta solo per visualizzazione. In più: il
+  calcolo si **ricalcola automaticamente** quando cambiano Velocity /
+  Fluido / Wall treatment (prima restava quello vecchio, es. calcolato a
+  10 m/s e usato a 1 m/s), un edit manuale della frazione torna in
+  modalità manuale, e il messaggio dichiara che la stima flat-plate su
+  flussi curvi/interni può differire ~2-4×.
 - **Case root con spazio nel percorso utente** (regressione della fase 2
   Linux): il fallback "senza spazi" riscriveva il path sostituendo gli
   spazi con underscore, creando un albero inesistente
