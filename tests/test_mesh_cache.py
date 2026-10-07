@@ -276,28 +276,9 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_panel_reuse_checkbox_defaults_on(app):
+def test_panel_cache_reuse_is_automatic(app):
+    """Cache reuse has NO user knob any more (user request: things the app
+    should just do are not checkboxes)."""
     panel = ParamsPanel()
-    assert panel._reuse_cache_check.isChecked() is True
+    assert not hasattr(panel, "_reuse_cache_check")
     assert panel.get_reuse_cached_mesh() is True
-
-
-def test_panel_reuse_getter_tracks_checkbox(app):
-    panel = ParamsPanel()
-    panel._reuse_cache_check.setChecked(False)
-    assert panel.get_reuse_cached_mesh() is False
-    panel._reuse_cache_check.setChecked(True)
-    assert panel.get_reuse_cached_mesh() is True
-
-
-def test_panel_reuse_setting_persists(app, tmp_path):
-    panel = ParamsPanel()
-    panel._reuse_cache_check.setChecked(False)
-
-    store = QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
-    panel.save_params(store)
-    store.sync()
-
-    fresh = ParamsPanel()
-    fresh.restore_params(store)
-    assert fresh.get_reuse_cached_mesh() is False

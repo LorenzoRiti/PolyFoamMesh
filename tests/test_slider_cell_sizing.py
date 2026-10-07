@@ -131,3 +131,18 @@ def test_mesher_wording_linux_is_native(monkeypatch):
     assert w["no_of_label"] == "no OpenFOAM"
     assert w["no_of_sentence"] == "No OpenFOAM required."
     assert "WSL" not in " ".join(w.values())
+
+
+def test_surface_resolution_follows_the_detail_slider(panel):
+    """Automatic curvature resolution: the Detail slider is the single control.
+
+    Regression for the user request: 'surface resolution deve capirlo in
+    automatico, io gia' sposto lo slider' - there must be no separate knob.
+    """
+    panel._detail_slider.setValue(0)
+    assert panel.get_surface_resolution() == "Coarse"
+    panel._detail_slider.setValue(10)
+    assert panel.get_surface_resolution() == "Medium"
+    panel._detail_slider.setValue(20)
+    assert panel.get_surface_resolution() == "Very fine"
+    assert not hasattr(panel, "_surface_resolution")

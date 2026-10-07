@@ -858,3 +858,21 @@ toccano GMSH). Test aggiornati (40 in test_mesh_cache.py), suite fast 1396
 passed. Semantica onesta: la cache accelera i re-run identici e le
 iterazioni non-BL; cambiare y+/layer richiede GMSH (corretto per design).
 Poi: commit e fine programma notturno.
+
+## 2026-10-08 - semplificazione UI (richiesta utente, arrabbiato giustamente)
+
+Direzione: TUTTO automatico, niente pulsanti per cose che l'app deve fare
+da sola. Rimosso dal pannello BL/Mesh:
+- "Calibrate from simulation" (modulo core/solver_calibration.py resta
+  interno, testato; UI via);
+- "Fit BL to mesh" (la compressione la gestisce il motore, il log la
+  dichiara);
+- combo "Surface resolution": ora DERIVATO dallo slider Detail
+  (very_coarse/coarse->Coarse, medium->Medium, fine/very_fine->Fine/Very
+  fine) - get_surface_resolution() legge get_detail_level();
+- checkbox cache mesh: sempre attiva (get_reuse_cached_mesh() -> True).
+Calcolo y+ AUTOMATICO: parte quando si attiva il BL (se l'utente non ha
+mai editato a mano: flag _bl_user_manual) e si aggiorna su Velocity/
+Fluido/Wall treatment; edit manuale rispettato.
+Test aggiornati (cache automatica, surface resolution dallo slider);
+suite fast 1395 passed, ruff pulito. CHANGELOG/USER_GUIDE aggiornati.
