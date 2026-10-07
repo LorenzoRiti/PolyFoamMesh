@@ -505,12 +505,17 @@ def test_global_windings_vectorized_graph_matches_reference_on_valve_dual():
 
 
 def test_bl_zero_concave_binary_drop_keeps_full_stack_elsewhere():
-    """Binary local termination (opt-in): the flagged faces get ZERO layers
-    (no shell), every other face keeps the FULL stack — unlike the fixpoint
-    path, which floods the whole region to the minimum count.  Cells stay
-    closed and positive; the shell under the dropped faces is deliberately
-    given up (documented domain change), so volume conservation is NOT
-    asserted here."""
+    """Binary local termination (opt-in), complete-coverage policy.
+
+    Historical note (2026-10-07 BL-closure fix): the flagged faces used to
+    get ZERO layers (no shell) while every other face kept the FULL stack.
+    The policy is now COMPLETE COVERAGE: the flagged faces are still
+    extruded with a compressed stack (short height, full layer count) so the
+    wall shell has no holes; only ``cover_thin=False`` (the caller's
+    last-resort fallback) restores the historical drop.  The shell under the
+    dropped faces is deliberately given up in that fallback (documented
+    domain change), so volume conservation is NOT asserted here.
+    """
     case = _build_dual_case(WORK_ROOT / "cube_zero_concave")
     poly = case / "constant" / "polyMesh"
     points, faces, owner, neigh, patches = fio.read_polymesh(poly)
@@ -519,11 +524,14 @@ def test_bl_zero_concave_binary_drop_keeps_full_stack_elsewhere():
     sel, used = eng._select_faces(faces, owner, patches, n_int, None, True)
     n_cells = int(max(owner.max(), neigh.max())) + 1
     drop_bnd = {0, 1}
+
+    # Complete coverage (default): every selected face, including the two
+    # flagged ones, keeps the full layer count.
     b = eng._build(points, faces, owner, neigh, patches, n_int, sel,
                    3, 0.02, 1.2, 0.5, 0, drop_bnd, zero_concave=True)
-    assert b["layers_per_face_min"] == 0
+    assert b["layers_per_face_min"] == 3, b["layers_per_face_min"]
     assert b["layers_per_face_max"] == 3
-    assert b["n_prism_cells"] == (len(sel) - 2) * 3, b["n_prism_cells"]
+    assert b["n_prism_cells"] == len(sel) * 3, b["n_prism_cells"]
     vols, closure, scale = _cell_metrics(
         b["points"], b["faces"], np.asarray(b["owner"]),
         np.asarray(b["neigh"]), int(max(b["owner"].max(), b["neigh"].max())) + 1,
@@ -532,6 +540,23 @@ def test_bl_zero_concave_binary_drop_keeps_full_stack_elsewhere():
     rel = np.linalg.norm(closure, axis=1) / np.maximum(scale, 1e-300)
     assert np.all(rel < 1e-8), f"cells not closed: {int((rel >= 1e-8).sum())}"
     assert np.all(vols > 0.0), "non-positive cell volume"
+
+    # Historical fallback (cover_thin=False): the two flagged faces are
+    # dropped, everything else keeps the full stack.
+    b2 = eng._build(points, faces, owner, neigh, patches, n_int, sel,
+                    3, 0.02, 1.2, 0.5, 0, drop_bnd, zero_concave=True,
+                    cover_thin=False)
+    assert b2["layers_per_face_min"] == 0
+    assert b2["layers_per_face_max"] == 3
+    assert b2["n_prism_cells"] == (len(sel) - 2) * 3, b2["n_prism_cells"]
+    vols2, closure2, scale2 = _cell_metrics(
+        b2["points"], b2["faces"], np.asarray(b2["owner"]),
+        np.asarray(b2["neigh"]),
+        int(max(b2["owner"].max(), b2["neigh"].max())) + 1, int(b2["n_int"]),
+    )
+    rel2 = np.linalg.norm(closure2, axis=1) / np.maximum(scale2, 1e-300)
+    assert np.all(rel2 < 1e-8), f"cells not closed: {int((rel2 >= 1e-8).sum())}"
+    assert np.all(vols2 > 0.0), "non-positive cell volume"
 
 
 def test_bl_local_termination_run_succeeds_on_healthy_cube():

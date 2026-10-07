@@ -1198,42 +1198,58 @@ class PolyBoundaryLayerEngine:
         sel, used_patches = self._select_faces(
             faces, owner, patches, n_int, patch_names, apply_to_all,
         )
+        # The sliver filters no longer REMOVE faces from the extrusion set
+        # (that left bare wall faces and inflated the patch with ~19k
+        # terminator strips on the user's tube).  They only MARK them ``thin``:
+        # the face is still extruded with a compressed stack, while its tiny
+        # edge is excluded from the per-vertex inversion cap so the healthy
+        # neighbours keep a proper stack.  ``cover_thin=False`` in the build
+        # fallback restores the historical drop when a covered build cannot
+        # validate at any height scale.
+        thin_local: set[int] = set()
         if sel and min_base_face_fraction > 0.0:
-            sel, n_small, cut = _drop_small_base_faces(
+            kept, n_small, cut = _drop_small_base_faces(
                 points, faces, n_int, sel, min_base_face_fraction,
             )
+            thin_local |= set(sel) - set(kept)
             if n_small:
                 res.n_excluded_small_faces = int(n_small)
                 self._log(
-                    f"[bl] excluded {n_small} small base faces "
-                    f"(<{min_base_face_fraction:g}*median={cut:.6g}m)"
+                    f"[bl] {n_small} small base faces (<"
+                    f"{min_base_face_fraction:g}*median={cut:.6g}m) marked "
+                    "thin (compressed stack, NOT dropped)"
                 )
         if sel and min_base_edge_fraction > 0.0:
-            sel, n_edge, cut_e = _drop_small_base_edges(
+            kept, n_edge, cut_e = _drop_small_base_edges(
                 points, faces, n_int, sel, min_base_edge_fraction,
             )
+            thin_local |= set(sel) - set(kept)
             if n_edge:
                 res.n_excluded_small_edges = int(n_edge)
                 self._log(
-                    f"[bl] excluded {n_edge} sliver-edge base faces "
-                    f"(<{min_base_edge_fraction:g}*median={cut_e:.6g}m)"
+                    f"[bl] {n_edge} sliver-edge base faces (<"
+                    f"{min_base_edge_fraction:g}*median={cut_e:.6g}m) marked "
+                    "thin (compressed stack, NOT dropped)"
                 )
         if sel and min_base_edge_h1_factor > 0.0:
-            sel, n_edge_h1, cut_h1 = _drop_small_base_edges(
+            kept, n_edge_h1, cut_h1 = _drop_small_base_edges(
                 points, faces, n_int, sel, 0.0,
                 absolute_threshold=min_base_edge_h1_factor * res.first_height,
             )
+            thin_local |= set(sel) - set(kept)
             if n_edge_h1:
                 res.n_excluded_small_edges += int(n_edge_h1)
                 self._log(
-                    f"[bl] excluded {n_edge_h1} tiny-edge base faces "
-                    f"(<{min_base_edge_h1_factor:g}*h1={cut_h1:.6g}m)"
+                    f"[bl] {n_edge_h1} tiny-edge base faces (<"
+                    f"{min_base_edge_h1_factor:g}*h1={cut_h1:.6g}m) marked "
+                    "thin (compressed stack, NOT dropped)"
                 )
         if not sel:
             res.errors.append("no selected faces")
             return res
         res.n_wall_faces = len(sel)
         res.wall_patches = used_patches
+        thin_bnd = frozenset(thin_local)
 
         if local_termination:
             if local_termination not in (True, "decoupled", "decoupled_vertex"):
@@ -1266,7 +1282,7 @@ class PolyBoundaryLayerEngine:
         pre = self._build_precompute(
             points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
             concavity_criterion=concavity_criterion, normal_method=normal_method,
-            edge_cap_percentile=edge_cap_percentile,
+            edge_cap_percentile=edge_cap_percentile, thin_bnd=thin_bnd,
         )
         for k, v in pre.get("dual_stats", {}).items():
             res.stats[k] = v
@@ -1299,91 +1315,124 @@ class PolyBoundaryLayerEngine:
                 )
                 res.n_layers = k_sup
 
-        for scale, clamp in (
-            (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
-            (0.2, 0.1), (0.1, 0.05),
-        ):
-            if self._cancel():
-                res.errors.append("cancelled")
-                return res
-            try:
-                built = self._build(
-                    points, faces, owner, neighbour, patches, n_int,
-                    sel, res.n_layers, res.first_height * scale, growth, clamp,
-                    pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
-                    terminate_by_budget=terminate_by_budget,
-                    # Binary semantics ALWAYS in the standard path
-                    # (2026-10-07): the consistency fixpoint is a MIN over
-                    # the whole connected wall, so a single low-budget
-                    # vertex floods every face to 1 layer.  Binary keeps
-                    # the bulk at the (capped) count and compresses - never
-                    # drops, except for genuine input defects - the stacks
-                    # where max_h binds, so the BL shell stays COMPLETE
-                    # (the old policy left 5.9% of the wall faces bare on
-                    # the user's real case).
-                    zero_concave=True,
-                )
-            except Exception as exc:  # noqa: BLE001 - keep-best fallback
-                self._log(f"[bl] attempt scale={scale} clamp={clamp}: {exc}")
-                res.warnings.append(f"attempt at scale={scale} failed: {exc}")
-                continue
-            self._log(f"[bl] validating attempt at scale={scale} "
-                      f"clamp={clamp} (checkMesh criteria)...")
-            ok, msg = self._validate(built, total_vol0, max_core_volume_ratio)
-            if ok:
-                _hist, _med = self._layer_histogram(built)
-                if res.n_layers >= 2 and _med <= 1:
-                    res.warnings.append(
-                        f"attempt at scale={scale} clamp={clamp} is valid "
-                        f"but flattened to a single layer (median {_med:g} "
-                        f"of {res.n_layers} requested): rejected as not a "
-                        "boundary layer"
+        # Coverage-first, then fall back to the historical drop.  The first
+        # pass extrudes EVERY wall face (thin sliver/defect faces with a
+        # compressed stack); only if that cannot validate at any height scale
+        # does the second pass drop the thin faces, exactly as the historical
+        # path did.  This is the "compressed stack as long as validation
+        # passes, leave a face bare only when impossible" policy of the 2026-10
+        # BL closure fix.
+        cover_passes = (True, False) if thin_bnd else (True,)
+        for cover_thin in cover_passes:
+            for scale, clamp in (
+                (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
+                (0.2, 0.1), (0.1, 0.05),
+            ):
+                if self._cancel():
+                    res.errors.append("cancelled")
+                    return res
+                try:
+                    built = self._build(
+                        points, faces, owner, neighbour, patches, n_int,
+                        sel, res.n_layers, res.first_height * scale, growth,
+                        clamp,
+                        pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
+                        terminate_by_budget=terminate_by_budget,
+                        # Binary semantics ALWAYS in the standard path
+                        # (2026-10-07): the consistency fixpoint is a MIN over
+                        # the whole connected wall, so a single low-budget
+                        # vertex floods every face to 1 layer.  Binary keeps
+                        # the bulk at the (capped) count and compresses - never
+                        # drops, except for genuine input defects - the stacks
+                        # where max_h binds, so the BL shell stays COMPLETE.
+                        zero_concave=True,
+                        thin_bnd=thin_bnd, cover_thin=cover_thin,
                     )
+                except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(
-                        f"[bl] attempt at scale={scale} clamp={clamp}: "
-                        f"valid but flattened to a single layer (median "
-                        f"{_med:g} of {res.n_layers} requested) - rejected"
+                        f"[bl] attempt scale={scale} clamp={clamp} "
+                        f"(cover_thin={cover_thin}): {exc}"
+                    )
+                    res.warnings.append(
+                        f"attempt at scale={scale} failed: {exc}"
                     )
                     continue
-                return self._accept_built(res, built, scale, clamp, poly)
-            res.warnings.append(
-                f"validation failed at scale={scale} clamp={clamp}: {msg}"
-            )
-            self._log(f"[bl] validation failed at scale={scale} clamp={clamp}: {msg}")
+                self._log(f"[bl] validating attempt at scale={scale} "
+                          f"clamp={clamp} (cover_thin={cover_thin}, "
+                          "checkMesh criteria)...")
+                ok, msg = self._validate(built, total_vol0,
+                                         max_core_volume_ratio)
+                if ok:
+                    _hist, _med = self._layer_histogram(built)
+                    if res.n_layers >= 2 and _med <= 1:
+                        res.warnings.append(
+                            f"attempt at scale={scale} clamp={clamp} is valid "
+                            f"but flattened to a single layer (median {_med:g} "
+                            f"of {res.n_layers} requested): rejected as not a "
+                            "boundary layer"
+                        )
+                        self._log(
+                            f"[bl] attempt at scale={scale} clamp={clamp}: "
+                            f"valid but flattened to a single layer (median "
+                            f"{_med:g} of {res.n_layers} requested) - rejected"
+                        )
+                        continue
+                    return self._accept_built(res, built, scale, clamp, poly)
+                res.warnings.append(
+                    f"validation failed at scale={scale} clamp={clamp}: {msg}"
+                )
+                self._log(
+                    f"[bl] validation failed at scale={scale} clamp={clamp}: "
+                    f"{msg}"
+                )
 
-            # Early stop: a fallback attempt only helps if it eventually
-            # reaches ZERO not-closed cells.  The winding solve is now exact
-            # (no local-minimum behaviour), so a closure failure means a
-            # genuinely broken topology (non-manifold edge, reported in
-            # ``orient_stats``) that thinner layers cannot repair.  Keep the
-            # stagnation guard for that case: once THREE attempts have left a
-            # substantial count that is NOT halving, cut the run short
-            # instead of burning minutes on the remaining scales.
-            # A genuinely converging case (count dropping steeply, e.g.
-            # 300 -> 150 -> 80 -> 30 -> 0) never trips this: at attempt 3 the
-            # count is already below half of the first attempt.
-            m = re.search(r"(\d+) cells not closed", msg)
-            if m:
-                n_open = int(m.group(1))
-                attempts_done = len([w for w in res.warnings
-                                     if w.startswith("validation failed at")])
-                if attempts_done == 1:
-                    self._first_open = n_open
-                if (attempts_done >= 3 and n_open > 40
-                        and n_open >= 0.5 * getattr(self, "_first_open", n_open)):
-                    res.warnings.append(
-                        "early stop: still "
-                        f"{n_open} cells not closed after {attempts_done} "
-                        "attempts (topology defect, count not halving); "
-                        "mesh left unchanged"
-                    )
-                    self._log(
-                        "[bl] early stop: still "
-                        f"{n_open} cells not closed after {attempts_done} "
-                        "attempts (topology defect, count not halving); "
-                        "mesh left unchanged"
-                    )
-                    break
+                # Early stop: a fallback attempt only helps if it eventually
+                # reaches ZERO not-closed cells.  The winding solve is now
+                # exact (no local-minimum behaviour), so a closure failure
+                # means a genuinely broken topology (non-manifold edge,
+                # reported in ``orient_stats``) that thinner layers cannot
+                # repair.  Keep the stagnation guard for that case: once THREE
+                # attempts have left a substantial count that is NOT halving,
+                # cut the run short instead of burning minutes on the
+                # remaining scales.  A genuinely converging case (count
+                # dropping steeply, e.g. 300 -> 150 -> 80 -> 30 -> 0) never
+                # trips this: at attempt 3 the count is already below half of
+                # the first attempt.
+                m = re.search(r"(\d+) cells not closed", msg)
+                if m:
+                    n_open = int(m.group(1))
+                    attempts_done = len([w for w in res.warnings
+                                         if w.startswith("validation failed at")])
+                    if attempts_done == 1:
+                        self._first_open = n_open
+                    if (attempts_done >= 3 and n_open > 40
+                            and n_open >= 0.5 * getattr(
+                                self, "_first_open", n_open)):
+                        res.warnings.append(
+                            "early stop: still "
+                            f"{n_open} cells not closed after {attempts_done} "
+                            "attempts (topology defect, count not halving); "
+                            "mesh left unchanged"
+                        )
+                        self._log(
+                            "[bl] early stop: still "
+                            f"{n_open} cells not closed after {attempts_done} "
+                            "attempts (topology defect, count not halving); "
+                            "mesh left unchanged"
+                        )
+                        break
+            if not cover_thin:
+                break
+            if thin_bnd:
+                self._log(
+                    "[bl] covering the thin (sliver/defect) faces did not "
+                    "validate at any height scale; retrying with the "
+                    "historical drop (partial wall coverage)"
+                )
+                res.warnings.append(
+                    "thin (sliver/defect) faces could not be covered at any "
+                    "height scale; they are left bare (partial wall coverage)"
+                )
 
         res.errors.append(
             "could not insert a valid boundary layer (all height scales "
@@ -1639,6 +1688,10 @@ class PolyBoundaryLayerEngine:
                     pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
                     zero_concave=True, vertex_height_scale=trial_scale,
                     limit_height_gradient=False,
+                    # Local termination keeps the historical DROP semantics
+                    # (its measured exclusion counts are a golden); only the
+                    # standard path's complete-coverage policy changes.
+                    cover_thin=False,
                 )
             except Exception:  # noqa: BLE001 - this scale just doesn't work
                 continue
@@ -1779,6 +1832,9 @@ class PolyBoundaryLayerEngine:
                         drop_bnd=drop_bnd, pre=pre, zero_concave=True,
                         vertex_height_scale=(height_scale or None),
                         limit_height_gradient=False,
+                        # Historical DROP semantics for local termination
+                        # (golden exclusion counts) - see _retry_local_height.
+                        cover_thin=False,
                     )
                 except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(f"[bl] local attempt scale={scale}: {exc}")
@@ -1942,7 +1998,8 @@ class PolyBoundaryLayerEngine:
                           n_int, sel, drop_bnd,
                           concavity_criterion: str = "angle_fade",
                           normal_method: str = "area_weighted",
-                          edge_cap_percentile: float = 0.0) -> dict:
+                          edge_cap_percentile: float = 0.0,
+                          thin_bnd=frozenset()) -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
         vertices, per-vertex normals, the feature-aware angular fade (or the
@@ -1950,6 +2007,12 @@ class PolyBoundaryLayerEngine:
         (the smallest incident wall-face edge by default, or its
         ``edge_cap_percentile``-th percentile when that opt-in is > 0),
         the interior-support distance, and the edge/patch maps.
+
+        ``thin_bnd`` (boundary-LOCAL ids, 2026-10-07): faces the robust
+        sliver filters flagged.  They are excluded from the per-vertex
+        inversion cap so the healthy neighbours keep a proper stack, but the
+        faces themselves are still covered with a short compressed stack
+        (``_build``) - the filters no longer open holes in the wall shell.
 
         ``concavity_criterion`` selects the concavity detector that drives
         the local layer termination: "angle_fade" (default, historical,
@@ -2100,8 +2163,18 @@ class PolyBoundaryLayerEngine:
                     f"[bl] precompute: fade/min-edge "
                     f"{int(100 * wi / max(1, len(wall_verts)))}%..."
                 )
+            # The inversion clamp must NOT be capped by the sliver faces the
+            # robust filter flagged (``thin_bnd``): their tiny edges are what
+            # collapsed the whole local stack historically.  Compute the
+            # edge cap from the RETAINED (non-thin) incident faces; only when
+            # a vertex is incident to thin faces ALONE fall back to all of
+            # them, so every vertex still gets a finite positive cap.
+            incident = wall_face_of.get(w, ())
+            kept = [fi for fi in incident if (fi - n_int) not in thin_bnd]
+            if not kept:
+                kept = list(incident)
             f_edges = []
-            for fi in wall_face_of.get(w, ()):
+            for fi in kept:
                 f = faces[fi]
                 for k in range(len(f)):
                     a, b = f[k], f[(k + 1) % len(f)]
@@ -2123,7 +2196,7 @@ class PolyBoundaryLayerEngine:
                 angle_fade[w] = dual_fade[w]
                 continue
             f_norms = []
-            for fi in wall_face_of.get(w, ()):
+            for fi in kept:
                 f = faces[fi]
                 fn = _newell(pts, f)
                 fn = fn / (np.linalg.norm(fn) + 1e-300)
@@ -2268,7 +2341,9 @@ class PolyBoundaryLayerEngine:
                vertex_height_scale: dict[int, float] | None = None,
                edge_cap_percentile: float = 0.0,
                terminate_by_budget: bool = False,
-               limit_height_gradient: bool = True) -> dict:
+               limit_height_gradient: bool = True,
+               thin_bnd=frozenset(),
+               cover_thin: bool = True) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -2301,6 +2376,17 @@ class PolyBoundaryLayerEngine:
         The standard path keeps it on; the opt-in local-termination path
         (``_run_local_termination``, ``_retry_local_height``) passes False
         so its documented, measured exclusion counts are unchanged.
+
+        ``thin_bnd`` / ``cover_thin`` (2026-10-07, only meaningful with
+        ``zero_concave``): the thin faces flagged by the robust sliver
+        filters.  With ``cover_thin=True`` (default) they are extruded with
+        the FULL layer count but a SHORT per-vertex height (capped at half
+        their own smallest edge, floored at ``1e-3*h1``), so the wall shell
+        is complete.  With ``cover_thin=False`` they are dropped (0 layers)
+        together with the ``drop_bnd`` faces - the historical behaviour and
+        the caller's last-resort fallback when coverage cannot validate.
+        ``drop_bnd`` faces are ALSO covered under ``cover_thin=True`` (with
+        the same short-stack cap) rather than dropped.
         """
         if pre is None:
             pre = self._build_precompute(
@@ -2338,6 +2424,15 @@ class PolyBoundaryLayerEngine:
             drop_bnd = frozenset(
                 i for i, fi in enumerate(bnd) if (fi - n_int) in drop_bnd
             )
+        # ``thin_bnd`` (also boundary-LOCAL ids): wall faces the robust
+        # sliver filters would historically REMOVE from the extrusion.  They
+        # stay in ``bnd`` (so the wall shell is never left bare) but are
+        # extruded with a SHORT compressed stack whose per-vertex budget is
+        # capped by the face's own smallest edge - the same clamp the filter
+        # used to restore for the healthy neighbours (see _build_precompute).
+        thin = (frozenset(i for i, fi in enumerate(bnd)
+                          if (fi - n_int) in thin_bnd)
+                if thin_bnd else frozenset())
 
         # --- per-vertex inversion clamp ------------------------------------
         # distance from the wall vertex to the nearest NON-wall vertex of the
@@ -2429,7 +2524,16 @@ class PolyBoundaryLayerEngine:
             nf = {}
             nv = {w: 0 for w in wall_verts}
             for bi, fi in enumerate(bnd):
-                if bi in drop_bnd:
+                # COMPLETE-COVERAGE policy (2026-10-07, revised): a face the
+                # input pyramid criterion flagged (drop_bnd) or the robust
+                # sliver filters flagged (thin) is STILL extruded with a
+                # compressed stack unless ``cover_thin=False`` (the fallback
+                # the caller only reaches when the covered build cannot
+                # validate).  Leaving it bare is what opened the holes in the
+                # wall shell on the user's tube (measured: 1,120 of 6,095
+                # surface_2 faces bare, ~19k terminator strips inflating the
+                # patch).  Only a genuinely impossible face is left bare.
+                if not cover_thin and (bi in drop_bnd or bi in thin):
                     nf[bi] = 0
                     continue
                 nf[bi] = n_layers
@@ -2447,6 +2551,26 @@ class PolyBoundaryLayerEngine:
                 if h <= 0.0:
                     h = floor_h
                 hw[w] = h
+            # Short-stack cap for the thin (sliver/defect) faces.  Their tiny
+            # edges were deliberately EXCLUDED from the per-vertex edge_cap so
+            # the healthy neighbours keep a proper stack; without this cap a
+            # thin face sharing a vertex with a healthy one would inherit the
+            # tall budget and its small prism would invert.  Floor at the
+            # minimum-height policy (``floor_h``), never zero, so the shell
+            # stays complete.
+            for bi, fi in enumerate(bnd):
+                if nf[bi] == 0 or (bi not in thin and bi not in drop_bnd):
+                    continue
+                f = faces[fi]
+                m = len(f)
+                e_min = min(
+                    float(np.linalg.norm(pts[f[k]] - pts[f[(k + 1) % m]]))
+                    for k in range(m)
+                )
+                cap = max(floor_h, 0.5 * e_min)
+                for v in f:
+                    if nv[v] > 0 and hw[v] > cap:
+                        hw[v] = cap
             # Gradient-limit the per-vertex stack heights (2026-10-07).
             # hw = min(cum, max_h) is purely LOCAL: where the inversion budget
             # jumps between adjacent wall vertices (a deep first cell next to

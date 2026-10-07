@@ -619,3 +619,24 @@ Corsie parallele, tutte verificate (ruff + test + probe/smoke):
   Valve golden riallineato (4143 esclusioni / 75974 prismi).
 - MEASURE: togliendo la spunta spariscono marker/etichette/riepilogo.
 - Suite fast completa: 1292 passed.
+
+## Avanzamento 2026-10-07 (notte) - copertura completa con filtro sliver
+
+Caso utente ...115127 (tubo semplice, robust ON): copertura parete solo
+21.7% (1.120 facce senza prisma su 6.095 reali; la patch gonfiata a
+25.067 dalle strisce terminatore). Root cause NON era drop_bnd (0 sul
+caso): era il FILTRO SLIVER (min_base_edge_fraction=0.9) che RIMUOVEVA
+le facce dal set di estrusione. Fix: il filtro ora MARCA le facce sottili
+(edge_cap/min_edge/angle_fade calcolati dalle facce trattenute, beneficio
+del clamp preservato) ma le tiene nel set con stack CORTO (max(floor,
+0.5*edge minimo)); drop storico disponibile via cover_thin=False per i
+percorsi local-termination (golden valve invariati) e come secondo pass
+di ultima istanza nel fallback scale.
+Verifica tubo (robust ON): coverage 21.66% -> 100%, 36.570 prismi,
+checkMesh PASS (NO 68.5, skew 2.07), 0 celle non-positive; tappi piani
+(8.9e-5 m), trascinamento bordo <=0.35 mm su raggio 50 mm.
+Refinement: misurato sull'intera pipeline (GMSH->dual->BL) - il box e'
+uniforme a ogni profondita' (100% del volume del box) e dual/BL lo
+preservano (dimensioni bit-identiche dopo BL): nessun cambio necessario.
+Suite fast 1292 passed. NOTA per il rilascio: rifare l'A/B benchmark del
+robust ON (i suoi numeri di qualita' includevano la perdita di copertura).
