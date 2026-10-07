@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -13,6 +14,71 @@ class PatchInfo:
     patch_type: str
     n_faces: int
     start_face: int
+
+
+#: Characters an OpenFOAM patch name may not contain (structural, quotes or
+#: whitespace). Shared by the GUI rename validator and the writer below.
+_INVALID_PATCH_NAME_RE = re.compile(r'[;{}"/\\\s]')
+
+
+def rename_boundary_patch(
+    case_dir: Path | str, old_name: str, new_name: str,
+) -> Path:
+    """Rename a patch in ``constant/polyMesh/boundary`` and back the file up.
+
+    The generated-mesh rename path (the mandate's "rinominare dopo il meshing"):
+    validates the new name (non-empty, no structural/quote/whitespace chars,
+    not already in use), copies ``boundary`` to ``boundary.bak`` (only if no
+    backup exists yet, so the ORIGINAL is never overwritten), then rewrites the
+    single standalone patch-name line. Everything else in the file — nFaces,
+    startFace, type, physicalType, inGroups — is preserved byte-for-byte.
+
+    Raises ``FileNotFoundError`` when the case has no boundary file and
+    ``ValueError`` on an invalid/missing/duplicate name.
+    """
+    case = Path(case_dir)
+    bpath = case / "constant" / "polyMesh" / "boundary"
+    if not bpath.exists():
+        raise FileNotFoundError(f"Boundary file not found: {bpath}")
+
+    new_name = (new_name or "").strip()
+    if not new_name:
+        raise ValueError("patch name cannot be empty")
+    if _INVALID_PATCH_NAME_RE.search(new_name):
+        raise ValueError(
+            "patch name must not contain ; { } \" / \\ or whitespace"
+        )
+
+    patches = parse_boundary(bpath)
+    names = [p.name for p in patches]
+    if old_name not in names:
+        raise ValueError(f"patch not found: {old_name}")
+    if new_name != old_name and new_name in names:
+        raise ValueError(f"patch name already in use: {new_name}")
+    if new_name == old_name:
+        return bpath
+
+    bak = bpath.with_name("boundary.bak")
+    if not bak.exists():
+        shutil.copy2(bpath, bak)
+
+    # latin-1 round-trips every byte of the ASCII/binary-ish file verbatim.
+    text = bpath.read_bytes().decode("latin-1")
+    # Tolerate CRLF: capture the optional carriage return so the rewrite keeps
+    # the file's line endings intact.
+    pattern = re.compile(
+        rf"(?m)^([ \t]*){re.escape(old_name)}([ \t]*)(\r?)$"
+    )
+    new_text, n = pattern.subn(
+        lambda m: f"{m.group(1)}{new_name}{m.group(2)}{m.group(3)}", text, count=1
+    )
+    if n != 1:
+        raise ValueError(
+            f"could not locate the boundary entry for '{old_name}' to rename"
+        )
+    bpath.write_bytes(new_text.encode("latin-1"))
+    return bpath
+
 
 
 def parse_boundary(boundary_path: Path | str) -> list[PatchInfo]:
