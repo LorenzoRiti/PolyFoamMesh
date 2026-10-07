@@ -108,6 +108,29 @@ def _patch_type_map(case_dir: Path) -> dict[str, str]:
         return {}
 
 
+def _inferred_patch_roles(case_dir: Path) -> dict[str, str]:
+    """name -> inferred role for a generated mesh, best effort ({} on failure).
+
+    ``case_setup.infer_patch_roles`` classifies every patch geometrically when
+    the names are raw GMSH ``surface_N`` (no semantic information): the two
+    extreme flow-axis patches become inlet/outlet and everything else a wall.
+    This is what the patch table's Type column shows for a generated mesh
+    (instead of "other"), and what the BL uses to pick walls.
+    """
+    try:
+        from polyfoammesh.core.boundary_reader import parse_boundary
+        from polyfoammesh.core.case_setup import infer_patch_roles
+
+        boundary = Path(case_dir) / "constant" / "polyMesh" / "boundary"
+        patches = parse_boundary(boundary)
+        if not patches:
+            return {}
+        return infer_patch_roles(Path(case_dir), patches)
+    except Exception:
+        return {}
+
+
+
 def _trimesh_to_pydata(mesh: trimesh.Trimesh, color: tuple[float, float, float]) -> pv.PolyData:
     faces = np.hstack([np.full((len(mesh.faces), 1), 3), mesh.faces]).astype(np.int32)
     pd = pv.PolyData(mesh.vertices.astype(np.float64), faces)
@@ -647,6 +670,11 @@ class ViewerWidget(QWidget):
     #: (old_name, new_name) — emitted when the user renames a CAD patch in
     #: the patch table. Additive: existing signals/consumers are unaffected.
     patch_renamed = Signal(str, str)
+    #: (old_name, new_name) — emitted when the user renames a patch of a
+    #: GENERATED mesh in the patch table. The main window writes the new name
+    #: back to constant/polyMesh/boundary (after backing it up) and refreshes
+    #: the table/BC editor. Additive alongside patch_renamed.
+    mesh_patch_renamed = Signal(str, str)
     distance_measured = Signal(str)
     measure_hint = Signal(str)
     refinement_point_picked = Signal(float, float, float)
@@ -669,6 +697,9 @@ class ViewerWidget(QWidget):
         self._measure_index: int = 0
         self._mesh_patches: dict[str, pv.PolyData] = {}
         self._patch_names: list[str] = []
+        #: name -> inferred role ("wall"/"inlet"/"outlet") for a generated
+        #: mesh, from case_setup.infer_patch_roles. Empty for CAD.
+        self._patch_roles: dict[str, str] = {}
         self._patch_rename_guard: bool = False
         self._highlighted_actor = None
         self._showing_cad: bool = True
@@ -1140,12 +1171,10 @@ class ViewerWidget(QWidget):
             row = self._patch_table.rowCount()
             self._patch_table.insertRow(row)
             name_item = QTableWidgetItem(name)
-            # Only CAD patch names are editable; a loaded case mesh is
-            # read-only (a meshed case's names cannot be changed here).
-            if self._showing_cad:
-                name_item.setFlags(name_item.flags() | Qt.ItemIsEditable)
-            else:
-                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            # Both CAD and generated-mesh patch names are editable now: a
+            # generated mesh writes the new name back to
+            # constant/polyMesh/boundary (see mesh_patch_renamed / main window).
+            name_item.setFlags(name_item.flags() | Qt.ItemIsEditable)
             self._patch_table.setItem(row, 0, name_item)
             faces_item = QTableWidgetItem(f"{int(n_faces):,}")
             faces_item.setFlags(faces_item.flags() & ~Qt.ItemIsEditable)
@@ -1197,18 +1226,30 @@ class ViewerWidget(QWidget):
         finally:
             self._patch_rename_guard = False
 
+    def revert_patch_name(self, current_name: str, original_name: str) -> None:
+        """Undo a generated-mesh rename the writer refused (table + tracking).
+
+        Called by the main window when writing the boundary file fails, so the
+        Name cell never shows a name that is not on disk.
+        """
+        if current_name in self._patch_names:
+            row = self._patch_names.index(current_name)
+            self._patch_names[row] = original_name
+            self._restore_patch_name(row, original_name)
+
     def _on_patch_item_changed(self, item: QTableWidgetItem) -> None:
-        """Commit a patch rename (CAD only) or revert an illegal edit."""
+        """Commit a patch rename or revert an illegal edit.
+
+        CAD patches emit ``patch_renamed`` (mesh metadata only). Generated-mesh
+        patches emit ``mesh_patch_renamed``; the main window writes the new name
+        to constant/polyMesh/boundary (backing it up first) and refreshes.
+        """
         if self._patch_rename_guard or item.column() != 0:
             return
         row = item.row()
         if not (0 <= row < len(self._patch_names)):
             return
         old_name = self._patch_names[row]
-        if not self.is_showing_cad():
-            self._restore_patch_name(row, old_name)
-            logger.warning("Patch names can only be edited before meshing.")
-            return
         new_name = item.text().strip()
         if not new_name:
             self._restore_patch_name(row, old_name)
@@ -1228,12 +1269,23 @@ class ViewerWidget(QWidget):
             logger.warning("Patch name '%s' is already in use.", new_name)
             return
         self._patch_names[row] = new_name
-        self.patch_renamed.emit(old_name, new_name)
+        if self.is_showing_cad():
+            self.patch_renamed.emit(old_name, new_name)
+        else:
+            self.mesh_patch_renamed.emit(old_name, new_name)
+
+    def apply_case_patch_rename(self, old_name: str, new_name: str) -> None:
+        """Remap an already-committed generated-mesh rename (table already has
+        the new text). Keeps the 3D highlight/label maps consistent."""
+        if old_name in self._mesh_patches:
+            self._mesh_patches[new_name] = self._mesh_patches.pop(old_name)
+        role = self._patch_roles.pop(old_name, None)
+        if role is not None:
+            self._patch_roles[new_name] = role
 
     def _on_patch_item_double_clicked(self, item: QTableWidgetItem) -> None:
-        """Explain why a case-mesh patch cannot be renamed."""
-        if item.column() == 0 and not self.is_showing_cad():
-            logger.warning("Patch names can only be edited before meshing.")
+        """No-op: every Name cell is editable (CAD metadata or case boundary)."""
+        return
 
     def _reload_patch_panel_async(self):
         """Load the case boundary patches (background) and fill the panel."""
@@ -1243,17 +1295,23 @@ class ViewerWidget(QWidget):
             return
 
         def work(worker):
-            return read_openfoam_mesh_patches(case_dir), _patch_type_map(Path(case_dir))
+            return (
+                read_openfoam_mesh_patches(case_dir),
+                _patch_type_map(Path(case_dir)),
+                _inferred_patch_roles(Path(case_dir)),
+            )
 
         def on_done(_name, payload):
-            patches, types = payload
+            patches, types, roles = payload
             if not patches:
                 self._mesh_patches = {}
+                self._patch_roles = {}
                 self._clear_patch_panel()
                 return
             self._mesh_patches = dict(patches)
+            self._patch_roles = dict(roles or {})
             self._populate_patch_panel([
-                (name, int(pd.n_cells), detect_patch_type(name, types.get(name, "")))
+                (name, int(pd.n_cells), self._display_patch_type(name, types, roles))
                 for name, pd in patches.items()
             ])
 
@@ -1265,6 +1323,19 @@ class ViewerWidget(QWidget):
             on_finished=on_done, on_failed=on_failed,
             heartbeat_timeout_s=600.0,
         )
+
+    def _display_patch_type(self, name: str, types: dict, roles: dict) -> str:
+        """Type column for a generated mesh: the INFERRED role when available.
+
+        Raw GMSH ``surface_N`` patches carry no name/type information, so the
+        name/type fallbacks in ``detect_patch_type`` return "other". The
+        geometric role inference (inlet/outlet/wall) is what the BL itself
+        uses, so show that instead.
+        """
+        role = (roles or {}).get(name)
+        if role in _PATCH_TYPE_BY_ROLE:
+            return _PATCH_TYPE_BY_ROLE[role]
+        return detect_patch_type(name, (types or {}).get(name, ""))
 
     def start_refinement_pick(self):
         """Enter refinement-pick mode: click a point on the mesh to set
@@ -1885,8 +1956,10 @@ class ViewerWidget(QWidget):
             )
             self._mesh_patches = dict(patches)
             types = _patch_type_map(Path(case_dir))
+            roles = _inferred_patch_roles(Path(case_dir))
+            self._patch_roles = dict(roles or {})
             self._populate_patch_panel([
-                (name, int(pd.n_cells), detect_patch_type(name, types.get(name, "")))
+                (name, int(pd.n_cells), self._display_patch_type(name, types, roles))
                 for name, pd in patches.items()
             ])
             threshold, target = self._decimation_settings()

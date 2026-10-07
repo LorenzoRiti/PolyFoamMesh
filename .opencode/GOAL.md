@@ -683,3 +683,32 @@ poly_geo_wall_patch_names) anche DOPO il meshing (pannello patch);
 sottile. Accettazione: checkMesh sul caso 134536 (polyMesh_tet_backup
 presente per rigenerare il dual). Da riprendere nella corsia A+B+C+D
 appena atterra.
+
+## Caso paletta - fix applicati (corsia ripresa, 2026-10-07 notte)
+
+Riproduzione deterministica col codice attuale (WSL OpenFOAM 2512):
+- dual 307.613 celle, manifold; 493 difetti {pyramid 351, non_ortho 136,
+  skew 6}; checkMesh Failed 3 (351 volti orientati male, skew 767.8).
+- BL standard-robust: RIFIUTA a ogni scala (celle non-positive);
+  decoupled_vertex: "successo" con 1.191.856 prismi e riproduce
+  ESATTAMENTE il disastro (230.126 multiply-connected = +139.360 =
+  n_terminator_faces; 957 orientati male; aspect 2636; skew 767.8).
+- Root cause: le strisce terminator del BL ai bordi BL/non-BL vengono
+  emesse come volti di BOUNDARY (32 edge con incidenza 4) invece che come
+  volti INTERNI contro la cella adiacente.
+Fix in questo giro:
+- guard _boundary_manifold_defects in _validate: il build non-manifold
+  viene rifiutato -> sulla paletta si scrive la dual-only manifold
+  (multiply-connected 0, aspect 78.9 OK). 351 orientati + skew restano
+  (intrinseci al converter: sweep planarize/triangulate/smooth non li
+  rimuove).
+- patch roles ovunque: tier 2 geometrico verificato (87 wall patches);
+  tipo inferito nella tabella anche post-meshing; rename post-meshing nel
+  boundary (backup+validazione); floor parete A su sole superfici wall;
+  _BL_CELLS_ACROSS_STACK 5->3 (derivazione 0.34).
+- Sottile NON era la causa: 0% pareti sotto h1; 12.75% sotto stack
+  (gestito da terminate_by_budget).
+Test: 9 nuovi (test_blade_patch_roles_and_coupling.py), suite fast
+1329 passed. RIMANE PROGRAMMATO: fix algoritmico del terminator (step
+interno), e i difetti di orientamento/skew del converter su questa
+geometria.

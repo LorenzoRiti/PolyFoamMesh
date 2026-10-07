@@ -41,6 +41,22 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Guard di manifoldità del boundary BL** (caso reale "paletta"): le
+  strisce terminator del BL ai bordi BL/non-BL finivano nel blocco
+  boundary (misurato: +139.360 volti = esattamente i terminator, 32 edge
+  non-manifold) → checkMesh FAIL con 230.126 volti "multiply connected".
+  Ora `_validate` rifiuta un build con boundary non 2-manifold: sulla
+  paletta la mesh scritta è quella dual-only manifold (multiply-connected
+  0, aspect OK) invece del disastro. Il fix algoritmico del terminator
+  (step interno invece che striscia di boundary) resta programmato.
+- **Ruoli patch anche dopo il meshing**: la tabella patch su mesh
+  generata mostra il tipo **inferito geometricamente** (inlet/outlet/wall)
+  invece di "other", e il **rename post-meshing** scrive nel `boundary`
+  (backup + validazione). La selezione BL usa gli stessi ruoli inferiti e
+  il floor parete di A ora considera solo le superfici wall.
+- **Coerenza formula A**: `_BL_CELLS_ACROSS_STACK` 5→3 con la derivazione
+  dal budget di inversione (0.34): il floor parete ora rispetta davvero
+  il budget.
 - **Kill dei processi sicuro su Linux**: i processi OpenFOAM/cfMesh
   vengono lanciati con `start_new_session` e terminati con `killpg` (con
   guardia esplicita per non colpire mai il processo della GUI); su Windows

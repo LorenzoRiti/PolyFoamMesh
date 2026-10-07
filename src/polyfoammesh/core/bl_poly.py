@@ -916,6 +916,24 @@ def _limit_wall_height_gradient(hw, wall_verts, edges, upper, floor_h,
     return out
 
 
+def _boundary_manifold_defects(faces, n_int: int) -> int:
+    """Count boundary edges NOT shared by exactly two boundary faces.
+
+    This is checkMesh's "multiply connected (shared edge)" criterion applied to
+    the outer boundary: a valid polyMesh boundary is a closed 2-manifold, so
+    every boundary edge has incidence exactly 2. Returns 0 for a clean boundary.
+    """
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for f in faces[n_int:]:
+        m = len(f)
+        for i in range(m):
+            a, b = f[i], f[(i + 1) % m]
+            counts[(a, b) if a < b else (b, a)] += 1
+    return sum(1 for v in counts.values() if v != 2)
+
+
 class PolyBoundaryLayerEngine:
     """Adds a prism boundary layer to an existing polyhedral polyMesh.
 
@@ -2988,6 +3006,7 @@ class PolyBoundaryLayerEngine:
             "min_volume": None,
             "shell_loss": shell_loss,
             "n_terminator_faces": built_terminators,
+            "n_bnd_in": n_bnd,
             "n_prism_cells": n_prism_total,
             "layers_per_face_min": min(nf.values()) if nf else 0,
             "layers_per_face_max": max(nf.values()) if nf else 0,
@@ -3032,6 +3051,22 @@ class PolyBoundaryLayerEngine:
             return False, "first patch does not start at n_int"
         if sum(p["nFaces"] for p in patches) != len(faces) - n_int:
             return False, "patch nFaces do not cover the boundary faces"
+
+        # Boundary-surface manifoldness (checkMesh "multiply connected (shared
+        # edge)"): every edge of the outer boundary must be shared by EXACTLY
+        # two boundary faces. The dual enters as a closed 2-manifold, and a
+        # boundary layer only reshapes the interior, so the written boundary
+        # must stay a 2-manifold. The terminator strips emitted at a BL/non-BL
+        # border can coincide with the original wall band and leave an edge
+        # shared by 4 faces (measured on the blade repro: 32 edges with
+        # incidence 4 -> checkMesh reports the whole boundary multiply
+        # connected). The build is refused rather than written broken.
+        bad_edges = _boundary_manifold_defects(faces, n_int)
+        if bad_edges:
+            return False, (
+                f"{bad_edges} boundary edges shared by != 2 faces "
+                "(multiply connected boundary surface)"
+            )
 
         vols, closure, scale_mag = _cell_metrics(pts, faces, owner, neigh, n_cells, n_int)
         rel_closure = np.linalg.norm(closure, axis=1) / np.maximum(scale_mag, 1e-300)

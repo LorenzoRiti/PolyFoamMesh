@@ -57,14 +57,24 @@ _GMSH_DETAIL = {
                   "min_size": 0.0001, "max_size": 0.015, "cells_across": 48},
 }
 
-#: How many cells the automatic sizing should ideally fit across the requested
-#: boundary-layer stack. Wall cells far smaller than this fraction of the stack
-#: are what makes a boundary layer collapse: cfMesh/GMSH then compresses the
-#: first layer to a few percent of the requested height because the stack no
-#: longer physically fits between the wall and the first bulk cell. Enforcing
-#: a wall-cell floor of ``stack / _BL_CELLS_ACROSS_STACK`` (see
-#: ``compute_bl_wall_size_floor``) keeps the stack inside the local mesh.
-_BL_CELLS_ACROSS_STACK = 5
+#: How many wall cells the requested boundary-layer stack may span. The
+#: stack fits inside the local mesh only while ``stack <= 0.34 * wall_cell``
+#: (the BL inversion budget: a first cell may grow to at most ~1/3 of the
+#: local wall edge before it inverts / the stack compresses). Inverting that
+#: relation, the wall cell must be at least ``stack / 0.34``, i.e. ~3 cells
+#: across the stack — NOT 5. The original value of 5 (stack/5) under-corrected
+#: the floor by ~1.7x, so a requested stack stayed ~7x over the 0.34 budget
+#: (floor=stack/5 => 0.34*floor = 0.068*stack) and the first layer still
+#: collapsed. ``_BL_CELLS_ACROSS_STACK = 3`` makes ``0.34 * floor ==
+#: 0.34 * stack / 3 == 0.1133 * stack``; the true relation needs
+#: round(1/0.34) = 3, which is what this now documents (see
+#: ``compute_bl_wall_size_floor`` and the GUI hint).
+_BL_CELLS_ACROSS_STACK = 3
+
+#: The BL inversion budget relation, kept next to the constant it derives:
+#: ``max_stack ~= _BL_INVERSION_BUDGET * wall_cell``. 1 / 0.34 = 2.94 -> 3.
+_BL_INVERSION_BUDGET = 0.34
+
 
 #: Absolute ceiling on the BL wall-size floor, as a fraction of the geometry's
 #: largest bounding-box extent — never let a coupling knob ask for absurdly
@@ -515,8 +525,8 @@ def _count_volume_cells(gmsh_mod) -> int:
         return 0
 
 
-def _sample_wall_points(gmsh_mod, per_entity: int = 100):
-    """Coarse point cloud on every surface, for the BL wall-size floor.
+def _sample_wall_points(gmsh_mod, per_entity: int = 100, tags=None):
+    """Coarse point cloud on the given surfaces (all when *tags* is None).
 
     Returns an ``Nx3`` float array (empty on an empty/discrete model). Used only
     as a KDTree for "is this query point near a wall?" — exact sampling density
@@ -528,6 +538,9 @@ def _sample_wall_points(gmsh_mod, per_entity: int = 100):
         surfaces = gmsh_mod.model.getEntities(2)
     except Exception:
         return np.zeros((0, 3))
+    if tags is not None:
+        keep = set(int(t) for t in tags)
+        surfaces = [(d, t) for d, t in surfaces if int(t) in keep]
     pts: list = []
     for dim, tag in surfaces:
         try:
@@ -549,6 +562,67 @@ def _sample_wall_points(gmsh_mod, per_entity: int = 100):
     if not pts:
         return np.zeros((0, 3))
     return np.asarray(pts, dtype=np.float64)
+
+
+def _infer_wall_surface_tags(gmsh_mod, flow_direction=(1.0, 0.0, 0.0)) -> tuple[list[int], list[int]]:
+    """GMSH-surface mirror of ``case_setup.infer_patch_roles``.
+
+    Returns ``(wall_tags, all_tags)``. The two extreme surfaces along the
+    dominant flow axis whose outward normals align most with it are the
+    inlet/outlet and are excluded; every other surface is a wall. This lets the
+    BL wall-size floor (upgrade A) target walls only instead of every surface
+    (residual 2 from the blade mandate). Falls back to all tags — never raises —
+    on a discrete/STL model or a domain where the extremes cannot be found.
+    """
+    import numpy as np
+
+    try:
+        all_tags = [int(t) for _d, t in gmsh_mod.model.getEntities(2)]
+    except Exception:
+        return [], []
+    if len(all_tags) < 3:
+        return all_tags, all_tags
+    try:
+        info: dict[int, tuple] = {}
+        for t in all_tags:
+            bb = gmsh_mod.model.getBoundingBox(2, t)
+            c = np.asarray([(bb[i] + bb[i + 3]) / 2.0 for i in range(3)], dtype=float)
+            lo, hi = gmsh_mod.model.getParametrizationBounds(2, t)
+            n = gmsh_mod.model.getNormal(t, [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])])
+            n = np.asarray(n[:3], dtype=float)
+            nn = float(np.linalg.norm(n))
+            info[t] = (c, n / nn if nn > 1e-12 else n)
+
+        allbb = gmsh_mod.model.getBoundingBox(-1, -1)
+        ext = [allbb[i + 3] - allbb[i] for i in range(3)]
+        axis = int(np.argmax(ext))
+        fd = np.asarray(flow_direction, dtype=float)
+        fn = float(np.linalg.norm(fd))
+        fd = fd / fn if fn > 1e-30 else np.asarray([1.0, 0.0, 0.0])
+        axis_unit = fd if abs(fd[axis]) >= 0.5 else np.eye(3)[axis]
+        centre = np.mean([info[t][0] for t in all_tags], axis=0)
+        half = 0.25 * ext[axis]
+        low: list[tuple[int, float]] = []
+        high: list[tuple[int, float]] = []
+        for t in all_tags:
+            c, n = info[t]
+            along = float(np.dot(axis_unit, c - centre))
+            align = abs(float(np.dot(axis_unit, n)))
+            if along < -half:
+                low.append((t, align))
+            elif along > half:
+                high.append((t, align))
+        if not low or not high:
+            return all_tags, all_tags
+        low.sort(key=lambda x: -x[1])
+        high.sort(key=lambda x: -x[1])
+        excluded = {low[0][0], high[0][0]}
+        walls = [t for t in all_tags if t not in excluded]
+        return walls or all_tags, all_tags
+    except Exception:
+        logger.debug("gmsh_wrapper: wall-surface inference failed", exc_info=True)
+        return all_tags, all_tags
+
 
 
 def _sample_curvature_size_field(
@@ -1258,23 +1332,22 @@ def _configure_adaptive_sizing(
     # for gently-curved walls while still letting tight curvature refine
     # further — the "without disturbing curvature/gap refinement" requirement.
     #
-    # WIRING NOTE: wall-only surface tags are not available inside this module
-    # (it operates on raw GMSH entities, not GUI patch roles). The GMSH
-    # BoundaryLayer field installed by generate_volume_mesh already applies to
-    # ALL surfaces (CurvesList=[]), so this floor deliberately uses all
-    # surfaces too — consistent with the BL it is coupled to. classify_faces /
-    # patch_roles live in the GUI/geometry layers and are not plumbed here.
+    # WIRING NOTE (residual 2, fixed): the floor now targets WALL surfaces only.
+    # ``_infer_wall_surface_tags`` mirrors case_setup.infer_patch_roles at the
+    # GMSH-surface level and excludes the two extreme flow-axis surfaces
+    # (inferred inlet/outlet), so the coupling never coarsens cells near an
+    # inlet/outlet. It falls back to all surfaces when the inference cannot run.
     wall_floor_field: int | None = None
     wall_floor_points = None
     if bl_wall_size_floor and bl_wall_size_floor > 0:
         try:
-            wall_surfaces = gmsh_mod.model.getEntities(2)
+            wall_tags, _all_tags = _infer_wall_surface_tags(gmsh_mod)
         except Exception:
-            wall_surfaces = []
-        if wall_surfaces:
+            wall_tags = []
+        if wall_tags:
             f_dist_wall = gmsh_mod.model.mesh.field.add("Distance")
             gmsh_mod.model.mesh.field.setNumbers(
-                f_dist_wall, "SurfacesList", [float(t) for _d, t in wall_surfaces]
+                f_dist_wall, "SurfacesList", [float(t) for t in wall_tags]
             )
             wall_floor_field = gmsh_mod.model.mesh.field.add("Threshold")
             gmsh_mod.model.mesh.field.setNumber(wall_floor_field, "InField", f_dist_wall)
@@ -1292,11 +1365,11 @@ def _configure_adaptive_sizing(
                 f"[gmsh] BL wall size floor: "
                 f"{bl_wall_size_floor * 1000.0:.4g} mm "
                 f"(stack {bl_wall_size_floor * _BL_CELLS_ACROSS_STACK * 1000.0:.4g} mm "
-                f"/ {_BL_CELLS_ACROSS_STACK})"
+                f"/ {_BL_CELLS_ACROSS_STACK}, wall surfaces {len(wall_tags)})"
             )
             logger.info(_floor_msg)
             print(_floor_msg, flush=True)
-            wall_floor_points = _sample_wall_points(gmsh_mod)
+            wall_floor_points = _sample_wall_points(gmsh_mod, tags=wall_tags)
 
     # Gap-aware refinement, superseded here: the old approach placed one
     # Ball field per (surface-pair, bounding-box distance) — a proxy that

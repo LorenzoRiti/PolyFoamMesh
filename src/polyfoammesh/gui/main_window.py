@@ -732,6 +732,7 @@ class MainWindow(QMainWindow):
         self._viewer = ViewerWidget()
         self._viewer.face_picked.connect(self._on_face_picked)
         self._viewer.patch_renamed.connect(self._on_patch_renamed)
+        self._viewer.mesh_patch_renamed.connect(self._on_mesh_patch_renamed)
         h_splitter.addWidget(self._viewer)
 
         right = QWidget()
@@ -1756,6 +1757,44 @@ class MainWindow(QMainWindow):
             # the reason and kept the cell read-only.
             return
         self._rename_cad_patch(old_name, new_name)
+
+    @Slot(str, str)
+    def _on_mesh_patch_renamed(self, old_name: str, new_name: str) -> None:
+        """Rename a patch of a GENERATED mesh and write it to the boundary file.
+
+        The mandate's "rinominare dopo il meshing": backs up
+        ``constant/polyMesh/boundary`` to ``boundary.bak`` (original preserved),
+        validates and rewrites the name, then refreshes the viewer table (the
+        BC editor re-reads the boundary file when opened, so it picks the new
+        name up). On any failure the table edit is reverted.
+        """
+        case_dir = self._case_dir
+        boundary = (
+            Path(case_dir) / "constant" / "polyMesh" / "boundary"
+            if case_dir else None
+        )
+        if not boundary or not boundary.exists():
+            self._viewer.revert_patch_name(new_name, old_name)
+            QMessageBox.warning(
+                self, "Cannot rename",
+                "No generated mesh boundary file to rewrite. Generate a mesh "
+                "first.",
+            )
+            return
+        try:
+            from polyfoammesh.core.boundary_reader import rename_boundary_patch
+
+            rename_boundary_patch(case_dir, old_name, new_name)
+        except Exception as exc:  # noqa: BLE001 - revert on any failure
+            logger.exception("Generated-mesh patch rename failed")
+            self._viewer.revert_patch_name(new_name, old_name)
+            QMessageBox.warning(self, "Rename failed", str(exc))
+            return
+        self._viewer.apply_case_patch_rename(old_name, new_name)
+        self._log.append_log(
+            f"{Tag.PATCH} Renamed mesh patch '{old_name}' \u2192 '{new_name}' "
+            "(written to constant/polyMesh/boundary; backup: boundary.bak)."
+        )
 
     def _on_pick_refinement(self):
         """Start 3D picking mode for refinement zone centre."""
