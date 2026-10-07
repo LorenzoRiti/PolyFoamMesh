@@ -449,6 +449,23 @@ class ParamsPanel(QWidget):
         self._btn_bl_auto.clicked.connect(self._on_bl_auto_compute)
         bl_form.addRow(self._btn_bl_auto)
 
+        # The physics-derived first layer is stored in METRES, not only as a
+        # fraction of max cell: max cell changes with the detail slider and
+        # the adaptive sizing, and a stored fraction silently rescaled the
+        # first layer by the same factor (measured on a real case: 85.8 um
+        # -> 6.1 um, y+ target 30 -> ~0.2 achieved).
+        self._bl_first_layer_abs: float | None = None
+        self._bl_thick_updating = False
+        self._bl_thick.valueChanged.connect(self._on_bl_thick_edited)
+        # Physics inputs: recompute silently after a compute so the derived
+        # parameters never go stale (velocity 10 -> 1 m/s used to keep the
+        # old first layer).
+        self._bl_velocity.valueChanged.connect(self._on_bl_physics_inputs_changed)
+        self._bl_fluid.currentIndexChanged.connect(self._on_bl_physics_inputs_changed)
+        self._bl_wall_treatment.currentIndexChanged.connect(
+            self._on_bl_physics_inputs_changed
+        )
+
         self._bl_info = QLabel("")
         self._bl_info.setWordWrap(True)
         self._bl_info.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
@@ -913,6 +930,35 @@ class ParamsPanel(QWidget):
         except (AttributeError, ValueError):
             return 1e-12
 
+    def _bl_first_layer(self) -> float:
+        """First layer height in metres.
+
+        The physics-computed ABSOLUTE value when available, else the manual
+        fraction x max cell.  See the note in __init__ for why the absolute
+        value is authoritative (fraction x moving max_cell silently rescaled
+        the layer on real runs).
+        """
+        abs_h1 = getattr(self, "_bl_first_layer_abs", None)
+        if abs_h1:
+            return float(abs_h1)
+        return self._bl_thick.value() * self._max_cell.value()
+
+    def _on_bl_thick_edited(self, _value: float) -> None:
+        """A manual edit of the fraction switches back to manual mode."""
+        if getattr(self, "_bl_thick_updating", False):
+            return
+        self._bl_first_layer_abs = None
+        self._bl_fit_note = ""
+        self._refresh_bl_hint()
+
+    def _on_bl_physics_inputs_changed(self, *_args) -> None:
+        """Recompute silently when the physics inputs change after a compute."""
+        if getattr(self, "_bl_first_layer_abs", None) is None:
+            return
+        if not self._suggest_meshes:
+            return
+        self._on_bl_auto_compute()
+
     def _refresh_bl_hint(self) -> None:
         if not hasattr(self, "_bl_stack_hint"):
             return
@@ -920,7 +966,7 @@ class ParamsPanel(QWidget):
             from polyfoammesh.core.gmsh_wrapper import compute_bl_stack
         except Exception:
             return
-        h1 = self._bl_thick.value() * self._max_cell.value()
+        h1 = self._bl_first_layer()
         stack = compute_bl_stack(h1, self._bl_exp.value(), self._bl_n_layers.value())
         y = self._estimated_wall_cell_size()
         # Inversion budget: the stack may take at most ~0.34 of the local wall
@@ -972,12 +1018,18 @@ class ParamsPanel(QWidget):
         while n > 1 and _h1_for(n) / max_cell < min_fraction:
             n -= 1
         new_h1 = _h1_for(n)
-        old_h1 = self._bl_thick.value() * self._max_cell.value()
+        old_h1 = self._bl_first_layer()
         new_fraction = min(
             max(new_h1 / max_cell, min_fraction), self._bl_thick.maximum()
         )
         self._bl_n_layers.setValue(n)
-        self._bl_thick.setValue(new_fraction)
+        self._bl_thick_updating = True
+        try:
+            self._bl_thick.setValue(new_fraction)
+        finally:
+            self._bl_thick_updating = False
+        # The fitted first layer becomes the authoritative ABSOLUTE value.
+        self._bl_first_layer_abs = new_h1
 
         # y+ scales (approximately) linearly with the first-layer height, so
         # report the expected shift rather than claiming a new absolute y+.
@@ -1061,7 +1113,16 @@ class ParamsPanel(QWidget):
             min(max(params.n_layers, self._bl_n_layers.minimum()),
                 self._bl_n_layers.maximum())
         )
-        self._bl_thick.setValue(clamped)
+        # The physics result is stored as an ABSOLUTE first layer (metres):
+        # the spin box shows the fraction of the CURRENT max cell for
+        # reference, but the run uses the absolute value, so a later change
+        # of max cell (detail slider / adaptive sizing) cannot rescale it.
+        self._bl_first_layer_abs = params.first_layer_height
+        self._bl_thick_updating = True
+        try:
+            self._bl_thick.setValue(clamped)
+        finally:
+            self._bl_thick_updating = False
         self._bl_exp.setValue(
             min(max(params.growth_rate, self._bl_exp.minimum()), self._bl_exp.maximum())
         )
@@ -1077,9 +1138,11 @@ class ParamsPanel(QWidget):
 
         msg = (
             f"Re={flow.reynolds_number:.3g} · y+ target={params.target_yplus} · "
-            f"first layer={params.first_layer_height:.3g} m · "
+            f"first layer={params.first_layer_height:.3g} m (absolute) · "
             f"{params.n_layers} layers · growth {params.growth_rate:.2f} · "
             f"total thickness={params.total_thickness:.4g} m (L={length:.3g} m){note}"
+            "  [flat-plate estimate: on curved/internal flows the achieved "
+            "y+ can differ ~2-4x]"
         )
         self._bl_info.setText(msg)
         self.suggestion_completed.emit(f"[bl] {msg}")
@@ -1216,7 +1279,7 @@ class ParamsPanel(QWidget):
         return {
             "nLayers": self._bl_n_layers.value(),
             "thicknessRatio": self._bl_exp.value(),
-            "firstLayerThickness": self._bl_thick.value() * self._max_cell.value(),
+            "firstLayerThickness": self._bl_first_layer(),
             # poly path (barycentric dual): checked -> BL on every boundary
             # patch; unchecked (default) -> wall-typed / wall-named patches
             # only (G1 fix, FASE 1)

@@ -1,0 +1,100 @@
+"""Regression: the physics-derived BL first layer is stored ABSOLUTE (m).
+
+Real case (2026-10-07): "Compute layers from physics" produced a first
+layer of 85.8 um for y+ 30, but the run used 6.1 um because the panel
+stored it as a FRACTION of max cell and max cell changed (0.171 -> 0.0122)
+between compute and run.  The simulated y+ came out ~0.09 instead of 30.
+The absolute value is now authoritative; the spin box only shows the
+fraction of the current max cell.
+
+Also pins the flat-plate correlation itself against the textbook value.
+"""
+from __future__ import annotations
+
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import math
+
+import pytest
+
+pytest.importorskip("PySide6")
+import trimesh  # noqa: E402
+
+from polyfoammesh.commercial.bl_engine import BLEngine, FlowConditions  # noqa: E402
+from polyfoammesh.gui.params_panel import ParamsPanel  # noqa: E402
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _qapp():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+def test_engine_flat_plate_textbook_value():
+    """U=1 m/s, L=1 m, water: Re=1e6, Cf=0.027/Re^(1/7) -> h1 ~ 0.69 mm."""
+    flow = FlowConditions.from_velocity(
+        reference_velocity=1.0,
+        reference_length=1.0,
+        kinematic_viscosity=1e-6,
+        turbulence_model="kEpsilon",
+    )
+    params = BLEngine().calculate_from_flow(flow)
+    assert params.target_yplus == 30
+    re = 1.0 * 1.0 / 1e-6
+    cf = 0.027 / re ** (1.0 / 7.0)
+    u_tau = 1.0 * math.sqrt(cf / 2.0)
+    expected = 30.0 * 1e-6 / u_tau
+    # The engine rounds the result to 6 significant digits.
+    assert params.first_layer_height == pytest.approx(expected, rel=1e-4)
+    assert params.first_layer_height == pytest.approx(6.93e-4, rel=0.05)
+
+
+def _panel_with_geometry() -> ParamsPanel:
+    panel = ParamsPanel()
+    panel.set_suggest_meshes([trimesh.creation.box(extents=[1.0, 1.0, 1.0])])
+    panel._bl_checkbox.setChecked(True)  # get_bl_params returns None otherwise
+    return panel
+
+
+def test_physics_first_layer_is_absolute_not_fraction():
+    panel = _panel_with_geometry()
+    panel._max_cell.setValue(0.171)
+    panel._on_bl_auto_compute()
+    first = panel.get_bl_params()["firstLayerThickness"]
+    assert first > 0
+
+    # Simulate a later detail-slider change of max cell: the absolute first
+    # layer must NOT rescale (the historical bug did).
+    panel._max_cell.setValue(0.0122)
+    again = panel.get_bl_params()["firstLayerThickness"]
+    assert again == pytest.approx(first, rel=1e-12)
+
+
+def test_manual_fraction_edit_switches_to_manual_mode():
+    panel = _panel_with_geometry()
+    panel._max_cell.setValue(0.1)
+    panel._on_bl_auto_compute()
+    panel._bl_thick.setValue(0.001)  # manual edit
+    assert panel._bl_first_layer_abs is None
+    expected = 0.001 * panel._max_cell.value()
+    assert panel.get_bl_params()["firstLayerThickness"] == pytest.approx(
+        expected, rel=1e-12
+    )
+
+
+def test_velocity_change_recomputes_after_a_compute():
+    panel = _panel_with_geometry()
+    panel._max_cell.setValue(0.1)
+    panel._bl_velocity.setValue(10.0)
+    panel._on_bl_auto_compute()
+    h_ten = panel.get_bl_params()["firstLayerThickness"]
+    panel._bl_velocity.setValue(1.0)  # auto-recompute
+    h_one = panel.get_bl_params()["firstLayerThickness"]
+    assert h_one > h_ten  # lower velocity -> lower u_tau -> thicker first layer
+    # h1 ~ 1/(U * sqrt(Cf)) with Cf ~ Re^(-1/7) ~ U^(-1/7): the ratio is
+    # 10^(13/14), not exactly 10.
+    assert h_one / h_ten == pytest.approx(10.0 ** (13.0 / 14.0), rel=0.02)

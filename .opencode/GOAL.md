@@ -749,3 +749,26 @@ resta per il loop automatico.
 Nota residua da indagare: '[mesh_engine] /usr/bin/env: bash: No such
 file or directory' visto nello stesso run - probabile effetto collaterale
 del case dir sbagliato; da riverificare dopo il fix.
+
+## Avanzamento 2026-10-07 (notte) - fix y+ / primo strato (errore in catena)
+
+Caso reale (cono, BaramFlow): y+ target 30 -> primo strato calcolato
+85.8 um, motore riceve 6.1 um, simulazione y+ ~0.09.
+Diagnosi con i numeri: la formula del motore e' corretta
+(Cf=0.027/Re^(1/7), kEpsilon yplus_target=30, verificato textbook:
+U=1 L=1 acqua -> h1=0.693 mm). Il bug era nel PANNELLO:
+1) il primo strato era salvato solo come frazione di max_cell; max_cell
+   e' cambiato (0.171 -> 0.0122) -> stessa frazione = 14x piu' piccolo
+   (85.8 -> 6.1 um, esattamente il valore del log);
+2) cambiando Velocity dopo il calcolo (10 -> 1 m/s) la frazione restava
+   quella vecchia.
+Fix: primo strato memorizzato in METRI (assoluto, autorevole),
+frazione solo per display; ricalcolo automatico su cambio
+Velocity/Fluido/Wall treatment; edit manuale -> modalita' manuale; nota
+"flat-plate, su flussi curvi/interni y+ reale puo' differire 2-4x".
+Test: tests/test_bl_first_layer_absolute.py (4 test: textbook,
+assoluto-stabile, manuale, auto-recompute) + 22 correlati verdi.
+PROSSIMO (proposto): calibrazione da simulazione - leggere
+wallShearStress/yPlus dal caso risolto (BaramFlow) -> u_tau reale ->
+ricalcolare h1 per lo y+ target: l'unico modo per centrare y+ su flussi
+reali.
