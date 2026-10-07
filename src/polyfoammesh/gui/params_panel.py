@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
+from pathlib import Path
 
 import trimesh  # ✅ F-017
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -25,6 +31,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -449,6 +457,16 @@ class ParamsPanel(QWidget):
         self._btn_bl_auto.clicked.connect(self._on_bl_auto_compute)
         bl_form.addRow(self._btn_bl_auto)
 
+        self._btn_bl_calibrate = QPushButton("Calibrate from simulation...")
+        self._btn_bl_calibrate.setToolTip(
+            "Read the REAL wall y+ from a solved case (yPlus, or wallShearStress "
+            "as fallback) and propose the exact first layer for the target y+. "
+            "Works on any geometry: it uses the measured, area-weighted wall data "
+            "instead of the flat-plate correlation."
+        )
+        self._btn_bl_calibrate.clicked.connect(self._on_bl_calibrate)
+        bl_form.addRow(self._btn_bl_calibrate)
+
         # The physics-derived first layer is stored in METRES, not only as a
         # fraction of max cell: max cell changes with the detail slider and
         # the adaptive sizing, and a stored fraction silently rescaled the
@@ -544,8 +562,9 @@ class ParamsPanel(QWidget):
             "convert the hex-dominant mesh to polyhedral (polyDualMesh).\n"
             "The dual of a cartesian mesh stays very regular/grid-like\n"
             "(boundary cells ~99% quadrilaterals).",
-            checked=True,
         )
+        # Polymesh is the DEFAULT path (user request: the poly route is the
+        # product's core, cfMesh is the optional alternative).
         _add_mesher_btn(
             f"Polymesh  (poly, {_w['no_of_label']})",
             "gmsh_direct_poly",
@@ -553,14 +572,12 @@ class ParamsPanel(QWidget):
             "rebuild — 100% polyhedral coverage, ~5.5x lower cell count\n"
             f"(STAR-CCM+ style). Ideal for CFD. {_w['no_of_sentence']}\n"
             "Works best with real STEP/CAD input.",
-            checked=False,
+            checked=True,
         )
-        _add_mesher_btn(
-            f"FEM Tetra  (GMSH, {_w['no_of_label']})",
-            "gmsh_direct",
-            f"Pure GMSH tetrahedral mesh, {_w['no_of_sentence_l']}\n"
-            "For native tet FEM solvers. No polyhedral conversion.",
-        )
+        # "FEM Tetra (GMSH)" was removed (user request): a pure tet mesh for
+        # FEM solvers was a niche that duplicated the GMSH stage; the
+        # internal TETRAHEDRAL algorithm remains as the auto fallback for
+        # complex geometry, it just has no user-facing button any more.
         mesh_layout.addWidget(mesher_group)
         self._bl_group = bl_group
         self._mesher_group = mesher_group
@@ -1146,6 +1163,177 @@ class ParamsPanel(QWidget):
         )
         self._bl_info.setText(msg)
         self.suggestion_completed.emit(f"[bl] {msg}")
+
+    # Fluid density (kg/m^3) for turning wallShearStress into u_tau.
+    _FLUID_RHO = {"Air (20°C)": 1.2, "Water (20°C)": 998.0}
+
+    def _bl_target_yplus(self) -> float:
+        """Target y+ encoded in the wall-treatment combo ("y+ ≈ 30" / "≈ 1")."""
+        text = self._bl_wall_treatment.currentText()
+        m = re.search(r"y\+\s*[≈~=]?\s*(\d+(?:\.\d+)?)", text)
+        if m:
+            return float(m.group(1))
+        return 1.0 if "resolved" in text.lower() else 30.0
+
+    def _bl_case_dir(self) -> str:
+        """Known case directory, or ask the user for a solved case."""
+        case_dir = (self._case_dir or "").strip()
+        if case_dir and Path(case_dir).is_dir():
+            return case_dir
+        start = case_dir or os.path.expanduser("~")
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Select a solved OpenFOAM case directory", start
+        )
+        return chosen or ""
+
+    def _on_bl_calibrate(self):
+        """Recover the real first layer from a solved case's wall y+ data."""
+        from polyfoammesh.core.solver_calibration import (
+            calibrate_from_case,
+            proposed_first_layer,
+        )
+
+        case_dir = self._bl_case_dir()
+        if not case_dir:
+            return
+        h1_used = self._bl_first_layer()
+        fluid = self._bl_fluid.currentText()
+        nu = self._FLUID_NU.get(fluid, 1.5e-5)
+        rho = self._FLUID_RHO.get(fluid, 1.2)
+        target = self._bl_target_yplus()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = calibrate_from_case(
+                case_dir, h1_used=h1_used, nu=nu, rho=rho, fluid=fluid
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not result.ok:
+            QMessageBox.warning(self, "Calibration failed", result.error)
+            return
+
+        proposed = proposed_first_layer(target, h1_used, result, nu)
+        if proposed is None:
+            QMessageBox.warning(
+                self, "Calibration failed",
+                "Could not compute a proposed first layer from the measured y+.",
+            )
+            return
+
+        self._show_calibration_dialog(result, h1_used, target, nu, proposed)
+
+    def _show_calibration_dialog(
+        self, result, h1_used: float, target: float, nu: float, proposed: float
+    ) -> None:
+        """Per-patch table + proposal, with Apply/Cancel."""
+        from polyfoammesh.core.solver_calibration import proposed_first_layer
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Calibrate first layer from simulation")
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel(
+            f"Case: {result.case_dir}\n"
+            f"Time {result.time_name} · field {result.field} · "
+            f"rho {result.rho:.4g} kg/m³"
+        ))
+
+        table = QTableWidget(len(result.patches), 5)
+        table.setHorizontalHeaderLabels(
+            ["Patch", "Area (m²)", "Mean y+", "p10", "p90"]
+        )
+        for row, stat in enumerate(result.patches):
+            table.setItem(row, 0, QTableWidgetItem(stat.name))
+            table.setItem(row, 1, QTableWidgetItem(f"{stat.area:.6g}"))
+            table.setItem(row, 2, QTableWidgetItem(f"{stat.mean_yplus:.4g}"))
+            table.setItem(row, 3, QTableWidgetItem(f"{stat.p10:.4g}"))
+            table.setItem(row, 4, QTableWidgetItem(f"{stat.p90:.4g}"))
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+
+        layout.addWidget(QLabel(
+            f"Overall area-weighted mean y+ = {result.mean_yplus:.4g} "
+            f"(p10 {result.p10:.4g} / p90 {result.p90:.4g})"
+        ))
+        if not result.single_h1_reaches_all:
+            warn = QLabel(
+                f"y+ varies x{result.spread_ratio:.1f} across the wall: a single "
+                "first layer cannot hit the target everywhere; the proposal uses "
+                "the area-weighted mean."
+            )
+            warn.setWordWrap(True)
+            warn.setStyleSheet(metric_label(COLOR_DANGER, FS_METRIC))
+            layout.addWidget(warn)
+        for note in getattr(result, "notes", []) or []:
+            note_label = QLabel(note)
+            note_label.setWordWrap(True)
+            note_label.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+            layout.addWidget(note_label)
+
+        form = QFormLayout()
+        current = QDoubleSpinBox()
+        current.setRange(1e-9, 10.0)
+        current.setDecimals(9)
+        current.setSingleStep(1e-6)
+        current.setSuffix(" m")
+        current.setValue(h1_used)
+        form.addRow("Current first layer:", current)
+        proposed_label = QLabel(f"{proposed:.6g} m")
+        form.addRow(f"Proposed first layer (y+ {target:g}):", proposed_label)
+        layout.addLayout(form)
+
+        def _recompute(*_args) -> None:
+            p = proposed_first_layer(target, current.value(), result, nu)
+            proposed_label.setText("n/a" if p is None else f"{p:.6g} m")
+
+        current.valueChanged.connect(_recompute)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Apply | QDialogButtonBox.Cancel
+        )
+        buttons.button(QDialogButtonBox.Apply).setText("Apply")
+        applied: dict[str, float | None] = {"h1": None}
+
+        def _apply() -> None:
+            p = proposed_first_layer(target, current.value(), result, nu)
+            if p is not None:
+                applied["h1"] = p
+                dlg.accept()
+
+        buttons.button(QDialogButtonBox.Apply).clicked.connect(_apply)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.Accepted and applied["h1"]:
+            self._apply_bl_calibration(applied["h1"], result)
+
+    def _apply_bl_calibration(self, proposed_h1: float, result=None) -> None:
+        """Make the proposed first layer the authoritative ABSOLUTE value.
+
+        Mirrors the physics path: the spin box is only a display of the
+        fraction of the CURRENT max cell, while the run uses the absolute
+        metres, so a later max-cell change cannot rescale it.
+        """
+        if not proposed_h1 or proposed_h1 <= 0:
+            return
+        max_cell = max(self._max_cell.value(), 1e-12)
+        fraction = min(
+            max(proposed_h1 / max_cell, self._bl_thick.minimum()),
+            self._bl_thick.maximum(),
+        )
+        self._bl_first_layer_abs = float(proposed_h1)
+        self._bl_thick_updating = True
+        try:
+            self._bl_thick.setValue(fraction)
+        finally:
+            self._bl_thick_updating = False
+        if result is not None and getattr(result, "ok", False):
+            self.suggestion_completed.emit(
+                f"[bl] calibration: mean y+ {result.mean_yplus:.3g} -> "
+                f"first layer {proposed_h1:.4g} m"
+            )
+        self._refresh_bl_hint()
 
     def _on_suggest_sizes(self):
         if not self._suggest_meshes:

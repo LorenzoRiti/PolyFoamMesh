@@ -2591,7 +2591,7 @@ class MainWindow(QMainWindow):
             logger.critical("Meshing pipeline crashed:\n%s", tb)
             self._log.append_log(f"{Tag.ERROR} Meshing failed: {e}")
             self._params.set_all_enabled(True)
-            self._params.set_meshing_state(False)
+            self._set_run_state(False)
             self._progress.setVisible(False)
             self._ribbon_btns["cancel"].setVisible(False)
             self._status.showMessage("Meshing crashed")
@@ -2869,7 +2869,7 @@ class MainWindow(QMainWindow):
             self._on_meshing_finished(exit_code, output, attempts)
 
         try:
-            self._params.set_meshing_state(True)
+            self._set_run_state(True)
             self._progress.setRange(0, 0)
             self._progress.setVisible(True)
             self._ribbon_btns["cancel"].setVisible(True)
@@ -2932,7 +2932,7 @@ class MainWindow(QMainWindow):
             logger.error("Meshing launch failed: %s", e)
             self._log.append_log(f"{Tag.ERROR} Meshing launch failed: {e}")
             self._params.set_all_enabled(True)
-            self._params.set_meshing_state(False)
+            self._set_run_state(False)
             self._progress.setVisible(False)
             self._ribbon_btns["cancel"].setVisible(False)
             return
@@ -3811,6 +3811,20 @@ class MainWindow(QMainWindow):
             self._on_meshing_finished(exit_code, output, attempts)
         return guarded
 
+    def _set_run_state(self, running: bool) -> None:
+        """Single run-state switch: panel buttons + viewer render pacing.
+
+        The log flood was the main GUI-stutter source while meshing (fixed
+        in the log panel); the viewer's 30 FPS auto-update is the other
+        one, so it is paused for the duration of a run and resumed at the
+        end. The viewer is optional (no VTK), hence the guard.
+        """
+        self._params.set_meshing_state(running)
+        try:
+            self._viewer.set_rendering_paused(running)
+        except Exception:  # noqa: BLE001 - viewer is optional
+            pass
+
     def _on_cancel_meshing(self):
         self._run_id += 1
         # Kill WSL subprocesses FIRST, before stopping workers — and do it
@@ -3863,7 +3877,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 logger.debug("viewer mesh display cancel failed: %s", exc)
 
-        self._params.set_meshing_state(False)
+        self._set_run_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
         self._ribbon_btns["cancel"].setVisible(False)
@@ -3877,7 +3891,7 @@ class MainWindow(QMainWindow):
         if meshing_id is not None and meshing_id != self._run_id:
             logger.debug("Stale _on_meshing_finished ignored (meshing_id=%d, run_id=%d)", meshing_id, self._run_id)
             return
-        self._params.set_meshing_state(False)
+        self._set_run_state(False)
         self._progress.setVisible(False)
         self._ribbon_btns["cancel"].setVisible(False)
         self._params.set_all_enabled(True)
@@ -4024,7 +4038,7 @@ class MainWindow(QMainWindow):
             self._on_meshing_finished(ec, out, att)
 
         try:
-            self._params.set_meshing_state(True)
+            self._set_run_state(True)
             self._progress.setRange(0, 0)
             self._progress.setVisible(True)
             self._ribbon_btns["cancel"].setVisible(True)
@@ -4046,7 +4060,7 @@ class MainWindow(QMainWindow):
             logger.error("Direct remesh launch failed: %s", e)
             self._log.append_log(f"{Tag.ERROR} Direct remesh launch failed: {e}")
             self._params.set_all_enabled(True)
-            self._params.set_meshing_state(False)
+            self._set_run_state(False)
             self._progress.setVisible(False)
             self._ribbon_btns["cancel"].setVisible(False)
 
@@ -5310,7 +5324,7 @@ class MainWindow(QMainWindow):
 
         self._run_id += 1
         my_id = self._run_id
-        self._params.set_meshing_state(True)
+        self._set_run_state(True)
         self._params.set_all_enabled(False)
         self._ribbon_btns["cancel"].setVisible(True)
         self._progress.setRange(0, 0)
@@ -5386,7 +5400,7 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"{Tag.ERROR} Solution-adaptive refinement failed: {msg}")
 
     def _on_samr_thread_done(self):
-        self._params.set_meshing_state(False)
+        self._set_run_state(False)
         self._params.set_all_enabled(True)
         self._progress.setVisible(False)
         self._ribbon_btns["cancel"].setVisible(False)
@@ -5588,7 +5602,7 @@ class MainWindow(QMainWindow):
         """Safely restore the UI after any job ends (success/fail/cancel)."""
         try:
             self._params.set_all_enabled(True)
-            self._params.set_meshing_state(False)
+            self._set_run_state(False)
         except Exception:
             pass
         self._progress.setVisible(False)

@@ -64,6 +64,9 @@ def _build_stub():
     grid._kill_wsl_processes = mock.Mock()
     # Attach the REAL cancel handler (unbound method) to the stub object.
     grid._on_cancel_meshing = mw.MainWindow._on_cancel_meshing.__get__(grid)
+    # ... and the run-state helper it delegates to (panel buttons + viewer
+    # render pacing in one place).
+    grid._set_run_state = mw.MainWindow._set_run_state.__get__(grid)
     return grid
 
 

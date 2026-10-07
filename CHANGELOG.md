@@ -38,6 +38,27 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   "Linux (from source)" in INSTALL.md/.it.md. Comportamento Windows
   verificato **byte-identico** (18/18 controlli su comandi e script
   generati).
+- **Calibrazione y+ dalla simulazione**: nuovo bottone nel pannello BL
+  ("Calibrate from simulation"): legge `yPlus` (o `wallShearStress`) dal
+  caso risolto con parsing diretto (senza WSL/foamToVTK), calcola le
+  statistiche **pesate per area** sulle patch wall (ruoli inferiti
+  geometricamente: funziona anche con nomi `surface_N`, e con geometrie
+  chiuse/esterne via fallback per tipo/nome), mostra tabella per-patch
+  (media/p10/p90), avvisa quando un singolo primo strato non può centrare
+  il target ovunque (spread > 3x) e propone il nuovo primo strato
+  `h1_usato × y+target / y+medio`, applicabile con un click. Verificato
+  sul caso reale BaramFlow: y+ medio 0.0955 = identico al log del solver,
+  proposta 1.92 mm per y+ 30.
+- **Visibilità del boundary layer nel viewer**: checkbox "Show BL" che
+  classifica le celle prisma (seed dalle facce wall + test di forma +
+  flood multi-strato) e colora i BL in arancione sul core grigio.
+- **Log durante la mesh**: il pannello log creava UN blocco HTML unico e
+  illimitato → re-layout quadratico (10k righe = 29 s, 50k > 300 s) e
+  lag della GUI "senza motivo". Ora batching su timer, blocchi reali
+  (il tetto righe funziona davvero), coalescing delle righe ripetute
+  ("Improving..." collassate con contatore, "still running" sostituita):
+  50k righe in ~0.24 s. Nessun mirror di log esisteva, nessuna fedeltà
+  persa.
 - **Supporto Linux (fase 2 - GUI)**: il gate di disponibilità ora è
   "OpenFOAM disponibile (nativo o WSL)" (non più solo WSL), il probe RAM
   usa la RAM dell'host anche su Linux, il case root non dipende più da
@@ -47,6 +68,14 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Calibrazione y+: convenzione `wallShearStress`**: i solver
+  incomprimibili OpenFOAM scrivono il campo come τw/ρ (cinematico), ma il
+  codice divideva per ρ → u_tau sbagliato di √ρ (×31 per l'acqua). Ora
+  default cinematico (`u_tau = √|τw|`), convenzione dinamica disponibile
+  via `kinematic_shear=False`, con nota nel risultato e nel dialog.
+- **Deselezione patch nel viewer**: un click sullo **spazio vuoto** del 3D
+  ora rimuove l'evidenziazione e la selezione della riga (prima restavano
+  per sempre, rendendo inutile la selezione).
 - **y+ / primo strato del boundary layer (errore in catena, caso reale)**:
   il calcolo fisico era corretto (flat-plate, k-epsilon y+ 30) ma il
   pannello salvava il primo strato solo come **frazione di `max cell`**;
@@ -154,8 +183,9 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   `concaveClosure` dal payload GUI. Il flag legacy resta solo per il
   merge repair post-BL (off di default, misurato in regressione su
   groove1).
-- Pulsante **Full Auto** (il pulsante Cancel resta, centrato nella
-  ribbon).
+- Pulsante **Full Auto** dalla ribbon. Il **Cancel** non sta più nella
+  ribbon: è stato spostato nel tab Mesh, **sotto "Reset All"**, dove
+  l'utente guarda durante un run (appare solo mentre la mesh è in corso).
 - Combo **Decimation** dal viewer (la policy Auto resta fissa
   internamente).
 - Tab **Quality** vuota dal pannello sinistro (mostrava solo "No quality
@@ -167,6 +197,14 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Modificato
 
+- **Lista mesher**: **Polymesh è il percorso di default** (prima
+  Cartesian cfMesh, che resta come alternativa); il pulsante
+  "FEM Tetra (GMSH)" è stato **rimosso** (nicchia che duplicava lo stadio
+  GMSH — l'algoritmo tetraedrico interno resta come fallback automatico
+  per geometrie complesse).
+- **Viewer durante i run**: il render periodico (30 FPS) viene messo in
+  **pausa** mentre la mesh è in corso e ripreso alla fine, per non
+  competere con i worker (helper unico `_set_run_state`).
 - **Feature angle**: range esteso a 5–179° (era 5–80°, non permetteva
   valori come 89°); l'ultimo angolo usato viene ricordato.
 - **Interfaccia interamente in inglese**: pannelli, dialoghi, tooltip e

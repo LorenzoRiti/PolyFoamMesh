@@ -946,6 +946,30 @@ class PolyBoundaryLayerEngine:
         self._case_dir = Path(case_dir).resolve()
         self._log = log or (lambda msg: logger.info(msg))
         self._cancel = cancel or (lambda: False)
+        # Stage-timing accumulators (task: lightweight instrumentation, no
+        # behaviour change).  ``_build_precompute`` and every ``_build`` /
+        # ``_retry_local_height`` call site add their wall time here; ``run``
+        # resets them per call and logs one summary line via
+        # ``_finalize_stage_times``.  Only a few perf_counter calls.
+        self._stage_pre_s = 0.0
+        self._stage_build_s = 0.0
+
+    def _finalize_stage_times(self, res, t0: float) -> None:
+        """Log ONE stage-timing line for this run and stash the numbers.
+
+        Uses ``time.perf_counter`` (monotonic, high resolution).  Purely
+        additive: it does not touch any mesh data or decision.
+        """
+        total = time.perf_counter() - t0
+        pre = self._stage_pre_s
+        build = self._stage_build_s
+        res.stats["stage_precompute_s"] = round(pre, 1)
+        res.stats["stage_build_s"] = round(build, 1)
+        res.stats["stage_total_s"] = round(total, 1)
+        self._log(
+            f"[bl] stage times: precompute {pre:.1f}s | "
+            f"build {build:.1f}s | total {total:.1f}s"
+        )
 
     # ------------------------------------------------------------------
     # public API
@@ -1129,6 +1153,9 @@ class PolyBoundaryLayerEngine:
                 "edge_cap_percentile must be in [0, 100] "
                 "(0 keeps the historical min-edge cap)"
             )
+        t_run0 = time.perf_counter()
+        self._stage_pre_s = 0.0
+        self._stage_build_s = 0.0
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
             first_height=float(first_height),
@@ -1276,7 +1303,7 @@ class PolyBoundaryLayerEngine:
                     "(expected True, 'decoupled' or 'decoupled_vertex')"
                 )
                 return res
-            return self._run_local_termination(
+            out = self._run_local_termination(
                 res, points, faces, owner, neighbour, patches, n_int,
                 sel, drop_bnd, pyr_before, total_vol0,
                 max_core_volume_ratio, concavity_criterion, growth, poly,
@@ -1289,6 +1316,8 @@ class PolyBoundaryLayerEngine:
                 height_retry=local_height_retry,
                 edge_cap_percentile=edge_cap_percentile,
             )
+            self._finalize_stage_times(out, t_run0)
+            return out
 
         # fallback: progressively thinner layers AND tighter per-vertex
         # clamping (the pyramid criterion fails on thin twisted rim cells
@@ -1297,11 +1326,13 @@ class PolyBoundaryLayerEngine:
         # support distances, edge/patch maps) is computed ONCE  -  on the valve
         # it measured ~58 s per attempt, so reusing it across the 5 attempts
         # is most of the speedup.
+        _t_pre = time.perf_counter()
         pre = self._build_precompute(
             points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
             concavity_criterion=concavity_criterion, normal_method=normal_method,
             edge_cap_percentile=edge_cap_percentile, thin_bnd=thin_bnd,
         )
+        self._stage_pre_s += time.perf_counter() - _t_pre
         for k, v in pre.get("dual_stats", {}).items():
             res.stats[k] = v
 
@@ -1348,7 +1379,9 @@ class PolyBoundaryLayerEngine:
             ):
                 if self._cancel():
                     res.errors.append("cancelled")
+                    self._finalize_stage_times(res, t_run0)
                     return res
+                _t_build = time.perf_counter()
                 try:
                     built = self._build(
                         points, faces, owner, neighbour, patches, n_int,
@@ -1375,6 +1408,8 @@ class PolyBoundaryLayerEngine:
                         f"attempt at scale={scale} failed: {exc}"
                     )
                     continue
+                finally:
+                    self._stage_build_s += time.perf_counter() - _t_build
                 self._log(f"[bl] validating attempt at scale={scale} "
                           f"clamp={clamp} (cover_thin={cover_thin}, "
                           "checkMesh criteria)...")
@@ -1395,7 +1430,9 @@ class PolyBoundaryLayerEngine:
                             f"{_med:g} of {res.n_layers} requested) - rejected"
                         )
                         continue
-                    return self._accept_built(res, built, scale, clamp, poly)
+                    _out = self._accept_built(res, built, scale, clamp, poly)
+                    self._finalize_stage_times(_out, t_run0)
+                    return _out
                 res.warnings.append(
                     f"validation failed at scale={scale} clamp={clamp}: {msg}"
                 )
@@ -1456,6 +1493,7 @@ class PolyBoundaryLayerEngine:
             "could not insert a valid boundary layer (all height scales "
             "failed validation); mesh left unchanged"
         )
+        self._finalize_stage_times(res, t_run0)
         return res
 
     @staticmethod
@@ -1699,6 +1737,7 @@ class PolyBoundaryLayerEngine:
             trial_scale = dict(height_scale)
             for v in remaining:
                 trial_scale[v] = retry_scale
+            _t_build = time.perf_counter()
             try:
                 built = self._build(
                     points, faces, owner, neighbour, patches, n_int,
@@ -1713,6 +1752,8 @@ class PolyBoundaryLayerEngine:
                 )
             except Exception:  # noqa: BLE001 - this scale just doesn't work
                 continue
+            finally:
+                self._stage_build_s += time.perf_counter() - _t_build
             added2 = self._collect_exclusions(built, sel_cur, owner, n_int)
             still_bad: set[int] = set()
             for b in added2:
@@ -1833,6 +1874,7 @@ class PolyBoundaryLayerEngine:
                         f"({n_dropped} of {len(sel)})"
                     )
                     return res
+                _t_pre = time.perf_counter()
                 pre = self._build_precompute(
                     points, faces, owner, neighbour, patches, n_int,
                     sel_cur, drop_bnd,
@@ -1840,8 +1882,10 @@ class PolyBoundaryLayerEngine:
                     normal_method=normal_method,
                     edge_cap_percentile=edge_cap_percentile,
                 )
+                self._stage_pre_s += time.perf_counter() - _t_pre
                 for k, v in pre.get("dual_stats", {}).items():
                     res.stats[k] = v
+                _t_build = time.perf_counter()
                 try:
                     built = self._build(
                         points, faces, owner, neighbour, patches, n_int,
@@ -1860,6 +1904,8 @@ class PolyBoundaryLayerEngine:
                         f"local attempt at scale={scale} failed: {exc}"
                     )
                     break
+                finally:
+                    self._stage_build_s += time.perf_counter() - _t_build
                 self._log(
                     f"[bl] local termination attempt scale={scale} "
                     f"round={_round} excluded={n_dropped} "

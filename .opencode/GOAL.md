@@ -772,3 +772,76 @@ PROSSIMO (proposto): calibrazione da simulazione - leggere
 wallShearStress/yPlus dal caso risolto (BaramFlow) -> u_tau reale ->
 ricalcolare h1 per lo y+ target: l'unico modo per centrare y+ su flussi
 reali.
+
+## Programma notte 2026-10-07/08 - 3 corsie parallele (non committate)
+
+Contesto: utente a dormire, lavoro autonomo. Corsie attive su file disgiunti:
+1) CALIBRAZIONE y+ da simulazione (core/solver_calibration.py nuovo +
+   params_panel/main_window): legge yPlus/wallShearStress dal caso risolto
+   (parsing diretto, no WSL), ruoli wall inferiti (funziona su surface_N),
+   media pesata per area + p10/p90 per patch, avviso spread>3x (un solo h1
+   non centra y+ ovunque), proposta h1 = h1_usato*target/media, bottone +
+   dialog Apply. Verifica su caso reale BaramFlow C:\baram\11.bf se presente.
+2) VELOCITA' poly path (bl_poly/gmsh_wrapper/openfoam_runner/tet_poly_dual):
+   VINCOLO output IDENTICO (fingerprint SHA256 polyMesh + conteggi +
+   checkMesh); timings per stadio nel log; parallelizzazione SOLO del
+   precompute BL (multiprocessing, deterministico, fallback
+   POLYFOAMMESH_BL_SERIAL=1); esclusi threading GMSH (misurato: zero) e
+   build/winding solve. Misura before/after su dual reale.
+3) VISIBILITA' BL nel viewer (core/bl_cells.py nuovo + viewer_widget):
+   classificatore celle BL (seed da facce wall + test prisma m-gon +
+   flood multi-strato), checkbox "Show BL" che colora i prismi
+   diversamente dal core; test sintetico + smoke.
+
+In attesa di commit (file toccati da corsie in corso):
+- deselezione patch su click nel vuoto (viewer_widget + test, gia'
+  verificata: 18 test verdi) - commit quando le corsie atterrano.
+Poi, sempre in coda:
+- lista mesher: Polymesh default/primo, RIMUOVERE FEM Tetra
+  (params_panel+mesh_engine, appena la corsia 1 libera il file);
+- cache/riuso mesh+dual tra run (salta GMSH quando geometria/sizing
+  invariati) - il vero guadagno pratico per l'iterazione BL;
+- verifica finale di tutte le corsie, docs (CHANGELOG/GOAL/USER_GUIDE) e
+  commit unico; benchmark robust ON da rifare prima del rilascio.
+
+## Lane 4 (lag GUI durante la mesh) - avviata fase 1
+
+Analisi: log_panel ha GIA' maximumBlockCount + burst-drop; il lag residuo
+probabile = costo per-riga dell'highlighting + flood GMSH
+(Improving/still running) + viewer 30 FPS che compete + GIL dei loop
+Python. Fase 1 (in corso, log_panel.py libero): profiling headless 50k
+righe, batching su QTimer, coalescing IN WIDGET delle righe ripetute
+(still running sostituita, Improving collassata con contatore) con
+fidelity piena su eventuali mirror (file/telemetria), benchmark
+before/after, test dedicati. Fase 2 (quando viewer_widget si libera dalla
+lane 3): politica di rendering del viewer durante i run (auto_update
+ridotto/pausa). Fase 3 (quando la lane 2 libera tet_poly_dual): audit
+GIL-yield nei loop lunghi del dual.
+
+## Notte 2026-10-08 - chiusura corsie (no commit ancora: corsia velocita' attiva)
+
+Atterrate e verificate (ruff + test + numeri):
+- CALIBRAZIONE y+ (lane 1): verificata; corrette 2 cose da me:
+  (a) wallShearStress -> convenzione CINEMATICA di default (era diviso per
+  rho: errore x31 in acqua) con opzione dinamica; (b) fallback ruoli per
+  geometrie chiuse/esterne (tutto wall tranne inlet/outlet/symmetry
+  espliciti) + note mostrate nel dialog. Caso reale BaramFlow: y+ medio
+  0.0955 = identico al solver; proposta 1.92 mm per y+30.
+- VISIBILITA' BL (lane 3): verificata (27 test). Checkbox "Show BL",
+  classificatore in core/bl_cells.py (seed wall + test prisma + flood
+  multi-strato). Limite: prismi a base quadrata indistinguibili da hex
+  (il dual di produzione usa n-gon: coperto).
+- LOG/LAG (lane 4): verificata (22 test). Root cause trovata: insertHtml
+  creava UN blocco unico -> re-layout quadratico (10k righe 29 s, 50k
+  >300 s). Ora 50k righe in 0.24 s con batching+coalescing view-only.
+- VIEWER PAUSE (fase 2 lane 4, fatta da me): render 30 FPS in pausa
+  durante i run via _set_run_state (10 siti consolidati); test aggiornato.
+- LISTA MESHER (fatta da me): Polymesh DEFAULT (prima cfMesh), FEM Tetra
+  rimosso (fallback interno intatto); test test_mesher_buttons aggiornati.
+- CHANGELOG aggiornato per tutto il blocco notturno.
+IN VOLO: corsia VELOCITA' (bl_poly precompute multiprocessing + timings,
+vincolo output identico con fingerprint SHA256). Al suo atterraggio:
+verifica fingerprint/timings/golden, fast suite completa, eventuali
+correzioni, e COMMIT UNICO del blocco (deselezione, calibrazione, BL
+visibility, log, viewer pause, mesher list, velocita').
+Poi coda: cache mesh/dual tra run, benchmark robust ON, verifica Linux CI.
