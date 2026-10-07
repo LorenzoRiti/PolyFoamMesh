@@ -732,3 +732,20 @@ geometria.
 Resta: fase 3 packaging (AppImage/tarball build in CI) e la verifica
 Linux vera in CI; decisione aperta col utente sul fix algoritmico del
 terminator BL (caso paletta).
+
+## Avanzamento 2026-10-07 (notte) - fix regressione case root + Auto-Fix rimosso
+
+Regressione fase 2 Linux scoperta da un run reale (gmsh_direct_20261007_225047):
+_space_free_cases_root riscriveva il path (spazi -> underscore) creando
+C:\Users\Davide_Valoroso\... INESISTENTE -> WSL/checkMesh leggeva la
+directory sbagliata: 'cells=8', qualita' a zero nel pannello, dual
+'cells 701981 -> 0'. Fix: root senza spazi PER COSTRUZIONE
+(<disco>:\cfmesh_cases su Windows, tempdir/cfmesh_cases su POSIX); mai
+riscrivere path esistenti. Verifica: _resolve_case_root() ->
+C:\cfmesh_cases, smoke offscreen, 87 test quality/case-root verdi.
+Rimosso anche il pulsante 'Auto-Fix Quality' (il gate ritenta in
+automatico; richiesta utente) con signal/connect; _on_auto_fix_quality
+resta per il loop automatico.
+Nota residua da indagare: '[mesh_engine] /usr/bin/env: bash: No such
+file or directory' visto nello stesso run - probabile effetto collaterale
+del case dir sbagliato; da riverificare dopo il fix.

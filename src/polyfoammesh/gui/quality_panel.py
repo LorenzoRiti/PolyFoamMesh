@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
 )
-from PySide6.QtCore import Signal
 
 from polyfoammesh.gui.style import (
     COLOR_PASS, COLOR_WARN, COLOR_FAIL, COLOR_BG_DIM,
@@ -53,8 +52,6 @@ COLOR_DIM = COLOR_BG_DIM
 
 
 class QualityPanel(QFrame):
-    fix_requested = Signal(str)
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
@@ -107,13 +104,6 @@ class QualityPanel(QFrame):
         self._export_pdf_btn.setVisible(False)
         bottom.addWidget(self._export_pdf_btn)
 
-        self._auto_fix_btn = QPushButton("Auto-Fix Quality")
-        self._auto_fix_btn.setFixedSize(100, 20)
-        self._auto_fix_btn.setStyleSheet(f"font-size: {FS_BTN_TINY}px;")
-        self._auto_fix_btn.clicked.connect(self._on_auto_fix)
-        self._auto_fix_btn.setVisible(False)
-        bottom.addWidget(self._auto_fix_btn)
-
         bottom.addStretch()
         layout.addLayout(bottom)
 
@@ -132,7 +122,6 @@ class QualityPanel(QFrame):
         self._raw_log = report.get("raw_output", "")
         self._show_log_btn.setVisible(True)
         self._export_pdf_btn.setVisible(True)
-        self._auto_fix_btn.setVisible(True)
         metrics = report["metrics"]
         passed = report["passed"]
         status = report["status"]
@@ -184,7 +173,6 @@ class QualityPanel(QFrame):
         self._cells_label.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         self._show_log_btn.setVisible(False)
         self._export_pdf_btn.setVisible(False)
-        self._auto_fix_btn.setVisible(False)
         self.hide()
 
     def set_raw_log(self, text: str):
@@ -236,10 +224,6 @@ class QualityPanel(QFrame):
             tasks = TaskManager(self)
             self._tasks = tasks
         tasks.submit("pdf_export", FunctionWorker(work), on_finished=on_done, on_failed=on_failed)
-
-    def _on_auto_fix(self):
-        self.fix_requested.emit("auto_fix")
-
 
 class LogViewerDialog(QDialog):
     def __init__(self, text: str, parent=None):
