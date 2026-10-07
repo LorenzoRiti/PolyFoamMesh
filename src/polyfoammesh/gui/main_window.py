@@ -21,9 +21,13 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QDockWidget,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QInputDialog,
     QLabel,
@@ -54,6 +58,7 @@ from polyfoammesh.core.geometry import (
     estimate_cell_count_geometric,
     load_geometry,
     load_step,
+    split_mesh_by_angle,
     split_single_stl_patch,
     cfmesh_cell_budget,
     scale_meshes,
@@ -561,7 +566,11 @@ class MainWindow(QMainWindow):
         v.addWidget(tree)
         v.addWidget(hint_title)
         v.addWidget(self._wf_hint)
-        v.addStretch()
+        # The BaramMesh-style patch panel lives here, in the vertical space
+        # that used to be empty below the workflow hint (user request:
+        # bottom-left, not under the viewer toolbar). The widget is built
+        # by the viewer (all its logic lives there) and embedded here.
+        v.addWidget(self._viewer.patch_panel(), 1)
 
         dock.setWidget(container)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
@@ -722,6 +731,7 @@ class MainWindow(QMainWindow):
 
         self._viewer = ViewerWidget()
         self._viewer.face_picked.connect(self._on_face_picked)
+        self._viewer.patch_renamed.connect(self._on_patch_renamed)
         h_splitter.addWidget(self._viewer)
 
         right = QWidget()
@@ -738,6 +748,9 @@ class MainWindow(QMainWindow):
         self._viewer.refinement_point_picked.connect(self._on_refinement_point_picked)
         self._params.add_box_requested.connect(self._on_add_refinement_box)
         self._params.refinements_changed.connect(self._on_refinements_changed)
+        self._params.refinement_selection_changed.connect(
+            self._on_refinement_selection_changed
+        )
         self._viewer.refinement_boxes_changed.connect(self._on_refinement_boxes_changed)
         rl.addWidget(self._params)
 
@@ -805,15 +818,13 @@ class MainWindow(QMainWindow):
             self._progress.setRange(0, 100)
             self._progress.setVisible(False)
             if disable_run and hasattr(self._params, "_btn_run"):
-                # Re-derive from the current patch list rather than
+                # Re-derive from the currently loaded meshes rather than
                 # restoring a snapshot taken before this block ran: geometry
-                # loading happens *inside* this context and calls
-                # set_patches(), which is what should actually decide
-                # whether "Generate Mesh" is enabled. Restoring a stale
-                # pre-load snapshot (always False before geometry existed)
-                # silently clobbered that back to disabled every time —
-                # geometry loaded fine, patches showed up, "Ready to mesh"
-                # displayed, but the button just sat there dead.
+                # loading happens *inside* this context (and/or asynchronously),
+                # and set_suggest_meshes()/set_meshing_enabled() are what should
+                # actually decide whether "Generate Mesh" is enabled.
+                # Restoring a stale pre-load snapshot (always False before
+                # geometry existed) silently clobbered that back to disabled.
                 self._params._btn_run.setEnabled(
                     bool(self._params.get_patch_names())
                 )
@@ -853,17 +864,100 @@ class MainWindow(QMainWindow):
         self._params.restore_params(s.raw)
         self._ribbon_btns["expert"].setChecked(self._params.is_expert_mode())
 
+    def _ask_patch_split_settings(self, *, is_step: bool) -> tuple[float, bool] | None:
+        """BaramMesh-style "Patch splitting" dialog, shown on CAD import.
+
+        Returns ``(feature_angle_deg, use_cad_face_names)`` or ``None`` when
+        the user cancels (which aborts the load). The chosen angle is
+        persisted under ``geometry/feature_angle``; the first time, STEP
+        defaults to 30° and STL to 40°.
+        """
+        settings = self._settings()
+        default_angle = 30.0 if is_step else 40.0
+        stored = settings.get_value("geometry/feature_angle", None)
+        try:
+            angle = float(stored) if stored is not None else default_angle
+        except (TypeError, ValueError):
+            angle = default_angle
+        angle = max(5.0, min(80.0, angle))
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Patch splitting")
+        layout = QVBoxLayout(dlg)
+
+        form = QFormLayout()
+        angle_spin = QDoubleSpinBox()
+        angle_spin.setRange(5.0, 179.0)
+        angle_spin.setDecimals(1)
+        angle_spin.setSingleStep(1.0)
+        angle_spin.setValue(angle)
+        angle_spin.setToolTip(
+            "Faces joined by a dihedral angle smaller than this are merged "
+            "into one patch (BaramMesh-style). Smaller = more patches."
+        )
+        form.addRow("Feature angle (\u00b0):", angle_spin)
+        layout.addLayout(form)
+
+        names_check = QCheckBox("Use CAD face names (inlet/outlet/wall) when available")
+        names_check.setToolTip(
+            "STEP only: keep the CAD face classification (inlet/outlet/wall). "
+            "Turn off to split the whole shape purely by the feature angle."
+        )
+        if is_step:
+            names_check.setChecked(True)
+        else:
+            # STL carries no face names, so this option does not apply.
+            names_check.setChecked(False)
+            names_check.setVisible(False)
+        layout.addWidget(names_check)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        chosen = float(angle_spin.value())
+        settings.set_value("geometry/feature_angle", chosen)
+        return chosen, (names_check.isChecked() if is_step else False)
+
     def _load_geometry(self, shape: cq.Shape):
         """Load a CAD shape: classify/tessellate/heal in a background task
-        so big CAD files never freeze the UI, then apply on the GUI thread."""
+        so big CAD files never freeze the UI, then apply on the GUI thread.
+
+        Before anything is classified the "Patch splitting" dialog asks for
+        the feature angle (and, for STEP, whether CAD face names should be
+        kept). Cancelling aborts the load.
+        """
+        split_settings = self._ask_patch_split_settings(is_step=True)
+        if split_settings is None:
+            self._original_shape = None
+            self._status.showMessage("Geometry load cancelled.")
+            return
+        angle_deg, use_cad_names = split_settings
         self._original_shape = shape
         self._status.showMessage("Classifying faces...")
 
         def work(worker):
             n = len(list(shape.Faces()))
-            patches = classify_faces(shape)
-            worker.report_progress("Tessellating geometry...", 55.0)
-            meshes = list(tessellate_patches(patches))
+            if use_cad_names:
+                # Existing behaviour: BREP face classification preserves the
+                # CAD names (inlet/outlet/wall) when the CAD provides them.
+                patches = classify_faces(shape)
+                worker.report_progress("Tessellating geometry...", 55.0)
+                meshes = list(tessellate_patches(patches))
+            else:
+                # BaramMesh-style: tessellate the whole shape as one patch,
+                # then split faces purely by the chosen feature angle.
+                worker.report_progress("Tessellating geometry...", 45.0)
+                whole = list(tessellate_patches([("surface", list(shape.Faces()))]))
+                mesh = whole[0] if len(whole) == 1 else trimesh.util.concatenate(whole)
+                worker.report_progress("Splitting patches by feature angle...", 60.0)
+                meshes = split_mesh_by_angle(mesh, angle_deg)
+                patches = [(m.metadata.get("name", "?"), m.faces) for m in meshes]
             worker.report_progress("Healing geometry...", 75.0)
             heal_lines: list[str] = []
             try:
@@ -902,6 +996,12 @@ class MainWindow(QMainWindow):
 
     def _load_stl_async(self, path: str):
         """Load an STL file in a background task (big STLs are heavy)."""
+        split_settings = self._ask_patch_split_settings(is_step=False)
+        if split_settings is None:
+            self._log.append_log(f"{Tag.GEOM} STL load cancelled.")
+            self._status.showMessage("Ready")
+            return
+        angle_deg, _use_cad_names = split_settings
         self._status.showMessage("Loading STL...")
 
         def work(worker):
@@ -917,7 +1017,7 @@ class MainWindow(QMainWindow):
             ):
                 worker.report_progress("Detecting patches...", 60.0)
                 try:
-                    meshes = split_single_stl_patch(meshes[0])
+                    meshes = split_single_stl_patch(meshes[0], angle_deg)
                 except Exception as exc:
                     logger.debug("STL auto patch detection skipped: %s", exc)
             return meshes
@@ -949,8 +1049,8 @@ class MainWindow(QMainWindow):
         names = [m.metadata.get("name", "?") for m in self._meshes]
         logger.info("%s solids: %s", source, names)
         self._log.append_log(f"{Tag.GEOM} {source} solids: {', '.join(names)}")
-        self._params.set_patches(names)
         self._params.set_suggest_meshes(self._meshes)
+        self._params.set_meshing_enabled(bool(self._meshes))
         self._viewer.show_cad(self._meshes)
         dx, dy, dz = compute_bbox_full(self._meshes)
         self._params.set_bbox(dx, dy, dz)
@@ -1156,9 +1256,7 @@ class MainWindow(QMainWindow):
                         repaired = [trimesh.load(p) for p in repaired_paths]
                         self._unscaled_meshes = repaired
                         self._rebuild_scaled_meshes()
-                        self._params.set_patches(
-                            [m.metadata.get("name", "?") for m in self._meshes]
-                        )
+                        self._params.set_meshing_enabled(bool(self._meshes))
                     except Exception as exc:
                         logger.debug("Could not load repaired meshes: %s", exc)
                 if watertight:
@@ -1225,7 +1323,7 @@ class MainWindow(QMainWindow):
             if reports and reports[-1].watertight_after:
                 self._unscaled_meshes = result["repaired"]
                 self._rebuild_scaled_meshes()
-                self._params.set_patches([m.metadata.get("name", "?") for m in self._meshes])
+                self._params.set_meshing_enabled(bool(self._meshes))
                 self._viewer.show_cad(self._meshes)
                 self._log.append_log(
                     f"{Tag.GEOM} Watertight check: fixed automatically, geometry is now closed."
@@ -1280,8 +1378,7 @@ class MainWindow(QMainWindow):
         if abs(new_scale - self._current_scale) < 1e-9:
             return
         self._rebuild_scaled_meshes()
-        names = [m.metadata.get("name", "?") for m in self._meshes]
-        self._params.set_patches(names)
+        self._params.set_meshing_enabled(bool(self._meshes))
         self._params.set_suggest_meshes(self._meshes)
         self._viewer.show_cad(self._meshes)
         dx, dy, dz = compute_bbox_full(self._meshes)
@@ -1632,17 +1729,33 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Name",
                 "Patch name must not contain: ; { } \" / or whitespace.")
             return
-        logger.info("Renaming patch '%s' -> '%s'.", patch_name, new_name)
+        self._rename_cad_patch(patch_name, new_name)
+
+    def _rename_cad_patch(self, old_name: str, new_name: str) -> None:
+        """Apply a CAD patch rename: mesh metadata, viewer and params panel.
+
+        Shared by the 3D-click rename (``_on_face_picked``) and the editable
+        patch-table rename (``_on_patch_renamed``) so both paths behave
+        identically.
+        """
+        logger.info("Renaming patch '%s' -> '%s'.", old_name, new_name)
         for mesh in self._meshes:
-            if mesh.metadata.get("name") == patch_name:
+            if mesh.metadata.get("name") == old_name:
                 mesh.metadata["name"] = new_name
                 break
-        names = [m.metadata.get("name", "?") for m in self._meshes]
-        self._params.set_patches(names)
         self._params.set_suggest_meshes(self._meshes)
         self._viewer.show_cad(self._meshes)
         self._viewer.highlight_patch(new_name)
-        self._log.append_log(f"{Tag.PATCH} Renamed '{patch_name}' \u2192 '{new_name}'.")
+        self._log.append_log(f"{Tag.PATCH} Renamed '{old_name}' \u2192 '{new_name}'.")
+
+    @Slot(str, str)
+    def _on_patch_renamed(self, old_name: str, new_name: str) -> None:
+        """Patch table rename (viewer emits old, new after validating)."""
+        if not self._viewer.is_showing_cad():
+            # A loaded case mesh cannot be renamed; the viewer already logged
+            # the reason and kept the cell read-only.
+            return
+        self._rename_cad_patch(old_name, new_name)
 
     def _on_pick_refinement(self):
         """Start 3D picking mode for refinement zone centre."""
@@ -1691,8 +1804,9 @@ class MainWindow(QMainWindow):
         self._params.add_refinement_box(box)
         self._log.append_log(
             f"{Tag.GEOM} Refinement box L{level} centred at "
-            f"({x:.4f}, {y:.4f}, {z:.4f}) — drag its handles to resize."
+            f"({x:.4f}, {y:.4f}, {z:.4f}). {self.REFINEMENT_BOX_HINT}"
         )
+        self._status.showMessage(self.REFINEMENT_BOX_HINT)
         self._refresh_box_viewer()
 
     # --- 3D refinement boxes -------------------------------------------------
@@ -1738,6 +1852,11 @@ class MainWindow(QMainWindow):
                 continue
         return (lo, hi) if hi[0] > lo[0] else (None, None)
 
+    REFINEMENT_BOX_HINT = (
+        "Drag the box to move it; use the handles/edges to resize; "
+        "Level controls how fine the mesh gets; '-' removes it."
+    )
+
     def _on_add_refinement_box(self):
         """Add a 3D refinement box at the model centre, edited with the box
         gizmo shown in the viewer (drag its handles). Only choice: the level."""
@@ -1775,8 +1894,9 @@ class MainWindow(QMainWindow):
             self._params.add_refinement_box(box)
             self._log.append_log(
                 f"[refine] added box L{level} -> cell size "
-                f"{box['cell_size']:.5g} m — drag the box in the viewer"
+                f"{box['cell_size']:.5g} m. {self.REFINEMENT_BOX_HINT}"
             )
+            self._status.showMessage(self.REFINEMENT_BOX_HINT)
             self._refresh_box_viewer()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Add refinement box failed")
@@ -1791,6 +1911,21 @@ class MainWindow(QMainWindow):
             # Enter drag-edit mode so the arrows are immediately live
             # (refinement_boxes_changed is already connected in __init__).
             self._viewer.start_refinement_box_drag()
+        # Re-apply the panel's current selection: show_refinement_boxes reset
+        # the emphasis, and the row selected *before* the boxes were
+        # (re)built must still be highlighted now.
+        try:
+            self._viewer.set_refinement_box_selected(
+                self._params.selected_refinement_box_index()
+            )
+        except Exception:
+            logger.debug("Refinement box selection restore failed", exc_info=True)
+
+    @Slot(int)
+    def _on_refinement_selection_changed(self, index: int):
+        """A refinement row was selected — highlight its box in the 3D view."""
+        if self._viewer is not None:
+            self._viewer.set_refinement_box_selected(index)
 
     @Slot(object)
     def _on_refinement_boxes_changed(self, boxes: list):
@@ -1851,7 +1986,7 @@ class MainWindow(QMainWindow):
         self._case_dir = None
         self._current_scale = 1.0
         self._loaded_step_path = None
-        self._params.set_patches([])
+        self._params.set_meshing_enabled(False)
         self._params.set_suggest_meshes([])
         self._params.set_case_dir("")
         self._params.set_bbox(0, 0, 0)

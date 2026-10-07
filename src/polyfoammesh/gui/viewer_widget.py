@@ -644,6 +644,9 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
 
 class ViewerWidget(QWidget):
     face_picked = Signal(str)
+    #: (old_name, new_name) — emitted when the user renames a CAD patch in
+    #: the patch table. Additive: existing signals/consumers are unaffected.
+    patch_renamed = Signal(str, str)
     distance_measured = Signal(str)
     measure_hint = Signal(str)
     refinement_point_picked = Signal(float, float, float)
@@ -666,6 +669,7 @@ class ViewerWidget(QWidget):
         self._measure_index: int = 0
         self._mesh_patches: dict[str, pv.PolyData] = {}
         self._patch_names: list[str] = []
+        self._patch_rename_guard: bool = False
         self._highlighted_actor = None
         self._showing_cad: bool = True
         self._pending_vtu_mode: str = "surface_edges"
@@ -782,7 +786,13 @@ class ViewerWidget(QWidget):
             self._position_measure_summary()
 
     def _build_patch_panel(self):
-        """Compact BaramMesh-style patch list, docked under the viewer toolbar."""
+        """Compact BaramMesh-style patch list.
+
+        The widget is created here (so all the logic stays in the viewer)
+        but PLACED by the main window in the left dock, in the empty space
+        below the workflow tree - see MainWindow._setup_workflow_tree and
+        patch_panel().
+        """
         self._patch_panel = QWidget()
         layout = QVBoxLayout(self._patch_panel)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -793,23 +803,35 @@ class ViewerWidget(QWidget):
         self._patch_table.verticalHeader().setVisible(False)
         self._patch_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._patch_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self._patch_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # Edit triggers are enabled here but actual editability is per-item:
+        # only the Name cell of a CAD patch is editable (see
+        # _populate_patch_panel). A loaded case mesh keeps every cell read-only.
+        self._patch_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+        )
         self._patch_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._patch_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._patch_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self._patch_table.setMaximumHeight(140)
         self._patch_table.setMinimumHeight(60)
         self._patch_table.itemSelectionChanged.connect(self._on_patch_row_selected)
+        self._patch_table.itemChanged.connect(self._on_patch_item_changed)
+        self._patch_table.itemDoubleClicked.connect(self._on_patch_item_double_clicked)
         layout.addWidget(self._patch_table)
         self._patch_panel.setVisible(False)
-        self._layout.addWidget(self._patch_panel)
+        # NOT added to the viewer layout: the main window embeds this panel
+        # in the left dock (empty space below the workflow tree).
+
+    def patch_panel(self) -> QWidget:
+        """The BaramMesh-style patch panel, for the main window to embed."""
+        return self._patch_panel
 
     def _add_no_viewer_label(self, msg: str = ""):
         """Add a label explaining that 3D viewer is unavailable."""
         self._plotter = None
         self._plotter_ready = False
         if not msg:
-            msg = "3D viewer non disponibile.\nUsa Strumenti > Launch ParaView."
+            msg = "3D viewer unavailable.\nUse Tools > Launch ParaView."
         lbl = QLabel(msg)
         lbl.setAlignment(Qt.AlignCenter)
         self._layout.addWidget(lbl)
@@ -981,13 +1003,19 @@ class ViewerWidget(QWidget):
                 self._measure_check.blockSignals(False)
                 return
             self.measure_hint.emit(
-                "Click two points on the model to measure; Clear removes all."
+                "Click two points on the model to measure; unchecking "
+                "Measure (or Clear) removes the markers."
             )
         else:
             self._measure_points = []
             self._disable_picking_safely()
             if self._plotter is not None:
                 self._plotter.unsetCursor()
+            # Unchecking Measure removes every measurement - markers, tags
+            # and the summary overlay (user report: they stayed on screen
+            # after the tool was switched off; once measured, the clutter
+            # is not wanted).
+            self._clear_measurements()
 
     def _marker_radius(self) -> float:
         """A point-marker radius scaled to the current scene size."""
@@ -1111,11 +1139,21 @@ class ViewerWidget(QWidget):
         for name, n_faces, ptype in entries:
             row = self._patch_table.rowCount()
             self._patch_table.insertRow(row)
-            self._patch_table.setItem(row, 0, QTableWidgetItem(name))
+            name_item = QTableWidgetItem(name)
+            # Only CAD patch names are editable; a loaded case mesh is
+            # read-only (a meshed case's names cannot be changed here).
+            if self._showing_cad:
+                name_item.setFlags(name_item.flags() | Qt.ItemIsEditable)
+            else:
+                name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self._patch_table.setItem(row, 0, name_item)
             faces_item = QTableWidgetItem(f"{int(n_faces):,}")
+            faces_item.setFlags(faces_item.flags() & ~Qt.ItemIsEditable)
             faces_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._patch_table.setItem(row, 1, faces_item)
-            self._patch_table.setItem(row, 2, QTableWidgetItem(ptype))
+            type_item = QTableWidgetItem(ptype)
+            type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
+            self._patch_table.setItem(row, 2, type_item)
             self._patch_names.append(name)
         self._patch_table.blockSignals(False)
         self._patch_panel.setVisible(bool(entries))
@@ -1142,6 +1180,60 @@ class ViewerWidget(QWidget):
         row = self._patch_table.currentRow()
         if 0 <= row < len(self._patch_names):
             self.highlight_patch(self._patch_names[row])
+
+    # Names may not contain the OpenFOAM structural characters, quotes, or
+    # whitespace (same rule the 3D-click rename has always enforced).
+    _INVALID_PATCH_NAME_RE = re.compile(r'[;{}"/\s]')
+
+    def _restore_patch_name(self, row: int, name: str | None = None) -> None:
+        """Put *name* (or the tracked original) back into a Name cell."""
+        if name is None:
+            name = self._patch_names[row] if 0 <= row < len(self._patch_names) else ""
+        self._patch_rename_guard = True
+        try:
+            item = self._patch_table.item(row, 0)
+            if item is not None:
+                item.setText(name)
+        finally:
+            self._patch_rename_guard = False
+
+    def _on_patch_item_changed(self, item: QTableWidgetItem) -> None:
+        """Commit a patch rename (CAD only) or revert an illegal edit."""
+        if self._patch_rename_guard or item.column() != 0:
+            return
+        row = item.row()
+        if not (0 <= row < len(self._patch_names)):
+            return
+        old_name = self._patch_names[row]
+        if not self.is_showing_cad():
+            self._restore_patch_name(row, old_name)
+            logger.warning("Patch names can only be edited before meshing.")
+            return
+        new_name = item.text().strip()
+        if not new_name:
+            self._restore_patch_name(row, old_name)
+            logger.warning("Patch name cannot be empty or whitespace.")
+            return
+        if self._INVALID_PATCH_NAME_RE.search(new_name):
+            self._restore_patch_name(row, old_name)
+            logger.warning(
+                "Invalid patch name '%s': must not contain ; { } \" / or "
+                "whitespace.", new_name,
+            )
+            return
+        if new_name == old_name:
+            return
+        if new_name in self._patch_names:
+            self._restore_patch_name(row, old_name)
+            logger.warning("Patch name '%s' is already in use.", new_name)
+            return
+        self._patch_names[row] = new_name
+        self.patch_renamed.emit(old_name, new_name)
+
+    def _on_patch_item_double_clicked(self, item: QTableWidgetItem) -> None:
+        """Explain why a case-mesh patch cannot be renamed."""
+        if item.column() == 0 and not self.is_showing_cad():
+            logger.warning("Patch names can only be edited before meshing.")
 
     def _reload_patch_panel_async(self):
         """Load the case boundary patches (background) and fill the panel."""
@@ -2125,6 +2217,14 @@ class ViewerWidget(QWidget):
         self._measure_check.blockSignals(False)
         self._clear_measurements()
         self._clear_patch_panel()
+        # Drop refinement-box actors/widgets/labels (the plotter clear below
+        # removes the actors themselves; this resets our bookkeeping).
+        self.__init_ref_box_state()
+        self.stop_refinement_box_drag()
+        self._ref_box_actors = []
+        self._ref_box_data = []
+        self._ref_box_selected = None
+        self._ref_box_hover = None
         if not self._plotter_ready:
             return
         self._disable_picking_safely()
@@ -2145,20 +2245,104 @@ class ViewerWidget(QWidget):
     # only other user input; cell_size derives from it.
     # ------------------------------------------------------------------
 
+    #: High-contrast colours so a refinement box can never be mistaken for
+    #: CAD geometry. Bright, solid, and deliberately different from the
+    #: patch palette used for the part itself. Named colours (not hex) keep
+    #: gui/ free of hardcoded hex values (tests/test_design_system.py).
+    REF_BOX_FACE_COLOR = "darkorange"         # bright orange, translucent
+    REF_BOX_EDGE_COLOR = "red"                # bright red, thick wireframe
+    REF_BOX_SELECTED_FACE_COLOR = "gold"      # brighter on hover/selection
+    REF_BOX_SELECTED_EDGE_COLOR = "cyan"      # cyan on hover/selection
+    REF_BOX_FACE_OPACITY = 0.18
+    REF_BOX_SELECTED_OPACITY = 0.32
+
     def __init_ref_box_state(self):
         if not hasattr(self, "_ref_box_actors"):
-            self._ref_box_actors = []
+            self._ref_box_actors = []   # list[dict] {face, edge, label}
         if not hasattr(self, "_ref_box_widgets"):
             self._ref_box_widgets = []
         if not hasattr(self, "_ref_box_data"):
             self._ref_box_data = []
+        if not hasattr(self, "_ref_box_selected"):
+            self._ref_box_selected = None
+        if not hasattr(self, "_ref_box_hover"):
+            self._ref_box_hover = None
+        if not hasattr(self, "_ref_box_mouse_observer"):
+            self._ref_box_mouse_observer = None
+
+    @staticmethod
+    def _ref_box_label(index: int, box: dict) -> str:
+        """The 3D label drawn on a box, e.g. ``Box 1 - L2``."""
+        try:
+            level = int(box.get("level", 2))
+        except (TypeError, ValueError):
+            level = 2
+        return f"Box {index + 1} - L{level}"
+
+    @staticmethod
+    def _ref_box_bounds(box: dict) -> tuple:
+        return (
+            box["xmin"], box["xmax"], box["ymin"], box["ymax"],
+            box["zmin"], box["zmax"],
+        )
+
+    def _remove_ref_box_actors(self):
+        if self._plotter is None:
+            self._ref_box_actors = []
+            return
+        for entry in self._ref_box_actors:
+            for key in ("face", "edge", "label"):
+                actor = entry.get(key)
+                if actor is None:
+                    continue
+                try:
+                    self._plotter.remove_actor(actor)
+                except Exception:
+                    pass
+        self._ref_box_actors = []
+
+    def _add_ref_box_label(self, index: int, box: dict):
+        """A small always-visible 3D label sitting on top of the box."""
+        if self._plotter is None:
+            return None
+        cx = (box["xmin"] + box["xmax"]) / 2.0
+        cy = (box["ymin"] + box["ymax"]) / 2.0
+        try:
+            return self._plotter.add_point_labels(
+                [(cx, cy, box["zmax"])],
+                [self._ref_box_label(index, box)],
+                font_size=12,
+                text_color=self.REF_BOX_EDGE_COLOR,
+                always_visible=True,
+                name=f"_ref_box_label_{index}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Refinement box label %d failed: %s", index, exc)
+            return None
+
+    def _add_ref_box_actors(self, index: int, box: dict) -> dict:
+        """Build the translucent face, thick wireframe and label for a box."""
+        mesh = pv.Box(bounds=self._ref_box_bounds(box))
+        face = self._plotter.add_mesh(
+            mesh, color=self.REF_BOX_FACE_COLOR,
+            opacity=self.REF_BOX_FACE_OPACITY, style="surface",
+            pickable=True, show_edges=False,
+        )
+        edge = self._plotter.add_mesh(
+            mesh, color=self.REF_BOX_EDGE_COLOR, style="wireframe",
+            line_width=4, pickable=True,
+        )
+        return {"face": face, "edge": edge,
+                "label": self._add_ref_box_label(index, box)}
 
     def show_refinement_boxes(self, boxes: list):
-        """Render refinement boxes as translucent cuboids.
+        """Render refinement boxes as bright translucent cuboids with a label.
 
         *boxes* is a list of ``{type:'box', xmin..zmax, level, cell_size}``.
-        Subsequent calls replace the previous rendering. Drag-sizing is
-        entered separately via start_refinement_box_drag().
+        Each is drawn as a translucent bright-orange volume plus a thick red
+        wireframe and a "Box N - Lx" 3D label, so it is unmistakable in the
+        viewport. Subsequent calls replace the previous rendering.
+        Drag-sizing is entered separately via start_refinement_box_drag().
         """
         self.__init_ref_box_state()
         self.stop_refinement_box_drag()
@@ -2168,26 +2352,105 @@ class ViewerWidget(QWidget):
             self._plotter.disable_picking()
         except Exception:
             pass
-        for actor in self._ref_box_actors:
+        self._remove_ref_box_actors()
+        self._ref_box_data = [dict(b) for b in boxes]
+        self._ref_box_selected = None
+        self._ref_box_hover = None
+        for i, b in enumerate(self._ref_box_data):
             try:
-                self._plotter.remove_actor(actor)
-            except Exception:
-                pass
-        self._ref_box_actors = []
-        self._ref_box_data = list(boxes)
-        for b in boxes:
-            x0, x1 = b["xmin"], b["xmax"]
-            y0, y1 = b["ymin"], b["ymax"]
-            z0, z1 = b["zmin"], b["zmax"]
-            mesh = pv.Box(bounds=(x0, x1, y0, y1, z0, z1))
-            actor = self._plotter.add_mesh(
-                mesh, color="orange", opacity=0.35, style="surface",
-                pickable=False, show_edges=True, edge_color="red",
-                line_width=2,
-            )
-            self._ref_box_actors.append(actor)
+                self._ref_box_actors.append(self._add_ref_box_actors(i, b))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Refinement box %d render failed: %s", i, exc)
+        self._install_ref_box_hover()
         if boxes and self._plotter:
             self._plotter.render()
+
+    def _install_ref_box_hover(self):
+        """Best-effort: emphasise the box under the cursor on mouse move."""
+        if self._plotter is None or self._ref_box_mouse_observer is not None:
+            return
+        try:
+            import vtk
+            self._ref_box_picker = vtk.vtkPropPicker()
+            interactor = self._plotter.iren.interactor
+            self._ref_box_mouse_observer = interactor.AddObserver(
+                "MouseMoveEvent", self._on_ref_box_mouse_move
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Refinement box hover picker unavailable: %s", exc)
+            self._ref_box_mouse_observer = None
+
+    def _on_ref_box_mouse_move(self, _caller=None, _event=None):
+        if self._plotter is None or not self._ref_box_actors:
+            return
+        try:
+            x, y = self._plotter.iren.interactor.GetEventPosition()
+            self._ref_box_picker.Pick(x, y, 0, self._plotter.renderer)
+            actor = self._ref_box_picker.GetViewProp()
+        except Exception:
+            return
+        hover = None
+        for i, entry in enumerate(self._ref_box_actors):
+            if actor is not None and actor in (entry.get("face"), entry.get("edge")):
+                hover = i
+                break
+        if hover != self._ref_box_hover:
+            self._ref_box_hover = hover
+            self._apply_ref_box_emphasis()
+
+    def _apply_ref_box_emphasis(self):
+        """Recolour/thicken the hovered or selected box, dim the others."""
+        if self._plotter is None:
+            return
+        for i, entry in enumerate(self._ref_box_actors):
+            emphasised = (i == self._ref_box_selected) or (i == self._ref_box_hover)
+            face = entry.get("face")
+            edge = entry.get("edge")
+            label = entry.get("label")
+            try:
+                if face is not None:
+                    face.prop.color = (
+                        self.REF_BOX_SELECTED_FACE_COLOR if emphasised
+                        else self.REF_BOX_FACE_COLOR
+                    )
+                    face.prop.opacity = (
+                        self.REF_BOX_SELECTED_OPACITY if emphasised
+                        else self.REF_BOX_FACE_OPACITY
+                    )
+                if edge is not None:
+                    edge.prop.color = (
+                        self.REF_BOX_SELECTED_EDGE_COLOR if emphasised
+                        else self.REF_BOX_EDGE_COLOR
+                    )
+                    edge.prop.line_width = (
+                        7 if i == self._ref_box_selected
+                        else (5 if i == self._ref_box_hover else 4)
+                    )
+                if label is not None:
+                    label.prop.color = (
+                        self.REF_BOX_SELECTED_EDGE_COLOR if emphasised
+                        else self.REF_BOX_EDGE_COLOR
+                    )
+            except Exception:
+                continue
+        try:
+            self._plotter.render()
+        except Exception:
+            pass
+
+    def set_refinement_box_selected(self, index: int | None) -> None:
+        """Emphasise box *index* (the selected panel row), or clear it.
+
+        Public API used by the main window: selecting a row in the refinement
+        list highlights the matching box in the 3D view. ``None``/negative
+        clears the emphasis.
+        """
+        self.__init_ref_box_state()
+        if isinstance(index, int) and index >= 0:
+            self._ref_box_selected = index
+        else:
+            self._ref_box_selected = None
+        self._apply_ref_box_emphasis()
 
     def start_refinement_box_drag(self):
         """Enable drag-sizing of the boxes with the vtk BoxWidget gizmo."""
@@ -2259,22 +2522,38 @@ class ViewerWidget(QWidget):
         return [float(v) for v in bounds]
 
     def _sync_box_actor(self, i: int) -> None:
-        """Move the translucent box actor to match the widget bounds."""
+        """Move the box face/wireframe/label to match the widget bounds."""
         if self._plotter is None or i >= len(self._ref_box_actors):
             return
         b = self._ref_box_data[i]
-        mesh = pv.Box(bounds=(b["xmin"], b["xmax"], b["ymin"], b["ymax"],
-                              b["zmin"], b["zmax"]))
-        try:
-            self._ref_box_actors[i].mapper.SetInputData(mesh)
-            self._ref_box_actors[i].Render()
-        except Exception:
-            pass
+        mesh = pv.Box(bounds=self._ref_box_bounds(b))
+        entry = self._ref_box_actors[i]
+        for key in ("face", "edge"):
+            actor = entry.get(key)
+            if actor is None:
+                continue
+            try:
+                actor.mapper.SetInputData(mesh)
+            except Exception:
+                pass
+        # The label lives at the box's top-centre — rebuild it so it follows
+        # a resize instead of sitting where the box used to be.
+        old_label = entry.get("label")
+        if old_label is not None:
+            try:
+                self._plotter.remove_actor(old_label)
+            except Exception:
+                pass
+        entry["label"] = self._add_ref_box_label(i, b)
+        self._apply_ref_box_emphasis()
         if self._plotter:
             self._plotter.render()
 
     def stop_refinement_box_drag(self):
         self.__init_ref_box_state()
+        if self._plotter is None:
+            self._ref_box_widgets = []
+            return
         for w in self._ref_box_widgets:
             try:
                 self._plotter.remove_box_widget(w)

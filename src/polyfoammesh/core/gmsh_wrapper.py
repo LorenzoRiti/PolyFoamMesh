@@ -1765,6 +1765,46 @@ def _apply_gmsh_thread_env(gmsh_mod) -> None:
         logger.warning("Could not set GMSH threads: %s", exc)
 
 
+#: Value a zone field returns OUTSIDE its own volume when the zone has NO
+#: graded transition. Must be a huge positive number, NOT -1: the zone fields
+#: are MIN-combined with the geometry-adaptive background field, and GMSH's
+#: Min field takes the literal minimum of its inputs. With ``VOut = -1`` the
+#: minimum outside the box is ``-1`` (the zone wins everywhere), which GMSH
+#: cannot turn into a valid target size — it goes into an unbounded
+#: edge-splitting retry loop and the run never converges (reproduced directly
+#: with GMSH 4.15.2: a 1 m cube that meshes in 8 s with a huge VOut never
+#: finishes with -1).
+#:
+#: When a graded ``Thickness`` IS set, VOut must instead be the finite local
+#: background size — see ``_prepare_refinement_zones``. With a huge VOut the
+#: VIn->VOut ramp reaches the huge value after ~0 distance, so
+#: ``min(background, field)`` collapses straight back to the background and
+#: the transition is a step again (measured directly: Thickness=0.1 with
+#: VOut=1e22 produced exactly the same mesh as Thickness=0).
+_ZONE_OUTSIDE_SIZE = 1e22
+
+#: How many times the local background size a graded refinement transition
+#: spans. The Box/Ball ``Thickness`` grades VIn->VOut over this distance
+#: (measured: Thickness=0.1 on a 1 m cube with 0.08 background gave a smooth
+#: ~0.1 m ramp, ~1.25 coarse cells; 4x the background gives a ramp of several
+#: coarse cells so the boundary blends instead of showing a rectangular step).
+_ZONE_THICKNESS_BACKGROUND_MULT = 4.0
+
+#: A zone target may be at most this many times FINER than the local
+#: background size per axis (so at most 4^3 = 64x the cells per unit volume of
+#: the surrounding bulk). Keeps a single zone from being silently absurd.
+_ZONE_MAX_REFINEMENT = 4.0
+
+#: Absolute cap on the cells a single run's manual zones may add, used when the
+#: caller does not supply an explicit cell budget. Above this the zone targets
+#: are coarsened (cube-root) until the estimate fits, and a warning is logged.
+_ZONE_MAX_CELLS_DEFAULT = 250_000
+
+#: A regular tetrahedron's volume per edge^3 (V ~= 0.118 * a^3), the same
+#: cell-count-to-edge-length relation used by the adaptive sizing budget.
+_TET_VOLUME_PER_EDGE3 = 0.118
+
+
 def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
     """Turn refinement-zone dicts into GMSH size fields, returning their tags.
 
@@ -1777,11 +1817,26 @@ def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
     * ``{"centre": (cx,cy,cz), "radius": r, "cell_size": cs}`` — a sphere
       (GMSH ``Ball`` field); the legacy throat-detector / picker zones.
 
-    All fields set ``VOut = -1`` so they only shrink size inside the zone and
-    never coarsen what surrounds it (a refinement zone must be refinement-only).
+    If a zone carries a ``thickness`` (set by ``_prepare_refinement_zones``),
+    the field gets a GMSH ``Thickness`` that grades VIn->VOut over that
+    distance, and ``VOut`` becomes the zone's finite ``background_size`` so
+    the ramp is actually realised (see ``_ZONE_OUTSIDE_SIZE``). Without a
+    thickness the field keeps the huge VOut and MIN-combining still makes the
+    zone refinement-only.
     """
     zone_fields = []
     for i, z in enumerate(zones):
+        try:
+            thickness = float(z.get("thickness") or 0.0)
+        except (TypeError, ValueError):
+            thickness = 0.0
+        if thickness > 0:
+            try:
+                vout = float(z.get("background_size", _ZONE_OUTSIDE_SIZE))
+            except (TypeError, ValueError):
+                vout = _ZONE_OUTSIDE_SIZE
+        else:
+            vout = _ZONE_OUTSIDE_SIZE
         if z.get("type") == "box":
             try:
                 bf = gmsh_mod.model.mesh.field.add("Box")
@@ -1794,13 +1849,15 @@ def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
                     if v is None:
                         raise ValueError(f"box zone {i} missing {k}")
                     gmsh_mod.model.mesh.field.setNumber(bf, k, float(v))
-                gmsh_mod.model.mesh.field.setNumber(bf, "VOut", -1)
+                if thickness > 0:
+                    gmsh_mod.model.mesh.field.setNumber(bf, "Thickness", thickness)
+                gmsh_mod.model.mesh.field.setNumber(bf, "VOut", vout)
                 zone_fields.append(bf)
                 logger.info(
                     "GMSH refinement box %d: x[%.4g,%.4g] y[%.4g,%.4g] "
-                    "z[%.4g,%.4g] cell_size=%.5g",
+                    "z[%.4g,%.4g] cell_size=%.5g thickness=%.5g vout=%.5g",
                     i, z["xmin"], z["xmax"], z["ymin"], z["ymax"],
-                    z["zmin"], z["zmax"], z["cell_size"],
+                    z["zmin"], z["zmax"], z["cell_size"], thickness, vout,
                 )
             except Exception as exc:
                 logger.warning("Failed to add GMSH refinement box %d: %s", i, exc)
@@ -1811,7 +1868,11 @@ def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
         try:
             ball_field = gmsh_mod.model.mesh.field.add("Ball")
             gmsh_mod.model.mesh.field.setNumber(ball_field, "VIn", cs)
-            gmsh_mod.model.mesh.field.setNumber(ball_field, "VOut", -1)
+            if thickness > 0:
+                gmsh_mod.model.mesh.field.setNumber(
+                    ball_field, "Thickness", thickness
+                )
+            gmsh_mod.model.mesh.field.setNumber(ball_field, "VOut", vout)
             gmsh_mod.model.mesh.field.setNumber(ball_field, "Radius", r)
             # Centre keys are XCenter/YCenter/ZCenter — the bare X/Y/Z names
             # are unknown options, which silently made every manually-placed
@@ -1823,12 +1884,158 @@ def _add_refinement_zone_fields(gmsh_mod, zones: list) -> list:
             zone_fields.append(ball_field)
             logger.info(
                 "GMSH refinement zone %d: centre=(%.4f,%.4f,%.4f) "
-                "radius=%.4f cell_size=%.5f",
-                i, cx, cy, cz, r, cs,
+                "radius=%.4f cell_size=%.5f thickness=%.5g vout=%.5g",
+                i, cx, cy, cz, r, cs, thickness, vout,
             )
         except Exception as exc:
             logger.warning("Failed to add GMSH refinement zone %d: %s", i, exc)
     return zone_fields
+
+
+def _zone_volume_and_extents(z: dict) -> tuple[float, list[float]]:
+    """Approximate volume (m^3) and extent per axis (m) of a zone."""
+    if z.get("type") == "box" or "xmin" in z:
+        try:
+            ext = [
+                abs(float(z["xmax"]) - float(z["xmin"])),
+                abs(float(z["ymax"]) - float(z["ymin"])),
+                abs(float(z["zmax"]) - float(z["zmin"])),
+            ]
+        except (KeyError, TypeError, ValueError):
+            return 0.0, []
+        return ext[0] * ext[1] * ext[2], ext
+    try:
+        r = abs(float(z.get("radius", 0.0)))
+    except (TypeError, ValueError):
+        r = 0.0
+    d = 2.0 * r
+    return (4.0 / 3.0) * math.pi * r ** 3, [d, d, d]
+
+
+def _prepare_refinement_zones(
+    zones: list, background_size: float | None,
+    cell_budget: int | None = None,
+) -> list[dict]:
+    """Clamp zone targets and derive a graded ``thickness`` for each zone.
+
+    Three predictable guards, all logged:
+
+    1. **Max refinement** — a zone target is never finer than
+       ``background_size / _ZONE_MAX_REFINEMENT``. A box asking for a size
+       orders of magnitude below the bulk silently produces a runaway cell
+       count; clamping keeps the per-axis ratio documented and bounded.
+    2. **Graded transition** — ``thickness`` is set to
+       ``_ZONE_THICKNESS_BACKGROUND_MULT * background_size`` (capped at half
+       the zone's smallest extent, and never below 2x the target) so GMSH
+       ramps VIn->VOut instead of jumping at the box wall. This is what
+       removes the hard rectangular artifact.
+    3. **Cell budget** — if the estimated total cells the zones add exceed the
+       run's budget (the caller's explicit cell target, floored at
+       ``_ZONE_MAX_CELLS_DEFAULT``), every zone target is coarsened by the
+       cube-root factor needed to fit, and a warning is logged.
+
+    Returns fresh dicts; the caller's list is not mutated.
+    """
+    zones = zones or []
+    if not zones:
+        return []
+    try:
+        bg = float(background_size)
+    except (TypeError, ValueError):
+        bg = 0.0
+    bg = bg if bg > 0 else None
+    min_target = (bg / _ZONE_MAX_REFINEMENT) if bg else None
+
+    prepared: list[dict] = []
+    for z in zones:
+        if not isinstance(z, dict):
+            continue
+        zz = dict(z)
+        try:
+            target = float(zz.get("cell_size"))
+        except (TypeError, ValueError):
+            prepared.append(zz)
+            continue
+        if target <= 0:
+            prepared.append(zz)
+            continue
+        volume, extents = _zone_volume_and_extents(zz)
+
+        if min_target is not None and target < min_target:
+            logger.warning(
+                "Refinement zone target %.5g m is %.1fx finer than the "
+                "background %.5g m — clamping to %.5g m (max %.0fx per axis, "
+                "_ZONE_MAX_REFINEMENT=%.1f) to keep the cell count predictable.",
+                target, bg / target, bg, min_target,
+                _ZONE_MAX_REFINEMENT, _ZONE_MAX_REFINEMENT,
+            )
+            target = min_target
+
+        if bg:
+            smallest = min(extents) if extents else 0.0
+            thickness = min(_ZONE_THICKNESS_BACKGROUND_MULT * bg, 0.5 * smallest)
+            thickness = max(thickness, 2.0 * target)
+            zz["thickness"] = thickness
+            zz["background_size"] = bg
+
+        zz["cell_size"] = target
+        prepared.append(zz)
+
+    # --- cell budget --------------------------------------------------------
+    # Count the cells a zone ADDS over the background mesh, not the absolute
+    # cells inside it: at target == background a zone adds nothing, so the
+    # meaningful quantity is V/0.118 * (1/target^3 - 1/background^3). Capping
+    # the absolute count instead would try to coarsen a zone past the
+    # background and explode again once forced back.
+    budget = max(int(cell_budget or 0), _ZONE_MAX_CELLS_DEFAULT)
+
+    def _added_cells(zz: dict) -> float:
+        volume, _ = _zone_volume_and_extents(zz)
+        try:
+            t = float(zz.get("cell_size") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        if t <= 0 or volume <= 0:
+            return 0.0
+        base = 1.0 / (bg ** 3) if bg else 0.0
+        return (volume / _TET_VOLUME_PER_EDGE3) * max(0.0, 1.0 / t ** 3 - base)
+
+    added = [_added_cells(zz) for zz in prepared]
+    total = sum(added)
+    valid = [zz for zz in prepared
+             if float(zz.get("cell_size") or 0.0) > 0
+             and _zone_volume_and_extents(zz)[0] > 0]
+    if total > budget > 0 and valid:
+        # Split the budget across the zones so N boxes cannot each spend it.
+        share = budget / float(len(valid))
+        logger.warning(
+            "Manual refinement zones would add ~%.0f cells over the background, "
+            "over the %.0f-cell budget — coarsening zone targets until they fit "
+            "so the run stays predictable. Shrink the box or raise the cell "
+            "target for finer output.",
+            total, budget,
+        )
+        for zz in valid:
+            volume, _ = _zone_volume_and_extents(zz)
+            t = float(zz["cell_size"])
+            inv_bg3 = 1.0 / (bg ** 3) if bg else 0.0
+            # Solve V/0.118 * (1/t^3 - 1/bg^3) == share for t (> current t).
+            inv_t3 = inv_bg3 + share * _TET_VOLUME_PER_EDGE3 / volume
+            new_t = inv_t3 ** (-1.0 / 3.0)
+            if new_t > t:
+                zz["cell_size"] = new_t
+        added = [_added_cells(zz) for zz in prepared]
+        total = sum(added)
+
+    for idx, (zz, est) in enumerate(zip(prepared, added)):
+        logger.info(
+            "Refinement zone %d prepared: target=%.5g m thickness=%.5g m "
+            "background=%.5g m added_cells~%.0f",
+            idx, float(zz.get("cell_size") or 0.0),
+            float(zz.get("thickness") or 0.0), bg or 0.0, est,
+        )
+    return prepared
+
 
 
 def _combine_zone_fields_with_bg(
@@ -1853,6 +2060,47 @@ def _combine_zone_fields_with_bg(
         gmsh_mod.model.mesh.field.setNumbers(combined, "FieldsList", zone_fields)
     gmsh_mod.model.mesh.field.setAsBackgroundMesh(combined)
     return combined
+
+
+def _lower_length_min_for_zones(gmsh_mod, zones: list) -> float | None:
+    """Drop ``Mesh.CharacteristicLengthMin`` to the finest zone target size.
+
+    GMSH applies ``Mesh.CharacteristicLengthMin`` as a hard floor AFTER the
+    background size field is evaluated (the same behaviour documented in
+    ``apply_solution_size_field``). The geometry-adaptive path sets it to its
+    own ``min_size`` and the explicit-size path to ``lc_min`` — both of which
+    are usually COARSER than a manual refinement box's target cell size. Left
+    alone, the box asks for a fine size and GMSH clamps it straight back to
+    the bulk size: the box "does nothing" even though the field is correct.
+
+    Only ever LOWERS the floor (a refinement zone is refinement-only); never
+    raises it. Returns the new floor, or None when there are no valid zones.
+    """
+    targets: list[float] = []
+    for z in zones or []:
+        try:
+            cs = float(z.get("cell_size"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if cs > 0:
+            targets.append(cs)
+    if not targets:
+        return None
+    try:
+        current = float(gmsh_mod.option.getNumber("Mesh.CharacteristicLengthMin"))
+    except Exception:  # noqa: BLE001
+        current = 0.0
+    zone_floor = min(targets)
+    new_floor = min(current, zone_floor) if current > 0 else zone_floor
+    if new_floor == current:
+        return current
+    gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", new_floor)
+    logger.info(
+        "Refinement zones lower Mesh.CharacteristicLengthMin %.6g -> %.6g "
+        "(finest zone target) so the box is not clamped away",
+        current, new_floor,
+    )
+    return new_floor
 
 
 def generate_volume_mesh(
@@ -1977,6 +2225,9 @@ def generate_volume_mesh(
     # min-combined with it rather than replacing it (see
     # apply_solution_size_field).
     bg_field_tag: int | None = None
+    # Bulk/background cell size of whichever sizing path ran, used to clamp
+    # manual refinement zones and derive their graded-transition thickness.
+    zone_background: float | None = None
 
     # Meshing algorithms are chosen HERE, before any sizing configuration —
     # NOT after it (where they used to be). The adaptive sizing path calls
@@ -2069,6 +2320,7 @@ def generate_volume_mesh(
             "GMSH user cell sizes: max=%.5f min=%.5f (detail=%s)",
             user_lc, lc_min, detail,
         )
+        zone_background = user_lc
     else:
         hw = _hardware_budget(max_cells_override)
         feat = _scan_feature_sizes(gmsh, max_extent)
@@ -2111,6 +2363,7 @@ def generate_volume_mesh(
             passage_boundary_mesh=passage_boundary_mesh,
         )
         bg_field_tag = sizing_info.get("bg_field")
+        zone_background = sizing_info.get("coarse_max")
         logger.info(
             "generate_volume_mesh adaptive sizing: %s (feature scan: min=%.5f "
             "small_curves=%d, curvature_field=%s)",
@@ -2150,12 +2403,26 @@ def generate_volume_mesh(
     # Each zone creates a field that maps distance-from-centre → cell size,
     # then a Min field combines them all with the base adaptive sizing.
     if refinement_zones:
-        zone_fields = _add_refinement_zone_fields(gmsh, refinement_zones)
+        # Clamp absurdly-fine targets and derive a graded transition thickness
+        # from the bulk background size (see _prepare_refinement_zones): a
+        # bare Box/Ball field is a hard step at its wall, which shows up as a
+        # rectangular refined block, and an unclamped fine target over a large
+        # box explodes the cell count far past the GUI's estimate.
+        zones = _prepare_refinement_zones(
+            refinement_zones, zone_background, max_cells_override
+        )
+        zone_fields = _add_refinement_zone_fields(gmsh, zones)
         # MIN-combine with the geometry-adaptive background field instead of
         # replacing it (docs/dev/solution_adaptive_handoff.md §1.4): a manual
         # refinement zone must refine, never silently throw away the sizing
         # that geometry already demanded everywhere else.
         bg_field_tag = _combine_zone_fields_with_bg(gmsh, zone_fields, bg_field_tag)
+        # The background field only *asks* for the fine size; GMSH's
+        # CharacteristicLengthMin (set above by the adaptive/explicit sizing
+        # path) is a hard floor applied afterwards and would clamp the zone
+        # away. Drop it to the finest zone target so the box actually meshes
+        # fine inside. See _lower_length_min_for_zones.
+        _lower_length_min_for_zones(gmsh, zones)
 
     # Solution-adaptive sizing: a target-cell-size lattice computed from a CFD
     # solution's refinement indicator. Applied last so it layers on top of

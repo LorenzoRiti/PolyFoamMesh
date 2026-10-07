@@ -20,9 +20,32 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 - **Workflow dock**: la voce statica "Next step" è diventata **Next
   action**, un suggerimento azionabile che segue lo stato reale (idle, in
   corso, finito, errore).
+- **Suddivisione patch stile BaramMesh**: popup all'import (STEP e STL)
+  con "Feature angle" (5–179°) e checkbox "Use CAD face names when
+  available"; con la checkbox off la superficie viene suddivisa per
+  angolo in patch `surface_1..N`. I **nomi delle patch sono editabili**
+  (doppio click) nella tabella patch, ora spostata nel dock sinistro in
+  basso (unico pannello: la lista duplicata nel tab Geometry è stata
+  rimossa). Il rename si propaga a meshing, BL e export.
 
 ### Corretto
 
+- **Refinement box ora fanno davvero ciò che promettono**: i campi zona
+  GMSH usavano `VOut = -1`, che combinato in MIN faceva prendere `-1`
+  ovunque fuori dalle box e mandava GMSH in un loop di retry infinito (la
+  mesh non si infittiva mai, o non finiva). Ora `VOut` finito +
+  **transizione graduata** (`Thickness`): niente più blocco rettangolare a
+  gradino netto. In più clamp del rapporto di raffinamento (max 4×) e del
+  budget di celle aggiunte (~250k) per evitare esplosioni di conteggio
+  (caso reale: 1.26M tetraedri richiesti → ~305k).
+- **BL: limiter del gradiente di altezza** (stile cfMesh
+  `relThicknessTol`): un vertice con budget di inversione profondo
+  accanto a uno sottile creava uno "spike" che piegava la superficie
+  estrusa in celle non-positive e faceva rifiutare l'intero BL; ora lo
+  stack è limitato al gradiente e le mesh sane restano identiche
+  (verificato byte-identico).
+- **Measure**: togliendo la spunta spariscono marker, etichette e
+  riepilogo (prima restavano sullo schermo); il pulsante Clear resta.
 - **Boundary layer COMPLETI (copertura 100% della parete)**: la semantica
   binaria scartava le facce sui vertici concavi o a budget esaurito,
   lasciando buchi nel guscio (misurato: 5.9% delle facce di parete senza
@@ -79,6 +102,8 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Modificato
 
+- **Feature angle**: range esteso a 5–179° (era 5–80°, non permetteva
+  valori come 89°); l'ultimo angolo usato viene ricordato.
 - **Interfaccia interamente in inglese**: pannelli, dialoghi, tooltip e
   messaggi di log (erano rimaste stringhe italiane in params_panel,
   main_window, viewer e nei template del motore).

@@ -107,6 +107,10 @@ class ParamsPanel(QWidget):
     pick_refinement_requested = Signal()
     add_box_requested = Signal()
     refinements_changed = Signal(object)
+    #: Index of the selected manual refinement BOX (0-based, boxes only), or
+    #: -1 when the selection is a sphere/nothing. Lets the main window
+    #: highlight the matching box in the 3D viewer.
+    refinement_selection_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -211,20 +215,6 @@ class ParamsPanel(QWidget):
         cad_layout.addLayout(form_geom)
 
         geom_layout.addWidget(cad_group)
-
-        patch_group = QGroupBox("Patches")
-        patch_layout = QVBoxLayout(patch_group)
-        self._patch_list = QListWidget()
-        self._patch_list.setMinimumHeight(40)
-        self._patch_list.setMaximumHeight(120)
-        patch_layout.addWidget(self._patch_list)
-        self._patch_placeholder = QLabel("No patches — load a geometry")
-        self._patch_placeholder.setAlignment(Qt.AlignCenter)
-        self._patch_placeholder.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
-        self._patch_placeholder.setVisible(True)
-        patch_layout.addWidget(self._patch_placeholder)
-        self._patch_list.setVisible(False)
-        geom_layout.addWidget(patch_group)
 
         geom_layout.addStretch()
         self._tabs.addTab(geom_tab, "Geometry")
@@ -1011,19 +1001,6 @@ class ParamsPanel(QWidget):
             return False
         return True
 
-    def set_patches(self, patch_names: list[str]):
-        self._patch_list.clear()
-        has_patches = len(patch_names) > 0
-        if has_patches:
-            for name in patch_names:
-                self._patch_list.addItem(name)
-            self._patch_list.setVisible(True)
-            self._patch_placeholder.setVisible(False)
-        else:
-            self._patch_list.setVisible(False)
-            self._patch_placeholder.setVisible(True)
-        self._btn_run.setEnabled(has_patches)
-
     def get_mesh_params(self) -> dict:
         return {
             "max_cell_size": self._max_cell.value(),
@@ -1451,9 +1428,33 @@ class ParamsPanel(QWidget):
         # keep the level spin in sync if the selected item was edited
         self._on_refine_selection_changed()
 
+    def selected_refinement_box_index(self) -> int:
+        """Index (among boxes) of the currently selected row, or -1."""
+        return self._refinement_box_index_of_row(self._refine_list.currentRow())
+
+    def _refinement_box_index_of_row(self, row: int) -> int:
+        """0-based index among BOX entries, or -1 when the row is not a box."""
+        if row < 0:
+            return -1
+        item = self._refine_list.item(row)
+        data = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(data, dict) or not self._zone_is_box(data):
+            return -1
+        index = 0
+        for i in range(row):
+            d = self._refine_list.item(i).data(Qt.UserRole)
+            if isinstance(d, dict) and self._zone_is_box(d):
+                index += 1
+        return index
+
     def _on_refine_selection_changed(self) -> None:
         item = self._refine_list.currentItem()
         data = item.data(Qt.UserRole) if item is not None else None
+        # Tell the viewer which box to highlight (parameterised index among
+        # boxes, so sphere rows correctly clear the highlight).
+        self.refinement_selection_changed.emit(
+            self._refinement_box_index_of_row(self._refine_list.currentRow())
+        )
         if not isinstance(data, dict):
             self._refine_level_spin.setEnabled(False)
             self._refine_level_hint.setText("Select a zone to edit its level")
@@ -1500,9 +1501,17 @@ class ParamsPanel(QWidget):
         return unit_to_scale(self._unit_selector.currentText())
 
     def get_patch_names(self) -> list[str]:
+        """Names of the currently loaded geometry patches.
+
+        The viewer's patch table is the single editable patch list; this
+        panel no longer owns a patch widget (it was redundant). Names are
+        derived from the meshes handed to :meth:`set_suggest_meshes`, so
+        callers that only need a count (e.g. enabling "Generate Mesh")
+        keep working unchanged.
+        """
         return [
-            self._patch_list.item(i).text()
-            for i in range(self._patch_list.count())
+            m.metadata.get("name", f"patch_{i}")
+            for i, m in enumerate(getattr(self, "_suggest_meshes", []) or [])
         ]
 
     def set_case_dir(self, path: str):

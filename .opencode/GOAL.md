@@ -595,3 +595,27 @@ su 14.359 facce, checkMesh PASS (NOmax 70.15, skew 1.741, neg 0).
 Warning onesto nel log: primo strato compresso al 2% del richiesto
 (mesh troppo fine per y+30: serve mesh di superficie piu' grossa).
 Suite BL 58 verdi senza aggiornare golden.
+
+## Avanzamento 2026-10-07 (sera) - patch BaramMesh, refinement, BL limiter, Measure
+
+Corsie parallele, tutte verificate (ruff + test + probe/smoke):
+- PATCH SYSTEM stile BaramMesh: popup all'import (feature angle 5-179,
+  checkbox nomi CAD), split per angolo (split_mesh_by_angle su
+  _face_components), nomi patch EDITABILI (signal patch_renamed), tabella
+  patch unica spostata nel dock sinistro in basso; rimossa la lista
+  duplicata del tab Geometry + tutte le chiamate set_patches.
+- REFINEMENT BOX: root cause trovata - VOut=-1 nei campi GMSH -> MIN ->
+  loop retry infinito -> refinement mai applicato; secondo bug:
+  CharacteristicLengthMin ri-clampava il target. Fix: VOut finito +
+  transizione graduata (Thickness) + clamp rapporto (max 4x) e budget
+  celle aggiunte (~250k). Prova headless: 2.99x piu' fine dentro, ramp
+  ~0.12m, far-field 1.02x, conteggi limitati (1.26M -> ~305k sul caso
+  reale proiettato). Box visibili (volume arancione traslucido +
+  wireframe spesso + etichetta "Box N - Lx" + hover/selezione).
+- BL: verdetto sullo screenshot "bucato" = vecchia mesh 95% (rigenerare);
+  engine attuale 100% su tutti i casi reali. Fix latente: limiter del
+  gradiente di altezza (cfMesh relThicknessTol style) contro gli spike
+  che piegavano la superficie -> celle non-positive -> BL rifiutato.
+  Valve golden riallineato (4143 esclusioni / 75974 prismi).
+- MEASURE: togliendo la spunta spariscono marker/etichette/riepilogo.
+- Suite fast completa: 1292 passed.
