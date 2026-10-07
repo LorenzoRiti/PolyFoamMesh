@@ -147,14 +147,19 @@ def _space_free_cases_root() -> Path:
 
     OpenFOAM/cfMesh reject paths containing spaces, so on Windows the
     home directory (often ``C:\\Users\\First Last``) is unusable and a
-    temp-tree fallback is needed. Uses ``tempfile.gettempdir()`` (POSIX
-    or Windows) instead of a hard-coded ``C:\\`` drive. The primary home
-    path is still tried first by callers; this is only the fallback.
+    fallback is needed.  The root must be space-free BY CONSTRUCTION:
+    rewriting an existing path (replacing spaces with underscores)
+    produced a parallel tree like ``C:\\Users\\Davide_Valoroso\\...`` that
+    does not exist, and every downstream WSL command then read the wrong
+    (empty) case dir - checkMesh reported 8 cells and the quality panel
+    showed zeros.  On Windows use the historical, working drive-root tree
+    (``<drive>:\\cfmesh_cases``, where real cases already live); on POSIX
+    a temp subdir is fine (quoting handles spaces there).
     """
-    base = Path(tempfile.gettempdir()) / "cfmesh_cases"
-    if " " in str(base):
-        base = Path(str(base).replace(" ", "_"))
-    return base
+    if sys.platform == "win32":
+        drive = Path(tempfile.gettempdir()).drive or "C:"
+        return Path(f"{drive}/cfmesh_cases")
+    return Path(tempfile.gettempdir()) / "cfmesh_cases"
 
 
 def _free_disk_gb(path: str | Path) -> float:
@@ -734,7 +739,10 @@ class MainWindow(QMainWindow):
         h_splitter.setSizes([900, 400])
 
         self._quality = QualityPanel()
-        self._quality.fix_requested.connect(self._on_auto_fix_quality)
+        # The quality panel's manual "Auto-Fix Quality" button was removed:
+        # the quality gate already retries automatically, and the button
+        # was redundant (user report). _on_auto_fix_quality stays available
+        # for the automatic loop.
 
         self._log = LogPanel()
         self._log.setMinimumHeight(60)

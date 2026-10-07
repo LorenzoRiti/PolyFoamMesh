@@ -47,6 +47,14 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Case root con spazio nel percorso utente** (regressione della fase 2
+  Linux): il fallback "senza spazi" riscriveva il path sostituendo gli
+  spazi con underscore, creando un albero inesistente
+  (`C:\Users\Davide_Valoroso\...`). Tutti i comandi WSL puntavano lì:
+  checkMesh leggeva una directory vuota (`cells=8`), il pannello qualità
+  mostrava zeri e la conversione dual riportava `cells ... -> 0`. Ora il
+  root è senza spazi **per costruzione**: `<disco>:\cfmesh_cases` su
+  Windows (dove stanno i casi reali), `tempdir/cfmesh_cases` su POSIX.
 - **Guard di manifoldità del boundary BL** (caso reale "paletta"): le
   strisce terminator del BL ai bordi BL/non-BL finivano nel blocco
   boundary (misurato: +139.360 volti = esattamente i terminator, 32 edge
@@ -140,6 +148,9 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 - Tab **Quality** vuota dal pannello sinistro (mostrava solo "No quality
   data yet"; il checkMesh resta nel log, nel quality panel e nel report
   PDF).
+- Pulsante **"Auto-Fix Quality"** dal quality panel (e il relativo
+  segnale `fix_requested`): il gate di qualità ritenta già in automatico,
+  il pulsante era ridondante.
 
 ### Modificato
 
