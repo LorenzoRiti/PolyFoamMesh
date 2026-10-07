@@ -1323,6 +1323,46 @@ Limiti accettati dopo il lavoro "BL reali" (commit `d654cdb`, `8f4b0e4`,
   by-design (peggiore misurato: 1.16e-3 sul Part2); un buco reale
   fallisce prima il test di chiusura a 1e-8, che è il gate esatto.
 
+## Boundary layer - terminator manifold defect (2026-10-07)
+
+Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
+
+- **Root cause**: at BL/non-BL borders the terminator strips are emitted
+  as BOUNDARY faces; when they coincide with the wall band the boundary
+  block becomes non-manifold (+139,360 faces = exactly n_terminator_faces,
+  32 boundary edges with incidence 4 -> checkMesh "230,126 multiply
+  connected faces").
+- **Current mitigation**: `bl_poly._validate` refuses any build whose
+  boundary is not a 2-manifold (`_boundary_manifold_defects`). On such
+  geometries the app writes the manifold DUAL-ONLY mesh (multiply
+  connected 0, aspect OK) and the log reports the refusal - no BL is
+  better than a broken BL.
+- **Scheduled fix (post-release)**: make the BL/non-BL step INTERNAL
+  (against the adjacent cell) instead of a boundary strip; this is a
+  deep bl_poly change that must re-validate the valve/Part2/cylinder
+  goldens.
+- **Converter-intrinsic defects on the same geometry**: 351 incorrectly
+  oriented faces + one skew-767.8 face remain in the dual; a kwargs sweep
+  (planarize/triangulate/smoothing/dissolution) does not remove them.
+- **A-floor note**: the BL wall-size floor is stack/3 (derived from the
+  0.34 inversion-budget relation, capped at 10% of the model extent);
+  even fully honoured, very thick stacks on fine wall meshes can remain
+  compressed - the panel hint and "Fit BL to mesh" are the honest path.
+
+## Linux support status (2026-10-07)
+
+- Phase 1 (core) + phase 2 (GUI) are implemented: platform-dispatched
+  OFConfig (native `bash -lc` on POSIX, Windows byte-identical), XDG app
+  data, safe POSIX process kills, OpenFOAM availability gate, packaging
+  skeleton (`launch.sh`, `PolyFoamMesh-linux.spec`, release `build-linux`
+  tarball job).
+- **Verified on Windows only**: the fast suite stays green and POSIX
+  command generation is unit-tested; the real Linux run is verified by
+  the ubuntu CI job (dispatch step) and must be smoke-tested on a real
+  Linux machine before announcing Linux support.
+- Not done: AppImage/deb packaging (tarball only for now), native
+  OpenFOAM integration tests in CI, `mpirun` as non-root.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
