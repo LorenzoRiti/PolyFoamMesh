@@ -109,3 +109,27 @@ post-BL (off di default; era misurato in regressione su groove1).
   automatico è coperto dai test unitari, non da una misura reale).
 - Viewer: colorazione delle celle prism (visibilità BL) — oggi il viewer
   colora per patch.
+
+## BL completi - complete-coverage policy (2026-10-07)
+
+Misura sul run reale dell'utente (gmsh_direct_20261007_091301, 279.894
+celle, n=6, h1=9 mm, robust OFF, solo patch parete surface_2): la parete
+aveva copertura BL **95.0%** - 5.883 facce senza prisma ("BL estrusi solo
+in parte"). Causa: la semantica binaria (zero_concave) scartava le facce
+con ngle_fade<0.5 o max_h<=0, e il fixpoint (percorso non-binario)
+azzerava le facce sui vertici senza budget.
+
+Fix in l_poly._build:
+- il loop standard usa **sempre** la semantica binaria (prima solo in
+  modalita' budget): il fixpoint e' un MIN sull'intera parete connessa e
+  qualunque vertice a budget ridotto la inonda a 1 layer;
+- si scartano **solo** le facce con difetto d'input reale (drop_bnd);
+- i vertici concavi / a budget zero tengono la faccia con stack
+  **compresso** (sottile ma presente) e un floor di altezza minima
+  (1e-3 * h1) evita i prismi degeneri.
+
+Verifica (Part2 dual, stessa config): surface_2 coverage **100.0%**,
+86.154 prismi, 6 layer su 14.359 facce, checkMesh PASS (NOmax 70.15,
+skew 1.741, neg 0). Trade-off dichiarato nel log: primo strato compresso
+al 2% del richiesto (la mesh vicino alla parete regge ~1.2 mm di stack;
+per y+ 30 serve una mesh di superficie piu' grossa). Suite BL 58 verdi.

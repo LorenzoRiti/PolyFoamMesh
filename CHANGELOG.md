@@ -23,6 +23,15 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Boundary layer COMPLETI (copertura 100% della parete)**: la semantica
+  binaria scartava le facce sui vertici concavi o a budget esaurito,
+  lasciando buchi nel guscio (misurato: 5.9% delle facce di parete senza
+  BL su un caso reale, "i BL vengono estrusi solo in parte"). Ora il
+  percorso standard scarta solo le facce con difetti d'input reali e
+  tiene tutte le altre con stack compresso (sottile ma presente, con
+  altezza minima anti-degenerazione). Se il primo strato risulta
+  compresso, il log lo dichiara e suggerisce una mesh di superficie più
+  grossa per rispettare lo y+ richiesto.
 - **Boundary layer reali (non più "successi" finti)**: il layer poteva
   risultare valido ma invisibile (1 strato quando ne erano richiesti 14)
   perché il fixpoint di consistenza è un minimo su tutta la parete

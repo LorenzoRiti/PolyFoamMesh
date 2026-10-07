@@ -1242,15 +1242,16 @@ class PolyBoundaryLayerEngine:
                     sel, res.n_layers, res.first_height * scale, growth, clamp,
                     pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
                     terminate_by_budget=terminate_by_budget,
-                    # Budget mode: binary semantics (face = full stack or
-                    # dropped).  The consistency fixpoint is a MIN over the
-                    # whole connected wall, so a single low-budget vertex
-                    # floods every face to 1 layer; binary keeps the healthy
-                    # region at the capped count and compresses (never
-                    # inverts) the stacks where max_h binds.  The shell
-                    # given up under dropped faces is accounted for in the
-                    # volume-conservation check (built["shell_loss"]).
-                    zero_concave=terminate_by_budget,
+                    # Binary semantics ALWAYS in the standard path
+                    # (2026-10-07): the consistency fixpoint is a MIN over
+                    # the whole connected wall, so a single low-budget
+                    # vertex floods every face to 1 layer.  Binary keeps
+                    # the bulk at the (capped) count and compresses - never
+                    # drops, except for genuine input defects - the stacks
+                    # where max_h binds, so the BL shell stays COMPLETE
+                    # (the old policy left 5.9% of the wall faces bare on
+                    # the user's real case).
+                    zero_concave=True,
                 )
             except Exception as exc:  # noqa: BLE001 - keep-best fallback
                 self._log(f"[bl] attempt scale={scale} clamp={clamp}: {exc}")
@@ -2328,25 +2329,23 @@ class PolyBoundaryLayerEngine:
             # no extrusion budget force 0 (handled as unselected below)
             nf0[bi] = min(1, m) if bi in drop_bnd else m
         if zero_concave:
-            # BINARY local termination  -  the building block of the opt-in
-            # ``run(local_termination=True)`` path: a face is either fully
-            # layered (all vertices can take the full stack) or not extruded
-            # at all.  No intermediate counts -> no transition faces needed
-            # (equal counts pair directly, dropped faces use the FASE 1
-            # terminator machinery).  This keeps the healthy region at
-            # n_layers instead of flooding it to 1 via the consistency
-            # fixpoint, at the price of giving up the thin wall shell under
-            # the dropped faces (measured negligible on the valve).
+            # BINARY semantics: a face is either fully layered or not
+            # extruded at all - no intermediate counts, no transition faces.
+            # This keeps the healthy region at n_layers instead of flooding
+            # it to 1 via the consistency fixpoint.
+            #
+            # COMPLETE-COVERAGE POLICY (2026-10-07): only faces flagged by
+            # the INPUT pyramid criterion (drop_bnd, real concave defects)
+            # are left out.  Concave vertices / exhausted budgets keep their
+            # faces with a COMPRESSED stack (thin but present) instead of
+            # leaving holes in the BL shell: on the user's real case the old
+            # policy left 5.9% of the wall faces bare ("BL extruded only in
+            # part").  A zero-budget vertex gets a minimal positive stack so
+            # the prism never degenerates.
             nf = {}
             nv = {w: 0 for w in wall_verts}
             for bi, fi in enumerate(bnd):
-                fdrop = bi in drop_bnd
-                if not fdrop:
-                    for v in faces[fi]:
-                        if angle_fade[v] < 0.5 or max_h[v] <= 0.0:
-                            fdrop = True
-                            break
-                if fdrop:
+                if bi in drop_bnd:
                     nf[bi] = 0
                     continue
                 nf[bi] = n_layers
@@ -2354,10 +2353,16 @@ class PolyBoundaryLayerEngine:
                     nv[v] = n_layers
             if not any(nf[bi] > 0 for bi in range(n_wf)):
                 raise ValueError("zero_concave dropped every selected face")
-            hw = {
-                w: (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0)
-                for w in wall_verts
-            }
+            floor_h = 1e-3 * h1 if h1 > 0 else 0.0
+            hw = {}
+            for w in wall_verts:
+                if nv[w] <= 0:
+                    hw[w] = 0.0
+                    continue
+                h = min(cum[nv[w] - 1], max_h[w])
+                if h <= 0.0:
+                    h = floor_h
+                hw[w] = h
         else:
             # Consistency fixpoint: every wall vertex's layer count is clamped
             # to the SHALLOWEST incident selected face's count.  This is what
