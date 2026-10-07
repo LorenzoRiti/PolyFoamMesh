@@ -45,6 +45,12 @@ VIEW_MODES = ["Surface", "Surface with Edges", "Wireframe"]
 _MESH_COLOR = (0.86, 0.88, 0.91)
 _HIGHLIGHT_COLOR = (1.0, 0.84, 0.0)
 
+#: "Show BL": boundary-layer prism cells painted warm over the grey core.
+#: Named colours (not hex) keep gui/ free of hardcoded hex values
+#: (tests/test_design_system.py).
+_BL_CORE_COLOR = "gainsboro"
+_BL_HIGHLIGHT_COLOR = "darkorange"
+
 _MAX_CLIP_FACES = 50_000
 
 BACKGROUNDS = {
@@ -709,6 +715,12 @@ class ViewerWidget(QWidget):
         #: name -> inferred role ("wall"/"inlet"/"outlet") for a generated
         #: mesh, from case_setup.infer_patch_roles. Empty for CAD.
         self._patch_roles: dict[str, str] = {}
+        #: "Show BL" state: a boolean mask over polyMesh cells, the full
+        #: internal-volume grid it was computed for, and whether the warm
+        #: boundary-layer overlay is currently painted.
+        self._bl_cells: np.ndarray | None = None
+        self._bl_grid: object | None = None
+        self._bl_active: bool = False
         self._patch_rename_guard: bool = False
         self._highlighted_actor = None
         self._showing_cad: bool = True
@@ -776,6 +788,19 @@ class ViewerWidget(QWidget):
         self._measure_clear_btn.clicked.connect(self._clear_measurements)
         toolbar.addWidget(self._measure_clear_btn)
 
+        toolbar.addSpacing(8)
+
+        # "Show BL": highlight the boundary-layer prism cells (a 0.5-1 mm
+        # layer is invisible when the mesh is coloured by patch). Hidden in
+        # CAD mode; shown once a case mesh is loaded (show_mesh).
+        self._bl_check = QCheckBox("Show BL")
+        self._bl_check.setToolTip(
+            "Highlight boundary-layer prism cells in orange over the grey core."
+        )
+        self._bl_check.setVisible(False)
+        self._bl_check.toggled.connect(self._on_bl_toggled)
+        toolbar.addWidget(self._bl_check)
+
         self._stats_label = QLabel("")
         self._stats_label.setStyleSheet(
             "font-size: 11px; padding: 2px 8px; background: rgba(0,0,0,30); border-radius: 3px;"
@@ -815,6 +840,7 @@ class ViewerWidget(QWidget):
             self._layout.addWidget(self._plotter)
             self._plotter_ready = True
             self._apply_background(self._bg_selector.currentText())
+            self._install_click_deselect()
             QTimer.singleShot(0, self._position_measure_summary)
         except Exception as exc:
             logger.error("Failed to initialize VTK plotter: %s", exc)
@@ -916,6 +942,8 @@ class ViewerWidget(QWidget):
         """
         if self._plotter is None:
             return
+        # Track the selection so a click on empty space can clear it.
+        self._selected_patch_name = patch_name
         if not self._showing_cad and self._mesh_patches:
             self._highlight_mesh_patch(patch_name)
             return
@@ -1166,6 +1194,178 @@ class ViewerWidget(QWidget):
         y = g.y() + 12
         self._measure_summary.move(max(0, x), max(0, y))
         self._measure_summary.raise_()
+
+    # ------------------------------------------------------------------
+    # "Show BL": paint boundary-layer prism cells warm over the grey core.
+    # The classification runs in a background task (the viewer's existing
+    # TaskManager); the mask is applied to the full internal-volume grid,
+    # which is the only representation that carries every cell.
+    # ------------------------------------------------------------------
+    def _log_bl(self, message: str) -> None:
+        logger.info("Show BL: %s", message)
+
+    def _uncheck_bl(self) -> None:
+        """Clear the checkbox without re-entering the toggle handler."""
+        self._bl_active = False
+        chk = getattr(self, "_bl_check", None)
+        if chk is None:
+            return
+        chk.blockSignals(True)
+        chk.setChecked(False)
+        chk.blockSignals(False)
+
+    def _reset_bl_control(self) -> None:
+        """Drop any BL state and uncheck the box (CAD/clear/new mesh)."""
+        self._bl_cells = None
+        self._bl_grid = None
+        self._uncheck_bl()
+
+    def _on_bl_toggled(self, checked: bool) -> None:
+        """Toggle the boundary-layer highlight on/off."""
+        try:
+            if not checked:
+                self._bl_active = False
+                self._redisplay_current()
+                return
+            case_dir = getattr(self, "_mesh_case_dir", "")
+            if not case_dir or self.is_showing_cad():
+                self._log_bl("available only for a loaded case mesh.")
+                self._uncheck_bl()
+                return
+            if getattr(self, "_bl_cells", None) is not None:
+                self._apply_bl_display()
+                return
+            self._run_bl_classify(Path(case_dir))
+        except Exception as exc:  # noqa: BLE001 - the toggle must never crash
+            logger.warning("Show BL toggle failed: %s", exc)
+            self._uncheck_bl()
+
+    def _run_bl_classify(self, case_dir: Path) -> None:
+        """Classify BL cells in a background task, then apply the overlay."""
+        from polyfoammesh.core.bl_cells import classify_bl_cells
+
+        tasks = getattr(self, "_vtk_tasks", None)
+        if tasks is None:
+            self._log_bl("background task manager unavailable.")
+            self._uncheck_bl()
+            return
+
+        def work(worker):
+            return classify_bl_cells(case_dir)
+
+        def on_done(_name, payload):
+            mask, count = payload
+            if mask is None or count == 0 or len(mask) == 0:
+                self._log_bl("no boundary-layer prism cells detected.")
+                self._uncheck_bl()
+                return
+            self._bl_cells = np.asarray(mask, dtype=bool)
+            self._apply_bl_display()
+
+        def on_failed(_name, msg):
+            self._log_bl(f"classification failed: {msg}")
+            self._uncheck_bl()
+
+        tasks.submit(
+            "bl_cells", FunctionWorker(work),
+            on_finished=on_done, on_failed=on_failed,
+            heartbeat_timeout_s=600.0,
+        )
+
+    @staticmethod
+    def _apply_bl_mask_to_grid(grid, mask) -> bool:
+        """Write an int 0/1 ``bl_cells`` array onto *grid* if it fits."""
+        try:
+            arr = np.asarray(mask, dtype=bool)
+            if grid is None or int(grid.n_cells) != int(arr.size):
+                return False
+            grid.cell_data["bl_cells"] = arr.astype(np.int32)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("BL mask application failed: %s", exc)
+            return False
+
+    def _apply_bl_display(self) -> None:
+        """Render the current internal-volume grid coloured by BL/core."""
+        mask = getattr(self, "_bl_cells", None)
+        grid = getattr(self, "_bl_grid", None)
+        if self._plotter is None:
+            self._log_bl("no 3D viewer available.")
+            self._uncheck_bl()
+            return
+        if grid is None:
+            # Patch-based view: only the internal-volume VTU carries all
+            # cells, so switch to it and apply the overlay when it lands
+            # (see _maybe_apply_bl_overlay).
+            self._log_bl("switching to the internal volume view for the overlay.")
+            self._bl_active = True
+            if getattr(self, "_mesh_case_dir", ""):
+                self._display_mesh()
+            else:
+                self._uncheck_bl()
+            return
+        if not self._apply_bl_mask_to_grid(grid, mask):
+            self._log_bl("cell mask does not match the displayed grid.")
+            self._uncheck_bl()
+            return
+        self._bl_active = True
+        self._render_bl_grid(grid)
+
+    def _maybe_apply_bl_overlay(self) -> None:
+        """After a fresh internal-volume render, re-apply BL if still on."""
+        chk = getattr(self, "_bl_check", None)
+        if chk is None or not chk.isChecked():
+            return
+        if getattr(self, "_bl_cells", None) is None:
+            return
+        self._apply_bl_display()
+
+    def _handle_bl_unavailable(self) -> None:
+        """A patch-only view has no per-cell data: refuse the BL overlay."""
+        chk = getattr(self, "_bl_check", None)
+        if chk is not None and chk.isChecked() and getattr(self, "_bl_grid", None) is None:
+            self._log_bl("internal volume grid unavailable; cannot show BL.")
+            self._uncheck_bl()
+
+    def _render_bl_grid(self, grid) -> None:
+        """Colour *grid* by its ``bl_cells`` array (orange BL / grey core)."""
+        try:
+            dataset = self._apply_section_clip(grid)
+            ec = self._edge_color()
+            mode = self._current_mode()
+            self._plotter.clear()
+            kwargs = dict(
+                scalars="bl_cells",
+                cmap=[_BL_CORE_COLOR, _BL_HIGHLIGHT_COLOR],
+                clim=(0, 1),
+                show_edges=True,
+                edge_color=ec,
+            )
+            if mode == "Wireframe":
+                kwargs.update(style="wireframe", line_width=0.8)
+            else:
+                kwargs.update(
+                    style="surface",
+                    smooth_shading=(mode == "surface"),
+                    line_width=0.6,
+                )
+            self._plotter.add_mesh(dataset, **kwargs)
+            try:
+                self._plotter.add_scalar_bar(title="BL", n_labels=2, fmt="%.0f")
+            except Exception as exc:  # noqa: BLE001 - scalar bar is cosmetic
+                logger.debug("BL scalar bar failed: %s", exc)
+            self._plotter.add_text(
+                "Show BL: orange = boundary-layer prisms",
+                color=self._text_color, font_size=10,
+            )
+            self._plotter.view_isometric()
+            self._plotter.render()
+            n_bl = int(np.asarray(self._bl_cells).sum())
+            self._log_bl(f"{n_bl} boundary-layer cells highlighted.")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("BL display failed: %s", exc)
+            self._log_bl(f"display failed: {exc}")
+            self._uncheck_bl()
 
     # ------------------------------------------------------------------
     # Patch list panel (BaramMesh-style): name / faces / auto type.
@@ -1441,6 +1641,69 @@ class ViewerWidget(QWidget):
         """True while the CAD surface is the displayed geometry."""
         return bool(getattr(self, "_showing_cad", True))
 
+    def set_rendering_paused(self, paused: bool) -> None:
+        """Pause the periodic 3D re-render while a meshing run saturates the
+        CPU.
+
+        The viewer's 30 FPS auto-update competes with the meshing workers
+        for the GUI thread and makes interaction stutter; pausing it for
+        the duration of a run (the log flood was the other, bigger source -
+        fixed in the log panel) keeps the window responsive. The display
+        itself is untouched and rendering resumes immediately when done.
+        """
+        if self._plotter is None:
+            return
+        try:
+            self._plotter.auto_update = 0.0 if paused else 30.0
+        except Exception as exc:  # noqa: BLE001 - viewer keeps working
+            logger.debug("auto_update toggle failed: %s", exc)
+
+    def _install_click_deselect(self) -> None:
+        """Clicking empty 3D space clears the current patch selection.
+
+        A patch selected from the table (or by a 3D click) used to stay
+        highlighted forever: clicking the empty background did nothing,
+        which made the selection useless (user report). A left-click that
+        hits no actor now clears both the highlight and the table row.
+        """
+        if self._plotter is None:
+            return
+        try:
+            self._click_observer = self._plotter.add_observer(
+                "LeftButtonPressEvent", self._on_viewer_click
+            )
+        except Exception as exc:  # noqa: BLE001 - viewer keeps working
+            logger.debug("click-deselect observer unavailable: %s", exc)
+
+    def _on_viewer_click(self, *_args) -> None:
+        """Left click anywhere: if nothing is hit, clear the selection."""
+        if self._plotter is None:
+            return
+        if getattr(self, "_selected_patch_name", None) is None:
+            return
+        try:
+            res = self._plotter.pick_mouse_position()
+            actor = res[0] if isinstance(res, tuple) else res
+        except Exception:
+            actor = None
+        if actor is None:
+            self._clear_patch_selection()
+
+    def _clear_patch_selection(self) -> None:
+        """Remove the patch highlight and clear the table selection."""
+        self._selected_patch_name = None
+        table = getattr(self, "_patch_table", None)
+        if table is not None:
+            table.blockSignals(True)
+            try:
+                table.clearSelection()
+                table.setCurrentItem(None)
+            finally:
+                table.blockSignals(False)
+        # Repaint without the highlight. For a case mesh this re-renders the
+        # cached patches / VTU (no foamToVTK re-run).
+        self._redisplay_current()
+
     def _current_mode(self) -> str:
         idx = self._view_selector.currentIndex()
         if 0 <= idx < len(VIEW_MODES):
@@ -1464,6 +1727,14 @@ class ViewerWidget(QWidget):
         """Render whatever is currently shown (CAD or mesh) using the
         representation selected in the "Display" combo."""
         if self._plotter is None:
+            return
+        if (
+            getattr(self, "_bl_active", False)
+            and getattr(self, "_bl_cells", None) is not None
+            and getattr(self, "_bl_grid", None) is not None
+        ):
+            # Keep the boundary-layer overlay through a representation change.
+            self._apply_bl_display()
             return
         if getattr(self, "_showing_cad", True) and self._cad_meshes:
             self._display_cad()
@@ -1865,6 +2136,7 @@ class ViewerWidget(QWidget):
         background task; render on the GUI thread when ready."""
         def work(worker):
             grid = pv.read(str(vtu_path))
+            full_grid = grid
             grid = self._prepare_internal_vtu_grid(grid, mode)
             n_cells = grid.n_cells
             threshold, target = self._decimation_settings()
@@ -1879,12 +2151,18 @@ class ViewerWidget(QWidget):
                     grid = grid.decimate_pro(target)
                 except Exception:
                     pass
-            return {"grid": grid, "n": n_cells, "show_dec": show_dec}
+            return {
+                "grid": grid, "n": n_cells, "show_dec": show_dec,
+                "full": full_grid,
+            }
 
         def on_done(_name, payload):
             self._mesh_display_in_progress = False
             self._cancel_display_timeout()
             grid = payload["grid"]
+            # The full-volume grid carries every polyMesh cell (the prepared
+            # grid may be the extracted boundary surface); "Show BL" needs it.
+            self._bl_grid = payload.get("full", grid)
             n_cells = payload["n"]
             show_dec = payload["show_dec"]
             ec = self._edge_color()
@@ -1926,6 +2204,7 @@ class ViewerWidget(QWidget):
                 self._plotter.view_isometric()
                 self._plotter.render()
                 self._reload_patch_panel_async()
+                self._maybe_apply_bl_overlay()
             except Exception as exc:
                 logger.error("Plotter display failed (internal VTU): %s", exc)
                 self._show_mesh_too_large(f"Errore display: {exc}")
@@ -2015,6 +2294,7 @@ class ViewerWidget(QWidget):
                     )
                 self._plotter.view_isometric()
                 self._plotter.render()
+                self._handle_bl_unavailable()
             except Exception as exc:
                 logger.error("Plotter display failed (mesh patches): %s", exc)
                 self._show_mesh_too_large(f"Errore display: {exc}")
@@ -2129,6 +2409,9 @@ class ViewerWidget(QWidget):
         self._cad_meshes = list(meshes)
         self._showing_cad = True
         self._mesh_patches = {}
+        self._reset_bl_control()
+        if getattr(self, "_bl_check", None) is not None:
+            self._bl_check.setVisible(False)
         entries = []
         for i, mesh in enumerate(self._cad_meshes):
             name = mesh.metadata.get("name", f"patch_{i}")
@@ -2224,6 +2507,9 @@ class ViewerWidget(QWidget):
             self._mesh_case_dir = str(case_dir)
             self._showing_cad = False
             self._mesh_patches = {}
+            self._reset_bl_control()
+            if getattr(self, "_bl_check", None) is not None:
+                self._bl_check.setVisible(True)
             self._clear_patch_panel()
             self._cancel_display_timeout()
             self._mesh_display_in_progress = False
@@ -2284,6 +2570,9 @@ class ViewerWidget(QWidget):
         self._mesh_case_dir = ""
         self._mesh_patches = {}
         self._showing_cad = True
+        self._reset_bl_control()
+        if getattr(self, "_bl_check", None) is not None:
+            self._bl_check.setVisible(False)
         self._pending_vtu_mode = "surface_edges"
         self._pvdata_to_name.clear()
         self._stats_label.setText("")

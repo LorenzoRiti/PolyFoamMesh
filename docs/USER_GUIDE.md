@@ -23,8 +23,8 @@ quality honestly.
 
 1. `File > Open Geometry...` (`Ctrl+O`) or drag & drop a `.step` / `.stl`.
 2. Pick a mesher in the **Mesh** tab (start with **Quick Mesh**, `Ctrl+M`).
-3. Press **Generate Mesh** (`Ctrl+R`). The button turns into **Cancel** while
-   the mesh is being built.
+3. Press **Generate Mesh** (`Ctrl+R`). While the mesh is being built a red
+   **Cancel** button appears in the Mesh tab, right under "Reset All".
 4. Watch the **log** and the **Workflow** dock: the *Next action* line always
    tells you what to do next.
 5. When it finishes, `checkMesh` runs automatically and the result is logged
@@ -32,7 +32,7 @@ quality honestly.
 
 ## The interface
 
-- **Ribbon (top)**: meshing actions, Cancel (centred), export shortcuts.
+- **Ribbon (top)**: meshing actions and export shortcuts.
 - **Left dock - Workflow**: the project schematic (Geometry, Mesh, Advanced,
   Quality, Export) with live status icons, plus the **Next action** hint
   (idle / in progress / finished / error).
@@ -82,8 +82,8 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)).
-- **Generate Mesh** (`Ctrl+R`): starts the run; the same button becomes
-  **Cancel** while running.
+- **Generate Mesh** (`Ctrl+R`): starts the run. While running, the
+  dedicated red **Cancel** (under "Reset All") stops it.
 - If the actual cell count deviates a lot from the budget, the app
   performs ONE automatic size correction (logged as
   `[gmsh] budget correction: ...`) before giving the mesh.

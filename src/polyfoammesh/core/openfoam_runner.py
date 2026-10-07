@@ -1631,6 +1631,10 @@ class DualPolyWorker(QObject):
     def run(self):
         from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
 
+        # Stage timing (perf_counter; zero behaviour change).  One summary
+        # line is emitted before finished; the BL engine logs its own
+        # precompute/build split and exposes it through result.stats.
+        t_worker0 = time.perf_counter()
         self.log_line.emit(
             "[poly] Converting tet -> polyhedral mesh (barycentric dual)..."
         )
@@ -1688,7 +1692,9 @@ class DualPolyWorker(QObject):
                 boundary_feature_angle=40.0,
                 collapse_volume_tolerance=0.10,
             )
+            t_dual0 = time.perf_counter()
             result = converter.run()
+            dual_s = time.perf_counter() - t_dual0
         except Exception as exc:
             self.log_line.emit(f"[poly] ERROR: {exc}")
             self.failed.emit(str(exc))
@@ -1707,6 +1713,7 @@ class DualPolyWorker(QObject):
         )
 
         # boundary layers on the poly mesh (our own advancing-layer engine)
+        bres = None
         if self._bl_params:
             from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
 
@@ -1922,6 +1929,19 @@ class DualPolyWorker(QObject):
                 result.bl_prism_cells = 0
                 result.bl_warning = msg
 
+        # One stage-timing summary per poly run (perf_counter).
+        bl_pre = bl_build = bl_total = 0.0
+        if bres is not None:
+            stats = getattr(bres, "stats", {}) or {}
+            bl_pre = float(stats.get("stage_precompute_s", 0.0) or 0.0)
+            bl_build = float(stats.get("stage_build_s", 0.0) or 0.0)
+            bl_total = float(stats.get("stage_total_s", 0.0) or 0.0)
+        self.log_line.emit(
+            f"[poly] stage times: dual {dual_s:.1f}s | "
+            f"BL precompute {bl_pre:.1f}s | BL build {bl_build:.1f}s | "
+            f"BL total {bl_total:.1f}s | "
+            f"total {time.perf_counter() - t_worker0:.1f}s"
+        )
         self.finished.emit(result)
 
 
