@@ -66,6 +66,7 @@ from polyfoammesh.core.geometry import (
     unit_to_scale,
     validate_cell_sizes,
 )
+from polyfoammesh.core import mesh_cache
 from polyfoammesh.core.gmsh_wrapper import gmsh_shutdown
 from polyfoammesh.core.meshdict_gen import write_meshdict
 from polyfoammesh.core.openfoam_runner import (
@@ -318,6 +319,8 @@ class MainWindow(QMainWindow):
         tm.addAction("Load Sample Cylinder (demo geometry)", self._on_test_cylinder)
         tm.addSeparator()
         tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
+        tm.addSeparator()
+        tm.addAction("Clear mesh cache", self._on_clear_mesh_cache)
         tm.addSeparator()
 
     def _on_theme_change(self, mode: str) -> None:
@@ -3058,12 +3061,205 @@ class MainWindow(QMainWindow):
             root = _space_free_cases_root()
         return root
 
+    def _prepare_gmsh_direct_case_dir(self) -> Path:
+        """Create the OpenFOAM case skeleton for a direct-GMSH run.
+
+        gmshToFoam (and checkMesh/polyDualMesh after it) need a real case
+        skeleton — system/controlDict at minimum. Every other mesher path
+        gets this from write_meshdict() or similar; this one never got it at
+        all until the freeze fix. Returns the ``.msh`` path GMSH writes to
+        (also the destination when a cached mesh is reused).
+        """
+        self._log.append_log("[gmsh] Starting volume mesh generation in background...")
+        self._status.showMessage("GMSH: volume mesh...")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        root = self._resolve_case_root()
+        self._case_dir = root / f"gmsh_direct_{ts}"
+        self._case_dir.mkdir(parents=True, exist_ok=True)
+        (self._case_dir / "system").mkdir(parents=True, exist_ok=True)
+        (self._case_dir / "constant").mkdir(parents=True, exist_ok=True)
+        # Single shared writer (core.case_setup.write_control_dict) — no
+        # longer reached through commercial.mesh_engine.
+        from polyfoammesh.core.case_setup import write_control_dict
+        write_control_dict(self._case_dir)
+        (self._case_dir / "system" / "fvSchemes").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n"
+            "ddtSchemes { default steadyState; }\n"
+            "gradSchemes { default Gauss linear; }\n"
+            "divSchemes { default Gauss linear; }\n"
+            "laplacianSchemes { default Gauss linear corrected; }\n"
+            "interpolationSchemes { default linear; }\n"
+            "snGradSchemes { default corrected; }\n",
+            encoding="ascii",
+        )
+        (self._case_dir / "system" / "fvSolution").write_text(
+            "FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }\n"
+            "solvers { p { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0.1; } }\n",
+            encoding="ascii",
+        )
+        self._params.set_case_dir(str(self._case_dir))
+        return self._case_dir / "mesh.msh"
+
+    def _gmsh_mesh_cache_inputs(
+        self, step_path, detail, mesher, adaptive,
+        max_cell, min_cell, max_cells_target, surface_resolution,
+        refinement_zones,
+        n_layers=0, bl_thickness=None, bl_expansion=1.2,
+        bl_wall_size_floor=0.0,
+    ) -> dict:
+        """Build the dict :func:`core.mesh_cache.mesh_fingerprint` hashes.
+
+        The BL inputs that SHAPE the .msh (n_layers / bl_thickness /
+        bl_expansion drive GMSH's BoundaryLayer field; bl_wall_size_floor
+        is a sizing field) are INCLUDED: the GMSH stage bakes the near-wall
+        tet layout the dual is built on, so a BL change must invalidate the
+        cache.  The other BL settings (applyToAll, sliver filters, budget)
+        do not touch GMSH and stay excluded.
+        """
+        try:
+            st = Path(step_path).stat()
+            geometry_path = str(Path(step_path).resolve())
+            geometry_size, geometry_mtime_ns = st.st_size, st.st_mtime_ns
+        except OSError:
+            geometry_path = str(step_path)
+            geometry_size, geometry_mtime_ns = None, None
+        try:
+            feature_angle = self._settings().get_value("geometry/feature_angle", None)
+        except Exception:
+            feature_angle = None
+        return {
+            "geometry_path": geometry_path,
+            "geometry_size": geometry_size,
+            "geometry_mtime_ns": geometry_mtime_ns,
+            "mesher": mesher,
+            "detail": detail,
+            "adaptive": adaptive,
+            "max_cell": max_cell,
+            "min_cell": min_cell,
+            "max_cells_target": max_cells_target,
+            "surface_resolution": surface_resolution,
+            "feature_angle": feature_angle,
+            "refinement_zones": refinement_zones,
+            "n_layers": n_layers,
+            "bl_thickness": bl_thickness,
+            "bl_expansion": bl_expansion,
+            "bl_wall_size_floor": bl_wall_size_floor,
+        }
+
+    def _reuse_cached_tet_mesh(
+        self, my_id: int, fingerprint: str, dest_msh: Path,
+    ) -> None:
+        """Advance the pipeline on a cache hit exactly as GMSH completion does."""
+        try:
+            size_mb = dest_msh.stat().st_size / (1024 * 1024)
+        except OSError:
+            size_mb = 0.0
+        meta = mesh_cache.metadata(fingerprint)
+        created = meta.get("created", "unknown")
+        self._log.append_log(
+            f"[cache] reusing cached tet mesh (fingerprint {fingerprint[:8]}, "
+            f"created {created}, {size_mb:.1f} MB) - GMSH skipped"
+        )
+        names = meta.get("names") or []
+        # Same continuation GmshVolumeWorker's success callback invokes — no
+        # duplicated conversion/setup logic.
+        self._continue_gmsh_direct(my_id, dest_msh, names)
+
+    def _store_tet_mesh_cache(
+        self, ctx: dict, msh_path: Path, names: list,
+    ) -> None:
+        """Store a successful GMSH .msh under its attempt fingerprint."""
+        try:
+            if not self._params.get_reuse_cached_mesh():
+                return
+            inputs = ctx.get("fingerprint_inputs")
+            if not inputs:
+                return
+            fingerprint = mesh_cache.mesh_fingerprint(inputs)
+            meta = {
+                "geometry_path": inputs.get("geometry_path"),
+                "names": list(names or []),
+                "sizing": {
+                    key: inputs.get(key) for key in (
+                        "mesher", "detail", "adaptive", "max_cell", "min_cell",
+                        "max_cells_target", "surface_resolution", "feature_angle",
+                    )
+                },
+            }
+            if mesh_cache.store(fingerprint, msh_path, meta):
+                mesh_cache.prune()
+        except Exception:
+            logger.debug("Mesh cache store skipped", exc_info=True)
+
+    def _on_clear_mesh_cache(self) -> None:
+        """Tools action: delete every cached tet mesh."""
+        try:
+            removed = mesh_cache.clear()
+        except Exception:
+            removed = 0
+        self._log.append_log(f"[cache] cleared {removed} cached tet mesh(es).")
+        self._status.showMessage(f"Mesh cache cleared ({removed} entries)", 4000)
+
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
         from polyfoammesh.core.openfoam_runner import GmshVolumeWorker
         logger.info(
             "GMSH stage entered: run_id=%d step=%s mesher=%s",
             my_id, step_path, getattr(self, "_current_mesher_type", ""),
         )
+
+        # --- TET-sizing snapshot, gathered before the resource pre-flight
+        # and the case-dir setup so the same values feed both the mesh-cache
+        # fingerprint and the GMSH worker.  The BL inputs that shape the
+        # .msh (n_layers/bl_thickness/bl_expansion -> GMSH BoundaryLayer
+        # field; bl_wall_size_floor -> sizing field) ARE part of the
+        # fingerprint: the near-wall tet layout is baked in by GMSH, so a BL
+        # change must invalidate the cache (only the remaining BL settings,
+        # which never touch GMSH, stay excluded).
+        detail = self._params.get_detail_level()
+        bl_params = self._params.get_bl_params()
+        n_layers = bl_params.get("nLayers", 0) if bl_params else 0
+        bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
+        bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
+        adaptive = self._params.get_adaptive_sizing_enabled()
+        surface_resolution = self._params.get_surface_resolution()
+        bl_wall_size_floor = (
+            self._params.get_bl_wall_size_floor() if bl_params else 0.0
+        )
+        if adaptive:
+            max_cell = 0
+            min_cell = 0
+            max_cells_target = self._params.get_max_cells_target()
+        else:
+            max_cell = self._params.get_max_cell()
+            min_cell = self._params.get_min_cell()
+            max_cells_target = 0
+        refinement_zones = self._gmsh_refinement_zones()
+        fingerprint_inputs = self._gmsh_mesh_cache_inputs(
+            step_path, detail, getattr(self, "_current_mesher_type", ""),
+            adaptive, max_cell, min_cell, max_cells_target,
+            surface_resolution, refinement_zones,
+            n_layers=n_layers, bl_thickness=bl_thickness,
+            bl_expansion=bl_expansion, bl_wall_size_floor=bl_wall_size_floor,
+        )
+        fingerprint = mesh_cache.mesh_fingerprint(fingerprint_inputs)
+
+        # --- Cache reuse: identical tet sizing -> skip the whole GMSH stage.
+        # This runs BEFORE the RAM/disk pre-flight (GMSH will not run, so the
+        # guard is irrelevant). Any copy failure falls through to a normal,
+        # full GMSH run below.
+        if self._params.get_reuse_cached_mesh():
+            cached_msh = mesh_cache.lookup(fingerprint)
+            if cached_msh is not None:
+                msh_path = self._prepare_gmsh_direct_case_dir()
+                try:
+                    shutil.copy2(cached_msh, msh_path)
+                except OSError as exc:
+                    logger.warning(
+                        "Mesh cache copy failed (%s) — running GMSH instead", exc,
+                    )
+                else:
+                    self._reuse_cached_tet_mesh(my_id, fingerprint, msh_path)
+                    return
 
         # Pre-flight guard: GMSH volume meshing is RAM- and disk-hungry, and
         # on a machine where WSL2/OpenFOAM + the GUI already compete for
@@ -3137,73 +3333,14 @@ class MainWindow(QMainWindow):
             # A probe failure must never block meshing.
             logger.debug("Pre-flight resource check skipped: %s", exc)
 
-        self._log.append_log("[gmsh] Starting volume mesh generation in background...")
-        self._status.showMessage("GMSH: volume mesh...")
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = self._resolve_case_root()
-        self._case_dir = root / f"gmsh_direct_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
-        # gmshToFoam (and checkMesh/polyDualMesh after it) need a real
-        # OpenFOAM case skeleton — system/controlDict at minimum. Every
-        # other mesher path gets this from write_meshdict() or similar;
-        # this one never got it at all. Uncovered by fixing the freeze
-        # above: gmshToFoam failed immediately with "cannot find file
-        # .../system/controlDict" — previously invisible because nothing
-        # downstream of the freeze ever ran.
-        (self._case_dir / "system").mkdir(parents=True, exist_ok=True)
-        (self._case_dir / "constant").mkdir(parents=True, exist_ok=True)
-        # Single shared writer (core.case_setup.write_control_dict) — no
-        # longer reached through commercial.mesh_engine.
-        from polyfoammesh.core.case_setup import write_control_dict
-        write_control_dict(self._case_dir)
-        (self._case_dir / "system" / "fvSchemes").write_text(
-            "FoamFile { version 2.0; format ascii; class dictionary; object fvSchemes; }\n"
-            "ddtSchemes { default steadyState; }\n"
-            "gradSchemes { default Gauss linear; }\n"
-            "divSchemes { default Gauss linear; }\n"
-            "laplacianSchemes { default Gauss linear corrected; }\n"
-            "interpolationSchemes { default linear; }\n"
-            "snGradSchemes { default corrected; }\n",
-            encoding="ascii",
-        )
-        (self._case_dir / "system" / "fvSolution").write_text(
-            "FoamFile { version 2.0; format ascii; class dictionary; object fvSolution; }\n"
-            "solvers { p { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0.1; } }\n",
-            encoding="ascii",
-        )
-        self._params.set_case_dir(str(self._case_dir))
-        msh_path = self._case_dir / "mesh.msh"
-        detail = self._params.get_detail_level()
-        bl_params = self._params.get_bl_params()
-        n_layers = bl_params.get("nLayers", 0) if bl_params else 0
-        bl_thickness = bl_params.get("firstLayerThickness", 0.005) if bl_params else None
-        bl_expansion = bl_params.get("thicknessRatio", 1.2) if bl_params else 1.2
         # Adaptive sizing toggle (Mesh tab, next to the Mesh Fineness
-        # slider): this is now the ONLY thing deciding which sizing path
-        # GMSH takes. Previously `max_cells_target > 0` also forced the
-        # adaptive path regardless of the checkbox — but the slider's
-        # target is NEVER zero (it maps slider position 0..20 to
-        # 10K..20M cells, see _slider_to_cells), so that condition was
-        # always true and the checkbox was unreachable dead UI: there was
-        # no way to actually get literal/manual sizing from the GUI.
-        # max_cells_target itself is only meaningful to the adaptive path
-        # (generate_volume_mesh ignores it whenever an explicit max_cell
-        # is passed), so it is only forwarded when adaptive is on.
-        adaptive = self._params.get_adaptive_sizing_enabled()
-        surface_resolution = self._params.get_surface_resolution()
-        # BL <-> sizing coupling (upgrade A): only meaningful when BL is on.
-        # 0.0 = off, so a run with no BL is byte-for-byte the previous path.
-        bl_wall_size_floor = (
-            self._params.get_bl_wall_size_floor() if bl_params else 0.0
-        )
-        if adaptive:
-            max_cell = 0
-            min_cell = 0
-            max_cells_target = self._params.get_max_cells_target()
-        else:
-            max_cell = self._params.get_max_cell()
-            min_cell = self._params.get_min_cell()
-            max_cells_target = 0
+        # slider): this is the ONLY thing deciding which sizing path GMSH
+        # takes — max_cells_target is only meaningful to the adaptive path
+        # (generate_volume_mesh ignores it whenever an explicit max_cell is
+        # passed), so it is only forwarded when adaptive is on. The snapshot
+        # itself was taken before the pre-flight; this just prepares the
+        # OpenFOAM case skeleton GMSH output lands in.
+        msh_path = self._prepare_gmsh_direct_case_dir()
 
         # Propagate the user's OpenMP thread selection to the GMSH
         # subprocess so a "Custom" thread count also applies to GMSH
@@ -3237,7 +3374,7 @@ class MainWindow(QMainWindow):
 
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
         w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
-                             refinement_zones=self._gmsh_refinement_zones(),
+                             refinement_zones=refinement_zones,
                              max_cell_size=max_cell, min_cell_size=min_cell,
                              max_cells_target=max_cells_target,
                              surface_resolution=surface_resolution,
@@ -3250,11 +3387,16 @@ class MainWindow(QMainWindow):
             # Fase 3 P3.3: snapshot the ACTUAL values used in this attempt so
             # the no-BL retry reuses them instead of re-reading the spinboxes
             # (which the user may have changed in the meantime).
-            "refinement_zones": self._gmsh_refinement_zones(),
+            "refinement_zones": refinement_zones,
             "max_cell": max_cell, "min_cell": min_cell,
             "max_cells_target": max_cells_target,
             "surface_resolution": surface_resolution,
             "bl_wall_size_floor": bl_wall_size_floor,
+            # Tet-sizing snapshot for the mesh cache. Recomputed into a
+            # fingerprint on success (and after a detail-level retry), and
+            # updated in lock-step so the stored key matches the attempt
+            # that actually produced the .msh.
+            "fingerprint_inputs": fingerprint_inputs,
             "bl_retried": False, "detail_retried": False, "my_id": my_id,
         }
 
@@ -3286,6 +3428,13 @@ class MainWindow(QMainWindow):
                 "The tetrahedral mesh will still be clean; check the final poly "
                 "checkMesh report carefully before trusting it for a solver run."
             )
+        # Cache the successful .msh under the fingerprint of the attempt that
+        # produced it (fail-soft: a cache problem must never block the run).
+        try:
+            if msh_path_result.is_file() and msh_path_result.stat().st_size > 0:
+                self._store_tet_mesh_cache(ctx, msh_path_result, names)
+        except OSError:
+            logger.debug("Mesh cache post-run stat failed", exc_info=True)
         self._continue_gmsh_direct(my_id, msh_path_result, names)
 
     def _on_gmsh_volume_failed(self, msg: str):
@@ -3336,6 +3485,13 @@ class MainWindow(QMainWindow):
         if not ctx["detail_retried"] and next_detail:
             ctx["detail_retried"] = True
             ctx["detail"] = next_detail
+            # Keep the mesh-cache fingerprint in lock-step with the detail
+            # actually used by this retry, so a successful coarser pass is
+            # cached under (and reused on) the coarser fingerprint.
+            try:
+                ctx["fingerprint_inputs"]["detail"] = next_detail
+            except (KeyError, TypeError):
+                pass
             self._log.append_log(
                 f"{Tag.WARN} GMSH volume failed — retrying at a coarser "
                 f"detail level ({next_detail})."

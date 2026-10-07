@@ -342,6 +342,21 @@ class ParamsPanel(QWidget):
         surf_row.addWidget(self._surface_resolution)
         surf_row.addStretch()
         detail_layout.addLayout(surf_row)
+
+        # Performance: reuse a previously meshed tet mesh when the sizing
+        # inputs are unchanged, skipping the whole (minutes-long) GMSH stage.
+        # Only the boundary layer / solver setup is re-applied downstream.
+        # Default ON; a cache miss / corrupt entry falls back to a full run.
+        self._reuse_cache_check = QCheckBox(
+            "Reuse cached mesh when inputs are unchanged (skip GMSH)"
+        )
+        self._reuse_cache_check.setChecked(True)
+        self._reuse_cache_check.setToolTip(
+            "Reuses the tet mesh from a previous run with identical sizing; "
+            "only the boundary layer / solver setup is re-applied. Saves the "
+            "whole GMSH stage."
+        )
+        detail_layout.addWidget(self._reuse_cache_check)
         mesh_layout.addWidget(detail_group)
 
         self._bbox_dim = 1.0
@@ -1496,6 +1511,13 @@ class ParamsPanel(QWidget):
             return "medium"
         return self._surface_resolution.currentText()
 
+    def get_reuse_cached_mesh(self) -> bool:
+        """Whether a cached tet mesh may be reused when sizing is unchanged."""
+        return (
+            getattr(self, "_reuse_cache_check", None) is not None
+            and self._reuse_cache_check.isChecked()
+        )
+
     def get_bl_wall_size_floor(self) -> float:
         """Wall cell-size floor (metres) coupling the BL stack to the mesh.
 
@@ -2072,6 +2094,7 @@ class ParamsPanel(QWidget):
         s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
         s.setValue("params/unit", self._unit_selector.currentText())
         s.setValue("params/surface_resolution", self._surface_resolution.currentText())
+        s.setValue("params/reuse_cached_mesh", self._reuse_cache_check.isChecked())
         s.setValue("ui/expert_mode", self._expert_mode)
 
     def restore_params(self, s):
@@ -2088,6 +2111,9 @@ class ParamsPanel(QWidget):
         surf = s.value("params/surface_resolution", None)
         if surf is not None and str(surf) in ("Coarse", "Medium", "Fine", "Very fine"):
             self._surface_resolution.setCurrentText(str(surf))
+        reuse = s.value("params/reuse_cached_mesh", None, type=bool)
+        if reuse is not None:
+            self._reuse_cache_check.setChecked(bool(reuse))
         expert = s.value("ui/expert_mode", None, type=bool)
         if expert is not None:
             self.set_expert_mode(bool(expert))

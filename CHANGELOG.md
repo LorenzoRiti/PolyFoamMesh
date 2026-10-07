@@ -38,6 +38,18 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   "Linux (from source)" in INSTALL.md/.it.md. Comportamento Windows
   verificato **byte-identico** (18/18 controlli su comandi e script
   generati).
+- **Cache della mesh tet (salta GMSH)**: quando gli input che determinano
+  la mesh non cambiano, il `.msh` di un run precedente viene riusato
+  (fingerprint SHA256, copia nella nuova case dir, stessa continuazione
+  della pipeline) saltando l'intero stadio GMSH — il più lento. Checkbox
+  nel tab Mesh (ON di default, persistita), "Clear mesh cache" nel menu
+  Tools, prune automatico (5 voci / 2 GB), tutto fail-soft. **Nota di
+  correttezza**: lo stadio GMSH "cuoce" il layout degli strati vicino
+  alla parete nel `.msh` (campo BoundaryLayer da nLayers/spessore/
+  espansione) e applica il floor celle-parete come campo di size: questi
+  input fanno parte del fingerprint, quindi cambiare i parametri BL
+  invalida la cache (giusto); le altre impostazioni BL (apply-to-all,
+  filtri, budget) restano escluse.
 - **Calibrazione y+ dalla simulazione**: nuovo bottone nel pannello BL
   ("Calibrate from simulation"): legge `yPlus` (o `wallShearStress`) dal
   caso risolto con parsing diretto (senza WSL/foamToVTK), calcola le

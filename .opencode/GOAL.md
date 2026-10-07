@@ -845,3 +845,16 @@ verifica fingerprint/timings/golden, fast suite completa, eventuali
 correzioni, e COMMIT UNICO del blocco (deselezione, calibrazione, BL
 visibility, log, viewer pause, mesher list, velocita').
 Poi coda: cache mesh/dual tra run, benchmark robust ON, verifica Linux CI.
+
+## Notte 2026-10-08 - cache mesh tet (ultima corsia) + correzione fingerprint
+
+Lane cache atterrata e corretta da me (bug trovato in review): il percorso
+poly PASSA i parametri BL al worker GMSH (n_layers/bl_thickness/
+bl_expansion -> campo BoundaryLayer nel .msh; bl_wall_size_floor -> campo
+di size): escluderli dal fingerprint (come da mio spec) restituiva una
+mesh tet STANTIA dopo un cambio BL. Fix: i 4 input che modellano il .msh
+sono ora nel fingerprint; restano esclusi applyToAll/filtri/budget (non
+toccano GMSH). Test aggiornati (40 in test_mesh_cache.py), suite fast 1396
+passed. Semantica onesta: la cache accelera i re-run identici e le
+iterazioni non-BL; cambiare y+/layer richiede GMSH (corretto per design).
+Poi: commit e fine programma notturno.
