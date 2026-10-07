@@ -1280,6 +1280,24 @@ the properties that matter (triangulation truly eliminates non-planarity)
 still hold exactly; see `notes/smoothing_gate_fix_reasoning.md` for the
 full account. Fast suite green (1170 passed).
 
+## GUI release polish (2026-10-06)
+
+- **Section Cut**: now a deterministic static plane through the model centre
+  (was a fragile draggable box that only worked in one mode). Reliable in
+  every representation, but not movable with the mouse; a draggable plane is
+  a possible follow-up.
+- **Theme QSS**: the disk stylesheets (`.ui-design/qss/light.qss`,
+  `dark.qss`) still hardcode theme-specific hex; the light-island bug is
+  fixed at runtime by a palette fix-up in `theme.py`. Converting the QSS to
+  palette roles is a follow-up.
+- **Viewer BL visibility**: prism cells are still not colored differently
+  from the core; the BL truth lives in the `[bl]` log lines (median,
+  coverage, first layer). Cell-type coloring is a follow-up.
+- **Quality tab**: removed from the left panel (it was an empty
+  placeholder). Quality lives in the log, the quality panel and the PDF
+  report; if a dedicated surface is wanted again it must be populated, not
+  re-added empty.
+
 ## Boundary layer reale (2026-10-06)
 
 Limiti accettati dopo il lavoro "BL reali" (commit `d654cdb`, `8f4b0e4`,

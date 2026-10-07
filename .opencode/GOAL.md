@@ -552,3 +552,26 @@ misurata una regressione quando la LT girava per prima). Il flag legacy
 'concaveClosure' resta solo per il merge repair post-BL (off di default,
 misurato in regressione su groove1). Guardia memoria (8M facce/1.5M celle)
 spostata sul retry della chiusura. Test aggiornati (13 verdi).
+
+## Avanzamento 2026-10-06 (notte, GUI release polish) - commit 409f0b1 + docs
+
+Corsie parallele completate e verificate una per una (ruff + test + diff):
+- viewer: Measure riparato (kwarg invalido use_marker -> TypeError, picker mai
+  armato), Section Cut deterministico (plane statica, non trascinabile),
+  rappresentazioni unificate Surface / Surface with Edges / Wireframe,
+  Decimation rimossa, look mesh migliore, highlight patch solido.
+- main_window: Full Auto rimosso, Cancel centrato, workflow spunte sul
+  processo reale, 'Next step' -> 'Next action' azionabile, flusso refinement
+  box riparato end-to-end (il pick crea una box centrata; prima creava una
+  sfera legacy e non la mostrava).
+- params_panel: tab Quality vuota rimossa, lista refinement con etichette
+  leggibili, inglese.
+- temi: causa radice delle isole chiaro/scuro nel QSS (background opaco
+  ereditato dalle QLabel); fix runtime + dialoghi palette-driven, contrasto
+  verificato (min 6.0).
+- Sweep inglese: template_engine, mesh_engine, adaptive_loop + tutti i file
+  GUI. Suite fast 1284 passed.
+- Manuale utente completo in inglese: docs/USER_GUIDE.md (riscritto).
+- CHANGELOG [Non rilasciato] aggiornato con Aggiunto/Corretto/Rimosso GUI.
+- residual_risks: sezione 'GUI release polish' (section cut statica, QSS
+  hex residui, viewer senza colorazione BL, tab Quality rimossa).

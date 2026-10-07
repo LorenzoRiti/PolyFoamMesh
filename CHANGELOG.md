@@ -7,6 +7,20 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Non rilasciato]
 
+### Aggiunto
+
+- **Manuale utente completo in inglese** (`docs/USER_GUIDE.md`), riscritto
+  per la UI corrente: workflow, viewer, boundary layer (con lettura del
+  log), refinement, temi e troubleshooting.
+- **Viewer**: Section Cut deterministico che taglia in tutte le
+  rappresentazioni; Measure funzionante (distanza a due click su CAD e
+  mesh); rappresentazioni unificate stile ParaView (`Surface`, `Surface
+  with Edges`, `Wireframe`); highlight patch solido; aspetto mesh più
+  curato (smooth shading, edge adattivi).
+- **Workflow dock**: la voce statica "Next step" è diventata **Next
+  action**, un suggerimento azionabile che segue lo stato reale (idle, in
+  corso, finito, errore).
+
 ### Corretto
 
 - **Boundary layer reali (non più "successi" finti)**: il layer poteva
@@ -46,6 +60,30 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   `concaveClosure` dal payload GUI. Il flag legacy resta solo per il
   merge repair post-BL (off di default, misurato in regressione su
   groove1).
+- Pulsante **Full Auto** (il pulsante Cancel resta, centrato nella
+  ribbon).
+- Combo **Decimation** dal viewer (la policy Auto resta fissa
+  internamente).
+- Tab **Quality** vuota dal pannello sinistro (mostrava solo "No quality
+  data yet"; il checkMesh resta nel log, nel quality panel e nel report
+  PDF).
+
+### Modificato
+
+- **Interfaccia interamente in inglese**: pannelli, dialoghi, tooltip e
+  messaggi di log (erano rimaste stringhe italiane in params_panel,
+  main_window, viewer e nei template del motore).
+- **Tema chiaro/scuro**: causa radice delle "isole" di colore misto
+  trovata nel QSS applicativo (background opaco ereditato dalle QLabel);
+  fix runtime + dialoghi About/Template palette-driven e colori di
+  testo/contrasto theme-aware (contrasto verificato, minimo 6.0).
+- **Flusso refinement box**: il picking nel viewer ora crea una box
+  centrata sul punto (prima creava una sfera legacy e non mostrava mai
+  la box); lista zone con etichette leggibili e livello sincronizzato
+  con la selezione.
+- **Workflow**: le spunte seguono il processo reale (geometry -> sizing
+  -> generate -> quality) anche per i percorsi GMSH/autopoly/native,
+  non solo cfMesh.
 
 ## [2.2.0] - 2026-09-08
 
