@@ -3101,6 +3101,12 @@ class MainWindow(QMainWindow):
         # (generate_volume_mesh ignores it whenever an explicit max_cell
         # is passed), so it is only forwarded when adaptive is on.
         adaptive = self._params.get_adaptive_sizing_enabled()
+        surface_resolution = self._params.get_surface_resolution()
+        # BL <-> sizing coupling (upgrade A): only meaningful when BL is on.
+        # 0.0 = off, so a run with no BL is byte-for-byte the previous path.
+        bl_wall_size_floor = (
+            self._params.get_bl_wall_size_floor() if bl_params else 0.0
+        )
         if adaptive:
             max_cell = 0
             min_cell = 0
@@ -3144,7 +3150,9 @@ class MainWindow(QMainWindow):
         w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
                              refinement_zones=self._gmsh_refinement_zones(),
                              max_cell_size=max_cell, min_cell_size=min_cell,
-                             max_cells_target=max_cells_target)
+                             max_cells_target=max_cells_target,
+                             surface_resolution=surface_resolution,
+                             bl_wall_size_floor=bl_wall_size_floor)
         self._gmsh_worker = w
         self._gmsh_vol_ctx = {
             "step_path": step_path, "msh_path": msh_path, "detail": detail,
@@ -3156,6 +3164,8 @@ class MainWindow(QMainWindow):
             "refinement_zones": self._gmsh_refinement_zones(),
             "max_cell": max_cell, "min_cell": min_cell,
             "max_cells_target": max_cells_target,
+            "surface_resolution": surface_resolution,
+            "bl_wall_size_floor": bl_wall_size_floor,
             "bl_retried": False, "detail_retried": False, "my_id": my_id,
         }
 
@@ -3206,7 +3216,9 @@ class MainWindow(QMainWindow):
                                   refinement_zones=ctx["refinement_zones"],
                                   max_cell_size=ctx["max_cell"],
                                   min_cell_size=ctx["min_cell"],
-                                  max_cells_target=ctx["max_cells_target"])
+                                  max_cells_target=ctx["max_cells_target"],
+                                  surface_resolution=ctx.get("surface_resolution", "medium"),
+                                  bl_wall_size_floor=0.0)
             self._gmsh_worker = w2
             self._submit_task(
                 "gmsh_volume", w2,
@@ -3248,6 +3260,8 @@ class MainWindow(QMainWindow):
                 refinement_zones=ctx["refinement_zones"],
                 max_cell_size=ctx["max_cell"], min_cell_size=ctx["min_cell"],
                 max_cells_target=ctx["max_cells_target"],
+                surface_resolution=ctx.get("surface_resolution", "medium"),
+                bl_wall_size_floor=ctx.get("bl_wall_size_floor", 0.0),
             )
             self._gmsh_worker = w2
             self._submit_task(

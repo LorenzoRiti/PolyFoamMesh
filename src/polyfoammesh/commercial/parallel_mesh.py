@@ -27,8 +27,11 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -38,6 +41,15 @@ from pathlib import Path
 from polyfoammesh.config import OFConfig
 from polyfoammesh.core.validation import validate_cell_size, validate_case_dir
 from polyfoammesh.octopoda_local import octo
+
+
+def _posix_popen_kwargs() -> dict:
+    """Isolate the child into its own session/process group on POSIX so
+    ``killpg(pid)`` kills the child's tree and never the GUI's own group.
+    Empty on Windows (``taskkill /t`` does the tree walk there)."""
+    if sys.platform == "win32":
+        return {}
+    return {"start_new_session": True}
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +403,7 @@ class ParallelMeshEngine:
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
+            **_posix_popen_kwargs(),
         )
         out_lines: list[str] = []
         err_lines: list[str] = []
@@ -431,19 +444,32 @@ class ParallelMeshEngine:
 
     @staticmethod
     def _kill_process_tree(pid: int) -> None:
-        """Kill the full process tree (wsl.exe + children inside WSL).
-        On Windows, Popen.kill() only terminates the one wsl.exe process,
-        leaving mpirun/cartesianMesh orphaned inside WSL.  taskkill /t walks
-        the entire tree."""
+        """Kill the full process tree (wsl.exe + children inside WSL, or the
+        native OpenFOAM tree on Linux). On Windows, Popen.kill() only
+        terminates the one wsl.exe process, leaving mpirun/cartesianMesh
+        orphaned inside WSL — taskkill /t walks the entire tree. On POSIX the
+        child was launched with ``start_new_session=True``, so its process
+        group id equals its pid and ``killpg(pid)`` reaps the whole tree
+        (guarded so it can never target the GUI's own group)."""
         try:
-            subprocess.run(
-                ["taskkill", "/f", "/t", "/pid", str(pid)],
-                capture_output=True, text=True, timeout=5,
-            )
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/f", "/t", "/pid", str(pid)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return
+            try:
+                own_pgid = os.getpgid(0)
+            except OSError:
+                own_pgid = -1
+            if pid != own_pgid:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
         except Exception:
             # kill is best-effort: a dead/already-exited process must not
             # raise out of the cancel path
-            logger.debug("parallel_mesh: taskkill failed for pid %s", pid, exc_info=True)
+            logger.debug("parallel_mesh: kill failed for pid %s", pid, exc_info=True)
 
     def _step_parallel_mesh(self) -> None:
         """Run cartesianMesh in parallel via MPI on all subdomains."""

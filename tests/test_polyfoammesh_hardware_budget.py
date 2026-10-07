@@ -58,3 +58,21 @@ def test_auto_budget_floor():
          mock.patch.object(hb, "wsl_ram_bytes", return_value=None):
         b = geom.cfmesh_cell_budget()
     assert b["max_cells"] >= 200_000
+
+
+def test_wsl_ram_bytes_none_on_posix(monkeypatch):
+    """On POSIX there is no WSL2 VM: wsl_ram_bytes() must return None
+    without ever shelling out to wsl.exe, so the budget stays host-only."""
+    monkeypatch.setattr(hb.sys, "platform", "linux")
+    # If it tried to run wsl.exe this would raise (no wsl.exe on Linux);
+    # the function must short-circuit before that.
+    assert hb.wsl_ram_bytes() is None
+
+
+def test_cfmesh_budget_posix_uses_host_only(monkeypatch):
+    """Simulated POSIX budget: no WSL cap, host numbers win."""
+    monkeypatch.setattr(hb.sys, "platform", "linux")
+    with _mock_host(16.0, 32.0)[0], _mock_host(16.0, 32.0)[1]:
+        b = geom.cfmesh_cell_budget()
+    assert b["wsl_max_cells"] is None
+    assert b["max_cells"] == b["host_max_cells"]

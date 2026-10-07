@@ -1001,6 +1001,9 @@ def cfmesh_cell_budget(
     max_cells = max(200_000, int(max(by_available, by_total)))
 
     wsl_stats = wsl_ram_bytes()
+    # On POSIX hardware_budget.wsl_ram_bytes() returns None (native Linux:
+    # there is no separate VM cap — the host probes above are the real
+    # constraint), so wsl_max_cells stays None and max_cells is host-only.
     wsl_max_cells = None
     if wsl_stats is not None:
         wsl_total, wsl_available = wsl_stats

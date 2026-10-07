@@ -287,6 +287,31 @@ class ParamsPanel(QWidget):
         )
         self._adaptive_sizing_check.toggled.connect(self._on_adaptive_sizing_toggled)
         detail_layout.addWidget(self._adaptive_sizing_check)
+
+        # Surface resolution: how tightly the mesh follows CAD curvature,
+        # independent of the cell budget. Default Medium == the historical
+        # curvature angular error, so leaving it alone changes nothing. Only
+        # meaningful while automatic refinement is on (the field it scales is
+        # only built in that path).
+        surf_row = QHBoxLayout()
+        surf_row.addWidget(QLabel("Surface resolution:"))
+        self._surface_resolution = QComboBox()
+        self._surface_resolution.addItems(["Coarse", "Medium", "Fine", "Very fine"])
+        self._surface_resolution.setCurrentText("Medium")
+        self._surface_resolution.setToolTip(
+            "How tightly the mesh follows CAD curvature: finer = smaller cells "
+            "on curved surfaces (independent of the cell budget)."
+        )
+        self._surface_resolution.setEnabled(self._adaptive_sizing_check.isChecked())
+        self._surface_resolution.currentTextChanged.connect(
+            lambda _t: self._refresh_bl_hint()
+        )
+        self._adaptive_sizing_check.toggled.connect(
+            self._surface_resolution.setEnabled
+        )
+        surf_row.addWidget(self._surface_resolution)
+        surf_row.addStretch()
+        detail_layout.addLayout(surf_row)
         mesh_layout.addWidget(detail_group)
 
         self._bbox_dim = 1.0
@@ -407,10 +432,37 @@ class ParamsPanel(QWidget):
         self._bl_info.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         bl_form.addRow(self._bl_info)
 
+        # BL <-> mesh sizing consistency hint (upgrade A). Compares the
+        # requested BL stack with the mesh's estimated wall cell size and warns
+        # when the stack exceeds the ~0.34 * wall-cell inversion budget (beyond
+        # that the first layer gets compressed). Live: refreshes on any BL
+        # parameter or cell-size change.
+        self._bl_fit_note = ""
+        self._bl_stack_hint = QLabel("")
+        self._bl_stack_hint.setWordWrap(True)
+        self._bl_stack_hint.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        bl_form.addRow(self._bl_stack_hint)
+
+        self._btn_bl_fit = QPushButton("Fit BL to mesh")
+        self._btn_bl_fit.setToolTip(
+            "Adjusts the first-layer thickness (keeping the expansion ratio) so "
+            "the BL stack fits within the estimated wall cell size, avoiding a "
+            "compressed first layer."
+        )
+        self._btn_bl_fit.clicked.connect(self._on_fit_bl_clicked)
+        bl_form.addRow(self._btn_bl_fit)
+
         self._bl_form_widget = QWidget()
         self._bl_form_widget.setLayout(bl_form)
         self._bl_form_widget.setVisible(False)
         bl_layout.addWidget(self._bl_form_widget)
+        # Live BL consistency hint: any input that changes the stack (h1, ratio,
+        # nLayers) or the wall-cell estimate (derived Min Cell Size, surface
+        # resolution) refreshes it.
+        self._bl_n_layers.valueChanged.connect(self._refresh_bl_hint)
+        self._bl_thick.valueChanged.connect(self._refresh_bl_hint)
+        self._bl_exp.valueChanged.connect(self._refresh_bl_hint)
+        self._bl_checkbox.toggled.connect(self._refresh_bl_hint)
         mesh_layout.addWidget(bl_group)
 
         mesher_group = QGroupBox("Mesher")
@@ -620,6 +672,9 @@ class ParamsPanel(QWidget):
         self._prev_cell_params["min_cell"] = self._min_cell.value()
         self._max_cell.valueChanged.connect(self._on_max_cell_changed)
         self._min_cell.valueChanged.connect(self._on_min_cell_changed)
+        # The derived Min Cell Size is the wall-cell estimate used by the BL
+        # hint, so keep it in sync when the slider/geometry changes it.
+        self._min_cell.valueChanged.connect(self._refresh_bl_hint)
         adv_layout.addWidget(mesh_group)
 
         # Auto-Suggest predates the Mesh Fineness slider and is superseded
@@ -763,6 +818,8 @@ class ParamsPanel(QWidget):
         # were invisible), so the simple mode is disabled by default.
         self._expert_mode = True
         self.set_expert_mode(True)
+        # Establish the BL consistency hint from the initial widget state.
+        self._refresh_bl_hint()
 
     def is_expert_mode(self) -> bool:
         return self._expert_mode
@@ -797,6 +854,94 @@ class ParamsPanel(QWidget):
 
     def _on_bl_toggled(self, checked: bool):
         self._bl_form_widget.setVisible(checked)
+
+    def _estimated_wall_cell_size(self) -> float:
+        """Best available proxy for the automatic mesh's wall cell size.
+
+        The derived Min Cell Size is the finest size the current Mesh Fineness
+        / geometry estimate will place (curvature/small-feature floor), which
+        is exactly what the boundary-layer stack has to fit inside.
+        """
+        try:
+            return max(float(self._min_cell.value()), 1e-12)
+        except (AttributeError, ValueError):
+            return 1e-12
+
+    def _refresh_bl_hint(self) -> None:
+        if not hasattr(self, "_bl_stack_hint"):
+            return
+        try:
+            from polyfoammesh.core.gmsh_wrapper import compute_bl_stack
+        except Exception:
+            return
+        h1 = self._bl_thick.value() * self._max_cell.value()
+        stack = compute_bl_stack(h1, self._bl_exp.value(), self._bl_n_layers.value())
+        y = self._estimated_wall_cell_size()
+        # Inversion budget: the stack may take at most ~0.34 of the local wall
+        # cell edge before the first layer is squeezed.
+        max_stack = 0.34 * y
+        stack_mm, y_mm, budget_mm = stack * 1000.0, y * 1000.0, max_stack * 1000.0
+        if not self._bl_checkbox.isChecked():
+            self._bl_stack_hint.setText(
+                f"BL stack {stack_mm:.4g} mm; estimated mesh wall cells "
+                f"~{y_mm:.4g} mm (enable BL to check fit)."
+            )
+        elif stack <= max_stack:
+            self._bl_stack_hint.setText(
+                f"BL stack {stack_mm:.4g} mm; mesh wall cells ~{y_mm:.4g} mm "
+                f"-> fits (inversion budget ~{budget_mm:.4g} mm)."
+            )
+        else:
+            compressed = max_stack / stack * 100.0
+            self._bl_stack_hint.setText(
+                f"BL stack {stack_mm:.4g} mm; mesh wall cells ~{y_mm:.4g} mm "
+                f"-> compressed to ~{compressed:.0f}% of the requested stack "
+                f"(inversion budget ~{budget_mm:.4g} mm). Use 'Fit BL to mesh'."
+            )
+        if self._bl_fit_note:
+            self._bl_stack_hint.setText(
+                self._bl_stack_hint.text() + "\n" + self._bl_fit_note
+            )
+
+    def _on_fit_bl_clicked(self) -> None:
+        """Resize the stack to ~0.3x the estimated wall cell size, keeping ratio.
+
+        Solves ``target = h1 * (r^n - 1)/(r - 1)`` for h1 with the current
+        expansion ratio, reducing nLayers only if the required first layer
+        would fall below the field's own precision floor.
+        """
+        y = self._estimated_wall_cell_size()
+        target_stack = 0.3 * y
+        r = self._bl_exp.value()
+        max_cell = max(self._max_cell.value(), 1e-12)
+        min_fraction = self._bl_thick.minimum()
+
+        def _h1_for(nn: int) -> float:
+            if nn <= 0:
+                return 0.0
+            geom = nn if abs(r - 1.0) < 1e-9 else (r ** nn - 1.0) / (r - 1.0)
+            return target_stack / geom if geom > 0 else 0.0
+
+        n = self._bl_n_layers.value()
+        while n > 1 and _h1_for(n) / max_cell < min_fraction:
+            n -= 1
+        new_h1 = _h1_for(n)
+        old_h1 = self._bl_thick.value() * self._max_cell.value()
+        new_fraction = min(
+            max(new_h1 / max_cell, min_fraction), self._bl_thick.maximum()
+        )
+        self._bl_n_layers.setValue(n)
+        self._bl_thick.setValue(new_fraction)
+
+        # y+ scales (approximately) linearly with the first-layer height, so
+        # report the expected shift rather than claiming a new absolute y+.
+        factor = (new_h1 / old_h1) if old_h1 > 0 else 1.0
+        self._bl_fit_note = (
+            f"Fit applied: first layer {old_h1 * 1000.0:.4g} -> "
+            f"{new_h1 * 1000.0:.4g} mm ({n} layers) — wall y+ scales ~x{factor:.2f}."
+        )
+        self._refresh_bl_hint()
+        self.suggestion_completed.emit(f"[bl] {self._bl_fit_note}")
 
     def _on_adaptive_sizing_toggled(self, checked: bool):
         """Adaptive ON: Max/Min Cell Size are read-only DISPLAY of what the
@@ -942,6 +1087,7 @@ class ParamsPanel(QWidget):
         )
         if hasattr(self, "_detail_slider"):
             self._on_detail_changed(self._detail_slider.value())
+        self._refresh_bl_hint()
 
     def set_suggest_meshes(self, meshes: list) -> None:
         self._suggest_meshes = list(meshes) if meshes else []
@@ -953,6 +1099,7 @@ class ParamsPanel(QWidget):
         self._patch_sizes_cache = {}
         if hasattr(self, "_detail_slider"):
             self._on_detail_changed(self._detail_slider.value())
+        self._refresh_bl_hint()
 
     def set_cell_estimate(self, text: str):
         self._cell_est_label.setText(text)
@@ -1041,6 +1188,38 @@ class ParamsPanel(QWidget):
 
     def get_bl_apply_all(self) -> bool:
         return self._bl_apply_all.isChecked()
+
+    def get_surface_resolution(self) -> str:
+        """Selected curvature-following preset ("Coarse".."Very fine").
+
+        Only meaningful when automatic refinement is on; callers pass it to
+        gmsh_wrapper and it defaults to the historical "Medium" when absent.
+        """
+        if not hasattr(self, "_surface_resolution"):
+            return "medium"
+        return self._surface_resolution.currentText()
+
+    def get_bl_wall_size_floor(self) -> float:
+        """Wall cell-size floor (metres) coupling the BL stack to the mesh.
+
+        ``stack / 5`` capped at 10% of the geometry extent, or 0.0 (off) when
+        BL is disabled. Returns 0.0 on any failure so meshing never blocks on
+        this hint machinery.
+        """
+        if not self._bl_checkbox.isChecked():
+            return 0.0
+        try:
+            from polyfoammesh.core.gmsh_wrapper import (
+                compute_bl_wall_size_floor,
+            )
+            h1 = self._bl_thick.value() * self._max_cell.value()
+            return compute_bl_wall_size_floor(
+                h1, self._bl_exp.value(), self._bl_n_layers.value(),
+                getattr(self, "_bbox_dim", 0.0),
+            )
+        except Exception:
+            logger.debug("BL wall-size floor unavailable", exc_info=True)
+            return 0.0
 
     def get_poly_conversion(self) -> bool:
         return self._poly_check.isChecked()
@@ -1591,6 +1770,7 @@ class ParamsPanel(QWidget):
         s.setValue("params/detail_slider", self._detail_slider.value())
         s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
         s.setValue("params/unit", self._unit_selector.currentText())
+        s.setValue("params/surface_resolution", self._surface_resolution.currentText())
         s.setValue("ui/expert_mode", self._expert_mode)
 
     def restore_params(self, s):
@@ -1604,6 +1784,9 @@ class ParamsPanel(QWidget):
         unit = s.value("params/unit", None)
         if unit is not None:
             self._unit_selector.setCurrentText(unit)
+        surf = s.value("params/surface_resolution", None)
+        if surf is not None and str(surf) in ("Coarse", "Medium", "Fine", "Very fine"):
+            self._surface_resolution.setCurrentText(str(surf))
         expert = s.value("ui/expert_mode", None, type=bool)
         if expert is not None:
             self.set_expert_mode(bool(expert))

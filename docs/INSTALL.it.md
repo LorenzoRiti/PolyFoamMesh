@@ -86,6 +86,61 @@ Oppure usa lo script incluso `installer/setup_wsl_openfoam.ps1` (richiede
 privilegi admin, ~1-2 GB di download). Dopo il setup, tutti i percorsi
 (cfMesh, checkMesh) funzionano senza altre modifiche.
 
+## Opzione D — Linux (da sorgente)
+
+PolyFoamMesh gira nativamente su Linux. I percorsi puramente GMSH (CFD Poly,
+FEM Tetra, viewer) non richiedono OpenFOAM; i percorsi Cartesian cfMesh e
+checkMesh richiedono OpenFOAM nel `PATH`.
+
+### Installare l'app
+
+```bash
+git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
+cd PolyFoamMesh
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e ".[test]"
+./launch.sh          # oppure: bash launch.sh
+```
+
+`launch.sh` e' l'equivalente Linux di `launch.ps1`: prova ogni interprete
+candidato per PySide6 + pyvista e usa il primo che funziona. In alternativa
+`polyfoammesh` (lo script console installato da pip) avvia l'app
+direttamente. Su un sistema minimale servono le solite librerie Qt/X11
+(Debian/Ubuntu: `sudo apt-get install libegl1 libgl1 libglu1-mesa
+libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 libfontconfig1`).
+
+### Installare OpenFOAM (solo per cfMesh / checkMesh)
+
+Package della distribuzione oppure build OpenFOAM Foundation:
+
+```bash
+# Opzione 1 — repo apt OpenFOAM Foundation (layout di default)
+#   env script: /usr/lib/openfoam/openfoam2512/etc/bashrc
+# Opzione 2 — build da sorgente / manuale
+#   env script: /opt/openfoam2512/etc/bashrc
+```
+
+Assicurati che `cartesianMesh`, `checkMesh` e `foamToVTK` siano nel `PATH`
+della shell che avvia PolyFoamMesh — normalmente sorgendo l'`etc/bashrc` di
+OpenFOAM in `~/.bashrc`. Se l'env script e' in una posizione non standard,
+indicalo esplicitamente:
+
+```bash
+export POLYFOAMMESH_OF_BASHRC=/opt/openfoam2512/etc/bashrc
+./launch.sh
+```
+
+Su Linux non c'e' il passaggio WSL: ogni comando OpenFOAM viene eseguito
+come semplice `bash -lc`. I binari `cfMesh`, `checkMesh` e `foamToVTK`
+devono quindi essere risolvibili da `bash`.
+
+### Dove stanno i dati
+
+Su Linux l'app salva sessioni e log nella directory XDG:
+`$XDG_DATA_HOME/polyfoammesh` (default `~/.local/share/polyfoammesh`), con i
+log in `logs/app.log`. Su Windows nulla cambia (`%APPDATA%\polyfoammesh`).
+
 ## Problemi?
 
 Apri una issue con il contenuto di `%APPDATA%\polyfoammesh\logs\app.log` —

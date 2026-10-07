@@ -640,3 +640,46 @@ uniforme a ogni profondita' (100% del volume del box) e dual/BL lo
 preservano (dimensioni bit-identiche dopo BL): nessun cambio necessario.
 Suite fast 1292 passed. NOTA per il rilascio: rifare l'A/B benchmark del
 robust ON (i suoi numeri di qualita' includevano la perdita di copertura).
+
+## Avanzamento 2026-10-07 (notte) - Linux fase 1 (core) - corsia completata
+
+Audit read-only (explorer) ha mappato tutte le dipendenze Windows. Punto
+chiave: config.py e' il collo di bottiglia (tutte le 10 costruzioni
+comando passano da _build_wsl_cmd). Fase 1 implementata e verificata
+(suite completa rinviata perche' la corsia A+B+C+D stava scrivendo
+gmsh_wrapper - ora compila):
+- config.py: dispatch per piattaforma (win32 = wsl.exe byte-identico,
+  POSIX = bash -lc nativo), bashrc via POLYFOAMMESH_OF_BASHRC (default
+  /usr/lib/openfoam/openfoam2512/etc/bashrc), validate() dispatchato.
+  Prova: 18/18 controlli byte-identici su Windows; comandi POSIX senza
+  wsl.exe.
+- Kill POSIX: start_new_session + killpg con guardia anti-GUI in
+  openfoam_runner e parallel_mesh; taskkill invariato su Windows.
+- _paths.py: XDG (~/.local/share/polyfoammesh, XDG_DATA_HOME) con
+  migrazione legacy; %APPDATA% invariato su Windows.
+- hardware_budget.wsl_ram_bytes -> None su POSIX; messaggio export
+  de-WSLizzato; geometry.py consumer ok.
+- Packaging/CI: PolyFoamMesh-linux.spec (glob .so gmsh), launch.sh,
+  ci.yml step POSIX dispatch, release.yml build-linux/attach-linux
+  (job Windows intatto), pyproject classifier Linux.
+- Test nuovi: test_paths.py (XDG/Windows/migrazione), dispatch POSIX in
+  test_config, wsl_ram_bytes None. Ruff + py_compile ok.
+- Docs: sezione Linux in INSTALL.md/.it.md; CHANGELOG aggiornato.
+Fase 2 (main_window: gate OpenFOAM, RAM probe, case root, kill UI,
+stringhe; ramo CLI gmsh_wrapper) e fase 3 (AppImage) in coda.
+
+## Caso reale difficile registrato: paletta (gmsh_direct_20261007_134536)
+
+Geometria reale (paletta/blade), 1.499.469 celle, generata PRIMA dei commit
+recenti. Esito checkMesh: FAIL (non-ortho 99.4, skew 767.8, aspect 2637,
+238.126 volti multiply connected, 957 volti orientati male, patch
+non-closed, input dual con 3777 violazioni pyramid). 15+ patch tutte
+chiamate surface_N (nessun nome semantico) -> selezione patch BL cieca;
+geometria sottile (collisione stack BL).
+Piano: (0) rigenerare col codice attuale per separare gia'-risolto da
+da-fixare; (1) ruoli patch geometrici (infer_patch_roles /
+poly_geo_wall_patch_names) anche DOPO il meshing (pannello patch);
+(2) diagnosi/fix multiply-connected + orientamento; (3) guard spessore
+sottile. Accettazione: checkMesh sul caso 134536 (polyMesh_tet_backup
+presente per rigenerare il dual). Da riprendere nella corsia A+B+C+D
+appena atterra.

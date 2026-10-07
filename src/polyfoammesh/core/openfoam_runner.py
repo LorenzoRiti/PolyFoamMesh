@@ -17,6 +17,7 @@ import shlex
 import signal
 import struct
 import subprocess
+import sys
 import threading
 import time
 import enum
@@ -32,6 +33,22 @@ if TYPE_CHECKING:
 
 # Monotonic clock for elapsed-time measurement (immune to wall-clock jumps).
 _now = time.monotonic
+
+
+def _posix_popen_kwargs() -> dict:
+    """Popen kwargs that put a child in its OWN process group/session on POSIX.
+
+    Without this, ``os.killpg(os.getpgid(child_pid), SIGKILL)`` would resolve
+    to the GUI's own process group and kill the application itself. With
+    ``start_new_session=True`` the child becomes a session/group leader, so
+    its pgid equals its pid and ``killpg(pid)`` can never touch the GUI.
+
+    Empty on Windows, where ``taskkill /T`` walks the tree instead — keeping
+    Windows Popen calls byte-identical.
+    """
+    if sys.platform == "win32":
+        return {}
+    return {"start_new_session": True}
 
 
 def poly_wall_patch_names(case_dir: Path | str) -> list[str]:
@@ -689,6 +706,7 @@ class MeshWorker(QObject):
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                **_posix_popen_kwargs(),
             )
             self._pid = process.pid
             self.progress_update.emit(0)
@@ -830,23 +848,36 @@ class MeshWorker(QObject):
     def _kill_process_tree(self, pid: int, wsl_distro: str | None = None):
         """Kill process and its children recursively.
 
-        Uses ``taskkill /T`` on Windows, ``os.killpg`` on POSIX.
-        Falls back to ``wsl --terminate`` when the subprocess may be WSL.
+        Uses ``taskkill /T`` on Windows, ``killpg`` on POSIX. The OpenFOAM
+        child is launched with ``start_new_session=True`` (see
+        ``_posix_popen_kwargs``), so its process-group id equals its pid;
+        ``killpg(pid)`` therefore targets the child's own group and can
+        never SIGKILL the GUI. The ``pid != own_pgid`` guard is a defensive
+        second line: if a child were ever launched without the new session,
+        it would share our group and we must NOT killpg it.
 
         Args:
             pid: Process ID to terminate.
-            wsl_distro: WSL distro name for fallback kill (e.g. ``"Ubuntu"``).
+            wsl_distro: Unused on POSIX (kept for API compatibility); WSL
+                distro name for the Windows fallback.
         """
-        if os.name == "nt":
+        if sys.platform == "win32":
             with suppress(OSError, subprocess.TimeoutExpired):
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
                     timeout=5,
                 )
-        else:
-            with suppress(OSError, ProcessLookupError):
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            return
+        try:
+            own_pgid = os.getpgid(0)
+        except OSError:
+            own_pgid = -1
+        with suppress(OSError, ProcessLookupError):
+            if pid != own_pgid:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
 
 
 # ------------------------------------------------------------------
@@ -2192,13 +2223,29 @@ def _gmsh_wrapper_script_cmd(
 
 
 def _kill_pid_tree(pid: int) -> None:
-    """Kill a process and its children by PID. Windows-only helper for
-    the GMSH-subprocess workers (WSL processes go through
-    MeshWorker._kill_process_tree / _kill_wsl_processes instead — this
-    is for the plain sys.executable child _stream_subprocess launches).
+    """Kill a process and its children by PID for the GMSH-subprocess
+    workers (WSL/OpenFOAM processes go through
+    MeshWorker._kill_process_tree instead — this is for the plain
+    sys.executable child _stream_subprocess launches).
+
+    Windows: ``taskkill /T``. POSIX: the child was launched with
+    ``start_new_session=True``, so its process group id equals its pid and
+    ``killpg(pid)`` kills the whole tree without ever hitting the GUI's own
+    group (guarded explicitly).
     """
     import subprocess
     from contextlib import suppress
+    if sys.platform != "win32":
+        try:
+            own_pgid = os.getpgid(0)
+        except OSError:
+            own_pgid = -1
+        with suppress(OSError, ProcessLookupError):
+            if pid != own_pgid:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        return
     with suppress(OSError, subprocess.TimeoutExpired):
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -2364,6 +2411,7 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="backslashreplace",
         cwd=run_cwd, env=child_env, bufsize=1,
+        **_posix_popen_kwargs(),
     )
     _harden_windows_child(proc)
     if proc_holder is not None:
@@ -2570,6 +2618,8 @@ class GmshVolumeWorker(QObject):
                  max_cell_size: float = 0, min_cell_size: float = 0,
                  max_cells_target: int = 0,
                  size_field_file: str | Path | None = None,
+                 surface_resolution: str = "medium",
+                 bl_wall_size_floor: float = 0.0,
                  parent=None):
         super().__init__(parent)
         # Solution-derived target-size lattice (core.solution_adaptive). Passed
@@ -2586,6 +2636,9 @@ class GmshVolumeWorker(QObject):
         self._max_cell_size = max_cell_size
         self._min_cell_size = min_cell_size
         self._max_cells_target = max_cells_target
+        # Surface resolution preset + BL<->sizing wall-size floor (0 = off).
+        self._surface_resolution = surface_resolution or "medium"
+        self._bl_wall_size_floor = float(bl_wall_size_floor or 0.0)
         self._proc_holder: dict = {}
         self._cancelled = False
 
@@ -2620,6 +2673,8 @@ class GmshVolumeWorker(QObject):
             f"--max-cell={self._max_cell_size}",
             f"--min-cell={self._min_cell_size}",
             f"--max-cells-target={self._max_cells_target}",
+            f"--surface-resolution={self._surface_resolution}",
+            f"--bl-wall-size-floor={self._bl_wall_size_floor}",
         ]
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
