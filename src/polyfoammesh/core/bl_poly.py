@@ -45,7 +45,14 @@ Algorithm (per run)
    notes/most_visible_normal_reasoning.md); max height = ``clamp_factor``
    times the distance to the nearest non-wall vertex of the incident cells
    (inversion guard);
-3. layer heights ``h_k = h1 * r^(k-1)``, cumulative, per-vertex clamped;
+3. layer heights ``h_k = h1 * r^(k-1)``, cumulative, per-vertex clamped to
+   the local inversion budget; the per-vertex TOTAL height field is then
+   gradient-limited over the wall edges (``_limit_wall_height_gradient``,
+   cfMesh ``relThicknessTol`` / snappy ``maxThicknessToMedialRatio``) so
+   adjacent wall vertices cannot jump between very different stack heights
+   and fold the extruded top surface, while every vertex stays inside its
+   own budget (complete coverage is preserved; a locally smooth budget
+   field is left byte-identical);
 4. build the prism cells, move the wall vertices of the wall-adjacent
    internal faces to their last-layer positions, swap wall faces for the
    top faces, then solve the face windings EXACTLY by a global parity/BFS
@@ -846,6 +853,69 @@ def _drop_small_base_edges(points, faces, n_int, sel, fraction,
             int((~keep).sum()), threshold)
 
 
+# Per-vertex stack-height gradient limit: the extrusion height (the total
+# depth of a wall vertex's prism stack) may differ between two adjacent wall
+# vertices by at most this factor times their edge length.  0.5 bounds the
+# shear of the extruded top surface below ~27 degrees, so the top surface
+# cannot fold over itself; a larger, isolated inversion budget at one vertex
+# (a locally deep first cell next to a thin one) is levelled down to its
+# neighbourhood instead of spiking out of it.  This is the production-BL
+# control for the same failure: cfMesh's ``relThicknessTol`` ("maximum
+# difference of layer thickness between two neighbouring points divided by
+# the distance between the points") and snappyHexMesh's
+# ``maxThicknessToMedialRatio``.
+_WALL_HEIGHT_JUMP_TOL = 0.5
+_WALL_HEIGHT_LIMIT_ITERS = 24
+
+
+def _limit_wall_height_gradient(hw, wall_verts, edges, upper, floor_h,
+                                tol: float = _WALL_HEIGHT_JUMP_TOL,
+                                iters: int = _WALL_HEIGHT_LIMIT_ITERS):
+    """Bound the per-vertex stack-height field to a maximum slope.
+
+    ``hw`` maps wall vertex -> total extrusion height; ``edges`` is a list of
+    ``(a, b, length)`` unique wall edges; ``upper`` maps vertex -> its hard
+    height budget (the inversion clamp, also capped to the requested stack);
+    ``floor_h`` is the positive minimum.  Each iteration moves half of every
+    edge's excess height from the higher endpoint to the lower one (a hard
+    cfMesh-style ``relThicknessTol`` limiter), then clamps every vertex to
+    ``[floor_h, upper]``.  A vertex whose budget is already the local
+    neighbour level absorbs the transfer (nothing to gain: it is clamped),
+    so the spike is levelled down over the neighbourhood until the slope is
+    below the limit.  The field is returned as a fresh dict; the no-op case
+    (every edge already within the limit) returns the input values verbatim,
+    so a locally smooth budget field is left byte-identical.
+    """
+    out = dict(hw)
+    if not edges:
+        return out
+    for _ in range(iters):
+        changed = False
+        for a, b, length in edges:
+            lim = tol * length
+            dh = out[a] - out[b]
+            if dh > lim:
+                excess = 0.5 * (dh - lim)
+                out[a] -= excess
+                out[b] += excess
+                changed = True
+            elif dh < -lim:
+                excess = 0.5 * (-dh - lim)
+                out[a] += excess
+                out[b] -= excess
+                changed = True
+        for w in wall_verts:
+            v = out[w]
+            if v > upper[w]:
+                v = upper[w]
+            if v < floor_h:
+                v = floor_h
+            out[w] = v
+        if not changed:
+            break
+    return out
+
+
 class PolyBoundaryLayerEngine:
     """Adds a prism boundary layer to an existing polyhedral polyMesh.
 
@@ -1568,6 +1638,7 @@ class PolyBoundaryLayerEngine:
                     sel_cur, n_layers, height, growth, clamp,
                     pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
                     zero_concave=True, vertex_height_scale=trial_scale,
+                    limit_height_gradient=False,
                 )
             except Exception:  # noqa: BLE001 - this scale just doesn't work
                 continue
@@ -1707,6 +1778,7 @@ class PolyBoundaryLayerEngine:
                         growth, clamp, pyr_before=pyr_before,
                         drop_bnd=drop_bnd, pre=pre, zero_concave=True,
                         vertex_height_scale=(height_scale or None),
+                        limit_height_gradient=False,
                     )
                 except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(f"[bl] local attempt scale={scale}: {exc}")
@@ -2195,7 +2267,8 @@ class PolyBoundaryLayerEngine:
                zero_concave: bool = False,
                vertex_height_scale: dict[int, float] | None = None,
                edge_cap_percentile: float = 0.0,
-               terminate_by_budget: bool = False) -> dict:
+               terminate_by_budget: bool = False,
+               limit_height_gradient: bool = True) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -2205,11 +2278,15 @@ class PolyBoundaryLayerEngine:
         is None); with ``pre`` given, the cap is whatever that precompute
         was built with (see ``run(edge_cap_percentile=...)``).
 
-        ``zero_concave`` (opt-in, experiment): faces flagged as concave
-        (input pyramid violations) get ZERO layers instead of being floored
-        at one  -  the local wall shell is given up there (moved boundary
-        face) so the whole healthy region keeps its full layer count instead
-        of being flooded to one layer by the consistency fixpoint.
+        ``zero_concave`` (the standard-path BINARY mode, 2026-10-07): every
+        selected face keeps the FULL ``n_layers`` stack and its vertices get
+        a positive compressed height (only faces flagged by the input
+        pyramid criterion are dropped, at 0 layers) - the healthy region is
+        never flooded to one layer by the consistency fixpoint and the wall
+        shell stays COMPLETE.  The per-vertex height field is gradient-
+        limited (``_limit_wall_height_gradient``) so a locally deep
+        inversion budget cannot spike a stack past the fold threshold; the
+        limiter is a no-op on a locally smooth budget field.
 
         ``vertex_height_scale`` (opt-in, default None = no-op by
         construction): per-vertex multiplier on the inversion-clamp height
@@ -2217,6 +2294,13 @@ class PolyBoundaryLayerEngine:
         ``run(local_height_retry=True)`` to try a SHORTER stack at wall
         vertices that fail at full height instead of excluding them
         outright; see notes/local_height_retry_reasoning.md.
+
+        ``limit_height_gradient`` (default True, only meaningful with
+        ``zero_concave``): gradient-limit the per-vertex stack-height field
+        to a bounded top-surface slope (``_limit_wall_height_gradient``).
+        The standard path keeps it on; the opt-in local-termination path
+        (``_run_local_termination``, ``_retry_local_height``) passes False
+        so its documented, measured exclusion counts are unchanged.
         """
         if pre is None:
             pre = self._build_precompute(
@@ -2363,6 +2447,43 @@ class PolyBoundaryLayerEngine:
                 if h <= 0.0:
                     h = floor_h
                 hw[w] = h
+            # Gradient-limit the per-vertex stack heights (2026-10-07).
+            # hw = min(cum, max_h) is purely LOCAL: where the inversion budget
+            # jumps between adjacent wall vertices (a deep first cell next to
+            # a thin one) the compressed stacks jump with it, and a jump of
+            # more than one edge length folds the extruded top surface - the
+            # deeper stack leans over the shallower one and its prism cells
+            # turn non-positive (measured: one spiked wall vertex on the
+            # dual-cube fixture -> 2 non-positive cells, validation fails, the
+            # whole BL is rejected after every fallback scale).  Level the
+            # height field to a bounded slope (cfMesh relThicknessTol /
+            # snappyHexMesh maxThicknessToMedialRatio) while every vertex
+            # stays inside its own inversion budget, so completeness (all
+            # faces keep n_layers) and positivity are both preserved.  A
+            # locally smooth budget field is returned verbatim, so healthy
+            # meshes (the real tube: max |dh|/L = 0.27) are byte-identical.
+            ext_verts = [w for w in wall_verts if nv[w] > 0]
+            edges = []
+            for bi, fi in enumerate(bnd):
+                if nf[bi] == 0:
+                    continue
+                f = faces[fi]
+                m = len(f)
+                for e in range(m):
+                    a, b = f[e], f[(e + 1) % m]
+                    if a < b and nv[a] > 0 and nv[b] > 0:
+                        edges.append(
+                            (a, b, float(np.linalg.norm(pts[a] - pts[b])))
+                        )
+            if limit_height_gradient and edges:
+                upper = {}
+                stack_top = float(cum[n_layers - 1])
+                for w in ext_verts:
+                    u = max_h[w] if max_h[w] > 0.0 else hw[w]
+                    upper[w] = max(min(u, stack_top), floor_h)
+                hw = _limit_wall_height_gradient(
+                    hw, ext_verts, edges, upper, floor_h,
+                )
         else:
             # Consistency fixpoint: every wall vertex's layer count is clamped
             # to the SHALLOWEST incident selected face's count.  This is what

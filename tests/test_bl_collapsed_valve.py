@@ -5,15 +5,17 @@ Pins the H4 result.  On the production converter output
 collapse_volume_tolerance=0.10`` — the exact kwargs used by
 ``core/openfoam_runner.py``) the face-level exclusion cascade stalls a few
 pyramid violations above the input (FASE 7/8: 373-385 vs 370), while the
-``decoupled_vertex`` mode closes at scale 0.6 with 4,008 of 42,130 wall
-faces excluded and 76,052 prism cells (5 builds, ~297 s).
+``decoupled_vertex`` mode closes at scale 0.6 with 4,143 of 42,130 wall
+faces excluded and 75,974 prism cells (5 builds, ~297 s).
 
-The prism count was 75,360 before the drop_bnd units fix in ``_build``:
-``drop_bnd`` is keyed by boundary-LOCAL face ids while the membership
-test indexed the FILTERED selection by position, so with 4,008 excluded
-faces the old code flagged arbitrary faces (692 fewer prisms).  The fixed
-build drops the 96 genuinely flagged faces and keeps full stacks
-elsewhere.
+Historical numbers, in order: 75,360 (before the drop_bnd units fix in
+``_build`` - ``drop_bnd`` was keyed by boundary-LOCAL face ids while the
+membership test indexed the FILTERED selection by position, so arbitrary
+faces were flagged), 76,052 after that fix, and the current 75,974 after
+the complete-coverage policy (commit 208a61c): the local termination now
+drops only faces flagged by the input pyramid criterion, so its exclusion
+cascade settles at 4,143 instead of 4,008 and the kept faces all carry
+the full 2-layer stack (layer_hist has no zeros).
 
 Deterministic numbers; engine gate only, no WSL required.  Marked slow:
 the collapsed conversion takes ~2 min and the BL ~5 min.
@@ -74,11 +76,16 @@ def test_collapsed_valve_vertex_exclusion_closes():
     )
     assert r.success, (r.errors, r.warnings)
     assert r.stats.get("scale") == 0.6, r.stats
-    assert r.stats.get("local_excluded_faces") == 4008, r.stats
+    # 4,143 after the complete-coverage policy (commit 208a61c): the local
+    # termination now drops only faces flagged by the input pyramid
+    # criterion, so its exclusion cascade settles at a different (larger)
+    # count than the historical 4,008; coverage on the kept faces is 100%
+    # (layer_hist has no zeros) and the mesh closes.
+    assert r.stats.get("local_excluded_faces") == 4143, r.stats
     assert r.stats.get("local_termination_mode") == "decoupled_vertex"
-    # 76,052 after the drop_bnd units fix (was 75,360 with the position vs
-    # local-id mismatch flagging arbitrary faces); see module docstring.
-    assert r.n_prism_cells == 76052, r.n_prism_cells
+    # 75,974 after the complete-coverage policy (was 76,052 after the
+    # drop_bnd units fix, 75,360 before it); see module docstring.
+    assert r.n_prism_cells == 75974, r.n_prism_cells
     # the written mesh must carry the BL invariants
     from polyfoammesh.core import foam_mesh_io as fio
     points, faces, owner, neigh, patches = fio.read_polymesh(poly)

@@ -1,9 +1,12 @@
 ﻿"""Tests for GMSH refinement-zone fields (core/gmsh_wrapper.py).
 
 Verifies that manual refinement zones — the new 3D boxes and the legacy
-spheres — are turned into the correct GMSH background fields (Box/Ball) with
-refinement-only semantics (VOut = -1 so a zone never coarsens outside itself).
-Requires gmsh, but no OpenFOAM and no GUI.
+spheres — are turned into the correct GMSH background fields (Box/Ball).
+Ungraded zones keep ``VOut = a huge outside size`` so a zone never coarsens
+outside itself once MIN-combined; graded zones (``_prepare_refinement_zones``)
+get a finite VOut equal to the background plus a ``Thickness`` so the
+transition blends instead of stepping. Requires gmsh, but no OpenFOAM and no
+GUI.
 """
 from __future__ import annotations
 
@@ -11,8 +14,12 @@ import gmsh
 import pytest
 
 from polyfoammesh.core.gmsh_wrapper import (
+    _ZONE_MAX_REFINEMENT,
+    _ZONE_OUTSIDE_SIZE,
     _add_refinement_zone_fields,
     _combine_zone_fields_with_bg,
+    _lower_length_min_for_zones,
+    _prepare_refinement_zones,
 )
 
 
@@ -37,8 +44,13 @@ def test_box_zone_creates_box_field(gmodel):
     assert gmodel.model.mesh.field.getNumber(tags[0], "XMin") == pytest.approx(0.1)
     assert gmodel.model.mesh.field.getNumber(tags[0], "XMax") == pytest.approx(0.9)
     assert gmodel.model.mesh.field.getNumber(tags[0], "VIn") == pytest.approx(0.0025)
-    # Refinement only: it must not impose a size outside the box.
-    assert gmodel.model.mesh.field.getNumber(tags[0], "VOut") == -1
+    # Refinement only: outside the box the field must ask for a HUGE size so
+    # MIN-combining with the background field leaves the surroundings alone.
+    # (It used to be -1, which the Min field took literally — GMSH then tried
+    # to reach a negative target size and never finished. See
+    # _ZONE_OUTSIDE_SIZE.)
+    assert gmodel.model.mesh.field.getNumber(tags[0], "VOut") == \
+        pytest.approx(_ZONE_OUTSIDE_SIZE)
 
 
 def test_sphere_zone_creates_ball_field(gmodel):
@@ -48,7 +60,115 @@ def test_sphere_zone_creates_ball_field(gmodel):
     assert len(tags) == 1
     assert gmodel.model.mesh.field.getType(tags[0]) == "Ball"
     assert gmodel.model.mesh.field.getNumber(tags[0], "VIn") == pytest.approx(0.01)
-    assert gmodel.model.mesh.field.getNumber(tags[0], "VOut") == -1
+    assert gmodel.model.mesh.field.getNumber(tags[0], "VOut") == \
+        pytest.approx(_ZONE_OUTSIDE_SIZE)
+
+
+def test_graded_box_zone_sets_finite_vout_and_thickness(gmodel):
+    """A prepared (graded) zone must set a finite VOut + a Thickness.
+
+    With VOut=1e22 the VIn->VOut ramp collapses (the huge value is reached
+    after ~0 distance), so ``min(background, field)`` steps straight back to
+    the background and the boundary stays a hard rectangular edge. Graded
+    zones therefore carry ``background_size`` and a finite ``VOut``.
+    """
+    tags = _add_refinement_zone_fields(gmodel, [{
+        "type": "box", "xmin": 0.1, "xmax": 0.9, "ymin": 0.2, "ymax": 0.8,
+        "zmin": 0.0, "zmax": 1.0, "cell_size": 0.01,
+        "thickness": 0.08, "background_size": 0.03,
+    }])
+    assert len(tags) == 1
+    assert gmodel.model.mesh.field.getNumber(tags[0], "Thickness") == pytest.approx(0.08)
+    assert gmodel.model.mesh.field.getNumber(tags[0], "VOut") == pytest.approx(0.03)
+    assert gmodel.model.mesh.field.getNumber(tags[0], "VIn") == pytest.approx(0.01)
+
+
+def test_graded_sphere_zone_sets_thickness(gmodel):
+    tags = _add_refinement_zone_fields(gmodel, [{
+        "centre": (0.5, 0.5, 0.5), "radius": 0.2, "cell_size": 0.01,
+        "thickness": 0.05, "background_size": 0.03,
+    }])
+    assert gmodel.model.mesh.field.getNumber(tags[0], "Thickness") == pytest.approx(0.05)
+    assert gmodel.model.mesh.field.getNumber(tags[0], "VOut") == pytest.approx(0.03)
+
+
+def test_prepare_zones_clamps_excessive_refinement():
+    """A target 10x finer than the background is clamped to the documented
+    max ratio (4x per axis), and a graded thickness is derived. A tiny box
+    keeps the cell budget out of the way so the ratio clamp is isolated."""
+    prepared = _prepare_refinement_zones(
+        [{"type": "box", "xmin": 0.0, "xmax": 0.01, "ymin": 0.0, "ymax": 0.01,
+          "zmin": 0.0, "zmax": 0.01, "cell_size": 0.003}],
+        background_size=0.03,
+    )
+    z = prepared[0]
+    assert z["cell_size"] == pytest.approx(0.03 / _ZONE_MAX_REFINEMENT)
+    assert z["background_size"] == pytest.approx(0.03)
+    assert z["thickness"] > 0
+
+
+def test_prepare_zones_keeps_reasonable_refinement_untouched():
+    prepared = _prepare_refinement_zones(
+        [{"type": "box", "xmin": 0.45, "xmax": 0.55, "ymin": 0.45, "ymax": 0.55,
+          "zmin": 0.45, "zmax": 0.55, "cell_size": 0.01}],
+        background_size=0.03,
+    )
+    assert prepared[0]["cell_size"] == pytest.approx(0.01)
+    # thickness = min(4*0.03, 0.5*0.1) = 0.05
+    assert prepared[0]["thickness"] == pytest.approx(0.05)
+
+
+def test_prepare_zones_does_not_mutate_input():
+    original = {"type": "box", "xmin": 0, "xmax": 1, "ymin": 0, "ymax": 1,
+                "zmin": 0, "zmax": 1, "cell_size": 0.001}
+    _prepare_refinement_zones([original], background_size=0.05)
+    assert original["cell_size"] == pytest.approx(0.001)
+    assert "thickness" not in original
+
+
+def test_prepare_zones_coarsens_to_fit_cell_budget():
+    """An enormous zone must be coarsened until the cells it ADDS over the
+    background fit the budget floor, instead of exploding the mesh."""
+    from polyfoammesh.core.gmsh_wrapper import (
+        _TET_VOLUME_PER_EDGE3, _ZONE_MAX_CELLS_DEFAULT,
+    )
+    prepared = _prepare_refinement_zones(
+        [{"type": "box", "xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 1.0,
+          "zmin": 0.0, "zmax": 1.0, "cell_size": 0.01}],
+        background_size=0.03,
+    )
+    z = prepared[0]
+    t = z["cell_size"]
+    assert t < 0.03  # still finer than the background (real refinement)
+    added = (1.0 / _TET_VOLUME_PER_EDGE3) * (1.0 / t ** 3 - 1.0 / 0.03 ** 3)
+    assert added <= _ZONE_MAX_CELLS_DEFAULT * 1.05
+
+
+def test_zones_lower_characteristic_length_min(gmodel):
+    """A zone target finer than the active floor must drop the floor.
+
+    GMSH applies Mesh.CharacteristicLengthMin as a hard floor AFTER the
+    background field, so without this a zone asking for 0.0125 under a
+    0.015 floor is silently clamped back to the bulk size.
+    """
+    gmodel.option.setNumber("Mesh.CharacteristicLengthMin", 0.015)
+    new_floor = _lower_length_min_for_zones(
+        gmodel, [{"type": "box", "cell_size": 0.0125}]
+    )
+    assert new_floor == pytest.approx(0.0125)
+    assert gmodel.option.getNumber("Mesh.CharacteristicLengthMin") == \
+        pytest.approx(0.0125)
+
+
+def test_zones_never_raise_the_floor(gmodel):
+    """A zone coarser than the floor must not coarsen the whole mesh."""
+    gmodel.option.setNumber("Mesh.CharacteristicLengthMin", 0.005)
+    new_floor = _lower_length_min_for_zones(
+        gmodel, [{"type": "box", "cell_size": 0.02}]
+    )
+    assert new_floor == pytest.approx(0.005)
+    assert gmodel.option.getNumber("Mesh.CharacteristicLengthMin") == \
+        pytest.approx(0.005)
 
 
 def test_mixed_zones_combine(gmodel):

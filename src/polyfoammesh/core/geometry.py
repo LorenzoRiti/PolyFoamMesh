@@ -1650,3 +1650,56 @@ def split_single_stl_patch(
         ", ".join(f"{p.metadata['name']}({len(p.faces)}f)" for p in out),
     )
     return out
+
+
+def split_mesh_by_angle(
+    mesh: trimesh.Trimesh,
+    angle_deg: float = 30.0,
+) -> list[trimesh.Trimesh]:
+    """Split *mesh* into surface patches by feature (dihedral) angle.
+
+    BaramMesh-style: faces joined by a dihedral angle smaller than
+    ``angle_deg`` are merged into one patch. A smaller angle therefore
+    produces more, smaller patches. The resulting submeshes are named
+    ``surface_1``, ``surface_2``, ... (1-based), ordered by component
+    area descending so patch numbering is stable and meaningful.
+
+    Never raises: returns ``[mesh]`` unchanged when there is at most one
+    component, or on any failure (the caller can always fall back to the
+    original single patch).
+    """
+    try:
+        work = mesh.copy()
+        work.merge_vertices()
+        if len(work.faces) == 0:
+            return [mesh]
+        labels = _face_components(work, np.radians(float(angle_deg)))
+    except Exception as exc:
+        logger.debug("split_mesh_by_angle failed: %s", exc)
+        return [mesh]
+
+    comp_ids = np.unique(labels)
+    if len(comp_ids) <= 1:
+        return [mesh]
+
+    areas = work.area_faces
+    comps: list[tuple[float, np.ndarray]] = []
+    for comp in comp_ids:
+        idx = np.flatnonzero(labels == comp)
+        comps.append((float(areas[idx].sum()), idx))
+    comps.sort(key=lambda item: item[0], reverse=True)
+
+    source_name = mesh.metadata.get("name", "unnamed")
+    out: list[trimesh.Trimesh] = []
+    for k, (_area, idx) in enumerate(comps, start=1):
+        part = work.submesh([idx], append=True, repair=False)
+        part.metadata["name"] = f"surface_{k}"
+        part.metadata["auto_split"] = True
+        part.metadata["split_from"] = source_name
+        out.append(part)
+    logger.info(
+        "Split '%s' into %d patches by %.1f deg: %s",
+        source_name, len(out), float(angle_deg),
+        ", ".join(f"{p.metadata['name']}({len(p.faces)}f)" for p in out),
+    )
+    return out
