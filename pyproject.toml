@@ -10,12 +10,13 @@ authors = [{name = "Davide Valoroso"}]
 license = {text = "GPL-3.0-or-later"}
 readme = "README.md"
 requires-python = ">=3.11"
-keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2", "polyfoammesh"]
+keywords = ["openfoam", "cfmesh", "mesh", "cfd", "wsl2", "polyfoammesh", "linux"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering",
 ]

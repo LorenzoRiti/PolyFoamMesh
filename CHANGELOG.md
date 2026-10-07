@@ -27,9 +27,28 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   (doppio click) nella tabella patch, ora spostata nel dock sinistro in
   basso (unico pannello: la lista duplicata nel tab Geometry è stata
   rimossa). Il rename si propaga a meshing, BL e export.
+- **Supporto Linux (fase 1 - core)**: l'app ora esegue i comandi
+  OpenFOAM/cfMesh nativamente su Linux (`bash -lc` invece di `wsl.exe`),
+  con bashrc configurabile via variabile `POLYFOAMMESH_OF_BASHRC`
+  (default `/usr/lib/openfoam/openfoam2512/etc/bashrc`). Dati applicativi
+  in posizione XDG (`~/.local/share/polyfoammesh`, override
+  `XDG_DATA_HOME`) con migrazione legacy intatta. Launcher `launch.sh`,
+  spec PyInstaller Linux (`PolyFoamMesh-linux.spec`) e job CI
+  `build-linux`/`attach-linux` (il job Windows resta invariato). Sezione
+  "Linux (from source)" in INSTALL.md/.it.md. Comportamento Windows
+  verificato **byte-identico** (18/18 controlli su comandi e script
+  generati).
 
 ### Corretto
 
+- **Kill dei processi sicuro su Linux**: i processi OpenFOAM/cfMesh
+  vengono lanciati con `start_new_session` e terminati con `killpg` (con
+  guardia esplicita per non colpire mai il processo della GUI); su Windows
+  resta `taskkill /T` invariato. Prima su POSIX `killpg` poteva uccidere
+  l'app stessa e due helper basati su `taskkill` erano no-op (processi
+  orfani dopo Cancel).
+- **Guard RAM su Linux**: il probe RAM usava `ctypes.windll` (inerte su
+  POSIX con fallback 999 GB); ora su Linux si usa la RAM reale dell'host.
 - **Refinement box ora fanno davvero ciò che promettono**: i campi zona
   GMSH usavano `VOut = -1`, che combinato in MIN faceva prendere `-1`
   ovunque fuori dalle box e mandava GMSH in un loop di retry infinito (la

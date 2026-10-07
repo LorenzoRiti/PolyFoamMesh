@@ -70,7 +70,10 @@ def _build_internal_vtu(case_dir: Path, of_config: OFConfig | None = None) -> Pa
             f"foamToVTK timed out after {_FOAM_TO_VTK_TIMEOUT_S}s"
         ) from exc
     except FileNotFoundError as exc:
-        raise RuntimeError("WSL not found — cannot run foamToVTK") from exc
+        raise RuntimeError(
+            "OpenFOAM shell not found — cannot run foamToVTK "
+            "(install OpenFOAM, or on Windows enable WSL2)."
+        ) from exc
 
     if result.returncode != 0:
         raise RuntimeError(

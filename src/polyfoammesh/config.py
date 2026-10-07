@@ -5,12 +5,27 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+# OpenFOAM environment script sourced before every OpenFOAM/cfMesh command.
+#
+# On Linux the OpenFOAM Foundation apt package installs it under
+# /usr/lib/openfoam/openfoam2512/etc/bashrc. A source build or a manual
+# install commonly lives at /opt/openfoam2512/etc/bashrc instead — override
+# with the POLYFOAMMESH_OF_BASHRC environment variable, e.g.:
+#     export POLYFOAMMESH_OF_BASHRC=/opt/openfoam2512/etc/bashrc
+# On Windows this is the path *inside* WSL; the default is unchanged, so
+# Windows command lists stay byte-identical when the variable is unset.
+_DEFAULT_OF_BASHRC = os.environ.get(
+    "POLYFOAMMESH_OF_BASHRC",
+    "/usr/lib/openfoam/openfoam2512/etc/bashrc",
+)
 
 
 def _resolve_for_wsl(p: Path | str) -> Path:
@@ -67,7 +82,7 @@ def extract_poly_mesh_archive(case_dir: Path | str) -> bool:
 @dataclass
 class OFConfig:
     wsl_distro: str = "Ubuntu"
-    env_script: str = "/usr/lib/openfoam/openfoam2512/etc/bashrc"
+    env_script: str = _DEFAULT_OF_BASHRC
     cartesian_mesh_bin: str = "cartesianMesh"
     check_mesh_bin: str = "checkMesh"
     _validated: bool = False
@@ -95,12 +110,19 @@ class OFConfig:
         try:
             env_quoted = shlex.quote(self.env_script)
             bin_quoted = shlex.quote(self.cartesian_mesh_bin)
-            result = subprocess.run(
-                [
+            bash_code = f"source {env_quoted} 2>/dev/null && which {bin_quoted}"
+            # Platform dispatch: on POSIX OpenFOAM runs natively, so there is
+            # no wsl.exe hop — just invoke bash directly. On Windows the
+            # command list is unchanged (wsl.exe ... bash -lc <code>).
+            if sys.platform == "win32":
+                cmd = [
                     "wsl.exe", "-d", self.wsl_distro, "--",
-                    "bash", "-lc",
-                    f"source {env_quoted} 2>/dev/null && which {bin_quoted}"
-                ],
+                    "bash", "-lc", bash_code,
+                ]
+            else:
+                cmd = ["bash", "-lc", bash_code]
+            result = subprocess.run(
+                cmd,
                 capture_output=True, text=True, timeout=10,
             )
             self._validated = result.returncode == 0 and result.stdout.strip() != ""
@@ -132,6 +154,11 @@ class OFConfig:
         # does not exist — `source` then failed silently behind 2>/dev/null and
         # every OpenFOAM command came back "command not found" (rc=127).
         if raw.startswith("/"):
+            # Already a POSIX path (e.g. a native Linux case dir, or the
+            # OpenFOAM env script at /usr/lib/openfoam/...): leave it alone.
+            # On Windows, running it through the Windows->WSL translation
+            # turned it into /mnt/c/usr/lib/... , which does not exist — so
+            # this identity branch is what makes native-Linux paths work.
             return raw.replace("'", "'\\''")
         # Windows-style paths must be detected on the raw string: on a POSIX
         # host (tests, tools running inside WSL) Path("C:\\x").resolve()
@@ -151,10 +178,19 @@ class OFConfig:
         return f"/mnt/{drive_letter}{rel}".replace("'", "'\\''")
 
     def _build_wsl_cmd(self, bash_code: str) -> list[str]:
-        return [
-            "wsl.exe", "-d", self.wsl_distro, "--",
-            "bash", "-lc", bash_code,
-        ]
+        """Wrap *bash_code* in the platform-appropriate launcher.
+
+        Windows keeps the exact wsl.exe invocation (unchanged). On POSIX
+        OpenFOAM is installed natively, so the command is a plain
+        ``bash -lc`` — no wsl.exe, no distro hop. The method name is kept
+        for API stability (every builder in this class calls it).
+        """
+        if sys.platform == "win32":
+            return [
+                "wsl.exe", "-d", self.wsl_distro, "--",
+                "bash", "-lc", bash_code,
+            ]
+        return ["bash", "-lc", bash_code]
 
     def _quoted_linux_path(self, case_dir: Path | str) -> str:
         return shlex.quote(self.wsl_linux_case_path(case_dir))

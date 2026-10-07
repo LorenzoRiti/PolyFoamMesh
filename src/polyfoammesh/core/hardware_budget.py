@@ -121,9 +121,18 @@ def wsl_ram_bytes(wsl_distro: str = "Ubuntu") -> tuple[int, int] | None:
     Returns ``None`` (never raises) when WSL isn't available or the
     call fails/times out — callers should fall back to the host-only
     budget in that case, not treat it as a hard error.
+
+    On POSIX there is no WSL2 VM: cartesianMesh runs in this same
+    machine's memory space, so ``available_ram_bytes``/``total_ram_bytes``
+    already describe the real constraint. Return ``None`` immediately so
+    callers fall back to those host probes (and so no ``wsl.exe`` is ever
+    invoked on Linux).
     """
     import re
     import subprocess
+
+    if sys.platform != "win32":
+        return None
 
     try:
         result = subprocess.run(

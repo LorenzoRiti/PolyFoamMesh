@@ -36,8 +36,50 @@ def test_build_command_returns_list():
     cfg = OFConfig()
     cmd = cfg.build_command("C:\\test\\case")
     assert isinstance(cmd, list), f"Expected list, got {type(cmd)}"
-    assert len(cmd) >= 6, f"Expected at least 6 elements, got {len(cmd)}"
-    assert "wsl.exe" in cmd[0] or cmd[0].endswith("wsl.exe")
+    if sys.platform == "win32":
+        # Windows keeps the exact wsl.exe invocation.
+        assert len(cmd) >= 6, f"Expected at least 6 elements, got {len(cmd)}"
+        assert "wsl.exe" in cmd[0] or cmd[0].endswith("wsl.exe")
+    else:
+        # POSIX runs OpenFOAM natively: bash -lc, no wsl.exe anywhere.
+        assert cmd[:2] == ["bash", "-lc"], f"Expected bash -lc, got {cmd[:2]}"
+        assert not any("wsl" in str(part).lower() for part in cmd), cmd
+
+
+def test_build_wsl_cmd_posix_dispatch(monkeypatch):
+    """Simulate POSIX: _build_wsl_cmd must return plain bash -lc with no
+    wsl.exe, while keeping the same bash payload."""
+    import polyfoammesh.config as cfgmod
+
+    monkeypatch.setattr(cfgmod.sys, "platform", "linux")
+    cfg = OFConfig()
+    cmd = cfg._build_wsl_cmd("echo hi")
+    assert cmd == ["bash", "-lc", "echo hi"], cmd
+    assert not any("wsl" in str(part).lower() for part in cmd), cmd
+
+
+def test_validate_posix_dispatch_no_wsl(monkeypatch):
+    """validate() on POSIX must probe via bash -lc (no wsl.exe) and keep the
+    same boolean semantics (rc == 0 AND non-empty stdout)."""
+    import subprocess
+    import polyfoammesh.config as cfgmod
+
+    monkeypatch.setattr(cfgmod.sys, "platform", "linux")
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "/usr/bin/cartesianMesh\n"
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    cfg = OFConfig()
+    assert cfg.validate() is True
+    assert captured["cmd"][:2] == ["bash", "-lc"], captured["cmd"]
+    assert not any("wsl" in str(p).lower() for p in captured["cmd"]), captured["cmd"]
 
 
 def test_build_command_contains_quoted_path():

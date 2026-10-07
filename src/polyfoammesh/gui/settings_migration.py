@@ -29,6 +29,7 @@ _SETTINGS_SCHEMA: dict[str, type] = {
     "params/detail_slider": int,
     "params/unit": str,
     "params/bl_checked": bool,
+    "params/surface_resolution": str,
     "window/size": object,  # QSize
     "window/pos": object,  # QPoint
     "viewer/background": str,

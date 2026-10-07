@@ -57,6 +57,47 @@ _GMSH_DETAIL = {
                   "min_size": 0.0001, "max_size": 0.015, "cells_across": 48},
 }
 
+#: How many cells the automatic sizing should ideally fit across the requested
+#: boundary-layer stack. Wall cells far smaller than this fraction of the stack
+#: are what makes a boundary layer collapse: cfMesh/GMSH then compresses the
+#: first layer to a few percent of the requested height because the stack no
+#: longer physically fits between the wall and the first bulk cell. Enforcing
+#: a wall-cell floor of ``stack / _BL_CELLS_ACROSS_STACK`` (see
+#: ``compute_bl_wall_size_floor``) keeps the stack inside the local mesh.
+_BL_CELLS_ACROSS_STACK = 5
+
+#: Absolute ceiling on the BL wall-size floor, as a fraction of the geometry's
+#: largest bounding-box extent — never let a coupling knob ask for absurdly
+#: fine cells on a huge part.
+_BL_FLOOR_MAX_EXTENT_FRACTION = 0.10
+
+#: ``Surface resolution`` presets -> multiplier on the curvature angular-error
+#: constant used by the a-priori curvature size field (the chord-angle relation
+#: ``target = radius * angle`` in ``_sample_curvature_size_field``). Medium
+#: (1.0) is the historical default, so leaving the control alone changes
+#: nothing. A SMALLER multiplier means a smaller angular error, i.e. smaller
+#: cells on curved surfaces (finer), independent of the cell budget.
+_SURFACE_RESOLUTION_MULT = {
+    "coarse": 1.6,
+    "medium": 1.0,
+    "fine": 0.7,
+    "very fine": 0.5,
+}
+
+#: Dihedral-angle threshold (degrees) above which an edge between two surfaces
+#: counts as a sharp edge worth refining, and the maximum number of sharp
+#: curves folded into the small-feature field.
+_SHARP_EDGE_ANGLE_DEG = 40.0
+_SHARP_EDGE_MAX = 200
+
+#: Above this requested cell target the one-shot budget correction in
+#: ``generate_volume_mesh`` is skipped (too expensive / already large).
+_BUDGET_CORRECTION_MAX_TARGET = 2_000_000
+#: Relative deviation from the target that triggers the single correction.
+_BUDGET_CORRECTION_DEVIATION = 0.40
+#: Per-correction clamp on the size rescale factor (never more than +/-50%).
+_BUDGET_CORRECTION_FACTOR_CLAMP = 0.5
+
 
 def _fmt_bytes(n: int) -> str:
     """Human-readable byte count (e.g. "14.2 GB"), best-effort."""
@@ -318,6 +359,196 @@ def _detect_surface_gaps(gmsh_mod, max_extent: float, max_pairs: int = 4000) -> 
 
     gaps.sort(key=lambda g: g["distance"])
     return gaps[:50]  # cap field count — each becomes a Ball field below
+
+
+def surface_resolution_multiplier(surface_resolution) -> float:
+    """Map the GUI ``Surface resolution`` preset (or an explicit float) to a
+    multiplier on the curvature angular-error constant (``_SURFACE_RESOLUTION_MULT``).
+
+    ``"Medium"`` (the default) returns exactly 1.0, so the historical behaviour
+    is reproduced bit-for-bit when the control is left alone. Unknown values
+    also fall back to 1.0 rather than silently coarsening/refining.
+    """
+    if isinstance(surface_resolution, bool):
+        return 1.0
+    if isinstance(surface_resolution, (int, float)):
+        value = float(surface_resolution)
+        return value if value > 0 else 1.0
+    key = str(surface_resolution or "").strip().lower().replace("_", " ")
+    key = key.replace("veryfine", "very fine")
+    return _SURFACE_RESOLUTION_MULT.get(key, 1.0)
+
+
+def compute_bl_stack(first_layer: float, growth_ratio: float, n_layers: int) -> float:
+    """Total boundary-layer thickness: ``h1 * (r^n - 1) / (r - 1)``.
+
+    ``first_layer`` is the ABSOLUTE first-layer height (metres),
+    ``growth_ratio`` the layer-to-layer expansion, ``n_layers`` the count.
+    Returns 0.0 for a disabled/degenerate stack (never raises).
+    """
+    try:
+        h1 = float(first_layer)
+        r = float(growth_ratio)
+        n = int(n_layers)
+    except (TypeError, ValueError):
+        return 0.0
+    if h1 <= 0 or n <= 0:
+        return 0.0
+    if abs(r - 1.0) < 1e-9:
+        return h1 * n
+    if r <= 0:
+        return 0.0
+    return h1 * (r ** n - 1.0) / (r - 1.0)
+
+
+def compute_bl_wall_size_floor(
+    first_layer: float, growth_ratio: float, n_layers: int, max_extent: float,
+) -> float:
+    """Wall-cell size floor that lets the requested BL stack physically fit.
+
+    ``stack / _BL_CELLS_ACROSS_STACK``, capped at
+    ``_BL_FLOOR_MAX_EXTENT_FRACTION * max_extent`` so the coupling can never ask
+    for absurdly fine cells on a large part. Returns 0.0 (off) when the stack
+    is disabled/degenerate or the geometry extent is unknown.
+    """
+    total = compute_bl_stack(first_layer, growth_ratio, n_layers)
+    if total <= 0:
+        return 0.0
+    try:
+        extent = float(max_extent)
+    except (TypeError, ValueError):
+        extent = 0.0
+    floor = total / _BL_CELLS_ACROSS_STACK
+    if extent > 0:
+        floor = min(floor, extent * _BL_FLOOR_MAX_EXTENT_FRACTION)
+    return floor
+
+
+def _detect_sharp_edge_curves(
+    gmsh_mod, threshold_deg: float = _SHARP_EDGE_ANGLE_DEG,
+    max_edges: int = _SHARP_EDGE_MAX,
+) -> list[int]:
+    """Curve tags lying on a sharp edge (dihedral angle > *threshold_deg*).
+
+    A plain box has no curvature to sample (its faces are flat), so the
+    curvature field alone leaves its edges under-resolved; this detects them
+    from GMSH's own B-Rep adjacency. For each curve shared by exactly two
+    surfaces, the dihedral angle is computed from those surfaces' normals at
+    the curve midpoint (``angle = pi - acos(n1·n2)``, so a flat continuation
+    gives ~180° and a box edge ~90°).
+
+    Best-effort and bounded: returns [] when the model has no surfaces or the
+    CAD kernel cannot provide normals (e.g. discrete STL surfaces), never
+    raises, and caps the result at *max_edges*.
+    """
+    import numpy as np
+
+    try:
+        surfaces = gmsh_mod.model.getEntities(2)
+    except Exception:
+        logger.debug("gmsh_wrapper: sharp-edge scan: getEntities failed", exc_info=True)
+        return []
+    if not surfaces:
+        return []
+
+    curve_to_surfaces: dict[int, list[int]] = {}
+    for _dim, stag in surfaces:
+        try:
+            boundary = gmsh_mod.model.getBoundary(
+                [(2, stag)], combined=False, oriented=False, recursive=False
+            )
+        except Exception:
+            logger.debug("gmsh_wrapper: sharp-edge scan: getBoundary(%d) failed", stag, exc_info=True)
+            continue
+        for bdim, btag in boundary:
+            if bdim == 1:
+                curve_to_surfaces.setdefault(int(btag), []).append(int(stag))
+
+    threshold = math.radians(float(threshold_deg))
+    sharp: list[int] = []
+    for ctag, adjacent in curve_to_surfaces.items():
+        if len(adjacent) != 2:
+            continue
+        try:
+            lo, hi = gmsh_mod.model.getParametrizationBounds(1, ctag)
+            mid = 0.5 * (float(lo[0]) + float(hi[0]))
+            xyz = gmsh_mod.model.getValue(1, ctag, [mid])
+            point = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+        except Exception:
+            logger.debug("gmsh_wrapper: sharp-edge scan: curve %d midpoint failed", ctag, exc_info=True)
+            continue
+
+        normals: list = []
+        ok = True
+        for stag in adjacent:
+            try:
+                pr = gmsh_mod.model.getParametrization(2, stag, point)
+                n = gmsh_mod.model.getNormal(stag, [float(pr[0]), float(pr[1])])
+                v = np.asarray(n[:3], dtype=float)
+                nv = float(np.linalg.norm(v))
+                if nv < 1e-12:
+                    ok = False
+                    break
+                normals.append(v / nv)
+            except Exception:
+                logger.debug("gmsh_wrapper: sharp-edge scan: normal at curve %d failed", ctag, exc_info=True)
+                ok = False
+                break
+        if not ok or len(normals) != 2:
+            continue
+        cos_a = float(np.clip(float(np.dot(normals[0], normals[1])), -1.0, 1.0))
+        dihedral = math.pi - math.acos(cos_a)
+        if dihedral > threshold:
+            sharp.append(ctag)
+            if len(sharp) >= max_edges:
+                break
+    return sharp
+
+
+def _count_volume_cells(gmsh_mod) -> int:
+    """Number of 3D (volume) elements currently in the GMSH mesh, best-effort."""
+    try:
+        _types, tags, _nodes = gmsh_mod.model.mesh.getElements(3)
+        return int(sum(len(t) for t in tags))
+    except Exception:
+        logger.debug("gmsh_wrapper: volume cell count failed", exc_info=True)
+        return 0
+
+
+def _sample_wall_points(gmsh_mod, per_entity: int = 100):
+    """Coarse point cloud on every surface, for the BL wall-size floor.
+
+    Returns an ``Nx3`` float array (empty on an empty/discrete model). Used only
+    as a KDTree for "is this query point near a wall?" — exact sampling density
+    does not matter, it just has to cover the boundary.
+    """
+    import numpy as np
+
+    try:
+        surfaces = gmsh_mod.model.getEntities(2)
+    except Exception:
+        return np.zeros((0, 3))
+    pts: list = []
+    for dim, tag in surfaces:
+        try:
+            lo, hi = gmsh_mod.model.getParametrizationBounds(dim, tag)
+            n_side = max(2, int(math.sqrt(per_entity)))
+            us = np.linspace(lo[0], hi[0], n_side)
+            vs = np.linspace(lo[1], hi[1], n_side)
+            param = []
+            for u in us:
+                for v in vs:
+                    param.extend([float(u), float(v)])
+            coords = gmsh_mod.model.getValue(dim, tag, param)
+            n = len(param) // 2
+            for i in range(n):
+                pts.append([float(coords[3 * i]), float(coords[3 * i + 1]), float(coords[3 * i + 2])])
+        except Exception:
+            logger.debug("gmsh_wrapper: wall sampling failed dim=%d tag=%d", dim, tag, exc_info=True)
+            continue
+    if not pts:
+        return np.zeros((0, 3))
+    return np.asarray(pts, dtype=np.float64)
 
 
 def _sample_curvature_size_field(
@@ -672,6 +903,9 @@ def _configure_curvature_size_field(
     passage_points=None,
     passage_target_sizes=None,
     skip_curvature: bool = False,
+    wall_points=None,
+    wall_min_distance: float = 0.0,
+    wall_floor: float = 0.0,
 ) -> dict:
     """A-priori, geometry-based mesh adaptation: build an explicit local
     Size Field from the CAD model's own discrete curvature (H_MIN/H_MAX/
@@ -758,10 +992,29 @@ def _configure_curvature_size_field(
 
     tree = cKDTree(points)
 
+    # BL wall-size floor (upgrade A): the geometry-adaptive/passage fields can
+    # ask for cells smaller than the requested BL stack needs, so near a wall
+    # the callback result is raised to the floor. Away from walls the query is
+    # beyond wall_min_distance and nothing changes — curvature/gap refinement
+    # elsewhere is untouched.
+    wall_tree = None
+    if wall_points is not None and len(wall_points) and wall_floor > 0:
+        wall_tree = cKDTree(np.asarray(wall_points, dtype=np.float64))
+        logger.info(
+            "BL wall-size floor active in size callback: %.5g m within %.5g m "
+            "of %d wall samples",
+            wall_floor, wall_min_distance, len(wall_points),
+        )
+
     def _callback(dim, tag, x, y, z, lc):
         _, idx = tree.query([x, y, z])
         target = float(relaxed[idx])
-        return min(lc, target) if lc > 0 else target
+        result = min(lc, target) if lc > 0 else target
+        if wall_tree is not None:
+            dist, _ = wall_tree.query([x, y, z])
+            if dist <= wall_min_distance:
+                result = max(result, wall_floor)
+        return result
 
     gmsh_mod.model.mesh.setSizeCallback(_callback)
 
@@ -783,7 +1036,8 @@ def _configure_adaptive_sizing(
     gmsh_mod, detail: str, max_extent: float, feat: dict, hw: dict,
     cross_scale: float | None = None, domain_volume: float | None = None,
     growth_rate: float = 1.2, use_curvature_size_field: bool = True,
-    passage_boundary_mesh=None,
+    passage_boundary_mesh=None, surface_resolution="medium",
+    bl_wall_size_floor: float = 0.0,
 ) -> dict:
     """Local/adaptive sizing: fine near small curves (a Distance +
     Threshold background field) and near curved surfaces (GMSH's
@@ -928,12 +1182,28 @@ def _configure_adaptive_sizing(
     )
     min_size = max(geom_min, hw_floor)
 
-    n_small = len(feat["small_curve_tags"])
+    # Sharp-edge refinement (upgrade C): a flat-faced part (a plain box) has
+    # nothing for the curvature sampler to bite on, so its 90-degree edges stay
+    # as coarse as the bulk. Detect edges whose dihedral angle exceeds
+    # _SHARP_EDGE_ANGLE_DEG and fold their curve tags into the SAME
+    # small-feature Distance/Threshold field (deduped against the curves already
+    # flagged by _scan_feature_sizes), so there is one bounded field, one
+    # growth-rate transition, and no duplicate Distance fields. Best-effort:
+    # returns [] on STL/discrete surfaces or an empty model.
+    sharp_edge_tags = _detect_sharp_edge_curves(gmsh_mod)
+    if sharp_edge_tags:
+        logger.info("[gmsh] sharp-edge refinement: %d edges", len(sharp_edge_tags))
+
+    _seen_curves = set(int(t) for t in feat["small_curve_tags"])
+    curve_tags = list(feat["small_curve_tags"]) + [
+        t for t in sharp_edge_tags if int(t) not in _seen_curves
+    ]
+    n_small = len(curve_tags)
     active_fields = []
     if n_small:
         f_dist = gmsh_mod.model.mesh.field.add("Distance")
         gmsh_mod.model.mesh.field.setNumbers(
-            f_dist, "CurvesList", [float(t) for t in feat["small_curve_tags"]]
+            f_dist, "CurvesList", [float(t) for t in curve_tags]
         )
         f_thresh = gmsh_mod.model.mesh.field.add("Threshold")
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "InField", f_dist)
@@ -969,6 +1239,64 @@ def _configure_adaptive_sizing(
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "DistMin", dist_min)
         gmsh_mod.model.mesh.field.setNumber(f_thresh, "DistMax", dist_max)
         active_fields.append(f_thresh)
+
+    # Boundary-layer <-> sizing coupling (upgrade A). When the caller computed a
+    # wall-size floor from the requested BL stack, enforce it with a Distance
+    # field on the WALL surfaces + a Threshold returning the floor near the
+    # wall. DistMin=0, DistMax=one local bulk cell so the constraint is
+    # genuinely local.
+    #
+    # SEMANTICS NOTE (deviation from the literal "add to the Min background"):
+    # a MIN-combined field can only ever make cells SMALLER, so adding a
+    # SizeMin=floor/SizeMax=huge field to the Min background cannot fix the
+    # reported problem (wall cells far smaller than the stack) — it would be a
+    # no-op wherever the adaptive fields are already finer than the floor.
+    # A floor is a LOWER bound, so the field is MAX-combined with the adaptive
+    # background instead: near the wall the target becomes
+    # max(adaptive, floor), away from it (Threshold returns 0) it stays
+    # adaptive. The size callback's min(lc, curvature) then keeps the floor
+    # for gently-curved walls while still letting tight curvature refine
+    # further — the "without disturbing curvature/gap refinement" requirement.
+    #
+    # WIRING NOTE: wall-only surface tags are not available inside this module
+    # (it operates on raw GMSH entities, not GUI patch roles). The GMSH
+    # BoundaryLayer field installed by generate_volume_mesh already applies to
+    # ALL surfaces (CurvesList=[]), so this floor deliberately uses all
+    # surfaces too — consistent with the BL it is coupled to. classify_faces /
+    # patch_roles live in the GUI/geometry layers and are not plumbed here.
+    wall_floor_field: int | None = None
+    wall_floor_points = None
+    if bl_wall_size_floor and bl_wall_size_floor > 0:
+        try:
+            wall_surfaces = gmsh_mod.model.getEntities(2)
+        except Exception:
+            wall_surfaces = []
+        if wall_surfaces:
+            f_dist_wall = gmsh_mod.model.mesh.field.add("Distance")
+            gmsh_mod.model.mesh.field.setNumbers(
+                f_dist_wall, "SurfacesList", [float(t) for _d, t in wall_surfaces]
+            )
+            wall_floor_field = gmsh_mod.model.mesh.field.add("Threshold")
+            gmsh_mod.model.mesh.field.setNumber(wall_floor_field, "InField", f_dist_wall)
+            gmsh_mod.model.mesh.field.setNumber(
+                wall_floor_field, "SizeMin", bl_wall_size_floor
+            )
+            # Away from the wall (d >= DistMax) GMSH evaluates SizeMax; 0 makes
+            # max(background, 0) == background, i.e. no constraint there.
+            gmsh_mod.model.mesh.field.setNumber(wall_floor_field, "SizeMax", 0.0)
+            gmsh_mod.model.mesh.field.setNumber(wall_floor_field, "DistMin", 0.0)
+            gmsh_mod.model.mesh.field.setNumber(
+                wall_floor_field, "DistMax", max(coarse_max, min_size)
+            )
+            _floor_msg = (
+                f"[gmsh] BL wall size floor: "
+                f"{bl_wall_size_floor * 1000.0:.4g} mm "
+                f"(stack {bl_wall_size_floor * _BL_CELLS_ACROSS_STACK * 1000.0:.4g} mm "
+                f"/ {_BL_CELLS_ACROSS_STACK})"
+            )
+            logger.info(_floor_msg)
+            print(_floor_msg, flush=True)
+            wall_floor_points = _sample_wall_points(gmsh_mod)
 
     # Gap-aware refinement, superseded here: the old approach placed one
     # Ball field per (surface-pair, bounding-box distance) — a proxy that
@@ -1019,6 +1347,23 @@ def _configure_adaptive_sizing(
         bg_field = gmsh_mod.model.mesh.field.add("Min")
         gmsh_mod.model.mesh.field.setNumbers(bg_field, "FieldsList", active_fields)
         gmsh_mod.model.mesh.field.setAsBackgroundMesh(bg_field)
+
+    # Apply the BL wall-size floor as a LOWER bound on top of the adaptive
+    # background (see the SEMANTICS NOTE above): MAX-combine the near-wall
+    # Threshold (floor close to the wall, 0 away) with whatever background
+    # exists. With no adaptive background at all, the floor field is the
+    # background by itself.
+    if wall_floor_field is not None:
+        if bg_field is None:
+            bg_field = wall_floor_field
+            gmsh_mod.model.mesh.field.setAsBackgroundMesh(bg_field)
+        else:
+            f_floor_max = gmsh_mod.model.mesh.field.add("Max")
+            gmsh_mod.model.mesh.field.setNumbers(
+                f_floor_max, "FieldsList", [bg_field, wall_floor_field]
+            )
+            bg_field = f_floor_max
+            gmsh_mod.model.mesh.field.setAsBackgroundMesh(bg_field)
 
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMin", min_size)
     gmsh_mod.option.setNumber("Mesh.CharacteristicLengthMax", coarse_max)
@@ -1075,15 +1420,24 @@ def _configure_adaptive_sizing(
     # (skip_curvature=True) but its passage points still need this same
     # callback/relaxation/curve-seeding machinery to actually reach GMSH.
     curvature_field_info: dict = {"n_samples": 0}
+    # Curvature angular-error constant, scaled by the Surface resolution
+    # preset. The chord-angle relation target = radius * angle means a smaller
+    # angle yields smaller cells on curved surfaces, independent of the cell
+    # budget. "Medium" maps to exactly 1.0 -> bit-for-bit the historical value.
+    _surf_mult = surface_resolution_multiplier(surface_resolution)
+    curvature_angle_rad = math.radians(df["curv_angle"]) * _surf_mult
     if use_curvature_size_field or len(passage_points):
         try:
             curvature_field_info = _configure_curvature_size_field(
                 gmsh_mod, min_size, coarse_max,
-                angle_sensitivity_rad=math.radians(df["curv_angle"]),
+                angle_sensitivity_rad=curvature_angle_rad,
                 growth_rate=growth_rate,
                 passage_points=passage_points if len(passage_points) else None,
                 passage_target_sizes=passage_target if len(passage_target) else None,
                 skip_curvature=not use_curvature_size_field,
+                wall_points=wall_floor_points,
+                wall_min_distance=max(coarse_max, min_size),
+                wall_floor=float(bl_wall_size_floor or 0.0),
             )
         except Exception:
             logger.exception("Curvature size field setup failed; continuing without it")
@@ -1137,6 +1491,9 @@ def _configure_adaptive_sizing(
         "n_surfaces": n_surfaces, "poly_dual_risk": poly_dual_risk,
         "curvature_field_samples": curvature_field_info.get("n_samples", 0),
         "curvature_field_seeded": curvature_field_info.get("n_seeded", 0),
+        "n_sharp_edges": len(sharp_edge_tags),
+        "surface_resolution_mult": _surf_mult,
+        "bl_wall_size_floor": float(bl_wall_size_floor or 0.0),
     }
 
 
@@ -2115,6 +2472,8 @@ def generate_volume_mesh(
     min_cell_size: float | None = None,
     max_cells_override: int | None = None,
     size_field_file: Path | str | None = None,
+    surface_resolution: str | float = "medium",
+    bl_wall_size_floor: float = 0.0,
 ) -> tuple[Path, list[str]]:
     """Generate a full tetrahedral volume mesh using GMSH (direct flow).
 
@@ -2142,6 +2501,14 @@ def generate_volume_mesh(
     gmsh = _ensure_gmsh()
     gmsh.clear()
     _apply_gmsh_thread_env(gmsh)
+    # Global size multiplier used by the budget correction (upgrade D). GMSH
+    # options survive clear(), so reset it here: a corrected run that lowered
+    # it must not leak into a later in-process call. Production runs each mesh
+    # in a fresh subprocess, but this keeps repeated calls deterministic.
+    try:
+        gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", 1.0)
+    except Exception:
+        logger.debug("gmsh_wrapper: could not reset CharacteristicLengthFactor", exc_info=True)
     filepath_str = str(Path(filepath).resolve())
     output_msh = str(Path(output_msh).resolve())
     gmsh.open(filepath_str)
@@ -2228,6 +2595,38 @@ def generate_volume_mesh(
     # Bulk/background cell size of whichever sizing path ran, used to clamp
     # manual refinement zones and derive their graded-transition thickness.
     zone_background: float | None = None
+
+    # BL <-> sizing coupling (upgrade A): cap the caller's requested wall-size
+    # floor at 10% of the largest extent, and treat it as off on the
+    # explicit-size path — the floor is implemented as a Distance/Threshold
+    # pair in _configure_adaptive_sizing, which only exists when the adaptive
+    # background field is built. A plain "user cell size" run has no Min
+    # background field to attach it to.
+    try:
+        _bl_floor_req = float(bl_wall_size_floor or 0.0)
+    except (TypeError, ValueError):
+        _bl_floor_req = 0.0
+    _bl_floor_effective = 0.0
+    if _bl_floor_req > 0:
+        if user_lc:
+            logger.info(
+                "BL wall-size floor requested (%.4g mm) but the explicit-size "
+                "path has no Min background field — ignored (enable automatic "
+                "refinement for BL<->sizing coupling).",
+                _bl_floor_req * 1000.0,
+            )
+        else:
+            _bl_floor_effective = min(
+                _bl_floor_req, max_extent * _BL_FLOOR_MAX_EXTENT_FRACTION
+            )
+            if n_layers > 0 and bl_thickness:
+                logger.info(
+                    "BL coupling: stack=%.4g mm -> wall-size floor=%.4g mm "
+                    "(requested %.4g mm, capped at 10%% of extent %.4g m)",
+                    compute_bl_stack(bl_thickness, bl_expansion, n_layers) * 1000.0,
+                    _bl_floor_effective * 1000.0,
+                    _bl_floor_req * 1000.0, max_extent,
+                )
 
     # Meshing algorithms are chosen HERE, before any sizing configuration —
     # NOT after it (where they used to be). The adaptive sizing path calls
@@ -2361,6 +2760,8 @@ def generate_volume_mesh(
             gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=vol,
             use_curvature_size_field=not is_stl_input,
             passage_boundary_mesh=passage_boundary_mesh,
+            surface_resolution=surface_resolution,
+            bl_wall_size_floor=_bl_floor_effective,
         )
         bg_field_tag = sizing_info.get("bg_field")
         zone_background = sizing_info.get("coarse_max")
@@ -2441,6 +2842,65 @@ def generate_volume_mesh(
             f"GMSH volume meshing failed: {e}. "
             "Try reducing max cell size or simplifying the CAD geometry."
         ) from e
+
+    # Budget feedback (upgrade D): ONE bounded correction when the actual
+    # volume-cell count deviates from the requested target by more than
+    # _BUDGET_CORRECTION_DEVIATION. Mesh.CharacteristicLengthFactor globally
+    # rescales every target size, so the correction re-runs the SAME configured
+    # size fields (no rebuild) with at most one extra GMSH meshing pass. Targets
+    # above _BUDGET_CORRECTION_MAX_TARGET are skipped (too expensive to redo).
+    _budget_target = (
+        int(max_cells_override)
+        if max_cells_override and max_cells_override > 0 else 0
+    )
+    actual_cells = _count_volume_cells(gmsh)
+    if _budget_target and actual_cells > 0:
+        deviation = abs(actual_cells - _budget_target) / float(_budget_target)
+        if _budget_target > _BUDGET_CORRECTION_MAX_TARGET:
+            logger.info(
+                "[gmsh] budget correction skipped: target %d > %d cells",
+                _budget_target, _BUDGET_CORRECTION_MAX_TARGET,
+            )
+        elif deviation <= _BUDGET_CORRECTION_DEVIATION:
+            logger.info(
+                "[gmsh] budget check OK: actual %d vs target %d (%.0f%% off)",
+                actual_cells, _budget_target, deviation * 100.0,
+            )
+        else:
+            factor = (actual_cells / float(_budget_target)) ** (1.0 / 3.0)
+            factor = min(
+                max(factor, 1.0 - _BUDGET_CORRECTION_FACTOR_CLAMP),
+                1.0 + _BUDGET_CORRECTION_FACTOR_CLAMP,
+            )
+            msg = (
+                f"[gmsh] budget correction: actual {actual_cells} vs target "
+                f"{_budget_target} -> rescaling sizes by {factor:.3f}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+            try:
+                gmsh.model.mesh.clear()
+                gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", factor)
+                gmsh.model.mesh.generate(3)
+                corrected = _count_volume_cells(gmsh)
+                result_msg = (
+                    f"[gmsh] budget correction result: {actual_cells} -> "
+                    f"{corrected} cells (target {_budget_target}, "
+                    f"{abs(corrected - _budget_target) / _budget_target * 100.0:.0f}% off)"
+                )
+                logger.info(result_msg)
+                print(result_msg, flush=True)
+            except Exception:
+                # The first mesh was cleared before the retry; recover by
+                # regenerating at the original scale rather than failing a run
+                # that already had a usable mesh.
+                logger.exception(
+                    "Budget correction re-mesh failed; regenerating first-size mesh"
+                )
+                gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", 1.0)
+                gmsh.model.mesh.generate(3)
+    else:
+        logger.info("[gmsh] budget check skipped: no explicit cell target")
 
     # Get patch names
     groups = gmsh.model.getPhysicalGroups()
@@ -2565,6 +3025,8 @@ def _cli_main(argv):
         max_cell_size = _arg(6, "max-cell", float, 0)
         min_cell_size = _arg(7, "min-cell", float, 0)
         max_cells_target = _arg(8, "max-cells-target", int, 0)
+        bl_wall_size_floor = _arg(9, "bl-wall-size-floor", float, 0.0)
+        surface_resolution = _arg(10, "surface-resolution", str, "medium")
         # Read refinement zones from environment variable (set by GmshVolumeWorker)
         refinement_zones = None
         zones_json = os.environ.get("GMSH_REFINEMENT_ZONES", "")
@@ -2587,6 +3049,8 @@ def _cli_main(argv):
                 user_lc=max_cell_size if max_cell_size > 0 else None,
                 min_cell_size=min_cell_size if min_cell_size > 0 else None,
                 max_cells_override=max_cells_target if max_cells_target > 0 else None,
+                surface_resolution=surface_resolution,
+                bl_wall_size_floor=bl_wall_size_floor,
             )
             # Cheap post-hoc check (reuses the still-open GMSH model, a
             # few ms) so the GUI can warn about the known polyDualMesh

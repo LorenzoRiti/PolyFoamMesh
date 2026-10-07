@@ -44,6 +44,8 @@ def run_gmsh_volume(
     timeout_s: int = 3600,
     threads: int = 0,
     algo3d: int | None = None,
+    surface_resolution: str = "medium",
+    bl_wall_size_floor: float = 0.0,
 ) -> dict:
     """Mesh *step_path* via gmsh_wrapper's ``volume`` CLI, returning its JSON.
 
@@ -52,7 +54,9 @@ def run_gmsh_volume(
     ``GMSH_SOLUTION_SIZE_FIELD`` env var the CLI reads — this is how the
     SAMR loop tells GMSH where to refine. *threads* > 0 enables GMSH
     multi-threaded meshing (``GMSH_NUM_THREADS``), the main lever for the
-    large remeshes near the end of the loop.
+    large remeshes near the end of the loop. *surface_resolution* selects the
+    curvature-following preset; *bl_wall_size_floor* couples the requested
+    boundary-layer stack to the wall cell size (0 = off).
     """
     from polyfoammesh.core.openfoam_runner import _stream_subprocess
 
@@ -68,6 +72,8 @@ def run_gmsh_volume(
         f"--max-cell={user_lc!r}",
         f"--min-cell={min_lc!r}",
         f"--max-cells-target={int(max_cells_target)}",
+        f"--surface-resolution={surface_resolution}",
+        f"--bl-wall-size-floor={float(bl_wall_size_floor)!r}",
     ]
     cmd, run_cwd = _gmsh_cmd(args, "--gmsh-volume")
     env = dict(os.environ)
