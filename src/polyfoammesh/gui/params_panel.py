@@ -841,6 +841,23 @@ class ParamsPanel(QWidget):
         btn_reset_layout.addWidget(self._btn_reset)
         outer.addLayout(btn_reset_layout)
 
+        # Cancel (moved here from the ribbon, user request): shown by the
+        # main window only while a meshing run is active, directly under
+        # "Reset All" where the user is looking during a run.
+        btn_cancel_layout = QHBoxLayout()
+        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel.setMinimumHeight(40)
+        self._btn_cancel.setToolTip("Stop the meshing run in progress.")
+        self._btn_cancel.setStyleSheet(
+            f"QPushButton {{ background:{COLOR_DANGER}; color:white; "
+            f"border:1px solid {COLOR_DANGER}; border-radius:4px; "
+            "font-weight:700; }}"
+        )
+        self._btn_cancel.setVisible(False)
+        self._btn_cancel.clicked.connect(self.cancel_meshing.emit)
+        btn_cancel_layout.addWidget(self._btn_cancel)
+        outer.addLayout(btn_cancel_layout)
+
         # Advanced mode ON by default: the mesher choice buttons, boundary
         # layers and the Advanced tab are all visible from the start. Hiding
         # them behind "simple mode" confused users (e.g. the 3 mesher buttons
@@ -1728,6 +1745,10 @@ class ParamsPanel(QWidget):
 
     def set_meshing_enabled(self, enabled: bool):
         self._btn_run.setEnabled(enabled)
+
+    def cancel_button(self) -> QPushButton:
+        """The Cancel control, embedded by the main window below Reset All."""
+        return self._btn_cancel
 
     def set_all_enabled(self, enabled: bool):
         self._btn_run.setEnabled(enabled)
