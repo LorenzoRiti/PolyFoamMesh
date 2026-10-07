@@ -122,7 +122,7 @@ class QuickMesh:
             logger.info("QuickMesh: %d patches, bbox=%.4f m", len(meshes), bbox_dim)
 
             # 3. Auto-select algorithm
-            has_wsl = self._of_config.validate()
+            has_openfoam = self._of_config.validate()
             n_wt = sum(1 for m in meshes if m.is_watertight)
             all_wt = n_wt == len(meshes)
 
@@ -135,7 +135,8 @@ class QuickMesh:
             detail_map = {"draft": "coarse", "medium": "medium", "high": "fine"}
             detail = detail_map.get(quality_target, "medium")
             algo = engine.auto_select(
-                patch_count=len(meshes), watertight=all_wt, has_wsl=has_wsl,
+                patch_count=len(meshes), watertight=all_wt,
+                has_openfoam=has_openfoam,
             )
             result.algorithm = algo.value
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import logging
 import os
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -122,47 +122,40 @@ def _is_wall_patch(name: str) -> bool:
     return True
 
 
-def _check_drive_writable(drive: str) -> bool:
-    """Check if a drive root (e.g. 'C:\\') is writable."""
-    import os as _os
-    try:
-        test_path = _os.path.join(drive, ".cfmesh_write_test")
-        with open(test_path, "w") as _f:
-            _f.write("test")
-        _os.remove(test_path)
-        return True
-    except (OSError, PermissionError):
-        return False
-
-
 def _free_ram_gb() -> float:
-    """Free physical RAM in GB (best-effort, ctypes/GlobalMemoryStatusEx).
+    """Free physical RAM in GB (best-effort, cross-platform).
 
-    Used by the pre-flight guard before a GMSH volume run: the reported
-    freeze was the system thrashing into swap while GMSH + WSL2/OpenFOAM +
-    the GUI competed for memory, not a bug in the meshing pipeline itself
-    (GMSH always completed its .msh; the GUI main thread then starved and
-    Windows killed it with an App Hang).
+    Delegates to core.hardware_budget.available_ram_bytes(), which probes
+    via GlobalMemoryStatusEx on Windows and sysconf on POSIX — so the
+    pre-flight guard works the same on both. The reported freeze was the
+    system thrashing into swap while GMSH + OpenFOAM + the GUI competed
+    for memory, not a bug in the meshing pipeline itself (GMSH always
+    completed its .msh; the GUI main thread then starved and the OS
+    killed it).
+
+    Returns 999.0 only when the probe genuinely fails (so the guard never
+    blocks on an unknown value).
     """
     try:
-        class _MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-        stat = _MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return stat.ullAvailPhys / (1024 ** 3)
+        from polyfoammesh.core.hardware_budget import available_ram_bytes
+        return available_ram_bytes() / (1024 ** 3)
     except Exception:
         return 999.0  # unknown — never block on a probe failure
+
+
+def _space_free_cases_root() -> Path:
+    """A space-free ``cfmesh_cases`` fallback root, platform-neutral.
+
+    OpenFOAM/cfMesh reject paths containing spaces, so on Windows the
+    home directory (often ``C:\\Users\\First Last``) is unusable and a
+    temp-tree fallback is needed. Uses ``tempfile.gettempdir()`` (POSIX
+    or Windows) instead of a hard-coded ``C:\\`` drive. The primary home
+    path is still tried first by callers; this is only the fallback.
+    """
+    base = Path(tempfile.gettempdir()) / "cfmesh_cases"
+    if " " in str(base):
+        base = Path(str(base).replace(" ", "_"))
+    return base
 
 
 def _free_disk_gb(path: str | Path) -> float:
@@ -1109,19 +1102,38 @@ class MainWindow(QMainWindow):
         budget_cells = budget["max_cells"]
         if est_cells >= budget_cells:
             hours = est_seconds / 3600.0
+            # Platform-conditional advice: Windows OpenFOAM runs in WSL2,
+            # which has its own memory cap; Linux runs natively, where the
+            # constraint is the process/OS memory limit. Windows text is
+            # kept byte-identical.
+            if sys.platform == "win32":
+                _mem_advice = (
+                    "The meshing engine runs in WSL2, which has its own memory "
+                    "ceiling: beyond this limit the operating system kills the "
+                    "process (OOM killer) and meshing crashes.<br><br>"
+                    "<b>Suggestions:</b><br>"
+                    "• Use a coarser detail level (e.g. Medium or Coarse)<br>"
+                    "• Reduce the maximum cell size in the Advanced panel<br>"
+                    "• Increase WSL2 memory: <code>wsl --set-memory Ubuntu 32G</code> "
+                    "then restart WSL"
+                )
+            else:
+                _mem_advice = (
+                    "The meshing engine has an OS memory ceiling: beyond this "
+                    "limit the operating system kills the process (OOM killer) "
+                    "and meshing crashes.<br><br>"
+                    "<b>Suggestions:</b><br>"
+                    "• Use a coarser detail level (e.g. Medium or Coarse)<br>"
+                    "• Reduce the maximum cell size in the Advanced panel<br>"
+                    "• Check free memory with <code>free -h</code> and raise the "
+                    "process limit if needed (<code>ulimit -v unlimited</code>)"
+                )
             msg = (
                 f"<b>Mesh exceeds available memory</b><br><br>"
                 f"The estimate is ~{est_cells:,} cells, but this computer can "
                 f"handle ~{budget_cells:,} (RAM limit).<br><br>"
                 f"Cell sizes: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
-                "The meshing engine runs in WSL2, which has its own memory "
-                "ceiling: beyond this limit the operating system kills the "
-                "process (OOM killer) and meshing crashes.<br><br>"
-                "<b>Suggestions:</b><br>"
-                "• Use a coarser detail level (e.g. Medium or Coarse)<br>"
-                "• Reduce the maximum cell size in the Advanced panel<br>"
-                "• Increase WSL2 memory: <code>wsl --set-memory Ubuntu 32G</code> "
-                "then restart WSL"
+                + _mem_advice
             )
             QMessageBox.critical(self, "Mesh Too Large", msg)
             return False
@@ -1133,14 +1145,28 @@ class MainWindow(QMainWindow):
         hours = minutes / 60.0
 
         if est_cells >= budget_cells * 0.5:
+            # Windows: WSL2 memory cap advice. Linux: native memory/ulimit
+            # advice. Windows text kept byte-identical.
+            if sys.platform == "win32":
+                _big_advice = (
+                    "This mesh may require more than 8 GB of RAM and several hours.<br>"
+                    "Make sure WSL2 has enough memory "
+                    "(run <code>wsl --set-memory Ubuntu {'quantity'}</code> in PowerShell).<br><br>"
+                    "Continue?"
+                )
+            else:
+                _big_advice = (
+                    "This mesh may require more than 8 GB of RAM and several hours.<br>"
+                    "Make sure the machine has enough free memory "
+                    "(check with <code>free -h</code>; see <code>ulimit</code> "
+                    "for per-process limits).<br><br>"
+                    "Continue?"
+                )
             msg = (
                 f"<b>Very large mesh:</b> ~{est_cells:,} cells "
                 f"(~{hours:.1f} hours estimated).<br><br>"
                 f"Cell sizes: max={max_cell:.4g} m, min={min_cell:.4g} m.<br><br>"
-                "This mesh may require more than 8 GB of RAM and several hours.<br>"
-                "Make sure WSL2 has enough memory "
-                "(run <code>wsl --set-memory Ubuntu {'quantity'}</code> in PowerShell).<br><br>"
-                "Continue?"
+                + _big_advice
             )
         else:
             msg = (
@@ -1431,6 +1457,11 @@ class MainWindow(QMainWindow):
         """Explain the experimental native mesher (Phases 1-6)."""
         from PySide6.QtWidgets import QMessageBox
 
+        _of_validation = (
+            "Python); WSL is only used by the checkMesh validation.\n\n"
+            if sys.platform == "win32"
+            else "Python); OpenFOAM is only used by the checkMesh validation.\n\n"
+        )
         QMessageBox.information(
             self, "Native Poly (experimental)",
             "Native experimental mesher (our own algorithm, pure Python, "
@@ -1439,8 +1470,8 @@ class MainWindow(QMainWindow):
             "2. median dual -> 100% polyhedral mesh (core/hex_poly_dual.py), "
             "with quality-driven smoothing\n\n"
             "No external mesher is used to generate (our own algorithm, pure "
-            "Python); WSL is only used by the checkMesh validation.\n\n"
-            "Known limits (measured):\n"
+            + _of_validation
+            + "Known limits (measured):\n"
             "- works well on curved surfaces (e.g. a sphere);\n"
             "- on walls parallel to the grid (e.g. a venturi) the dual can fail: "
             "it needs snapping (not yet implemented for that case);\n"
@@ -2044,26 +2075,27 @@ class MainWindow(QMainWindow):
         """"Automatic" mode: pick the best available mesher so the user
         never has to think about mesher internals.
 
-        Cartesian cfMesh (hex-dominant via WSL2/cartesianMesh) is the
-        highest-quality option when WSL2/OpenFOAM is available;
-        otherwise our Polymesh (native polyhedral barycentric dual, no WSL)
-        is the fallback — it always produces a 100% polyhedral mesh.
+        Cartesian cfMesh (hex-dominant via OpenFOAM/cartesianMesh, native
+        on Linux, via WSL2 on Windows) is the highest-quality option when
+        OpenFOAM is available; otherwise our Polymesh (native polyhedral
+        barycentric dual, no OpenFOAM) is the fallback — it always
+        produces a 100% polyhedral mesh.
         """
-        # Uses the cached startup WSL availability instead of calling
-        # OFConfig.validate() here — that launches wsl.exe and can block
-        # for minutes on a cold WSL2 boot, which used to freeze the whole
-        # UI the moment "Automatic" was selected.
-        wsl_ok = getattr(self, "_wsl_available", None)
-        if wsl_ok is None:
+        # Uses the cached startup OpenFOAM availability instead of calling
+        # OFConfig.validate() here — on Windows that launches wsl.exe and
+        # can block for minutes on a cold WSL2 boot, which used to freeze
+        # the whole UI the moment "Automatic" was selected.
+        openfoam_ok = getattr(self, "_openfoam_available", None)
+        if openfoam_ok is None:
             # Startup check still in flight: assume available; the async
             # WslCheckWorker path will surface the real state before any
             # meshing command actually runs.
-            wsl_ok = True
+            openfoam_ok = True
         try:
-            if wsl_ok:
+            if openfoam_ok:
                 return "cfmesh"
         except Exception as exc:
-            logger.debug("Automatic mesher: WSL check failed: %s", exc)
+            logger.debug("Automatic mesher: OpenFOAM check failed: %s", exc)
         try:
             from polyfoammesh.commercial.autopoly_bridge import create_mesher
             if create_mesher() is not None:
@@ -2128,7 +2160,10 @@ class MainWindow(QMainWindow):
         if mesher_type == "auto":
             mesher_type = self._resolve_auto_mesher()
             _friendly = {
-                "cfmesh": "Cartesian cfMesh (WSL2)",
+                "cfmesh": (
+                    "Cartesian cfMesh (WSL2)" if sys.platform == "win32"
+                    else "Cartesian cfMesh (OpenFOAM)"
+                ),
                 "autopoly": "Autopoly",
                 "gmsh_direct_poly": "Polymesh (our poly mesher)",
                 "gmsh_direct": "FEM Tetra (GMSH)",
@@ -2247,8 +2282,7 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         raw_candidates = [
             Path.home() / "cfmesh_cases",
-            Path("C:/cfmesh_cases"),
-            Path(str(Path(os.environ.get("TEMP", "C:\\temp"))).replace(" ", "_")) / "cfmesh_cases",
+            _space_free_cases_root(),
         ]
         candidates = [p for p in raw_candidates if " " not in str(p)]
         root = None
@@ -2298,15 +2332,21 @@ class MainWindow(QMainWindow):
         # doesn't work" reports were actually seeing). Run it on a
         # background QThread instead so the UI stays alive and the status
         # bar keeps showing feedback while WSL boots.
-        self._log.append_log(
-            f"{Tag.CASE} Checking OpenFOAM environment (WSL2)... "
-            "this can take a minute if WSL just started."
-        )
-        self._status.showMessage("Checking OpenFOAM environment (WSL2)...")
+        if sys.platform == "win32":
+            _of_env_log = (
+                f"{Tag.CASE} Checking OpenFOAM environment (WSL2)... "
+                "this can take a minute if WSL just started."
+            )
+            _of_env_status = "Checking OpenFOAM environment (WSL2)..."
+        else:
+            _of_env_log = f"{Tag.CASE} Checking OpenFOAM environment..."
+            _of_env_status = "Checking OpenFOAM environment..."
+        self._log.append_log(_of_env_log)
+        self._status.showMessage(_of_env_status)
         self._start_wsl_check(my_id)
 
     def _start_deferred_wsl_check(self) -> None:
-        """Deferred WSL check on startup — allows UI to render first."""
+        """Deferred OpenFOAM check on startup — allows UI to render first."""
         self._start_wsl_check(self._run_id)
 
     def _start_wsl_check(self, my_id: int) -> None:
@@ -2328,27 +2368,50 @@ class MainWindow(QMainWindow):
         )
 
     def _on_wsl_check_finished(self, of_available: bool) -> None:
-        self._wsl_available = of_available
+        # Value means "OpenFOAM available", native on Linux or via WSL2 on
+        # Windows (OFConfig.validate() is platform-correct since phase 1).
+        self._openfoam_available = of_available
         my_id = getattr(self, "_wsl_check_run_id", -1)
         if my_id not in (0, self._run_id):
-            logger.debug("Stale WSL-check callback ignored (got %d, current %d).", my_id, self._run_id)
+            logger.debug("Stale OpenFOAM-check callback ignored (got %d, current %d).", my_id, self._run_id)
             return
         if my_id == 0:
             # Deferred startup check — no message box
             if of_available:
-                logger.info("OpenFOAM v2512 detected via WSL2.")
-                self._status.showMessage("Ready — OpenFOAM v2512 via WSL2")
+                if sys.platform == "win32":
+                    logger.info("OpenFOAM v2512 detected via WSL2.")
+                    self._status.showMessage("Ready — OpenFOAM v2512 via WSL2")
+                else:
+                    logger.info("OpenFOAM v2512 detected natively.")
+                    self._status.showMessage("Ready — OpenFOAM v2512")
             else:
-                logger.warning("OpenFOAM not detected via WSL2.")
-                self._log.append_log(f"{Tag.WARN} OpenFOAM not detected via WSL.")
-                self._log.append_log(f"{Tag.WARN} Ensure WSL2 + OpenFOAM v2512 are installed.")
+                if sys.platform == "win32":
+                    logger.warning("OpenFOAM not detected via WSL2.")
+                    self._log.append_log(f"{Tag.WARN} OpenFOAM not detected via WSL.")
+                    self._log.append_log(f"{Tag.WARN} Ensure WSL2 + OpenFOAM v2512 are installed.")
+                else:
+                    logger.warning("OpenFOAM not detected.")
+                    self._log.append_log(
+                        f"{Tag.WARN} OpenFOAM not found (install OpenFOAM; "
+                        "on Windows it runs via WSL2)."
+                    )
                 self._status.showMessage("OpenFOAM not found — meshing disabled")
             return
         if not of_available:
+            if sys.platform == "win32":
+                _of_not_found = (
+                    "OpenFOAM v2512 not detected via WSL2.\n"
+                    "Install OpenFOAM v2512 in WSL2 Ubuntu and try again."
+                )
+            else:
+                _of_not_found = (
+                    "OpenFOAM v2512 not detected.\n"
+                    "Install OpenFOAM v2512 and ensure it is on PATH, "
+                    "then try again."
+                )
             QMessageBox.warning(
                 self, "OpenFOAM Not Found",
-                "OpenFOAM v2512 not detected via WSL2.\n"
-                "Install OpenFOAM v2512 in WSL2 Ubuntu and try again.",
+                _of_not_found,
             )
             self._params.set_all_enabled(True)
             return
@@ -2965,7 +3028,7 @@ class MainWindow(QMainWindow):
         from datetime import datetime as _dt
         _default_base = Path.home() / "cfmesh_cases" / ".gmsh_temp"
         if " " in str(_default_base):
-            _default_base = Path("C:/cfmesh_cases") / ".gmsh_temp"
+            _default_base = _space_free_cases_root() / ".gmsh_temp"
         base = self._case_dir or _default_base
         base.mkdir(parents=True, exist_ok=True)
         ts = _dt.now().strftime('%Y%m%d_%H%M%S')
@@ -3007,9 +3070,9 @@ class MainWindow(QMainWindow):
     def _resolve_case_root(self) -> Path:
         root = Path.home() / "cfmesh_cases"
         if " " in str(root):
-            root = Path("C:/cfmesh_cases")
-            if not _check_drive_writable("C:\\"):
-                root = Path(str(root).replace(" ", "_"))
+            # Home path contains spaces (OpenFOAM/cfMesh reject those):
+            # fall back to a platform-neutral, space-free temp tree.
+            root = _space_free_cases_root()
         return root
 
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
@@ -3040,7 +3103,11 @@ class MainWindow(QMainWindow):
                     f"Free RAM: {free_ram:.1f} GB (at least 5 GB required).\n\n"
                     "GMSH volume meshing would have stalled the system.\n"
                     "Close other applications, or reduce the memory "
-                    "reserved for WSL2 (.wslconfig file) and try again.",
+                    + (
+                        "reserved for WSL2 (.wslconfig file) and try again."
+                        if sys.platform == "win32"
+                        else "used by other processes and try again."
+                    ),
                 )
                 self._params.set_all_enabled(True)
                 return
@@ -3626,20 +3693,36 @@ class MainWindow(QMainWindow):
                 pass
 
     def _kill_wsl_processes(self) -> None:
-        """Best-effort kill of WSL2 mpirun/cartesianMesh processes.
-        Called on cancel to ensure no orphaned ranks continue running."""
+        """Best-effort kill of orphaned mpirun/cartesianMesh processes.
+
+        On Windows OpenFOAM runs inside WSL2, so the kill goes through
+        wsl.exe exactly as before. On POSIX the OpenFOAM tools run
+        natively in this same machine, so kill them directly (no wsl.exe
+        involved). Called on cancel to ensure no orphaned ranks continue
+        running.
+        """
+        import subprocess as _sp
+        # Same pkill patterns on both platforms (byte-identical payload on
+        # Windows).
+        _pkill = (
+            "pkill -9 -f cartesianMesh 2>/dev/null; "
+            "pkill -9 -f mpirun 2>/dev/null; "
+            "pkill -9 -f reconstructParMesh 2>/dev/null; true"
+        )
         try:
-            import subprocess as _sp
-            _sp.run(
-                ["wsl.exe", "-d", self._of_config.wsl_distro, "--",
-                 "bash", "-lc",
-                 "pkill -9 -f cartesianMesh 2>/dev/null; "
-                 "pkill -9 -f mpirun 2>/dev/null; "
-                 "pkill -9 -f reconstructParMesh 2>/dev/null; true"],
-                capture_output=True, text=True, timeout=10,
-            )
+            if sys.platform == "win32":
+                _sp.run(
+                    ["wsl.exe", "-d", self._of_config.wsl_distro, "--",
+                     "bash", "-lc", _pkill],
+                    capture_output=True, text=True, timeout=10,
+                )
+            else:
+                _sp.run(
+                    ["bash", "-lc", _pkill],
+                    capture_output=True, text=True, timeout=10,
+                )
         except Exception as exc:
-            logger.debug("WSL process kill skipped: %s", exc)
+            logger.debug("OpenFOAM process kill skipped: %s", exc)
 
     @Slot()
     @Slot(int)
@@ -5003,14 +5086,15 @@ class MainWindow(QMainWindow):
         from polyfoammesh.core.geometry import compute_bbox_dim
         detail = self._params.get_detail_level()
         # Auto-select algorithm via MeshEngine. Uses the cached startup
-        # WSL availability (never OFConfig.validate() — a cold WSL2 boot
-        # used to freeze the UI here for minutes).
-        has_wsl = getattr(self, "_wsl_available", True)
+        # OpenFOAM availability (never OFConfig.validate() — on Windows a
+        # cold WSL2 boot used to freeze the UI here for minutes).
+        openfoam_available = getattr(self, "_openfoam_available", True)
         n_wt = sum(1 for m in self._meshes if m.is_watertight)
         all_wt = n_wt == len(self._meshes)
         engine = MeshEngine()
         algo = engine.auto_select(
-            patch_count=len(self._meshes), watertight=all_wt, has_wsl=has_wsl,
+            patch_count=len(self._meshes), watertight=all_wt,
+            has_openfoam=openfoam_available,
         )
         self._log.append_log(f"[quick] Algorithm: {algo.value}")
         # Auto cell sizes via QuickMesh helper
@@ -5399,11 +5483,21 @@ class MainWindow(QMainWindow):
         import subprocess
         exe = self._resolve_paraview_exe()
         if exe is None:
+            if sys.platform == "win32":
+                _pv_not_found = (
+                    "ParaView executable not found in PATH or in the standard "
+                    "Program Files install location.\n"
+                    "Install ParaView and ensure 'paraview' is available."
+                )
+            else:
+                # Linux resolves ParaView via PATH only.
+                _pv_not_found = (
+                    "ParaView executable not found in PATH.\n"
+                    "Install ParaView and ensure 'paraview' is on your PATH."
+                )
             QMessageBox.warning(
                 self, "ParaView Not Found",
-                "ParaView executable not found in PATH or in the standard "
-                "Program Files install location.\n"
-                "Install ParaView and ensure 'paraview' is available.",
+                _pv_not_found,
             )
             return
         # ParaView's OpenFOAM reader is keyed off a "<name>.foam" marker

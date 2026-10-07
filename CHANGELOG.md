@@ -38,6 +38,12 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   "Linux (from source)" in INSTALL.md/.it.md. Comportamento Windows
   verificato **byte-identico** (18/18 controlli su comandi e script
   generati).
+- **Supporto Linux (fase 2 - GUI)**: il gate di disponibilità ora è
+  "OpenFOAM disponibile (nativo o WSL)" (non più solo WSL), il probe RAM
+  usa la RAM dell'host anche su Linux, il case root non dipende più da
+  `C:\`, il kill processi è nativo su POSIX, e tutti i messaggi/dialoghi
+  WSL-only (OOM, memoria GMSH, ParaView, "WSL not found") sono
+  condizionali per piattaforma — su Windows **byte-identici**.
 
 ### Corretto
 

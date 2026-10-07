@@ -288,8 +288,19 @@ class MeshEngine:
         watertight: bool = True,
         solver: str = "",
         has_wsl: bool = True,
+        *,
+        has_openfoam: bool | None = None,
     ) -> MeshingAlgorithm:
-        """Auto-select the best algorithm based on geometry and context."""
+        """Auto-select the best algorithm based on geometry and context.
+
+        ``has_wsl`` is kept for backward compatibility — it now means
+        "OpenFOAM is available", native or via WSL2 (OFConfig.validate()
+        is platform-correct since the Linux phase 1 change). The clearer
+        keyword-only alias ``has_openfoam`` is preferred for new callers;
+        when both are supplied, ``has_openfoam`` wins.
+        """
+        if has_openfoam is not None:
+            has_wsl = has_openfoam
         if not has_wsl:
             return MeshingAlgorithm.TETRAHEDRAL
 

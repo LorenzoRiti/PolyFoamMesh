@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -399,10 +400,11 @@ def _find_internal_vtu(case_dir: Path, vtk_subdir: str = "VTK_view") -> list[Pat
 def _poly_dir_state(poly_dir: Path, max_retries: int = 3, delay_ms: int = 500) -> float | None:
     """Check that all required polyMesh files exist and return newest mtime.
 
-    Never sleeps on the calling thread: callers that need the WSL2 9P
-    sync-delay retry (files written by cartesianMesh inside WSL may not be
-    visible from Windows for a few hundred ms) schedule their own retries
-    via QTimer â€” this function is a single non-blocking check.
+    Never sleeps on the calling thread: callers that need the sync-delay
+    retry (on Windows, files written by cartesianMesh inside WSL may not
+    be visible from Windows for a few hundred ms; on Linux the write may
+    simply not have landed yet) schedule their own retries via QTimer â€”
+    this function is a single non-blocking check.
     """
     files = ("points", "faces", "boundary")
     mtimes: list[float] = []
@@ -486,7 +488,7 @@ def build_internal_volume_vtu(case_dir: Path) -> Path | None:
     them fine, so foamToVTK -> PyVista is the reliable path here.
 
     Cached under <case_dir>/VTK_view, regenerated only when polyMesh changed.
-    Runs in a background task (the WSL2 call takes 30-60s).
+    Runs in a background task (the foamToVTK call takes 30-60s).
     """
     case_dir = Path(case_dir)
     poly_dir = case_dir / "constant" / "polyMesh"
@@ -571,10 +573,17 @@ def read_openfoam_mesh_patches(case_dir: Path | str) -> dict[str, pv.PolyData] |
     poly_dir = case_dir / "constant" / "polyMesh"
     state = _poly_dir_state(poly_dir)
     if state is None:
+        # Windows: files are written inside WSL2 and may lag on the 9P
+        # filesystem. Linux: cartesianMesh runs natively, so a delay here
+        # just means the write hasn't landed yet. Windows wording kept
+        # byte-identical.
+        _sync_note = (
+            "files may not have synced from WSL2 yet"
+            if sys.platform == "win32" else "files may not have synced yet"
+        )
         logger.warning(
-            "read_openfoam_mesh_patches: polyMesh state is None for %s "
-            "(files may not have synced from WSL2 yet)",
-            poly_dir,
+            "read_openfoam_mesh_patches: polyMesh state is None for %s (%s)",
+            poly_dir, _sync_note,
         )
         return None
     cache_key = (str(case_dir), state)
@@ -1773,8 +1782,9 @@ class ViewerWidget(QWidget):
     def _do_step_vtu(self, on_vtu_ready: callable) -> None:
         """Check VTU cache; if stale/missing, start QProcess, else callback immediately.
 
-        If polyMesh files aren't visible yet (WSL2 9P sync delay), retries
-        with increasing delay up to 30s before giving up.
+        If polyMesh files aren't visible yet (Windows WSL2 9P sync delay,
+        or a native write that hasn't landed yet), retries with increasing
+        delay up to 30s before giving up.
         """
         if self._plotter is None or not self._mesh_case_dir:
             return
