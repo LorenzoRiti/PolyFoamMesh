@@ -16,6 +16,7 @@ import trimesh  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from polyfoammesh.core.geometry import validate_cell_sizes  # noqa: E402
+from polyfoammesh.gui import params_panel as _pp  # noqa: E402
 from polyfoammesh.gui.params_panel import ParamsPanel  # noqa: E402
 
 
@@ -104,3 +105,29 @@ def test_adaptive_sizing_off_makes_cell_sizes_editable(panel):
     panel._adaptive_sizing_check.setChecked(True)
     assert panel._max_cell.isReadOnly()
     assert panel._min_cell.isReadOnly()
+
+
+def test_mesher_wording_windows_keeps_wsl(monkeypatch):
+    """Windows OpenFOAM runs in WSL2: the historical WSL wording must stay
+    byte-identical (a regression here is user-visible)."""
+    monkeypatch.setattr(_pp.sys, "platform", "win32")
+    w = _pp._platform_mesher_wording()
+    assert w["of_req"] == "requires WSL2"
+    assert w["of_via"] == "WSL2/OpenFOAM"
+    assert w["no_of_label"] == "no-WSL"
+    assert w["no_of_sentence"] == "No WSL required."
+    assert w["no_of_sentence_l"] == "no WSL required."
+    assert w["mem_ctx"] == (
+        "inside WSL2 (which caps its own memory well below the host's)"
+    )
+
+
+def test_mesher_wording_linux_is_native(monkeypatch):
+    """Linux resolves OpenFOAM natively via PATH — no WSL string may leak."""
+    monkeypatch.setattr(_pp.sys, "platform", "linux")
+    w = _pp._platform_mesher_wording()
+    assert w["of_req"] == "requires OpenFOAM on PATH"
+    assert w["of_via"] == "OpenFOAM"
+    assert w["no_of_label"] == "no OpenFOAM"
+    assert w["no_of_sentence"] == "No OpenFOAM required."
+    assert "WSL" not in " ".join(w.values())

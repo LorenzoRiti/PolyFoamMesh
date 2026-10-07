@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
 import trimesh  # ✅ F-017
 from PySide6.QtCore import Qt, Signal
@@ -62,6 +63,27 @@ _MESHER_BTN_ON = (
     f"}}"
     f"QPushButton:hover {{ background:{ORANGE_600}; }}"
 )
+
+
+def _platform_mesher_wording() -> dict[str, str]:
+    """Platform-conditional WSL/OpenFOAM user wording.
+
+    On Windows OpenFOAM runs in WSL2; on Linux it is native and resolved
+    via PATH. The Windows strings are kept byte-identical to the
+    historical WSL wording (the full fast suite asserts on them).
+    """
+    on_win = sys.platform == "win32"
+    return {
+        "of_req": "requires WSL2" if on_win else "requires OpenFOAM on PATH",
+        "of_via": "WSL2/OpenFOAM" if on_win else "OpenFOAM",
+        "no_of_label": "no-WSL" if on_win else "no OpenFOAM",
+        "no_of_sentence": "No WSL required." if on_win else "No OpenFOAM required.",
+        "no_of_sentence_l": "no WSL required." if on_win else "no OpenFOAM required.",
+        "mem_ctx": (
+            "inside WSL2 (which caps its own memory well below the host's)"
+            if on_win else "on this machine"
+        ),
+    }
 
 
 class ParamChangeCommand(QUndoCommand):
@@ -491,11 +513,16 @@ class ParamsPanel(QWidget):
                 btn.setChecked(True)
             return btn
 
+        # Platform-conditional WSL/OpenFOAM wording (see helper): on
+        # Windows OpenFOAM runs in WSL2; on Linux it is native and
+        # resolved via PATH. Windows text kept byte-identical.
+        _w = _platform_mesher_wording()
+
         _add_mesher_btn(
-            "Cartesian cfMesh  (requires WSL2)",
+            f"Cartesian cfMesh  ({_w['of_req']})",
             "cfmesh",
-            "cartesianMesh via WSL2/OpenFOAM — hex-dominant, the highest "
-            "quality. REQUIRES WSL2/OpenFOAM installed.\n"
+            f"cartesianMesh via {_w['of_via']} — hex-dominant, the highest "
+            f"quality. REQUIRES {_w['of_via']} installed.\n"
             "Optional: enable 'Convert to polyhedral mesh' (Advanced) to\n"
             "convert the hex-dominant mesh to polyhedral (polyDualMesh).\n"
             "The dual of a cartesian mesh stays very regular/grid-like\n"
@@ -503,18 +530,18 @@ class ParamsPanel(QWidget):
             checked=True,
         )
         _add_mesher_btn(
-            "Polymesh  (poly, no-WSL)",
+            f"Polymesh  (poly, {_w['no_of_label']})",
             "gmsh_direct_poly",
             "Polyhedral mesh from our Polymesh mesher: barycentric-dual\n"
             "rebuild — 100% polyhedral coverage, ~5.5x lower cell count\n"
-            "(STAR-CCM+ style). Ideal for CFD. No WSL required.\n"
+            f"(STAR-CCM+ style). Ideal for CFD. {_w['no_of_sentence']}\n"
             "Works best with real STEP/CAD input.",
             checked=False,
         )
         _add_mesher_btn(
-            "FEM Tetra  (GMSH, no-WSL)",
+            f"FEM Tetra  (GMSH, {_w['no_of_label']})",
             "gmsh_direct",
-            "Pure GMSH tetrahedral mesh, no WSL required.\n"
+            f"Pure GMSH tetrahedral mesh, {_w['no_of_sentence_l']}\n"
             "For native tet FEM solvers. No polyhedral conversion.",
         )
         mesh_layout.addWidget(mesher_group)
@@ -756,6 +783,8 @@ class ParamsPanel(QWidget):
 
         parallel_row = QHBoxLayout()
         self._parallel_check = QCheckBox("Parallel meshing (multi-core)")
+        # Windows: WSL2 caps its own memory below the host's. Linux: the
+        # machine's own RAM is the constraint. Windows text byte-identical.
         self._parallel_check.setToolTip(
             "Runs cartesianMesh across multiple CPU cores via MPI "
             "(cartesianMesh -parallel) and reconstructs the result. "
@@ -763,8 +792,7 @@ class ParamsPanel(QWidget):
             "decompose/reconstruct overhead can outweigh the benefit on "
             "small meshes.\n\n"
             "Each core loads a full copy of the geometry, so memory use "
-            "scales with the core count — inside WSL2 (which caps its own "
-            "memory well below the host's) too many cores on a large "
+            f"scales with the core count — {_w['mem_ctx']} too many cores on a large "
             "geometry can exhaust that memory and hang rather than speed "
             "things up. Start low and increase only if it works reliably."
         )
@@ -777,7 +805,8 @@ class ParamsPanel(QWidget):
         self._parallel_cores.setRange(2, max(2, cpu_n))
         # Half the cores, not "all but one": each rank redundantly loads
         # the full geometry, so memory (not just CPU) scales with core
-        # count, and WSL2's own memory cap is the usual real constraint.
+        # count, and the available-memory cap (WSL2's on Windows) is the
+        # usual real constraint.
         self._parallel_cores.setValue(max(2, min(4, cpu_n // 2)))
         self._parallel_cores.setSuffix(" cores")
         self._parallel_cores.setEnabled(False)

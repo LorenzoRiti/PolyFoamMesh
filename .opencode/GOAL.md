@@ -712,3 +712,23 @@ Test: 9 nuovi (test_blade_patch_roles_and_coupling.py), suite fast
 1329 passed. RIMANE PROGRAMMATO: fix algoritmico del terminator (step
 interno), e i difetti di orientamento/skew del converter su questa
 geometria.
+
+## Avanzamento 2026-10-07 (notte) - Linux fase 2 (GUI)
+
+- main_window: _free_ram_gb delega a hardware_budget (niente ctypes.windll);
+  _wsl_available -> _openfoam_available (gate "OpenFOAM nativo o WSL",
+  tutti gli usi aggiornati); alias keyword-only has_openfoam= in
+  MeshEngine.auto_select (has_wsl= resta per compatibilita'); fallback
+  case root platform-neutral (Path.home()/cfmesh_cases, tempfile) e
+  _check_drive_writable rimosso; _kill_wsl_processes nativo su POSIX
+  (wsl.exe invariato su Windows); dialoghi OOM/GMSH/ParaView/not-found
+  condizionali per piattaforma (testi Windows byte-identici).
+- params_panel: _platform_mesher_wording() per le card mesher (Linux:
+  "requires OpenFOAM on PATH"); viewer_widget: stringhe di sync/log
+  platform-neutral.
+- Test: +12 (alias auto_select, wording, case root, kill POSIX/Windows,
+  memory advice, dialoghi) -> suite fast 1321 passed; smoke offscreen
+  MainWindow OK; ruff pulito.
+Resta: fase 3 packaging (AppImage/tarball build in CI) e la verifica
+Linux vera in CI; decisione aperta col utente sul fix algoritmico del
+terminator BL (caso paletta).

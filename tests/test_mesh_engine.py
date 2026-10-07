@@ -156,6 +156,32 @@ def test_auto_select_many_patches():
     assert algo == MeshingAlgorithm.TETRAHEDRAL
 
 
+def test_auto_select_has_openfoam_alias_disables_cfmesh():
+    """``has_openfoam`` is the clearer, keyword-only alias for has_wsl
+    (the value now means "OpenFOAM available", native on Linux or via
+    WSL2 on Windows)."""
+    me = MeshEngine()
+    assert me.auto_select(has_openfoam=False) == MeshingAlgorithm.TETRAHEDRAL
+
+
+def test_auto_select_has_openfoam_alias_wins_over_legacy():
+    """When both are given, the new alias must win — otherwise a stale
+    has_wsl=False could force a tet mesh even though OpenFOAM is there."""
+    me = MeshEngine()
+    assert (
+        me.auto_select(has_wsl=False, has_openfoam=True)
+        != MeshingAlgorithm.TETRAHEDRAL
+    )
+
+
+def test_auto_select_legacy_has_wsl_still_works():
+    """Back-compat: existing has_wsl= callers keep the same behaviour."""
+    me = MeshEngine()
+    algo = me.auto_select(watertight=True, has_wsl=True)
+    assert algo in (MeshingAlgorithm.CARTESIAN_HEX, MeshingAlgorithm.HEX_CORE_POLY)
+    assert me.auto_select(has_wsl=False) == MeshingAlgorithm.TETRAHEDRAL
+
+
 def test_run_no_case():
     me = MeshEngine()
     # On POSIX there is no 'Z:' drive; use an absolute path that cannot be
@@ -586,6 +612,9 @@ if __name__ == "__main__":
     test_auto_select_not_watertight()
     test_auto_select_cht_solver()
     test_auto_select_many_patches()
+    test_auto_select_has_openfoam_alias_disables_cfmesh()
+    test_auto_select_has_openfoam_alias_wins_over_legacy()
+    test_auto_select_legacy_has_wsl_still_works()
     test_run_no_case()
     test_params_cell_size_validation()
     test_adaptive_escalation_enabled_by_default()
