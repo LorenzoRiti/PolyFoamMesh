@@ -68,15 +68,25 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   ~20M cells. It is a target, not a guarantee - the real size depends on the
   geometry; the label under the slider shows the geometric estimate and the
   cap.
+- **Automatic refinement (curvature, edges, narrow gaps)**: when on, the
+  mesh follows the CAD geometry (exact curvature, sharp edges, narrow
+  passages) within the cell budget.
+  - **Surface resolution** (Coarse / Medium / Fine / Very fine): how
+    tightly the mesh follows curved surfaces, independent of the budget.
+    Medium is the historical default.
 - **Mesher choice**:
   - **Quick Mesh** (`Ctrl+M`): one click, parameters auto-suggested.
   - **CFD Poly (GMSH, no WSL)**: GMSH tetrahedra -> polyhedral dual
     (STAR-CCM+ style topology) with optional boundary layers. No WSL needed.
   - **FEM Tetra (GMSH, no WSL)**: pure tetrahedral mesh for FEM solvers.
-  - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh in WSL2 -
-    requires OpenFOAM installed (see [INSTALL.md](INSTALL.md)).
+  - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
+    requires OpenFOAM (WSL2 on Windows, native on Linux; see
+    [INSTALL.md](INSTALL.md)).
 - **Generate Mesh** (`Ctrl+R`): starts the run; the same button becomes
   **Cancel** while running.
+- If the actual cell count deviates a lot from the budget, the app
+  performs ONE automatic size correction (logged as
+  `[gmsh] budget correction: ...`) before giving the mesh.
 
 ### 3. Advanced tab
 
@@ -92,8 +102,30 @@ Manual control for when Quick Mesh is not enough:
   - The **level** spin box (1-6) applies to the selected zone; the list shows
     each zone as `Box 1 - level 2 - 12.0 mm`.
 - **Boundary Layer** (see the dedicated section below): enable, patches,
-  layers, growth, y+ calculator, robust mode.
+  layers, growth, y+ calculator, robust mode, and the mesh/BL consistency
+  hint with the **Fit BL to mesh** button.
 - **Per-face sizing** and **multi-region** options for CHT/FSI cases.
+
+## Patches
+
+Patch names and types drive boundary layers and the exported case, so the
+app treats them as first-class:
+
+- **On import** (STEP or STL) a "Patch splitting" dialog asks for the
+  **Feature angle** (5-179 deg): faces joined by a smaller dihedral angle
+  are merged into one patch (BaramMesh-style). For STEP files you can also
+  keep the CAD face names when available; otherwise the surface is split
+  into `surface_1...N`. The last used angle is remembered.
+- **The patch panel** (left dock, bottom) lists every patch with name,
+  face count and **type** - for unnamed `surface_N` meshes the type is
+  inferred from the geometry (inlet/outlet/wall) so the boundary layer
+  never extrudes from an inlet.
+- **Names are editable**: double-click a Name cell. On CAD this renames
+  the patch for the whole pipeline; **after meshing** the rename is
+  written into `constant/polyMesh/boundary` (a `boundary.bak` backup is
+  kept the first time).
+- Selecting a row highlights the patch in the 3D view; clicking a patch
+  in the viewer (Select Patch) selects its row.
 
 ### 4. Quality
 
@@ -154,6 +186,14 @@ Boundary layers are inserted by the poly mesher (CFD Poly path). In the
 - **Robust boundary layer (recommended)**: drops sliver base faces and lets
   the engine cap the stack to what the mesh can actually hold. Use it for
   real parts.
+- **Mesh/BL consistency hint**: the panel compares the requested stack
+  with the wall cell size the current mesh will produce and tells you if
+  it fits or gets compressed. **Fit BL to mesh** adapts the first layer
+  (and layer count) to the mesh so the stack is hosted without heavy
+  compression - it reports the resulting y+ shift. When boundary layers
+  are enabled, the mesher also enforces a minimum wall cell size (the
+  stack divided by 3, capped at 10% of the model size), logged as
+  `[gmsh] BL wall size floor: ...`.
 
 What the log tells you after a run (always read these lines):
 
@@ -222,6 +262,13 @@ contrast is checked automatically in CI-style tests.
   tried its fallbacks. Coarser surface cells or a smaller first layer fix it.
 - **`checkMesh` failed**: open the quality panel, look at the highlighted
   cells, and let the auto-fix run, or relax local refinement.
+- **No boundary layer on a complex part**: if the log reports that the BL
+  build was refused (boundary not manifold), the app kept the dual-only
+  mesh on purpose - a known limitation on some real geometries, with the
+  fix scheduled; see [residual_risks.md](residual_risks.md).
+- **Linux**: install from source or from the release tarball - see the
+  "Linux" section of [INSTALL.md](INSTALL.md); OpenFOAM must be on PATH
+  (cfMesh/checkMesh/foamToVTK features).
 - **Cartesian/cfMesh paths unavailable**: WSL2 + OpenFOAM are required only
   for that mesher; the GMSH-based paths work standalone.
 - **Viewer looks empty after meshing**: press the display combo (try
