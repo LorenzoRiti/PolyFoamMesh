@@ -34,7 +34,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
-    QSizePolicy,
     QSplitter,
     QToolBar,
     QToolButton,
@@ -90,7 +89,7 @@ from polyfoammesh.gui.log_tags import Tag
 from polyfoammesh.gui.params_panel import ParamsPanel
 from polyfoammesh.gui.quality_panel import QualityPanel
 from polyfoammesh.gui.settings_migration import AppSettings
-from polyfoammesh.gui.style import COLOR_DANGER, COLOR_TEXT_DISABLED
+from polyfoammesh.gui.style import COLOR_TEXT_DISABLED
 from polyfoammesh.gui.task_runner import FunctionWorker, TaskManager
 from polyfoammesh.gui.viewer_widget import ViewerWidget
 from polyfoammesh.octopoda_local import octo
@@ -198,6 +197,11 @@ class MainWindow(QMainWindow):
 
         self._params.unit_changed.connect(self._on_unit_changed)
         self._params.cancel_meshing.connect(self._on_cancel_meshing)
+        # Cancel moved from the ribbon to the Mesh tab, directly under
+        # "Reset All" (user request). The widget is built by the params
+        # panel; every show/hide call site keeps using this registry entry,
+        # so the visibility logic is unchanged.
+        self._ribbon_btns["cancel"] = self._params.cancel_button()
         self._params.suggestion_completed.connect(
             lambda msg: self._log.append_log(msg)
         )
@@ -410,39 +414,10 @@ class MainWindow(QMainWindow):
             "flow is under-resolved (velocity-gradient based), and re-meshes "
             "finer there automatically — no manual refinement zones needed."
         )
-        # The Mesh tab's "Generate Mesh" button already turns into "Cancel"
-        # while a run is active, but that button lives on one specific tab
-        # — if meshing was started from the ribbon's Quick Mesh while
-        # looking at a different tab, there was no visible way to stop it.
-        # This mirrors that same cancel action in the ribbon itself, always
-        # reachable regardless of which tab is showing.
-        # The prominent "Full Auto" call-to-action used to anchor the right
-        # end of the ribbon. With it gone, a pair of expanding spacers keeps
-        # the bar looking intentional: the Cancel control (shown only while
-        # a run is active) sits centred between the action group and the
-        # settings group instead of floating next to Quick/Adaptive.
-        _cancel_spacer_left = QWidget()
-        _cancel_spacer_left.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred
-        )
-        ribbon.addWidget(_cancel_spacer_left)
-        self._ribbon_btns["cancel"] = _make_ribbon_btn(
-            "Cancel", "cancel", self._on_cancel_meshing, checkable=False,
-        )
-        cancel_btn = self._ribbon_btns["cancel"]
-        cancel_btn.setAutoExclusive(False)
-        cancel_btn.setToolTip("Stop the meshing run in progress.")
-        cancel_btn.setVisible(False)
-        cancel_btn.setStyleSheet(
-            f"QToolButton {{ background:{COLOR_DANGER}; color:white; "
-            f"border:1px solid {COLOR_DANGER}; border-radius:4px; padding:4px 16px; "
-            "font-weight:700; }"
-        )
-        _cancel_spacer_right = QWidget()
-        _cancel_spacer_right.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred
-        )
-        ribbon.addWidget(_cancel_spacer_right)
+        # Cancel is NOT in the ribbon any more: it lives in the Mesh tab,
+        # directly under "Reset All" (see the _params.cancel_button()
+        # binding in __init__). The ribbon used to carry a centred Cancel
+        # with expanding spacers; both are gone with the move.
         ribbon.addSeparator()
         # Simple by default (just cell sizes + Generate Mesh); toggling
         # this reveals boundary layers, mesher choice, and the
