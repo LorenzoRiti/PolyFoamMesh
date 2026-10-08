@@ -1860,14 +1860,19 @@ class ParamsPanel(QWidget):
 
     def set_meshing_state(self, running: bool):
         if running:
-            self._btn_run.setText("Cancel")
-            self._btn_run.setStyleSheet(f"background-color:{COLOR_DANGER};color:white")
-            self._btn_run.setEnabled(True)
+            # The run button keeps its identity: the dedicated Cancel button
+            # below "Reset All" is the single stop control now.  Relabelling
+            # this one "Cancel" too (legacy from when no dedicated button
+            # existed) showed TWO red Cancel buttons during a run.
+            self._btn_run.setText("Generate Mesh")
+            self._btn_run.setStyleSheet("")
+            self._btn_run.setEnabled(False)
             self._btn_reset.setEnabled(False)
             self._meshing_state = True
         else:
             self._btn_run.setText("Generate Mesh")
             self._btn_run.setStyleSheet("")
+            self._btn_run.setEnabled(True)
             self._btn_reset.setEnabled(True)
             self._meshing_state = False
 
