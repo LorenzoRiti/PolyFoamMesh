@@ -208,6 +208,102 @@ def test_consume_env_default_off():
         os.environ.pop("POLYFOAMMESH_BL_CONSUME")
 
 
+# ---------------------------------------------------------------------------
+# T4b: sliver-aware guard
+# ---------------------------------------------------------------------------
+
+def test_stack_depths_matches_geometric_series():
+    """The shared cumulative-height helper (used by both the budget and the
+    sliver threshold) is the exact geometric series ``h1*(r^k-1)/(r-1)``, and
+    uniform when growth == 1."""
+    assert np.allclose(
+        bl_poly._stack_depths(4, 0.05, 1.2),
+        [0.05, 0.11, 0.182, 0.2684],
+    )
+    assert np.allclose(bl_poly._stack_depths(3, 0.1, 1.0), [0.1, 0.2, 0.3])
+    assert bl_poly._stack_depths(1, 0.007, 1.2)[0] == pytest.approx(0.007)
+
+
+def test_consume_cell_min_edge_is_smallest_incident_face_edge():
+    """``_consume_cell_min_edge`` must equal an independently computed
+    min-over-incident-face-edges for every candidate cell."""
+    case = _build_layered_dual(WORK_ROOT / "sliver_minedge")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, patches, n_int, sel = _pre(eng, case)
+    pts = np.asarray(points)
+    n_cells = int(max(owner.max(), neighbour.max())) + 1
+    cells = list(range(min(60, n_cells)))
+    got = eng._consume_cell_min_edge(
+        pts, faces, owner, neighbour, n_int, cells,
+    )
+    for c in cells:
+        edges = []
+        for fi, f in enumerate(faces):
+            hit = int(owner[fi]) == c or (
+                fi < n_int and int(neighbour[fi]) == c
+            )
+            if not hit:
+                continue
+            k = len(f)
+            for i in range(k):
+                edges.append(
+                    float(np.linalg.norm(pts[f[i]] - pts[f[(i + 1) % k]]))
+                )
+        assert got[c] == pytest.approx(min(edges), rel=1e-12)
+
+
+def test_sliver_guard_pins_cells_and_falls_back_without_touching_healthy_cells(
+    monkeypatch,
+):
+    """With the threshold forced to flag every walked cell, the guard must
+    (a) pin interior vertices of sliver cells (zero reflow displacement) and
+    (b) flag the wall vertices whose support touches a sliver; with the
+    default threshold the graded dual has no slivers, so nothing is pinned."""
+    case = _build_layered_dual(WORK_ROOT / "sliver_pin")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, patches, n_int, sel = _pre(eng, case)
+
+    def _pre_at(target_depth):
+        return eng._build_precompute(
+            points, faces, owner, neighbour, patches, n_int, sel,
+            frozenset(), consume=True, target_depth=target_depth,
+        )
+
+    # default threshold: no sliver cells on this healthy graded dual.
+    pre_ok = _pre_at(0.30)
+    assert pre_ok["support_sliver"], "support_sliver must be populated"
+    assert not any(pre_ok["support_sliver"].values())
+    n_pin_ok = int((~pre_ok["consume_free"]).sum())
+
+    # flag everything: every walked cell becomes a sliver, so interior pin
+    # vertices appear and every wall vertex falls back.
+    monkeypatch.setattr(bl_poly, "_CONSUME_SLIVER_FRAC", 1e9)
+    pre_sliver = _pre_at(0.30)
+    assert any(pre_sliver["support_sliver"].values())
+    n_pin_sliver = int((~pre_sliver["consume_free"]).sum())
+    assert n_pin_sliver > n_pin_ok, "sliver vertices must be pinned"
+    # the reflow must leave every pinned vertex exactly where it was
+    hw = {w: 1e-3 for w in pre_sliver["wall_verts"]}
+    disp = eng._consume_reflow(pre_sliver, hw)
+    pinned = np.flatnonzero(~pre_sliver["consume_free"])
+    assert np.allclose(disp[pinned], 0.0)
+
+
+def test_sliver_guard_no_target_depth_is_a_noop(monkeypatch):
+    """target_depth == 0 (direct ``_build`` callers / tests) disables the
+    sliver detection: no cell is flagged, so the guard cannot change a build
+    whose threshold was never supplied."""
+    case = _build_layered_dual(WORK_ROOT / "sliver_notarget")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, patches, n_int, sel = _pre(eng, case)
+    monkeypatch.setattr(bl_poly, "_CONSUME_SLIVER_FRAC", 1e9)
+    pre = eng._build_precompute(
+        points, faces, owner, neighbour, patches, n_int, sel,
+        frozenset(), consume=True, target_depth=0.0,
+    )
+    assert not any(pre["support_sliver"].values())
+
+
 def test_gate_off_mesh_is_byte_identical_to_no_consume_path():
     """With the env unset the written mesh must equal the mesh written with
     the consume plumbing present but disabled (precompute/consume=False)."""

@@ -142,6 +142,50 @@ _CONSUME_MAX_LAYERS = 40
 #: by the interior compression, which checkMesh still accepts.
 _CONSUME_DIRICHLET = 1.3
 
+#: Sliver guard for the consuming reflow (T4b).  A dual cell is a SLIVER when
+#: its smallest face edge is below this fraction of the requested full stack
+#: depth.  Such cells are the ones the harmonic reflow inverts on the venturi:
+#: the harmonic extension of the wall displacement moves a vertex across the
+#: cell because the cell is nearly flat, not because the per-edge Lipschitz
+#: guard is wrong.
+#:
+#: The value is MEASURED, not guessed.  On the venturi dual (h_total =
+#: 6.206 mm) all 17 core cells the reflow inverted have min_edge in
+#: 1.08e-4..3.57e-4 m = 0.017..0.058 * h_total.  The plan's literal
+#: "min_edge < 0.5 * target_depth" flags 62% of the venturi and 73% of the
+#: TUBE cells (tube min-edge median 2.4 mm) and would pin healthy tube cells,
+#: destroying the accepted 6-layer tube build.  0.1 flags 0 cells on the tube
+#: and 193 (0.89%) on the venturi, all 17 inverted ones included, so it is the
+#: tightest threshold that is both safe and sufficient.  Pinned cells keep
+#: their original (positive) geometry; wall vertices whose support walk
+#: cross a pinned sliver fall back to the current single-cell budget.
+#: Measured outcome (this build): the guard pins the slivers and the engine
+#: reaches a ``_validate``-clean build, but on the venturi REAL checkMesh still
+#: fails (non-ortho 165.4, aspect 1818.8, 251 face pyramids) - the dominant
+#: inversions are PRISM cells, not the core slivers, so the gate stays OFF.
+_CONSUME_SLIVER_FRAC = 0.1
+
+
+def _stack_depths(n_layers: int, h1: float, growth: float) -> np.ndarray:
+    """Cumulative layer heights ``H_k = h1 * (r^k - 1)/(r - 1)``.
+
+    ``growth <= 1`` means uniform layers.  Shared by ``_build`` and the
+    requested-depth computation that drives the sliver guard, so both use the
+    exact same arithmetic and a test cannot drift between them.
+    """
+    cum = np.empty(int(n_layers), dtype=np.float64)
+    if growth > 1.0:
+        h = h1
+        acc = 0.0
+        for k in range(int(n_layers)):
+            acc += h
+            cum[k] = acc
+            h *= growth
+    else:
+        for k in range(int(n_layers)):
+            cum[k] = h1 * (k + 1)
+    return cum
+
 
 def _consume_enabled() -> bool:
     """Opt-in gate for the "core reflow" multi-layer consumption.
@@ -1367,6 +1411,9 @@ class PolyBoundaryLayerEngine:
             concavity_criterion=concavity_criterion, normal_method=normal_method,
             edge_cap_percentile=edge_cap_percentile, thin_bnd=thin_bnd,
             consume=consume,
+            target_depth=float(
+                _stack_depths(res.n_layers, res.first_height, growth)[-1]
+            ),
         )
         self._stage_pre_s += time.perf_counter() - _t_pre
         for k, v in pre.get("dual_stats", {}).items():
@@ -2155,8 +2202,13 @@ class PolyBoundaryLayerEngine:
         the depth to the far side of the wall-adjacent dual cell (which is
         ``>= support_d``, the distance to its nearest interior vertex); each
         following entry is the depth to the far side of the next cell along
-        the normal.  Returns ``{w: [(cum_depth, cell_layer), ...]}``,
-        monotone increasing, at most ``_CONSUME_MAX_LAYERS`` entries.
+        the normal.  Returns ``({w: [(cum_depth, cell_layer), ...]},
+        {w: [cell_id, ...]})`` where the second dict lists, in walk order, the
+        dual cells whose far face produced each entry (so ``cells[w][i]`` is
+        the cell behind ``out[w][i]``).  Both are monotone increasing, at most
+        ``_CONSUME_MAX_LAYERS`` entries.  The cell list is what the T4b sliver
+        guard uses to decide whether a wall vertex's stack has to cross a
+        pinned sliver cell.
 
         This is the geometry the reflow needs and cannot get from
         ``support_d``: the latter only measures the FIRST cell's interior
@@ -2179,6 +2231,7 @@ class PolyBoundaryLayerEngine:
         for fi in range(n_int, len(faces)):
             cell_links[int(ow[fi])].append((fi, -1))
         out: dict[int, list[tuple[float, int]]] = {}
+        cells_of: dict[int, list[int]] = {}
         for w in wall_verts:
             _gil_yield(w & 0xFFFF, 64)
             din = -np.asarray(normals[w], dtype=np.float64)
@@ -2187,10 +2240,12 @@ class PolyBoundaryLayerEngine:
             for fi in wall_face_of.get(w, ()):
                 starts.add(int(ow[fi]))
             best: list[tuple[float, int]] = []
+            best_cells: list[int] = []
             for c0 in starts:
                 cell = c0
                 visited: set[int] = set()
                 entries: list[tuple[float, int]] = []
+                walked: list[int] = []
                 prev = -1.0
                 for layer in range(_CONSUME_MAX_LAYERS):
                     if cell in visited:
@@ -2213,14 +2268,17 @@ class PolyBoundaryLayerEngine:
                     if depth <= prev + 1e-12:
                         break
                     entries.append((depth, layer))
+                    walked.append(cell)
                     prev = depth
                     if best_nb < 0:
                         break
                     cell = best_nb
                 if len(entries) > len(best):
                     best = entries
+                    best_cells = walked
             out[w] = [(float(d), int(k)) for d, k in best]
-        return out
+            cells_of[w] = best_cells
+        return out, cells_of
 
     @staticmethod
     def _consume_graph(pts, faces):
@@ -2248,6 +2306,36 @@ class PolyBoundaryLayerEngine:
         dst2 = np.concatenate([dst_a, src_a])
         elen2 = np.concatenate([elen_a, elen_a])
         return src2, dst2, elen2
+
+    @staticmethod
+    def _consume_cell_min_edge(pts, faces, owner, neighbour, n_int, cells):
+        """Smallest face edge per dual cell, restricted to ``cells``.
+
+        One O(F) scan of the faces; only faces incident to a candidate cell
+        are measured.  This is the T4b sliver detector's input: a cell whose
+        smallest edge is tiny relative to the requested stack is nearly flat
+        and the harmonic reflow can move a vertex through it.  ``neighbour``
+        is only consulted for the internal faces (``fi < n_int``).
+        """
+        cells = {int(c) for c in cells}
+        out = {c: float("inf") for c in cells}
+        if not cells:
+            return out
+        for fi, f in enumerate(faces):
+            o = int(owner[fi])
+            nb = int(neighbour[fi]) if fi < n_int else -1
+            if o not in cells and nb not in cells:
+                continue
+            k = len(f)
+            e = min(
+                float(np.linalg.norm(pts[f[i]] - pts[f[(i + 1) % k]]))
+                for i in range(k)
+            )
+            if o in cells and e < out[o]:
+                out[o] = e
+            if nb in cells and e < out[nb]:
+                out[nb] = e
+        return out
 
     def _consume_reflow(self, pre, hw):
         """Harmonic interior relocation ("core reflow", Task 2).
@@ -2346,7 +2434,8 @@ class PolyBoundaryLayerEngine:
                           normal_method: str = "area_weighted",
                           edge_cap_percentile: float = 0.0,
                           thin_bnd=frozenset(),
-                          consume: bool = False) -> dict:
+                          consume: bool = False,
+                          target_depth: float = 0.0) -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
         vertices, per-vertex normals, the feature-aware angular fade (or the
@@ -2669,11 +2758,12 @@ class PolyBoundaryLayerEngine:
 
         # --- opt-in core-reflow geometry (consumed when the gate is on) -----
         support_layers: dict[int, list[tuple[float, int]]] = {}
+        support_sliver: dict[int, bool] = {}
         consume_free = None
         consume_src = consume_dst = consume_elen = None
         cap_dist: dict[int, float] = {}
         if consume:
-            support_layers = self._consume_support_layers(
+            support_layers, support_cells = self._consume_support_layers(
                 pts, faces, owner, neighbour, n_int, n_cells,
                 wall_verts, wall_face_of, normals,
             )
@@ -2707,6 +2797,65 @@ class PolyBoundaryLayerEngine:
                     )
                 else:
                     cap_dist[w] = float("inf")
+            # T4b SLIVER GUARD.  The harmonic reflow inverts dual cells that
+            # are geometrically flat (tiny min edge) relative to the requested
+            # stack - its per-edge Lipschitz bound limits the CHANGE of
+            # displacement along an edge, not the absolute motion of a cell
+            # whose vertices are not all on short edges.  Mark those cells and:
+            #   (a) PIN every interior vertex of a sliver cell (zero
+            #       displacement), so the cell keeps its original, positive
+            #       geometry during the harmonic solve;
+            #   (b) flag every wall vertex whose support walk crosses a pinned
+            #       sliver, so ``_build`` keeps TODAY's single-cell budget for
+            #       it (partial consumption per vertex: fewer layers there,
+            #       never an inversion).
+            # The cell set is ALL dual cells (one O(F) scan), so a sliver that
+            # the walk only grazes is still pinned; at _CONSUME_SLIVER_FRAC =
+            # 0.1 that is 0 cells on the tube and 193 (0.89%) on the venturi.
+            # Whether a WALL vertex falls back is still decided by its own
+            # support walk (b), so healthy wall vertices keep the deep stack.
+            cell_min = self._consume_cell_min_edge(
+                pts, faces, owner, neighbour, n_int, range(n_cells),
+            )
+            sliver_cells: set[int] = set()
+            if target_depth > 0.0:
+                thr = _CONSUME_SLIVER_FRAC * target_depth
+                sliver_cells = {
+                    c for c, e in cell_min.items() if e < thr
+                }
+            for w in wall_verts:
+                # A wall vertex falls back when a pinned sliver lies anywhere
+                # in its support: either the walk crosses one, OR one of its
+                # incident wall faces is OWNED by a sliver dual cell (the walk
+                # only records the best start, so the owners of a vertex's
+                # other wall faces must be checked explicitly - otherwise a
+                # sliver cell would keep 3-4 deep vertices while its
+                # neighbours fall back, shearing the sliver and inverting it).
+                support_sliver[w] = any(
+                    int(c) in sliver_cells for c in support_cells.get(w, ())
+                ) or any(
+                    int(owner[fi]) in sliver_cells
+                    for fi in wall_face_of.get(w, ())
+                )
+            if sliver_cells:
+                pin: set[int] = set()
+                for fi, f in enumerate(faces):
+                    o = int(owner[fi])
+                    if o in sliver_cells or (
+                        fi < n_int and int(neighbour[fi]) in sliver_cells
+                    ):
+                        pin.update(int(v) for v in f)
+                pin_free = [v for v in pin if consume_free[v]]
+                if pin_free:
+                    consume_free[np.asarray(pin_free, dtype=np.int64)] = False
+                n_fb = sum(1 for w in wall_verts if support_sliver[w])
+                self._log(
+                    f"[bl] consume: sliver guard pinned "
+                    f"{len(sliver_cells):,} dual cell(s) / "
+                    f"{len(pin_free):,} interior vertex(es); "
+                    f"{n_fb:,} wall vertex(es) fall back to the "
+                    "single-cell budget"
+                )
             n_multi = sum(1 for w in wall_verts if len(support_layers[w]) >= 2)
             self._log(
                 f"[bl] consume: multi-cell support on {n_multi:,} of "
@@ -2725,6 +2874,7 @@ class PolyBoundaryLayerEngine:
             "n_cells_old": int(max(owner.max(), neighbour.max())) + 1,
             "dual_stats": dual_stats,
             "support_layers": support_layers,
+            "support_sliver": support_sliver,
             "consume_free": consume_free,
             "consume_src": consume_src,
             "consume_dst": consume_dst,
@@ -2789,10 +2939,14 @@ class PolyBoundaryLayerEngine:
         the same short-stack cap) rather than dropped.
         """
         if pre is None:
+            # Layer heights known before the precompute only when it is built
+            # here; the requested fullstack depth feeds the T4b sliver guard.
+            _cum_req = _stack_depths(n_layers, first_height, growth)
             pre = self._build_precompute(
                 points, faces, owner, neighbour, patches, n_int, sel,
                 drop_bnd, concavity_criterion=concavity_criterion,
                 edge_cap_percentile=edge_cap_percentile, consume=consume,
+                target_depth=float(_cum_req[-1]),
             )
         pts = pre["pts"]
         n_pts = pre["n_pts"]
@@ -2838,17 +2992,7 @@ class PolyBoundaryLayerEngine:
         # cumulative: H_k = h1 * (r^k - 1)/(r - 1); H_total = H_n.
         # growth == 1.0 -> uniform layers.
         h1 = first_height
-        cum = np.empty(n_layers)
-        if growth > 1.0:
-            h = h1
-            acc = 0.0
-            for k in range(n_layers):
-                acc += h
-                cum[k] = acc
-                h *= growth
-        else:
-            for k in range(n_layers):
-                cum[k] = h1 * (k + 1)
+        cum = _stack_depths(n_layers, h1, growth)
         h_total = float(cum[-1])
 
         # --- per-vertex inversion clamp ------------------------------------
@@ -2857,6 +3001,7 @@ class PolyBoundaryLayerEngine:
         # the wall-adjacent cells invert.
         max_h = {}
         support_layers = pre.get("support_layers") or {}
+        support_sliver = pre.get("support_sliver") or {}
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
             d = support_d[w]
@@ -2867,12 +3012,19 @@ class PolyBoundaryLayerEngine:
             budget = angle_fade[w] * min(
                 clamp_factor * d, 0.5 * edge_cap[w],
             )
-            if consume:
+            if consume and not support_sliver.get(w):
                 # CORE REFLOW (opt-in): the interior vertices that bound the
                 # consumed region are relocated (see ``_consume_reflow``), so
                 # the stack may reach the full requested depth - or the
                 # deepest dual cell the multi-cell walk actually reached,
                 # whichever is smaller.  Concavity fade still applies.
+                #
+                # A vertex whose support walk crosses a PINNED sliver cell is
+                # excluded here: its `budget` stays at today's single-cell
+                # cap, so the stack is thinned locally (partial consumption
+                # per vertex) instead of inverting the pinned cell.  The
+                # per-face layer COUNT is unaffected by the height; the
+                # binary stack builder compresses where the budget binds.
                 sl = support_layers.get(w) or []
                 reached = sl[-1][0] if sl else 0.0
                 target = min(h_total, max(budget, reached))

@@ -75,10 +75,14 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   stack completo entra anche dove la prima cella è sottile. **Verificato sul
   tubo reale**: 6 layer su 100% delle facce (mediana 6), primo strato =
   richiesto (y+ vero), checkMesh PASS (NO 56.75, skew 1.59) — prima: 1
-  layer. **Bloccato sul venturi**: le celle sliver si invertono (246 celle
-  non-positive) → la feature resta **gated OFF** finché la guardia
-  sliver-aware non è implementata. Default byte-identico con env OFF
-  (hash SHA256 dei file polyMesh verificato).
+  layer. **Bloccato sul venturi**: le inversioni sono **prismi su facce
+  base sliver** (4.027 facce) — la guardia sliver-aware (pin dei vertici
+  sliver + fallback per-vertice) tiene il tubo ma non salva il venturi
+  (checkMesh reale: NO 165 vs baseline 97). La feature resta **gated
+  OFF**; prossimo passo: auto-disattivazione del consumo sui dual
+  "sliver-heavy" (il venturi tornerebbe identico al baseline, il tubo
+  resta migliorato). Default byte-identico con env OFF (hash SHA256
+  verificato).
 - **Dual: input misto tet+prismi con stitching esatto**: il convertitore
   ora accetta mesh di input con prismi (da qualunque sorgente), li
   preserva verbatim nel polyMesh finale e cuce l'interfaccia al core
