@@ -3206,6 +3206,14 @@ class MainWindow(QMainWindow):
             "GMSH stage entered: run_id=%d step=%s mesher=%s",
             my_id, step_path, getattr(self, "_current_mesher_type", ""),
         )
+        # Poly path: show the Cancel control for the whole pipeline
+        # (GMSH -> conversion -> dual -> BL).  This route never did before -
+        # the button only appeared on the cfMesh path, so a running poly
+        # mesh could not be stopped from the UI (user report).  Hidden again
+        # in the pipeline end handlers (_on_polydual_finished/failed,
+        # _on_gmsh_volume_failed).
+        self._set_run_state(True)
+        self._ribbon_btns["cancel"].setVisible(True)
 
         # --- TET-sizing snapshot, gathered before the resource pre-flight
         # and the case-dir setup so the same values feed both the mesh-cache
@@ -3518,6 +3526,8 @@ class MainWindow(QMainWindow):
             return
         self._log.append_log(f"[ERROR] GMSH volume: {msg}")
         self._params.set_all_enabled(True)
+        self._set_run_state(False)
+        self._ribbon_btns["cancel"].setVisible(False)
         QMessageBox.critical(self, "GMSH Failed", f"Volume mesh failed:\n{msg}")
 
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
@@ -4508,6 +4518,8 @@ class MainWindow(QMainWindow):
 
     def _on_polydual_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
+        self._set_run_state(False)
+        self._ribbon_btns["cancel"].setVisible(False)
         self._log.append_log(f"[poly] FAILED: {msg}")
         QMessageBox.warning(
             self, "Polyhedral Conversion Failed",
@@ -4523,6 +4535,9 @@ class MainWindow(QMainWindow):
             logger.debug("Stale polyDual callback ignored (%d != %d).", poly_run_id, self._run_id)
             return
         logger.info("polyDualMesh finished successfully.")
+        # Poly pipeline done: hide the Cancel control again.
+        self._set_run_state(False)
+        self._ribbon_btns["cancel"].setVisible(False)
         self._log.append_log("[poly] Polyhedral conversion complete.")
         self._status.showMessage("Polyhedral mesh ready — running quality check...")
         self._viewer.show_mesh(self._case_dir)

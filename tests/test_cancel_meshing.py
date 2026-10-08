@@ -105,3 +105,26 @@ def test_cancel_resets_ui_state():
 def test_cancel_without_workers_is_safe():
     stub = _build_stub()
     stub._on_cancel_meshing()  # must not raise
+
+
+def test_poly_pipeline_shows_and_hides_cancel(monkeypatch):
+    """User report: a running poly mesh (GMSH -> dual) could not be stopped -
+    the Cancel control was only wired on the cfMesh route.  The poly start
+    handler must show it and every end handler must hide it."""
+    import inspect
+
+    monkeypatch.setattr(mw.QMessageBox, "warning", lambda *a, **k: None)
+    start_src = inspect.getsource(mw.MainWindow._start_gmsh_volume_worker)
+    assert "_set_run_state(True)" in start_src
+    assert "setVisible(True)" in start_src
+    for name in ("_on_polydual_finished", "_on_polydual_failed",
+                 "_on_gmsh_volume_failed"):
+        src = inspect.getsource(getattr(mw.MainWindow, name))
+        assert "_set_run_state(False)" in src, name
+
+    stub = _build_stub()
+    stub._set_run_state = mock.Mock()
+    stub._on_polydual_failed = mw.MainWindow._on_polydual_failed.__get__(stub)
+    stub._on_polydual_failed("boom")
+    stub._set_run_state.assert_called_once_with(False)
+    stub._ribbon_btns["cancel"].setVisible.assert_called_once_with(False)
