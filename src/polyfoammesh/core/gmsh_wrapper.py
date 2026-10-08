@@ -525,6 +525,16 @@ def _count_volume_cells(gmsh_mod) -> int:
         return 0
 
 
+def _count_prism_cells(gmsh_mod) -> int:
+    """Number of 3D prism elements (GMSH type 6) currently meshed."""
+    try:
+        types, tags, _nodes = gmsh_mod.model.mesh.getElements(3)
+        return int(sum(len(t) for ty, t in zip(types, tags) if int(ty) == 6))
+    except Exception:
+        logger.debug("gmsh_wrapper: prism cell count failed", exc_info=True)
+        return 0
+
+
 def _sample_wall_points(gmsh_mod, per_entity: int = 100, tags=None):
     """Coarse point cloud on the given surfaces (all when *tags* is None).
 
@@ -623,6 +633,129 @@ def _infer_wall_surface_tags(gmsh_mod, flow_direction=(1.0, 0.0, 0.0)) -> tuple[
         logger.debug("gmsh_wrapper: wall-surface inference failed", exc_info=True)
         return all_tags, all_tags
 
+
+# ---------------------------------------------------------------------------
+# GMSH-baked boundary layers (env-gated: POLYFOAMMESH_GMSH_BL=1)
+# ---------------------------------------------------------------------------
+#
+# IMPORTANT / MEASURED (GMSH 4.15.2): the ``BoundaryLayer`` *field* is a 2D
+# boundary-layer field.  It extrudes layers inside a SURFACE along curves that
+# are adjacent to exactly ONE surface; passing a curve that bounds two surfaces
+# aborts meshing with
+#
+#     Error : Only 2D Boundary Layers are supported (curve N is adjacent to 2 surfaces)
+#
+# A closed solid (every STEP/STL CFD part) has no such curve: every edge is
+# shared by exactly two faces, so the field can never bake 3D prisms on a
+# generic imported solid.  The non-functional 3D boundary-layer field was
+# removed from GMSH in 2.15.0 (2016) and never re-added; the supported 3D route
+# is the built-in-kernel ``gmsh.model.geo.extrudeBoundaryLayer`` /
+# ``Extrude { Surface{}; Layers{}; Recombine; }`` geometry command, which only
+# works on surfaces built in the built-in CAD kernel, not on OpenCASCADE
+# entities imported from STEP/STL.
+#
+# The code below therefore implements the field population exactly as the
+# specification asks (CurvesList = the wall-boundary curves) behind the env
+# gate, but treats "GMSH refused / produced no prisms" as an expected outcome:
+# it logs the measured reason and falls back to the pure-tet mesh so no
+# existing flow is ever broken.  See ``count_msh_element_types`` for the probe
+# used to verify whether prisms were actually written.
+
+
+def gmsh_baked_bl_enabled() -> bool:
+    """True when ``POLYFOAMMESH_GMSH_BL`` is set to a truthy value.
+
+    Default OFF so the historical pure-tet GMSH output is byte-identical.
+    """
+    return os.environ.get("POLYFOAMMESH_GMSH_BL", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _curves_of_surfaces(gmsh_mod, surface_tags) -> list[int]:
+    """Deduplicated dim-1 curve tags bounding the given surface tags.
+
+    Best-effort: returns [] when the model has no B-Rep curves (e.g. a raw
+    discrete STL).  Kept as a small, stub-friendly seam so the selection logic
+    can be unit-tested without a live GMSH model.
+    """
+    wanted = [int(t) for t in surface_tags]
+    if not wanted:
+        return []
+    try:
+        boundary = gmsh_mod.model.getBoundary(
+            [(2, t) for t in wanted], combined=False, oriented=False,
+            recursive=False,
+        )
+    except Exception:
+        logger.debug("gmsh_wrapper: BL curve selection: getBoundary failed", exc_info=True)
+        return []
+    curves: list[int] = []
+    seen: set[int] = set()
+    for bdim, btag in boundary:
+        if bdim == 1:
+            bt = int(btag)
+            if bt not in seen:
+                seen.add(bt)
+                curves.append(bt)
+    return curves
+
+
+def _select_bl_curves(gmsh_mod) -> list[int]:
+    """Curve tags the BoundaryLayer field should extrude along.
+
+    Default apply-to-all semantics: the curves bounding the *wall* surfaces
+    (inlet/outlet extremes excluded by ``_infer_wall_surface_tags``); falls
+    back to every model surface when the role inference cannot decide.
+    """
+    try:
+        wall_tags, all_tags = _infer_wall_surface_tags(gmsh_mod)
+    except Exception:
+        logger.debug("gmsh_wrapper: BL wall inference failed", exc_info=True)
+        wall_tags, all_tags = [], []
+    tags = wall_tags or all_tags
+    if not tags:
+        try:
+            tags = [int(t) for _d, t in gmsh_mod.model.getEntities(2)]
+        except Exception:
+            return []
+    return _curves_of_surfaces(gmsh_mod, tags)
+
+
+def count_msh_element_types(msh_path: Path | str) -> dict[int, int]:
+    """Count 3D/2D element types in a GMSH MSH 2.2 file, by type code.
+
+    MSH 2.2 type codes: 1=line, 2=triangle, 3=quad, 4=tet, 5=hex,
+    6=prism, 7=pyramid.  A pure-tet GMSH volume mesh returns ``{4: n}``;
+    a GMSH-baked boundary layer adds ``{6: n_prism}`` (and ``{3: ...}``
+    boundary quads).  Pure parser (no gmsh import), so it is safe to call
+    from tests and from a post-mesh probe.
+    """
+    counts: dict[int, int] = {}
+    try:
+        with open(msh_path, "r", encoding="utf-8", errors="replace") as fh:
+            in_elements = False
+            for raw in fh:
+                line = raw.strip()
+                if line == "$Elements":
+                    in_elements = True
+                    continue
+                if line == "$EndElements":
+                    break
+                if not in_elements or not line:
+                    continue
+                parts = line.split()
+                if not parts or not parts[0].isdigit():
+                    continue
+                try:
+                    etype = int(parts[1])
+                except (IndexError, ValueError):
+                    continue
+                counts[etype] = counts.get(etype, 0) + 1
+    except OSError:
+        logger.debug("gmsh_wrapper: could not read msh %s", msh_path, exc_info=True)
+        return {}
+    return counts
 
 
 def _sample_curvature_size_field(
@@ -3010,6 +3143,11 @@ def generate_volume_mesh(
     # matters.)
 
     # Boundary layers
+    # ``bl_field_tag`` is non-None only when POLYFOAMMESH_GMSH_BL=1 actually
+    # configured the field with curves (the env-gated GMSH-baked BL attempt).
+    # When the env gate is OFF the field is configured exactly as before
+    # (empty CurvesList -> no-op) so the default output is byte-identical.
+    bl_field_tag: int | None = None
     if n_layers > 0 and bl_thickness is not None:
         surfaces = gmsh.model.getEntities(2)
         surface_tags = [tag for _, tag in surfaces]
@@ -3019,7 +3157,26 @@ def generate_volume_mesh(
             # starting at 1, and a hardcoded collision here would either
             # error or silently overwrite one of them.
             bl_field = gmsh.model.mesh.field.add("BoundaryLayer")
-            gmsh.model.mesh.field.setNumbers(bl_field, "CurvesList", [])
+            if gmsh_baked_bl_enabled():
+                # Default apply-to-all semantics: the curves bounding the
+                # wall surfaces. On a closed solid these bound two surfaces
+                # each, which GMSH's 2D-only field rejects — the generate()
+                # handler below catches that and falls back to pure tets.
+                bl_curves = _select_bl_curves(gmsh)
+                gmsh.model.mesh.field.setNumbers(bl_field, "CurvesList", bl_curves)
+                bl_field_tag = bl_field
+                logger.info(
+                    "[gmsh] POLYFOAMMESH_GMSH_BL=1: BoundaryLayer field %d "
+                    "configured on %d wall-boundary curve(s)",
+                    bl_field, len(bl_curves),
+                )
+                print(
+                    f"[gmsh] POLYFOAMMESH_GMSH_BL=1: BoundaryLayer field "
+                    f"configured on {len(bl_curves)} wall-boundary curve(s)",
+                    flush=True,
+                )
+            else:
+                gmsh.model.mesh.field.setNumbers(bl_field, "CurvesList", [])
             gmsh.model.mesh.field.setNumbers(bl_field, "PointsList", [])
             gmsh.model.mesh.field.setNumber(bl_field, "hwall_n", bl_thickness)
             gmsh.model.mesh.field.setNumber(bl_field, "thickness", bl_thickness * n_layers)
@@ -3071,10 +3228,55 @@ def generate_volume_mesh(
     try:
         gmsh.model.mesh.generate(3)
     except Exception as e:
-        raise RuntimeError(
-            f"GMSH volume meshing failed: {e}. "
-            "Try reducing max cell size or simplifying the CAD geometry."
-        ) from e
+        # Env-gated GMSH-baked BL: the BoundaryLayer field is 2D-only, so a
+        # closed solid makes GMSH abort.  That is the measured, expected
+        # outcome (see gmsh_baked_bl_enabled); disable the field and re-mesh
+        # without it rather than failing a run that worked before the gate.
+        if bl_field_tag is not None and "boundary layer" in str(e).lower():
+            msg = (
+                f"[gmsh] GMSH-baked BL refused by GMSH ({e}); the "
+                "BoundaryLayer field is 2D-only and cannot extrude 3D prisms "
+                "on a closed solid. Falling back to a pure-tet mesh."
+            )
+            logger.warning(msg)
+            print(msg, flush=True)
+            try:
+                gmsh.model.mesh.field.remove(bl_field_tag)
+                gmsh.model.mesh.field.setAsBoundaryLayer(-1)
+            except Exception:
+                logger.debug("gmsh_wrapper: could not disable BL field", exc_info=True)
+            bl_field_tag = None
+            gmsh.model.mesh.clear()
+            try:
+                gmsh.model.mesh.generate(3)
+            except Exception as e2:
+                raise RuntimeError(
+                    f"GMSH volume meshing failed: {e2}. "
+                    "Try reducing max cell size or simplifying the CAD geometry."
+                ) from e2
+        else:
+            raise RuntimeError(
+                f"GMSH volume meshing failed: {e}. "
+                "Try reducing max cell size or simplifying the CAD geometry."
+            ) from e
+
+    if bl_field_tag is not None:
+        n_prism = _count_prism_cells(gmsh)
+        if n_prism > 0:
+            msg = (
+                f"[gmsh] GMSH-baked BL: {n_prism:,} prism elements written "
+                "(type 6) — 3D boundary layer present in the .msh."
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+        else:
+            msg = (
+                "[gmsh] GMSH-baked BL: 0 prism elements — GMSH did not bake a "
+                "3D boundary layer (the BoundaryLayer field is 2D-only on a "
+                "closed solid). The .msh is pure tetrahedra."
+            )
+            logger.warning(msg)
+            print(msg, flush=True)
 
     # Budget feedback (upgrade D): ONE bounded correction when the actual
     # volume-cell count deviates from the requested target by more than

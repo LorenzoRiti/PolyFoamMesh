@@ -107,6 +107,9 @@ class DualPolyResult:
     n_cells_after: int = 0
     n_poly_cells: int = 0
     n_residual_tets: int = 0
+    # Mixed tet+prism input (GMSH-baked BL): prisms carried through verbatim.
+    n_prisms_before: int = 0
+    n_prism_cells_after: int = 0
     n_internal_faces: int = 0
     n_boundary_faces: int = 0
     n_points_after: int = 0
@@ -468,6 +471,10 @@ class TetPolyDualConverter:
         res.stage_times["read"] = round(time.monotonic() - t, 2)
         self._check_cancel()
 
+        if getattr(P, "mixed", False):
+            self._run_mixed(res, P)
+            return
+
         splits: dict[int, dict[int, int]] = {}
         best = None
         best_defects: int | None = None
@@ -695,11 +702,10 @@ class TetPolyDualConverter:
 
         widths = np.fromiter((len(f) for f in faces_raw), dtype=np.int64, count=n_faces)
         if not np.all(widths == 3):
-            bad = int(np.count_nonzero(widths != 3))
-            raise RuntimeError(
-                f"Dual conversion requires a pure tetrahedral mesh; {bad}/{n_faces} "
-                "faces are not triangles (boundary layers / prisms / an already-"
-                "converted polyhedral mesh)."
+            # Mixed tet + prism input (a GMSH-baked boundary layer): dualize
+            # only the tet core and carry the prism cells through verbatim.
+            return self._read_primal_mixed(
+                res, points, faces_raw, owner, neighbour, patches,
             )
         tri = np.array([f for f in faces_raw], dtype=np.int64)
         del faces_raw
@@ -865,6 +871,438 @@ class TetPolyDualConverter:
             vf_ptr=vf_ptr, vf_idx=vf_idx, patch_of_bnd=patch_of_bnd,
             bnd_e_faces=bnd_e_faces, feat_edge=feat_edge, feat_vertex=feat_vertex,
             n_feat_edges=n_feat_edges, n_feat_verts=n_feat_verts,
+        )
+
+    # ------------------------------------------------------------------
+    # Mixed tet + prism input (GMSH-baked boundary layer)
+    # ------------------------------------------------------------------
+    #
+    # GMSH's BoundaryLayer field is 2D-only (see gmsh_wrapper's
+    # gmsh_baked_bl_enabled), so in practice a mixed .msh has to come from a
+    # different source. This path is still the contract the pipeline needs:
+    #   * prism cells are carried through VERBATIM (their bottom wall face and
+    #     side faces keep their patch/orientation), and
+    #   * only the tet core is dualized, with the prism top triangles becoming
+    #     internal faces to the dual cells.
+    #
+    # Exact stitching requires the median-dual boundary of the tet core: each
+    # interface triangle (a,b,c) is split into three planar quads through its
+    # edge midpoints and centroid, owned by the dual cells of a, b, c. Those
+    # quads share the prism top triangle exactly, so the prism's top triangle
+    # is replaced by them.  The new edge midpoints lie on the prism's side
+    # quads, so those quads are split at the midpoint too (otherwise the mesh
+    # has a T-junction).  Only the standard BL topology is supported: every
+    # tet<->prism face must be a triangle (the outermost prism top). A prism
+    # that meets a tet through a side quad is refused with a precise message.
+
+    def _read_primal_mixed(
+        self, res, points, faces_raw, owner, neighbour, patches,
+    ) -> SimpleNamespace:
+        """Classify a mixed tet+prism polyMesh and prepare the tet-core mesh.
+
+        Returns a lightweight namespace consumed by :meth:`_run_mixed`. The
+        tet core is written to a temporary case and dualized by a nested
+        converter in exact (non-collapse) mode; the prism cells are stitched
+        back by :meth:`_stitch_mixed`.
+        """
+        n_faces = len(faces_raw)
+        if len(owner) != n_faces:
+            raise RuntimeError(
+                f"owner has {len(owner)} entries but faces has {n_faces}"
+            )
+        n_int = int((neighbour >= 0).sum())
+        g_neigh = np.full(n_faces, -1, dtype=np.int64)
+        g_neigh[: len(neighbour)] = neighbour
+        n_cells = int(max(int(owner.max()), int(g_neigh.max()))) + 1
+
+        cell_faces: list[list[int]] = [[] for _ in range(n_cells)]
+        for f in range(n_faces):
+            cell_faces[int(owner[f])].append(f)
+            nb = int(g_neigh[f])
+            if nb >= 0:
+                cell_faces[nb].append(f)
+
+        is_tet = np.zeros(n_cells, dtype=bool)
+        is_prism = np.zeros(n_cells, dtype=bool)
+        for c in range(n_cells):
+            sizes = sorted(len(faces_raw[f]) for f in cell_faces[c])
+            if sizes == [3, 3, 3, 3]:
+                is_tet[c] = True
+            elif sizes == [3, 3, 4, 4, 4]:
+                is_prism[c] = True
+            else:
+                raise RuntimeError(
+                    "Dual conversion requires a pure tetrahedral mesh or a "
+                    "tetrahedral core with prism boundary layers; "
+                    f"cell {c} has face sizes {sizes} (only 4 triangles or "
+                    "2 triangles + 3 quads are supported)."
+                )
+        if not is_prism.any():
+            raise RuntimeError(
+                "Mixed dual path entered but no prism cells were found."
+            )
+        if not is_tet.any():
+            raise RuntimeError(
+                "Mixed tet/prism mesh has no tetrahedra to dualize."
+            )
+
+        tet_of_cell = np.full(n_cells, -1, dtype=np.int64)
+        prism_of_cell = np.full(n_cells, -1, dtype=np.int64)
+        n_tets = n_prism = 0
+        for c in range(n_cells):
+            if is_tet[c]:
+                tet_of_cell[c] = n_tets
+                n_tets += 1
+            elif is_prism[c]:
+                prism_of_cell[c] = n_prism
+                n_prism += 1
+        res.n_tets_before = n_tets
+        res.n_prisms_before = n_prism
+
+        # patch index of every global boundary face (0..n_int-1 are internal)
+        n_bnd_g = n_faces - n_int
+        patch_of_gb = np.full(n_bnd_g, -1, dtype=np.int64)
+        for pi, p in enumerate(patches):
+            s = int(p["startFace"]) - n_int
+            k = int(p["nFaces"])
+            if k <= 0:
+                continue
+            if s < 0 or s + k > n_bnd_g:
+                raise RuntimeError(
+                    f"Patch '{p['name']}' range [{s}, {s + k}) lies outside "
+                    f"the {n_bnd_g} boundary faces."
+                )
+            patch_of_gb[s:s + k] = pi
+        if np.any(patch_of_gb < 0):
+            raise RuntimeError(
+                f"{int((patch_of_gb < 0).sum())} boundary faces belong to no "
+                "patch — refusing to invent a defaultFaces patch."
+            )
+
+        core_int_faces: list[list[int]] = []
+        core_int_owner: list[int] = []
+        core_int_neigh: list[int] = []
+        core_ext_faces: list[list[int]] = []
+        core_ext_owner: list[int] = []
+        core_ext_patch: list[int] = []
+        iface_faces: list[list[int]] = []
+        iface_owner: list[int] = []
+        iface_prism: list[int] = []
+        prism_face_ids: list[int] = []
+
+        for f in range(n_faces):
+            o = int(owner[f])
+            nb = int(g_neigh[f])
+            v = [int(x) for x in faces_raw[f]]
+            if nb < 0:
+                if is_tet[o]:
+                    core_ext_faces.append(v)
+                    core_ext_owner.append(int(tet_of_cell[o]))
+                    core_ext_patch.append(int(patch_of_gb[f - n_int]))
+                elif is_prism[o]:
+                    prism_face_ids.append(f)
+                continue
+            ot, nt = bool(is_tet[o]), bool(is_tet[nb])
+            op, npb = bool(is_prism[o]), bool(is_prism[nb])
+            if ot and nt:
+                a = int(tet_of_cell[o]); b = int(tet_of_cell[nb])
+                if a > b:
+                    a, b = b, a
+                    v.reverse()
+                core_int_faces.append(v)
+                core_int_owner.append(a)
+                core_int_neigh.append(b)
+            elif op and npb:
+                prism_face_ids.append(f)
+            elif (ot and npb) or (op and nt):
+                if len(v) != 3:
+                    raise RuntimeError(
+                        "GMSH-baked BL interface is not a triangle (face "
+                        f"{f}, {len(v)} vertices). The prism block must meet "
+                        "the tet core only through the outermost prism top "
+                        "triangles; a prism<->tet side-quad interface is not "
+                        "supported by this pass."
+                    )
+                if ot:
+                    tet_c = o
+                    prism_c = nb
+                else:
+                    tet_c = nb
+                    prism_c = o
+                    v.reverse()
+                iface_faces.append(v)
+                iface_owner.append(int(tet_of_cell[tet_c]))
+                iface_prism.append(int(prism_of_cell[prism_c]))
+            else:  # pragma: no cover - classification is exhaustive
+                raise RuntimeError(f"Unclassifiable face {f} in mixed mesh.")
+
+        core_bnd_faces = core_ext_faces + iface_faces
+        # The core boundary face owner is the tet-core cell on the core side
+        # (the nested converter uses it for cell centroids / face counts); the
+        # interface faces are owned by the core dual cells in the OUTPUT.
+        core_bnd_owner = core_ext_owner + iface_owner
+        core_patches = [dict(p) for p in patches]
+        core_patches.append({"name": "__gmsh_bl_iface__", "type": "patch"})
+        synthetic_patch = len(core_patches) - 1
+        core_bnd_patch = core_ext_patch + [synthetic_patch] * len(iface_faces)
+        core_faces = core_int_faces + core_bnd_faces
+        core_owner = np.array(core_int_owner + core_bnd_owner, dtype=np.int64)
+        core_neigh = np.array(core_int_neigh, dtype=np.int64)
+        n_core_int = len(core_int_faces)
+
+        counts = np.bincount(
+            np.array(core_bnd_patch, dtype=np.int64), minlength=len(core_patches)
+        )
+        start = n_core_int
+        for pi, p in enumerate(core_patches):
+            p["nFaces"] = int(counts[pi])
+            p["startFace"] = start
+            start += int(counts[pi])
+
+        volume_input = self._input_volume(points, faces_raw, owner, g_neigh, n_cells)
+
+        return SimpleNamespace(
+            mixed=True,
+            points=points, n_pi=len(points),
+            n_tets=n_tets, n_prism=n_prism, n_cells=n_cells,
+            tet_of_cell=tet_of_cell, prism_of_cell=prism_of_cell,
+            core_faces=core_faces, core_owner=core_owner, core_neigh=core_neigh,
+            core_patches=core_patches, n_core_int=n_core_int,
+            g_verts=faces_raw, g_owner=owner, g_neigh=g_neigh,
+            g_patch=patch_of_gb, n_int_global=n_int, n_faces_global=n_faces,
+            prism_face_ids=prism_face_ids,
+            iface_faces=iface_faces, iface_prism=iface_prism,
+            n_iface=len(iface_faces),
+            volume_input=volume_input,
+        )
+
+    @staticmethod
+    def _input_volume(points, faces, owner, g_neigh, n_cells) -> float:
+        """Signed total volume of every input cell (tets + prisms)."""
+        sf, cf = _face_geometry(points, faces)
+        contrib = (cf * sf).sum(axis=1) / 3.0
+        vol = np.zeros(n_cells, dtype=np.float64)
+        np.add.at(vol, owner, contrib)
+        m = g_neigh >= 0
+        np.add.at(vol, g_neigh[m], -contrib[m])
+        return float(vol.sum())
+
+    def _run_mixed(self, res: DualPolyResult, P) -> None:
+        """Dualize the tet core, stitch the verbatim prisms, validate, write."""
+        import shutil
+        import tempfile
+
+        t = time.monotonic()
+        tmp = Path(tempfile.mkdtemp(prefix="polydual_mixed_"))
+        try:
+            core_poly = tmp / "constant" / "polyMesh"
+            core_poly.mkdir(parents=True, exist_ok=True)
+            foam_mesh_io.write_polymesh(
+                core_poly, P.points, P.core_faces, P.core_owner,
+                P.core_neigh, P.core_patches,
+            )
+            self._log(
+                f"[poly mixed] {P.n_tets:,} core tetrahedra + "
+                f"{P.n_prism:,} prisms ({P.n_iface:,} interface triangles)"
+            )
+            core_conv = TetPolyDualConverter(
+                tmp, log=self._log_cb, cancel=self._cancel_cb,
+                collapse_smooth_edges=False, smooth=False,
+            )
+            rc = core_conv.run()
+            if not rc.success:
+                raise RuntimeError(
+                    "tet-core dual conversion failed: " + "; ".join(rc.errors)
+                )
+            points_c, faces_c, owner_c, neigh_c, patches_c = (
+                foam_mesh_io.read_polymesh(core_poly)
+            )
+            M = self._stitch_mixed(
+                P, points_c, faces_c, owner_c, neigh_c, patches_c,
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        res.stage_times["build"] = round(time.monotonic() - t, 2)
+        self._check_cancel()
+
+        t = time.monotonic()
+        self._validate(res, M, P)
+        res.stage_times["validate"] = round(time.monotonic() - t, 2)
+        self._check_cancel()
+
+        t = time.monotonic()
+        self._write(M.points, M.faces, M.owner, M.neigh, M.patches)
+        res.stage_times["write"] = round(time.monotonic() - t, 2)
+
+        res.n_cells_after = M.n_cells
+        res.n_poly_cells = M.n_cells
+        res.n_prism_cells_after = int(P.n_prism)
+        res.n_residual_tets = 0
+        res.n_internal_faces = M.n_int
+        res.n_boundary_faces = len(M.faces) - M.n_int
+        res.n_points_after = len(M.points)
+        self._log(
+            f"[poly 9/9] wrote {M.n_cells:,} cells "
+            f"({P.n_prism:,} verbatim prisms + {M.n_cells - P.n_prism:,} dual "
+            f"core cells), {len(M.faces):,} faces, {len(M.points):,} points"
+        )
+
+    def _stitch_mixed(
+        self, P, points_c, faces_c, owner_c, neigh_c, patches_c,
+    ) -> SimpleNamespace:
+        """Merge the dualized tet core with the verbatim prism cells."""
+        n_dual = int(max(int(owner_c.max()), int(neigh_c.max()))) + 1
+        n_int_core = len(neigh_c)
+        if not patches_c or patches_c[-1]["name"] != "__gmsh_bl_iface__":
+            raise RuntimeError(
+                "mixed stitch: core dual is missing the interface patch"
+            )
+        ip_start = int(patches_c[-1]["startFace"])
+        ip_n = int(patches_c[-1]["nFaces"])
+        if ip_n != 3 * P.n_iface:
+            raise RuntimeError(
+                f"mixed stitch: interface patch has {ip_n} faces, expected "
+                f"{3 * P.n_iface} (three quads per interface triangle)"
+            )
+        prism_base = n_dual
+
+        # ---- points: core dual points + prism vertices not already present
+        def _key(c) -> tuple:
+            return (round(float(c[0]), 12), round(float(c[1]), 12),
+                    round(float(c[2]), 12))
+
+        pts_list = [np.asarray(p, dtype=np.float64) for p in points_c]
+        coord: dict[tuple, int] = {}
+        for i, p in enumerate(pts_list):
+            coord.setdefault(_key(p), i)
+
+        def _pt_of_coord(c) -> int:
+            k = _key(c)
+            idx = coord.get(k)
+            if idx is None:
+                idx = len(pts_list)
+                pts_list.append(np.asarray(c, dtype=np.float64))
+                coord[k] = idx
+            return idx
+
+        pt_map = np.empty(P.n_pi, dtype=np.int64)
+        for v in range(P.n_pi):
+            pt_map[v] = _pt_of_coord(P.points[v])
+
+        def _edge_mid_pt(u: int, v: int) -> int:
+            return _pt_of_coord(0.5 * (P.points[u] + P.points[v]))
+
+        # interface edges and their midpoints, keyed in the OUTPUT point-id
+        # space (the prism face vertex lists are mapped before the lookup).
+        iface_edge_set: set[frozenset] = set()
+        iface_edge_mid: dict[frozenset, int] = {}
+        for tri in P.iface_faces:
+            a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+            for u, v in ((a, b), (b, c), (c, a)):
+                key = frozenset((int(pt_map[u]), int(pt_map[v])))
+                iface_edge_set.add(key)
+                if key not in iface_edge_mid:
+                    iface_edge_mid[key] = _edge_mid_pt(u, v)
+
+        # ---- faces
+        int_faces: list[list[int]] = []
+        int_own: list[int] = []
+        int_nb: list[int] = []
+
+        for f in range(n_int_core):
+            int_faces.append([int(x) for x in faces_c[f]])
+            int_own.append(int(owner_c[f]))
+            int_nb.append(int(neigh_c[f]))
+
+        # interface quads become internal faces: dual cell <-> prism
+        for k in range(P.n_iface):
+            nb = prism_base + int(P.iface_prism[k])
+            for c in range(3):
+                fi = ip_start + 3 * k + c
+                int_faces.append([int(x) for x in faces_c[fi]])
+                int_own.append(int(owner_c[fi]))
+                int_nb.append(nb)
+
+        n_orig_patches = len(patches_c) - 1
+        bnd_faces: list[list[list[int]]] = [[] for _ in range(n_orig_patches)]
+        bnd_own: list[list[int]] = [[] for _ in range(n_orig_patches)]
+
+        def _emit_prism_face(v, owner_cell, neigh_cell, patch=None):
+            n = len(v)
+            split_at = -1
+            for i in range(n):
+                if frozenset((v[i], v[(i + 1) % n])) in iface_edge_set:
+                    split_at = i
+                    break
+            if split_at < 0:
+                pieces = [v]
+            else:
+                m = iface_edge_mid[frozenset((v[split_at], v[(split_at + 1) % n]))]
+                loop = v[: split_at + 1] + [m] + v[split_at + 1:]
+                pieces = [
+                    [loop[0], loop[j], loop[j + 1]]
+                    for j in range(1, len(loop) - 1)
+                ]
+            for piece in pieces:
+                if neigh_cell < 0:
+                    bnd_faces[patch].append(piece)
+                    bnd_own[patch].append(owner_cell)
+                else:
+                    int_faces.append(piece)
+                    int_own.append(owner_cell)
+                    int_nb.append(neigh_cell)
+
+        for f in P.prism_face_ids:
+            o = int(P.g_owner[f])
+            nb = int(P.g_neigh[f])
+            v = [int(pt_map[int(x)]) for x in P.g_verts[f]]
+            if nb < 0:
+                pi = int(P.g_patch[f - P.n_int_global])
+                oc = prism_base + int(P.prism_of_cell[o])
+                _emit_prism_face(v, oc, -1, patch=pi)
+            else:
+                oc = prism_base + int(P.prism_of_cell[o])
+                nc = prism_base + int(P.prism_of_cell[nb])
+                if oc > nc:
+                    oc, nc = nc, oc
+                    v.reverse()
+                _emit_prism_face(v, oc, nc, patch=None)
+
+        # core dual external boundary faces (the interface patch is excluded)
+        for pi in range(n_orig_patches):
+            s = int(patches_c[pi]["startFace"])
+            k = int(patches_c[pi]["nFaces"])
+            for fi in range(s, s + k):
+                bnd_faces[pi].append([int(x) for x in faces_c[fi]])
+                bnd_own[pi].append(int(owner_c[fi]))
+
+        # ---- assemble internal-first, then boundary per patch
+        faces = int_faces
+        owner_out = int_own
+        neigh_out = int_nb
+        n_int = len(faces)
+        new_patches: list[dict] = []
+        start = n_int
+        for pi in range(n_orig_patches):
+            k = len(bnd_faces[pi])
+            faces.extend(bnd_faces[pi])
+            owner_out.extend(bnd_own[pi])
+            new_patches.append({
+                "name": patches_c[pi]["name"],
+                "type": patches_c[pi].get("type", "patch"),
+                "nFaces": k,
+                "startFace": start,
+            })
+            start += k
+
+        return SimpleNamespace(
+            points=np.array(pts_list, dtype=np.float64),
+            faces=faces,
+            owner=np.array(owner_out, dtype=np.int64),
+            neigh=np.array(neigh_out, dtype=np.int64),
+            n_int=n_int,
+            patches=new_patches,
+            n_cells=prism_base + int(P.n_prism),
         )
 
     # ------------------------------------------------------------------
@@ -1784,17 +2222,22 @@ class TetPolyDualConverter:
             )
         res.volume_after = float(vol.sum())
 
-        pc = P.face_centroid
-        pn = 0.5 * np.cross(
-            P.points[P.tri[:, 1]] - P.points[P.tri[:, 0]],
-            P.points[P.tri[:, 2]] - P.points[P.tri[:, 0]],
-        )
-        pv = np.zeros(P.n_tets)
-        c = (pc * pn).sum(axis=1) / 3.0
-        np.add.at(pv, P.owner, c)
-        m = P.neigh >= 0
-        np.add.at(pv, P.neigh[m], -c[m])
-        res.volume_before = float(pv.sum())
+        if getattr(P, "volume_input", None) is not None:
+            # Mixed tet+prism input: the primal volume is the whole input
+            # (tet core + verbatim prisms), computed by _input_volume.
+            res.volume_before = float(P.volume_input)
+        else:
+            pc = P.face_centroid
+            pn = 0.5 * np.cross(
+                P.points[P.tri[:, 1]] - P.points[P.tri[:, 0]],
+                P.points[P.tri[:, 2]] - P.points[P.tri[:, 0]],
+            )
+            pv = np.zeros(P.n_tets)
+            c = (pc * pn).sum(axis=1) / 3.0
+            np.add.at(pv, P.owner, c)
+            m = P.neigh >= 0
+            np.add.at(pv, P.neigh[m], -c[m])
+            res.volume_before = float(pv.sum())
 
         rel_vol = abs(res.volume_after - res.volume_before) / max(
             abs(res.volume_before), 1e-300

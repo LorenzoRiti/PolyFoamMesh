@@ -1636,6 +1636,45 @@ class PolyDualWorker(QObject):
             self.failed.emit(str(exc))
 
 
+def count_polymesh_prism_cells(case_dir: Path | str) -> int:
+    """Number of prism-shaped cells in ``constant/polyMesh`` (best-effort).
+
+    A boundary-layer prism has exactly two triangular faces (the base/top
+    walls) and three quad faces; :func:`bl_cells._prism_like_mask` detects
+    that shape topologically, with no dependence on patch names.  Used to
+    decide whether the input already carries a GMSH-baked boundary layer so
+    the in-house ``bl_poly`` stage can be skipped (a second BL would double
+    it).  Returns 0 on any read failure — never raises.
+    """
+    try:
+        import numpy as np
+
+        from polyfoammesh.core.bl_cells import _prism_like_mask
+        from polyfoammesh.core.foam_mesh_io import read_polymesh
+
+        poly_dir = Path(case_dir) / "constant" / "polyMesh"
+        _points, faces, owner, neighbour, _patches = read_polymesh(poly_dir)
+        if len(faces) == 0 or len(owner) == 0:
+            return 0
+        owner = np.asarray(owner, dtype=np.int64).ravel()
+        neighbour = np.asarray(neighbour, dtype=np.int64).ravel()
+        n_internal = min(int(neighbour.size), len(faces))
+        n_cells = int(owner.max()) + 1
+        if n_internal:
+            n_cells = max(n_cells, int(neighbour[:n_internal].max()) + 1)
+        face_sizes = np.fromiter(
+            (len(f) for f in faces[: len(owner)]), dtype=np.int64,
+            count=len(owner),
+        )
+        mask = _prism_like_mask(
+            face_sizes, owner, neighbour[:n_internal], n_cells,
+        )
+        return int(mask.sum())
+    except Exception:
+        logger.debug("count_polymesh_prism_cells failed for %s", case_dir, exc_info=True)
+        return 0
+
+
 class DualPolyWorker(QObject):
     """Runs TetPolyDualConverter (tet -> polyhedral by barycentric dual) in a
     background QThread.
@@ -1748,10 +1787,33 @@ class DualPolyWorker(QObject):
             f"{result.n_cells_after:,} polyhedra, residual tetrahedra "
             f"{result.n_residual_tets} ({result.stage_times.get('total', 0)}s)"
         )
+        if getattr(result, "n_prisms_before", 0):
+            self.log_line.emit(
+                f"[poly] {result.n_prisms_before:,} GMSH prism cell(s) carried "
+                "through the dual conversion verbatim"
+            )
 
         # boundary layers on the poly mesh (our own advancing-layer engine)
         bres = None
+        # GMSH-baked BL: the converter reports how many input prisms it kept
+        # (the authoritative count — a stitched prism's side quads are split,
+        # so the shape detector below cannot see it). The shape detector is a
+        # second, independent check for a prism-bearing polyMesh that reached
+        # this worker without going through the mixed dual path. Both are only
+        # consulted when BL was actually requested, so a no-BL run pays
+        # nothing.
+        _has_gmsh_bl = False
         if self._bl_params:
+            _has_gmsh_bl = (
+                int(getattr(result, "n_prism_cells_after", 0) or 0) > 0
+                or count_polymesh_prism_cells(self._case_dir) > 0
+            )
+        if self._bl_params and _has_gmsh_bl:
+            # Adding the in-house BL on top would double the near-wall layers.
+            self.log_line.emit(
+                "[poly] GMSH-baked BL detected: skipping the in-house BL stage"
+            )
+        elif self._bl_params:
             from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
 
             bl = dict(self._bl_params)

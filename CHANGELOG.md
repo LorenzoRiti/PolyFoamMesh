@@ -69,6 +69,20 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Dual: input misto tet+prismi con stitching esatto**: il convertitore
+  ora accetta mesh di input con prismi (da qualunque sorgente), li
+  preserva verbatim nel polyMesh finale e cuce l'interfaccia al core
+  dualizzato (quad mediani per triangolo d'interfaccia, split dei lati,
+  niente T-junction). Verificato con checkMesh reale su mesh sintetiche
+  (Mesh OK). Il worker salta il BL interno quando i prismi sono già
+  presenti (guardia doppio-BL).
+- **Verdetto sul BL "cotto" in GMSH**: impossibile con GMSH 4.x — il
+  campo BoundaryLayer supporta solo strati 2D (il 3D è stato rimosso da
+  GMSH 2.15.0) e aborta sulle curve adiacenti a due superfici; l'unica
+  via 3D (extrudeBoundaryLayer) richiede geometrie del kernel interno,
+  non STEP/STL importati. Verificato empiricamente su venturi e
+  multi_inlet: zero prismi in ogni configurazione. Il tentativo resta
+  dietro `POLYFOAMMESH_GMSH_BL=1` (default OFF, fallback loggato).
 - **Hang GMSH (Parte2/venturi) RISOLTO**: causa radice misurata — la
   MeshAdapt 2D (Algorithm=1) va in loop infinito quando le è installato
   un size field non uniforme su superfici cilindriche/raccordi; Delaunay
