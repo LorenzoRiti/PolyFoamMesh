@@ -82,6 +82,7 @@ from __future__ import annotations
 from collections import deque
 import itertools
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -126,6 +127,36 @@ def _gil_yield(step: int, every: int = 256) -> None:
     window 'non risponde'), even though the work itself is on a QThread."""
     if step % every == 0:
         time.sleep(0)
+
+
+#: Maximum dual-cell layers the multi-cell support walk descends (hard bound
+#: so a pathological topology cannot make the walk unbounded).
+_CONSUME_MAX_LAYERS = 40
+
+#: Safety factor on the wall Dirichlet displacement of the reflow.  The
+#: harmonic field decays with distance from the wall, so the FIRST interior
+#: shell can end a fraction of a millimetre short of the prism top and turn
+#: the wall-adjacent core cell into a flat sliver (measured on the tube:
+#: 1 inverted face pyramid at exactly scale 1.0).  Over-driving the wall by
+#: this factor guarantees the shell clears the stack; the excess is absorbed
+#: by the interior compression, which checkMesh still accepts.
+_CONSUME_DIRICHLET = 1.3
+
+
+def _consume_enabled() -> bool:
+    """Opt-in gate for the "core reflow" multi-layer consumption.
+
+    Default OFF (the empty string).  A previous lane proved that WHOLE-CELL
+    absorption cannot stitch without transition cells, so the consumption
+    here is a bounded interior-vertex relocation ("reflow"): the wall still
+    extrudes the full requested stack, but the interior dual vertices that
+    bound the consumed region are moved along the extrusion direction so the
+    wall-adjacent cells do not invert.  OFF => byte-identical to the
+    historical single-cell behaviour."""
+    return os.environ.get("POLYFOAMMESH_BL_CONSUME", "").strip().lower() not in (
+        "", "0", "false", "no", "off",
+    )
+
 
 
 def _most_visible_normal(f_norms: list, iters: int = 200) -> np.ndarray:
@@ -1295,6 +1326,10 @@ class PolyBoundaryLayerEngine:
         res.n_wall_faces = len(sel)
         res.wall_patches = used_patches
         thin_bnd = frozenset(thin_local)
+        # Opt-in "core reflow" multi-layer consumption (default OFF,
+        # byte-identical when off).  Only the standard fallback path consumes
+        # it; the local-termination paths are left untouched.
+        consume = _consume_enabled()
 
         if local_termination:
             if local_termination not in (True, "decoupled", "decoupled_vertex"):
@@ -1331,6 +1366,7 @@ class PolyBoundaryLayerEngine:
             points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
             concavity_criterion=concavity_criterion, normal_method=normal_method,
             edge_cap_percentile=edge_cap_percentile, thin_bnd=thin_bnd,
+            consume=consume,
         )
         self._stage_pre_s += time.perf_counter() - _t_pre
         for k, v in pre.get("dual_stats", {}).items():
@@ -1347,7 +1383,7 @@ class PolyBoundaryLayerEngine:
         # do not fit, leave the count untouched: the usefulness guard below
         # rejects the flattened result and the caller can retry with a
         # smaller first height.
-        if terminate_by_budget and res.n_layers > 1:
+        if terminate_by_budget and res.n_layers > 1 and not consume:
             k_sup = self._supported_layers(
                 pre, res.first_height, growth, res.n_layers,
             )
@@ -1398,6 +1434,7 @@ class PolyBoundaryLayerEngine:
                         # where max_h binds, so the BL shell stays COMPLETE.
                         zero_concave=True,
                         thin_bnd=thin_bnd, cover_thin=cover_thin,
+                        consume=consume,
                     )
                 except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(
@@ -2104,6 +2141,202 @@ class PolyBoundaryLayerEngine:
         return sorted(selected), used_patches
 
     # ------------------------------------------------------------------
+    # core reflow (opt-in multi-cell consumption)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _consume_support_layers(pts, faces, owner, neighbour, n_int, n_cells,
+                                wall_verts, wall_face_of, normals):
+        """Multi-cell support walk (Task 1).
+
+        For every wall vertex, walk along its inward extrusion direction
+        (``-normals[w]``) through successive dual cells and record the
+        cumulative depth to the FAR face of each cell.  The first entry is
+        the depth to the far side of the wall-adjacent dual cell (which is
+        ``>= support_d``, the distance to its nearest interior vertex); each
+        following entry is the depth to the far side of the next cell along
+        the normal.  Returns ``{w: [(cum_depth, cell_layer), ...]}``,
+        monotone increasing, at most ``_CONSUME_MAX_LAYERS`` entries.
+
+        This is the geometry the reflow needs and cannot get from
+        ``support_d``: the latter only measures the FIRST cell's interior
+        vertex, so it caps the stack to one cell even when several cells
+        stand between the wall and the requested depth."""
+        _sf, fc = _face_geometry(pts, faces)
+        cc, _vol = _cell_centroids(
+            pts, faces, owner, neighbour, n_int, n_cells,
+        )
+        ow = np.asarray(owner)
+        nb = np.asarray(neighbour)
+        cell_links: list[list[tuple[int, int]]] = [
+            [] for _ in range(n_cells)
+        ]
+        for fi in range(n_int):
+            o = int(ow[fi])
+            n = int(nb[fi])
+            cell_links[o].append((fi, n))
+            cell_links[n].append((fi, o))
+        for fi in range(n_int, len(faces)):
+            cell_links[int(ow[fi])].append((fi, -1))
+        out: dict[int, list[tuple[float, int]]] = {}
+        for w in wall_verts:
+            _gil_yield(w & 0xFFFF, 64)
+            din = -np.asarray(normals[w], dtype=np.float64)
+            origin = pts[w]
+            starts = set()
+            for fi in wall_face_of.get(w, ()):
+                starts.add(int(ow[fi]))
+            best: list[tuple[float, int]] = []
+            for c0 in starts:
+                cell = c0
+                visited: set[int] = set()
+                entries: list[tuple[float, int]] = []
+                prev = -1.0
+                for layer in range(_CONSUME_MAX_LAYERS):
+                    if cell in visited:
+                        break
+                    visited.add(cell)
+                    best_f = -1
+                    best_proj = None
+                    best_nb = -2
+                    for fi, nb_c in cell_links[cell]:
+                        proj = float((fc[fi] - cc[cell]) @ din)
+                        if proj <= 1e-30:
+                            continue
+                        if best_proj is None or proj > best_proj:
+                            best_proj = proj
+                            best_f = fi
+                            best_nb = nb_c
+                    if best_f < 0:
+                        break
+                    depth = float((fc[best_f] - origin) @ din)
+                    if depth <= prev + 1e-12:
+                        break
+                    entries.append((depth, layer))
+                    prev = depth
+                    if best_nb < 0:
+                        break
+                    cell = best_nb
+                if len(entries) > len(best):
+                    best = entries
+            out[w] = [(float(d), int(k)) for d, k in best]
+        return out
+
+    @staticmethod
+    def _consume_graph(pts, faces):
+        """Symmetric dual edge list for the reflow Jacobi / min-diffusion
+        solve.  Every dual edge (consecutive face vertices) contributes one
+        entry; ``elen`` is its length in metres."""
+        src: list[int] = []
+        dst: list[int] = []
+        elen: list[float] = []
+        for f in faces:
+            m = len(f)
+            for k in range(m):
+                a = int(f[k])
+                b = int(f[(k + 1) % m])
+                if a == b:
+                    continue
+                src.append(a)
+                dst.append(b)
+                elen.append(float(np.linalg.norm(pts[a] - pts[b])))
+        src_a = np.asarray(src, dtype=np.int64)
+        dst_a = np.asarray(dst, dtype=np.int64)
+        elen_a = np.asarray(elen, dtype=np.float64)
+        # symmetric edges so the Jacobi average has full degree
+        src2 = np.concatenate([src_a, dst_a])
+        dst2 = np.concatenate([dst_a, src_a])
+        elen2 = np.concatenate([elen_a, elen_a])
+        return src2, dst2, elen2
+
+    def _consume_reflow(self, pre, hw):
+        """Harmonic interior relocation ("core reflow", Task 2).
+
+        The wall is extruded to the full (reflow-augmented) stack height
+        ``hw``; the interior dual vertices between the wall and the stack top
+        must yield.  Solve the harmonic (Laplace) extension of the wall
+        displacement ``-normal[w] * hw[w]`` over the dual edge graph, with the
+        non-BL boundary pinned at zero.  The wall Dirichlet is over-driven by
+        ``_CONSUME_DIRICHLET`` so the first interior shell always clears the
+        prism top.
+
+        The result is then bounded by the RELATIVE inversion guard: across
+        every dual edge the displacement magnitude may not change by more
+        than 0.9 * edge length (the actual no-inversion condition), solved as
+        the greatest such field below the harmonic one by min-diffusion.  An
+        absolute per-vertex cap would forbid any displacement larger than one
+        cell, i.e. exactly the multi-cell consumption this gate exists to
+        provide, and is deliberately NOT used.  Pinned magnitudes (wall /
+        non-BL boundary) are held fixed so the prism geometry is untouched.
+        Returns a full ``(n_pts, 3)`` displacement array (zero on wall /
+        pinned vertices); any residual inversion is caught by ``_validate``
+        and the keep-best fallback rather than written.
+        """
+        pts = pre["pts"]
+        n_pts = pre["n_pts"]
+        wall_verts = pre["wall_verts"]
+        normals = pre["normals"]
+        free = pre["consume_free"]
+        src = pre["consume_src"]
+        dst = pre["consume_dst"]
+        elen = pre["consume_elen"]
+        U = np.zeros((n_pts, 3), dtype=np.float64)
+        for w in wall_verts:
+            h = float(hw.get(w, 0.0))
+            if h > 0.0:
+                # Over-drive the wall displacement by a safety factor so the
+                # FIRST interior shell clears the prism top (see
+                # ``_CONSUME_DIRICHLET``).
+                U[w] = -normals[w] * (h * _CONSUME_DIRICHLET)
+        free_idx = np.flatnonzero(free)
+        # Jacobi sweeps: u <- neighbour average on the free set (pinned
+        # vertices keep their Dirichlet value).  Fixed iteration count keeps
+        # the result deterministic and independent of thread order.
+        for _ in range(500):
+            if free_idx.size == 0:
+                break
+            sums = np.zeros((n_pts, 3), dtype=np.float64)
+            for comp in range(3):
+                sums[:, comp] = (
+                    np.bincount(src, weights=U[dst, comp], minlength=n_pts)
+                    + np.bincount(dst, weights=U[src, comp], minlength=n_pts)
+                )
+            deg = (
+                np.bincount(src, minlength=n_pts)
+                + np.bincount(dst, minlength=n_pts)
+            ).astype(np.float64)
+            deg = np.maximum(deg, 1.0)
+            U[free_idx] = sums[free_idx] / deg[free_idx, None]
+        # Inversion guard (the real one): the displacement magnitude may not
+        # change by more than 0.9 * edge length across any dual edge, or the
+        # cell between the two vertices inverts.  Solve the greatest such
+        # field below the harmonic one by min-diffusion over the edge graph,
+        # keeping the pinned magnitudes (wall Dirichlet / non-BL boundary)
+        # fixed so the prism geometry is untouched.  This is a RELATIVE bound
+        # (per edge); an absolute per-vertex cap is wrong here - it would
+        # forbid any displacement larger than one cell, i.e. exactly the
+        # multi-cell consumption this gate exists to provide (measured: an
+        # absolute 0.9*mean-edge cap clamped the near-wall field to ~3.3 mm
+        # while the stack needed 6.2 mm, crushing the first core cell).
+        mag = np.linalg.norm(U, axis=1)
+        if free_idx.size:
+            lim = 0.9 * elen
+            pin_mag = mag.copy()
+            for _ in range(80):
+                before = mag[free_idx].copy()
+                np.minimum.at(mag, src, mag[dst] + lim)
+                np.minimum.at(mag, dst, mag[src] + lim)
+                mag[~free] = pin_mag[~free]
+                if np.array_equal(mag[free_idx], before):
+                    break
+        mag0 = np.linalg.norm(U, axis=1)
+        scale = np.ones(n_pts)
+        nz = mag0 > 1e-300
+        scale[nz] = mag[nz] / mag0[nz]
+        scale[~free] = 0.0  # never move wall / pinned boundary points
+        return U * scale[:, None]
+
+    # ------------------------------------------------------------------
     # core construction
     # ------------------------------------------------------------------
 
@@ -2112,7 +2345,8 @@ class PolyBoundaryLayerEngine:
                           concavity_criterion: str = "angle_fade",
                           normal_method: str = "area_weighted",
                           edge_cap_percentile: float = 0.0,
-                          thin_bnd=frozenset()) -> dict:
+                          thin_bnd=frozenset(),
+                          consume: bool = False) -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
         vertices, per-vertex normals, the feature-aware angular fade (or the
@@ -2433,6 +2667,52 @@ class PolyBoundaryLayerEngine:
                 )
             patch_of[s:s + p["nFaces"]] = pi
 
+        # --- opt-in core-reflow geometry (consumed when the gate is on) -----
+        support_layers: dict[int, list[tuple[float, int]]] = {}
+        consume_free = None
+        consume_src = consume_dst = consume_elen = None
+        cap_dist: dict[int, float] = {}
+        if consume:
+            support_layers = self._consume_support_layers(
+                pts, faces, owner, neighbour, n_int, n_cells,
+                wall_verts, wall_face_of, normals,
+            )
+            bnd_set = set(bnd)
+            other_bnd: set[int] = set()
+            for fi in range(n_int, len(faces)):
+                if fi in bnd_set:
+                    continue
+                other_bnd.update(int(v) for v in faces[fi])
+            consume_free = np.ones(n_pts, dtype=bool)
+            consume_free[wall_verts] = False
+            if other_bnd:
+                consume_free[list(other_bnd)] = False
+            (consume_src, consume_dst,
+             consume_elen) = self._consume_graph(pts, faces)
+            # Distance from every wall vertex to the nearest non-BL boundary
+            # vertex (the inlet/outlet caps).  The harmonic reflow is pinned to
+            # zero there, so an untapered full stack at the junction inverts
+            # the core cell between the two (measured on the tube: all 88
+            # non-positive cells sat at 6.2-7.1 mm from the caps, i.e. exactly
+            # the stack depth).  The stack is tapered to zero over ~3 local
+            # wall edges toward the cap (standard BL termination at a
+            # boundary), which keeps the per-face layer COUNT intact - only the
+            # local thickness is compressed.
+            cap_dist: dict[int, float] = {}
+            cap_pts = pts[sorted(other_bnd)] if other_bnd else None
+            for w in wall_verts:
+                if cap_pts is not None and len(cap_pts):
+                    cap_dist[w] = float(
+                        np.linalg.norm(pts[w] - cap_pts, axis=1).min()
+                    )
+                else:
+                    cap_dist[w] = float("inf")
+            n_multi = sum(1 for w in wall_verts if len(support_layers[w]) >= 2)
+            self._log(
+                f"[bl] consume: multi-cell support on {n_multi:,} of "
+                f"{len(wall_verts):,} wall vertices"
+            )
+
         return {
             "pts": pts, "n_pts": n_pts, "bnd": bnd, "wv": wv,
             "wall_verts": wall_verts, "vert_faces": vert_faces,
@@ -2444,6 +2724,12 @@ class PolyBoundaryLayerEngine:
             "n_wf": len(bnd), "n_bnd": n_bnd,
             "n_cells_old": int(max(owner.max(), neighbour.max())) + 1,
             "dual_stats": dual_stats,
+            "support_layers": support_layers,
+            "consume_free": consume_free,
+            "consume_src": consume_src,
+            "consume_dst": consume_dst,
+            "consume_elen": consume_elen,
+            "consume_cap_dist": cap_dist,
         }
 
     def _build(self, points, faces, owner, neighbour, patches, n_int,
@@ -2456,7 +2742,8 @@ class PolyBoundaryLayerEngine:
                terminate_by_budget: bool = False,
                limit_height_gradient: bool = True,
                thin_bnd=frozenset(),
-               cover_thin: bool = True) -> dict:
+               cover_thin: bool = True,
+               consume: bool = False) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -2505,7 +2792,7 @@ class PolyBoundaryLayerEngine:
             pre = self._build_precompute(
                 points, faces, owner, neighbour, patches, n_int, sel,
                 drop_bnd, concavity_criterion=concavity_criterion,
-                edge_cap_percentile=edge_cap_percentile,
+                edge_cap_percentile=edge_cap_percentile, consume=consume,
             )
         pts = pre["pts"]
         n_pts = pre["n_pts"]
@@ -2547,24 +2834,6 @@ class PolyBoundaryLayerEngine:
                           if (fi - n_int) in thin_bnd)
                 if thin_bnd else frozenset())
 
-        # --- per-vertex inversion clamp ------------------------------------
-        # distance from the wall vertex to the nearest NON-wall vertex of the
-        # incident cells bounds how far the extruded surface may travel before
-        # the wall-adjacent cells invert.
-        max_h = {}
-        for wi, w in enumerate(wall_verts):
-            _gil_yield(wi, 64)
-            d = support_d[w]
-            # inversion guard (distance to interior) + feature fade (angular
-            # divergence) + hard cap on the incident wall-face edge length
-            # (`edge_cap`: the historical smallest edge, or the opt-in
-            # `edge_cap_percentile` robust cap - see `_build_precompute`)
-            max_h[w] = angle_fade[w] * min(
-                clamp_factor * d, 0.5 * edge_cap[w],
-            )
-            if vertex_height_scale:
-                max_h[w] *= vertex_height_scale.get(w, 1.0)
-
         # --- layer heights --------------------------------------------------
         # cumulative: H_k = h1 * (r^k - 1)/(r - 1); H_total = H_n.
         # growth == 1.0 -> uniform layers.
@@ -2581,6 +2850,46 @@ class PolyBoundaryLayerEngine:
             for k in range(n_layers):
                 cum[k] = h1 * (k + 1)
         h_total = float(cum[-1])
+
+        # --- per-vertex inversion clamp ------------------------------------
+        # distance from the wall vertex to the nearest NON-wall vertex of the
+        # incident cells bounds how far the extruded surface may travel before
+        # the wall-adjacent cells invert.
+        max_h = {}
+        support_layers = pre.get("support_layers") or {}
+        for wi, w in enumerate(wall_verts):
+            _gil_yield(wi, 64)
+            d = support_d[w]
+            # inversion guard (distance to interior) + feature fade (angular
+            # divergence) + hard cap on the incident wall-face edge length
+            # (`edge_cap`: the historical smallest edge, or the opt-in
+            # `edge_cap_percentile` robust cap - see `_build_precompute`)
+            budget = angle_fade[w] * min(
+                clamp_factor * d, 0.5 * edge_cap[w],
+            )
+            if consume:
+                # CORE REFLOW (opt-in): the interior vertices that bound the
+                # consumed region are relocated (see ``_consume_reflow``), so
+                # the stack may reach the full requested depth - or the
+                # deepest dual cell the multi-cell walk actually reached,
+                # whichever is smaller.  Concavity fade still applies.
+                sl = support_layers.get(w) or []
+                reached = sl[-1][0] if sl else 0.0
+                target = min(h_total, max(budget, reached))
+                # Taper toward the non-BL boundary: the harmonic field is
+                # pinned to zero at the caps, so the full stack there would
+                # invert the junction core cell.  Smoothstep over ~3 local
+                # wall edges (the per-face layer COUNT is unaffected: only the
+                # local thickness compresses, exactly like the thin-face cap).
+                dist = (pre.get("consume_cap_dist") or {}).get(w, float("inf"))
+                taper_len = max(1e-12, 6.0 * edge_cap[w], 2.0 * target)
+                tf = min(1.0, dist / taper_len) if np.isfinite(dist) else 1.0
+                tf = tf * tf * (3.0 - 2.0 * tf)  # smoothstep
+                budget = angle_fade[w] * target * tf
+            max_h[w] = budget
+            if vertex_height_scale:
+                max_h[w] *= vertex_height_scale.get(w, 1.0)
+
         # FASE 2  -  LOCAL TERMINATION: the layer COUNT varies per wall
         # vertex.  Where the local geometry is healthy (angle_fade >= 50%),
         # all n_layers are kept and scaled to the inversion budget (FASE 1
@@ -2786,7 +3095,27 @@ class PolyBoundaryLayerEngine:
         # index (w, k): k=0 -> original point; k=1..nv[w] -> extruded
         new_pt = {}
         nxt = n_pts
-        pts_list = [pts]
+        consumed_layers_max = 0
+        pts_base = pts
+        if consume and pre.get("consume_free") is not None:
+            # CORE REFLOW: relocate the interior dual vertices that bound the
+            # consumed region along the harmonic extension of the wall
+            # displacement, so the wall-adjacent cells can host the full
+            # stack without inverting.  Wall/pinned boundary points are never
+            # moved (scale is zeroed there).
+            disp = self._consume_reflow(pre, hw)
+            pts_base = pts + disp
+            for w in wall_verts:
+                sl = support_layers.get(w) or []
+                hwt = hw[w]
+                cnt = sum(1 for dep, _k in sl if dep <= hwt + 1e-12)
+                if cnt > consumed_layers_max:
+                    consumed_layers_max = cnt
+            self._log(
+                f"[bl] consumed {consumed_layers_max} interior cell layers "
+                f"({1000.0 * total:.3f} mm of {1000.0 * h_total:.3f} mm)"
+            )
+        pts_list = [pts_base]
         for w in wall_verts:
             n_w = normals[w]
             nvw = nv[w]
