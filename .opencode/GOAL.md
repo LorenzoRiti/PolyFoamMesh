@@ -1003,3 +1003,41 @@ Muro misurato: la barra PASS sul venturi e' irraggiungibile con
 merge/smoothing -> serve C3 (refinement dell'input alla gola, a monte).
 PROSSIMO: P1b (C3) - testare sharp-edge field opt-in + sizing locale alla
 gola sul venturi, con keep-best corpus.
+
+## 2026-10-08 - P1b: MURO STRUTTURALE (nessun codice cambiato)
+
+Verdetto (misurato, no changes): la barra PASS sul venturi e'
+irraggiungibile via refinement a monte. Anche a 8.6x (valve1 nativo:
+824k tet) la stessa geometria ha la stessa malattia (340 piramidi, NO
+95.6): il dual a 1-cella-per-vertice-di-bordo NON puo' essere convesso
+attraverso una piega concava con normali che ruotano 90-145 gradi. Il
+muro e' TOPOLOGICO, non di risoluzione. Serve un cambio di topologia al
+bordo: merge delle celle avvolte + rilassamento dei punti (base: il
+merge esistente) oppure il rewrite del dual a facce compatte.
+Extra: il .step di produzione del venturi e' una SHELL APERTA (0 solidi)
+- GMSH non puo' volumizzare quel file; i run reali usano STL/altri file.
+Sharp-edge field: regredisce sul venturi solido del corpus (NO +6.7,
+piramidi 16->24) e rompe HXT -> resta OFF, correttamente.
+PROSSIMO: P5 - fix topologico del bordo (design spike prima, poi fix
+keep-best). E' l'ultimo muro per il goal "qualsiasi geometria".
+
+## 2026-10-08 - P5 spike: verdetto finale sul venturi (muro del dual)
+
+Misurato (checkMesh reale, prototipi in scratch, zero modifiche a src):
+- A (merge+rilassamento): venturi 224->109 piramidi, valvola 340->46;
+  NO/skew massimi INVARIATI (97.2/18.3). Il rilassamento e' no-op sul
+  criterio pyramid; forzato peggiora (177 piramidi, NO 169).
+- B (compact-fan): peggiore ovunque (335-1301 piramidi, NO 150-168).
+- Tubo: merge rifiutato (0 concave), byte-identico, Mesh OK.
+- Costo non e' il blocker (dual venturi 9.1s, checkMesh 3.3s).
+CONCLUSIONE ONESTA: il muro e' la COSTRUZIONE del dual a 1 cella per
+vertice di bordo su pieghe concave acute (NO 97 alla gola x=-0.144).
+Nessun lever esplorato lo supera: risoluzione (P1b), merge/relax (P1/P5),
+smoothing (C5), feature-angle, triangulate. Restano solo:
+(a) rewrite della costruzione del dual al bordo (Voronoi/centroidi,
+    settimane, rischio alto);
+(b) confronto con cfMesh/snappy SULLA STESSA geometria per stabilire se
+    NO<70 e' raggiungibile da qualcuno (il path cfMesh esiste nell'app);
+(c) accettare il limite con report onesto (checkMesh gia' dice FAIL e
+    l'app lo mostra; C4 = gate di qualita' nel writer = solo reporting).
+Tutto il codice e' committato e verde; il merge resta opt-in.
