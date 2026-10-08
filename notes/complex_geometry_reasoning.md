@@ -310,3 +310,128 @@ non-levers. The two credible levers are the already-coded concave-cell **merge**
 and a new **defect-masked smoothing** of the offending cells (C2), with **input
 feature refinement** (C3) as the upstream enabler and a **real acceptance gate**
 (C4) so failures stop shipping silently.
+
+## 8. P5 design spike — real-checkMesh evaluation of the two boundary-topology fixes
+
+Date: 2026-10-08. Scope: scratch prototypes only (`.superpowers/sdd/2026-10-05-poly-beat-snappy-program/`,
+deleted after); **no `src/` or `tests/` change**. Every number below is REAL
+OpenFOAM 2512 `checkMesh` (WSL Ubuntu) on a fresh rebuild from the tet backup
+with the production kwargs
+(`TetPolyDualConverter(case, collapse_smooth_edges=True, boundary_feature_angle=40.0, collapse_volume_tolerance=0.10)`).
+Bar to reach: **pyramids ~0, NO < 70, skew < 4, neg 0**.
+
+### 8.1 Prototypes evaluated
+
+- **A — merge + point relaxation.** `poly_cell_merge.repair_concave_cells_keepbest`
+  (the production max-severity merge, 224→110 venturi / 340→46 valve) followed by
+  a masked relaxation of the failing cells' interior (tet-centroid) vertices,
+  iterated for up to 10 steps per round and 4 rounds. Three relaxation modes
+  prototyped: `inward` (pull toward the cell's boundary-face mean), `lap`
+  (masked `poly_smoother._laplacian_relax`), and `plane` (push each failing
+  cell's interior vertices opposite the outward normal of each face whose exact
+  checkMesh pyramid test fails, magnitude `|h|`). Acceptance was keep-best:
+  accept a step only if the exact pyramid count falls (or is unchanged with a
+  lower continuous inversion penalty) and max NO / max skew do not rise.
+  Also ran the **existing production smoother** (`smooth_dual_mesh`, 8 iters,
+  with and without the C5 `guard_severity` gate) as the post-merge relaxation.
+- **B — compact-face dual at the crease (topology proxy).** Group the failing
+  *boundary* dual cells into connected components along their shared internal
+  faces (optionally pulling in each group's interior neighbours) and merge each
+  group into ONE compact cell — i.e. the topology-equivalent of building one
+  poly cell per group of primal boundary vertices. Emitted and checked real.
+
+### 8.2 Measured numbers (real checkMesh)
+
+**Venturi** (fresh prod dual-only; baseline §1.2 reproduced exactly):
+
+| variant | cells | pyramids | NO max | NO avg | severe>70 | NO err | skew max | highly skew | neg | failed |
+|---|---|---|---|---|---|---|---|---|---|---|
+| baseline prod dual | 21,798 | **224** | 97.1771 | 11.7154 | 47 | 10 | 18.3017 | 27 | 0 | 3 |
+| **A** merge (keepbest) | 21,654 | **109** | 97.1771 | 12.138 | 53 | 10 | 18.3017 | 40 | 0 | 3 |
+| **A** merge + relax (all 3 modes) | 21,654 | **109** | 97.1771 | – | 53 | 10 | 18.3017 | 40 | 0 | 3 |
+| **A** merge + global smoother (no guard) | 21,660 | 113 | 96.4151 | 11.6944 | 42 | 10 | **33.5641** | 40 | 0 | 3 |
+| **A** merge + global smoother (C5 guard) | 21,660 | **110** | 97.1258 | 12.0929 | 52 | 10 | 18.0918 | 39 | 0 | 3 |
+| **B** group merge + interior pull | 20,474 | **540** | 133.637 | 14.1468 | 255 | 35 | **426.057** | 532 | 0 | 3 |
+| **B** group merge, boundary only | 21,707 | **335** | 159.056 | 11.9769 | 63 | 59 | **392.562** | 188 | 0 | 3 |
+
+**Valve** (second hard case, fresh prod dual-only):
+
+| variant | cells | pyramids | NO max | NO avg | severe>70 | NO err | skew max | highly skew | neg | failed |
+|---|---|---|---|---|---|---|---|---|---|---|
+| baseline prod dual | 152,086 | **340** | 95.6151 | 10.5694 | 175 | 10 | 22.1645 | 28 | 0 | 3 |
+| **A** merge (keepbest) | 151,763 | **46** | 94.2995 | 10.7029 | 153 | 1 | 21.1737 | 56 | 0 | 3 |
+| **A** merge + relax (all 3 modes) | 151,763 | **46** | 94.2995 | – | 153 | 1 | 21.1737 | 56 | 0 | 3 |
+| **B** group merge + interior pull | 149,008 | **1,301** | 167.902 | 11.6056 | 633 | 463 | **1,428.01** | 1,184 | 0 | 3 |
+| **B** group merge, boundary only | 151,943 | **710** | 149.665 | 10.7679 | 403 | 289 | **1,741.22** | 316 | 0 | 3 |
+
+**Tube (103202) — non-regression:** baseline dual `Mesh OK` (NO 50.8101,
+skew 1.63313); A merge refused at round 0 (`concave 0`), output byte-identical,
+still `Mesh OK`. Candidate A cannot touch a healthy mesh.
+
+### 8.3 Why the relaxation is a measured no-op (not a tuning failure)
+
+Moving the failing boundary cells' interior vertices cannot fix the boundary
+pyramids. Diagnostics on the merged venturi dual:
+
+- The dual cell's OpenFOAM centre is dominated by its **pinned boundary
+  polygons**; moving interior tet-centroid vertices changes the centre too
+  little to flip a boundary-face pyramid. Every small step in all three modes
+  left the pyramid count and the continuous inversion penalty exactly
+  unchanged → keep-best rejected it.
+- An **unguarded** plane push at `relax=1.0` did lower the continuous inversion
+  penalty by only **13 %** (4.93e-7 → 4.30e-7) while the pyramid **count rose
+  110 → 177** and max NO exploded **97.2 → 169.1** (moved interior vertices are
+  shared with interior cells, which then invert). Larger steps were worse
+  (`relax=3/10/50` → 283/637/1495 pyramids, NO 178/177/176, negative volumes).
+- The production global smoother post-merge cannot reach the bar either: best
+  NO 96.42 at skew 33.56 (no guard), or NO 97.13 / skew 18.09 (C5 guard).
+
+### 8.4 The measured wall
+
+- **Candidate A reaches** pyramids **109 (venturi) / 46 (valve)** — a 51 % / 86 %
+  reduction — but the tail is a hard wall: **NO max 94.3–97.2°** and
+  **skew max 18.1–21.2°**, unchanged by merge and by every relaxation tried.
+  The single worst internal non-orthogonal face (97.18° at x ≈ -0.144) is not
+  removed by the merge, so NO cannot move below 70.
+- **Candidate B is strictly worse** on every metric at both resolutions
+  (pyramids 335–1301, NO 150–168°, skew 393–1741). Removing the internal faces
+  across the crease removes exactly the faces that carried acceptable
+  angles, and the surviving single large cell has worse ones. Its topology
+  proxy is a faithful test of "one cell per group of primal boundary vertices";
+  it fails hard.
+- **Neither candidate can reach pyramids ~0, NO < 70, skew < 4.** The residual
+  NO is an *internal-face* defect at the under-resolved concave feature, not a
+  boundary-cell convexity defect, and neither boundary-topology fix touches it.
+
+### 8.5 Cost
+
+- Fresh dual-only build (production): venturi 9.1 s / 21,798 cells; valve
+  61.4 s / 152,086 cells.
+- Real `checkMesh`: venturi 3.3 s; valve 6.9 s.
+- Merge keepbest: **3.3 s** on venturi (in-process; negligible vs build). One
+  relaxation round ~1.5 s. B's group merge is comparable but produces garbage.
+
+### 8.6 Recommendation (for the P5-fix task)
+
+**Implement neither A's relaxation nor B.** Keep Candidate A exactly as it
+already is — the opt-in, max-severity-gated merge at
+`src/polyfoammesh/core/tet_poly_dual.py` (`merge_concave_cells` /
+`merge_rounds`, constructor lines 189–190 / 360–380 / 436–437; application in
+`_run_inner` lines 703–738) backed by
+`src/polyfoammesh/core/poly_cell_merge.py:275` `repair_concave_cells_keepbest`
+— because it is a real, gated improvement, but it is **not a pass** and must
+stay opt-in. Do **not** add the point relaxation (measured no-op on the
+pyramid criterion, regression on the tail); do **not** build Candidate B (the
+topology proxy is catastrophic, and stitching a local compact fan into the
+regular dual would require new construction in `_build_dual`
+(`tet_poly_dual.py:1389`) or the mixed path (`_read_primal_mixed:975`,
+`_run_mixed:1167`) for a result measured to be worse).
+
+The P5-fix must attack the **root cause**: the under-resolved concave feature
+whose internal dual faces carry 94–97° non-orthogonality. That is the
+already-ranked **C3 upstream feature refinement** (GMSH feature sizing; the
+8.6× finer valve has the same wall) plus the **C4 real quality gate** in
+`tet_poly_dual._validate` (`tet_poly_dual.py:2242`) so failures stop shipping
+silently. A maximum-severity guard in `smooth_dual_mesh`
+(`poly_smoother.py:468`, the already-added `guard_severity`) is worth keeping
+as a low-risk tail protection, but it cannot reach the bar on its own.
