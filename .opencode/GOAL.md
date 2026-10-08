@@ -876,3 +876,29 @@ mai editato a mano: flag _bl_user_manual) e si aggiorna su Velocity/
 Fluido/Wall treatment; edit manuale rispettato.
 Test aggiornati (cache automatica, surface resolution dallo slider);
 suite fast 1395 passed, ruff pulito. CHANGELOG/USER_GUIDE aggiornati.
+
+## Notte 2026-10-08 - hang GMSH risolto + verifica corpus (MIA)
+
+Corsie atterrate e verificate DA ME:
+- WATCHDOG (openfoam_runner): verificato io (ruff + 11 test). Kill dopo
+  300s di silenzio (env POLYFOAMMESH_GMSH_STALL_S), retry robusto unico,
+  secondo stallo = errore chiaro.
+- HANG GMSH (gmsh_wrapper): causa radice = MeshAdapt 2D in loop infinito
+  con size field non uniforme; robust mode = healing OCC + Delaunay(5) +
+  no optimizer. VERIFICA MIA: Parte2.stp completa in 149.3s (702k nodi,
+  239MB, zero loop). Default path bit-identico (multi_inlet, verificato
+  dalla corsia e ricontrollato nei numeri).
+- GUARDIA PRISMI DEGENERI (bl_poly): primo strato < 5% del richiesto ->
+  build rifiutato. Scoperta da me col corpus: il venturi aveva primi
+  strati da 80 NANOMETRI (NO 133.6). Dopo la guardia: NO 43.3, prismi
+  degeneri rifiutati. Test aggiornato (test_bl_poly huge-first-layer).
+- SHARP-EDGE OPT-IN: il corpus non mostrava la regressione che sospettavo
+  (BASELINE_POLY ha solo 6 geometrie; i miei '0' erano default dello
+  script). Confronto REALE: external_aero/pipe/pipe_constriction/thin_gap
+  IDENTICI, box_obstacle +8% prismi/-2 NO, venturi migliorato. Nessuna
+  regressione. Campo comunque reso opt-in (keep-best).
+CORPUS default-path (run finale): 3/15 "pass" col criterio del harness
+(metà geometrie senza baseline registrata -> FAIL per definizione), ma
+il confronto coi 6 baseline reali e' pulito.
+PROSSIMO: commit, poi (se serve) estendere il baseline del corpus alle
+geometrie mancanti per rendere il gate significativo.

@@ -216,3 +216,52 @@ def test_resolve_algo3d_ignores_bad_override():
     with mock.patch.dict(_os.environ, {"CFMESH_GMSH_ALGO3D": "abc"}, clear=False):
         assert gw._resolve_algo3d() is None
 
+
+# ------------------------------------------------------------------
+# Robust fallback mode: POLYFOAMMESH_GMSH_ROBUST + CFMESH_GMSH_OPTIMIZE
+# ------------------------------------------------------------------
+def test_robust_mode_off_by_default():
+    """No env var -> default behaviour (robust path disabled)."""
+    import polyfoammesh.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {}, clear=False):
+        _os.environ.pop("POLYFOAMMESH_GMSH_ROBUST", None)
+        assert gw._gmsh_robust_mode() is False
+
+
+def test_robust_mode_accepts_truthy_values():
+    import polyfoammesh.core.gmsh_wrapper as gw
+    import os as _os
+    for val in ("1", "true", "TRUE", "yes", "on"):
+        with mock.patch.dict(_os.environ, {"POLYFOAMMESH_GMSH_ROBUST": val}, clear=False):
+            assert gw._gmsh_robust_mode() is True, val
+    for val in ("0", "false", "", "no"):
+        with mock.patch.dict(_os.environ, {"POLYFOAMMESH_GMSH_ROBUST": val}, clear=False):
+            assert gw._gmsh_robust_mode() is False, val
+
+
+def test_resolve_optimize_default_on():
+    """Historical default: optimizers ON unless overridden."""
+    import polyfoammesh.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {}, clear=False):
+        _os.environ.pop("CFMESH_GMSH_OPTIMIZE", None)
+        assert gw._resolve_optimize(False) == 1
+
+
+def test_resolve_optimize_robust_forces_off():
+    """Robust mode disables the optimizers regardless of the env override."""
+    import polyfoammesh.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {"CFMESH_GMSH_OPTIMIZE": "1"}, clear=False):
+        assert gw._resolve_optimize(True) == 0
+
+
+def test_resolve_optimize_honours_override():
+    import polyfoammesh.core.gmsh_wrapper as gw
+    import os as _os
+    with mock.patch.dict(_os.environ, {"CFMESH_GMSH_OPTIMIZE": "0"}, clear=False):
+        assert gw._resolve_optimize(False) == 0
+    with mock.patch.dict(_os.environ, {"CFMESH_GMSH_OPTIMIZE": "abc"}, clear=False):
+        assert gw._resolve_optimize(False) == 1
+

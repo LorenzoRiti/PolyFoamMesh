@@ -217,15 +217,19 @@ def test_bl_partial_patch_terminators():
 # clamp / fallback
 # ---------------------------------------------------------------------------
 
-def test_bl_clamps_huge_first_layer():
-    """A first-layer height far larger than the local cell must be clamped
-    per wall vertex (inversion guard) instead of producing negative cells."""
+def test_bl_rejects_huge_first_layer_instead_of_degenerate_prisms():
+    """A first-layer height far larger than the local cell used to be
+    clamped and ACCEPTED - producing sub-micron pancakes with catastrophic
+    non-orthogonality (corpus regression 2026-10-08: venturi first layer
+    80 nm, NO 133 deg).  The degenerate-prism guard (first layer < 5% of
+    the request) now rejects it: better no BL than garbage prisms."""
     case = _build_dual_case(WORK_ROOT / "cube_huge")
     eng = PolyBoundaryLayerEngine(case)
     r = eng.run(n_layers=3, first_height=10.0, growth_rate=1.2, apply_to_all=True)
-    assert r.success, r.errors
-    # the effective total thickness must be far below the requested 10 m
-    assert r.total_thickness < 1.0
+    assert not r.success
+    assert r.errors
+    assert any("degenerate" in w for w in r.warnings), r.warnings
+    # the mesh must be untouched (no BL written)
     vols = _mesh_ok(case / "constant" / "polyMesh")
     assert np.all(vols > 0.0)
 

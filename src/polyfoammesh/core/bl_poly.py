@@ -1430,6 +1430,32 @@ class PolyBoundaryLayerEngine:
                             f"{_med:g} of {res.n_layers} requested) - rejected"
                         )
                         continue
+                    # Degenerate-prism guard (corpus regression 2026-10-08):
+                    # a build whose first layer is compressed to a few percent
+                    # of the request produces sub-micron pancakes (venturi:
+                    # 80 nm) and catastrophic non-orthogonality (133 deg).
+                    # The old behaviour - BL fails, clean dual-only mesh -
+                    # was strictly better than a valid-but-garbage BL.
+                    _h_eff = (
+                        float(built["heights"][1])
+                        if len(built["heights"]) > 1 else 0.0
+                    )
+                    _h_req = res.first_height * scale
+                    if _h_req > 0.0 and _h_eff < 0.05 * _h_req:
+                        res.warnings.append(
+                            f"attempt at scale={scale} clamp={clamp} would "
+                            f"create degenerate prisms (first layer "
+                            f"{_h_eff:.3g} m = "
+                            f"{100.0 * _h_eff / _h_req:.1f}% of requested): "
+                            "rejected - better no BL than sub-micron pancakes"
+                        )
+                        self._log(
+                            f"[bl] attempt at scale={scale} clamp={clamp}: "
+                            f"first layer {_h_eff:.3g} m "
+                            f"({100.0 * _h_eff / _h_req:.1f}% of requested) "
+                            "- rejected as degenerate"
+                        )
+                        continue
                     _out = self._accept_built(res, built, scale, clamp, poly)
                     self._finalize_stage_times(_out, t_run0)
                     return _out
@@ -1927,6 +1953,29 @@ class PolyBoundaryLayerEngine:
                             f"round={_round}: valid but flattened to a "
                             f"single layer (median {_med:g} of "
                             f"{res.n_layers} requested) - rejected"
+                        )
+                        break
+                    # Degenerate-prism guard (see the standard path): a
+                    # sub-5%-of-request first layer means sub-micron pancakes
+                    # and catastrophic non-orthogonality - better no BL.
+                    _h_eff = (
+                        float(built["heights"][1])
+                        if len(built["heights"]) > 1 else 0.0
+                    )
+                    _h_req = res.first_height * scale
+                    if _h_req > 0.0 and _h_eff < 0.05 * _h_req:
+                        res.warnings.append(
+                            f"local attempt at scale={scale} "
+                            f"round={_round} would create degenerate prisms "
+                            f"(first layer {_h_eff:.3g} m = "
+                            f"{100.0 * _h_eff / _h_req:.1f}% of requested): "
+                            "rejected - better no BL than sub-micron pancakes"
+                        )
+                        self._log(
+                            f"[bl] local attempt at scale={scale} "
+                            f"round={_round}: first layer {_h_eff:.3g} m "
+                            f"({100.0 * _h_eff / _h_req:.1f}% of requested) "
+                            "- rejected as degenerate"
                         )
                         break
                     res.stats["local_excluded_faces"] = n_dropped

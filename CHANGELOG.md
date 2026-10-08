@@ -69,6 +69,23 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Hang GMSH (Parte2/venturi) RISOLTO**: causa radice misurata — la
+  MeshAdapt 2D (Algorithm=1) va in loop infinito quando le è installato
+  un size field non uniforme su superfici cilindriche/raccordi; Delaunay
+  (5) completa lo stesso campo in ~2 s. Ora c'è una **modalità robusta**
+  (`POLYFOAMMESH_GMSH_ROBUST=1`): healing OCC + Delaunay + niente
+  ottimizzazione, e il **watchdog** la attiva da solo: se GMSH non
+  produce output per 5 minuti → kill + retry robusto una volta → se si
+  blocca ancora, errore chiaro. Parte2 completa in **149 s** (702k nodi,
+  .msh valido); percorso default bit-identico sui casi che funzionano.
+- **Prismi degeneri rifiutati**: un build BL con primo strato < 5% del
+  richiesto (venturi: 80 nm!) produce pancake sub-micron e non-ortogonalità
+  133° — ora viene rifiutato (meglio niente BL che un BL spazzatura):
+  venturi default NO 133.6 → 43.3.
+- **Campo sharp-edge opt-in** (`POLYFOAMMESH_GMSH_SHARP_EDGES=1`): il run
+  di regressione del corpus non ha mostrato regressioni, ma il campo
+  resta opt-in per principio keep-best finché un corpus non prova che
+  aiuta più di quanto costi.
 - **Calibrazione y+: convenzione `wallShearStress`**: i solver
   incomprimibili OpenFOAM scrivono il campo come τw/ρ (cinematico), ma il
   codice divideva per ρ → u_tau sbagliato di √ρ (×31 per l'acqua). Ora
