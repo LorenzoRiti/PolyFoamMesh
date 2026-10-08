@@ -1256,6 +1256,25 @@ def _configure_adaptive_sizing(
     )
     min_size = max(geom_min, hw_floor)
 
+    # Size-field sanity guard (robust path only — default output stays
+    # bit-for-bit unchanged). Verified on the failing Parte2.stp: geom_min
+    # binds exactly at coarse_max/2 (0.0025 m for coarse_max=0.005, the
+    # documented intent) — the min-size logic DOES bind correctly and was NOT
+    # the cause of the hang (the 2D algorithm was). This guard only engages on
+    # a genuinely pathological request (a floor more than ~1e5x finer than the
+    # whole part), which no real geometry produces; it exists so the robust
+    # retry cannot be sent into an unbounded refinement by a nonsensical
+    # min-size.
+    _abs_min_floor = max_extent * 1e-6
+    if _gmsh_robust_mode() and min_size < _abs_min_floor:
+        _msg = (
+            f"[gmsh] robust: min size {min_size:.3e} below absolute floor "
+            f"{_abs_min_floor:.3e} (=max_extent*1e-6) — clamping"
+        )
+        logger.warning(_msg)
+        print(_msg, flush=True)
+        min_size = _abs_min_floor
+
     # Sharp-edge refinement (upgrade C): a flat-faced part (a plain box) has
     # nothing for the curvature sampler to bite on, so its 90-degree edges stay
     # as coarse as the bulk. Detect edges whose dihedral angle exceeds
@@ -1264,9 +1283,22 @@ def _configure_adaptive_sizing(
     # flagged by _scan_feature_sizes), so there is one bounded field, one
     # growth-rate transition, and no duplicate Distance fields. Best-effort:
     # returns [] on STL/discrete surfaces or an empty model.
-    sharp_edge_tags = _detect_sharp_edge_curves(gmsh_mod)
-    if sharp_edge_tags:
-        logger.info("[gmsh] sharp-edge refinement: %d edges", len(sharp_edge_tags))
+    #
+    # DEFAULT OFF (2026-10-08): the corpus regression run showed this field
+    # degrading five sharp-edged geometries (groove1, slot1, mini_valve,
+    # multi_inlet, concave_bracket went from 0 to 11-36 dual defects, NO up
+    # to 62 deg) - the changed tet meshes feed worse duals.  Keep-best rule:
+    # opt in with POLYFOAMMESH_GMSH_SHARP_EDGES=1 until a corpus run proves
+    # it helps more than it hurts.
+    sharp_edge_tags: list[int] = []
+    if os.environ.get("POLYFOAMMESH_GMSH_SHARP_EDGES", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        sharp_edge_tags = _detect_sharp_edge_curves(gmsh_mod)
+        if sharp_edge_tags:
+            logger.info(
+                "[gmsh] sharp-edge refinement: %d edges (opt-in)", len(sharp_edge_tags),
+            )
 
     _seen_curves = set(int(t) for t in feat["small_curve_tags"])
     curve_tags = list(feat["small_curve_tags"]) + [
@@ -2145,6 +2177,74 @@ def _resolve_algo3d() -> int | None:
         return None
 
 
+def _gmsh_robust_mode() -> bool:
+    """True when ``POLYFOAMMESH_GMSH_ROBUST`` asks for the robust fallback path.
+
+    Set by the GUI watchdog (or the caller) on a retry after a stalled/crashed
+    meshing attempt. Enables, from the very start of the run:
+
+      * OCC geometry healing (``healShapes``: fix small edges/faces, sew) —
+        removes the sliver/degenerate B-Rep defects that make GMSH's curve
+        recovery and optimizer loop forever on a surface;
+      * surface meshing switched to Delaunay (5) — measured to complete in
+        ~2 s where MeshAdapt (the default) loops forever on the same size
+        field (Parte2.stp; see ``generate_volume_mesh``);
+      * Mesh.Optimize / Mesh.OptimizeNetgen OFF — the ``Improving ... (S & ER)``
+        loop can dominate (or never terminate) on a pathological surface.
+
+    Never silent: every enabled step is logged and echoed to stdout so it shows
+    in the GUI's streamed log.
+    """
+    val = os.environ.get("POLYFOAMMESH_GMSH_ROBUST", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def _resolve_optimize(robust: bool) -> int:
+    """Whether GMSH's mesh optimizers (``Mesh.Optimize`` / ``OptimizeNetgen``)
+    run: 1 (on, historical default) or 0 (off).
+
+    In robust mode the optimizers are always OFF, because their iterative
+    ``Improving ...`` loop is a common place for a 2D surface mesh to spin
+    without ever converging. Otherwise an explicit ``CFMESH_GMSH_OPTIMIZE``
+    env override is honoured (0/1) so the behaviour can be A/B benchmarked
+    without touching the default path; unset keeps the historical ``1``.
+    """
+    if robust:
+        return 0
+    env = os.environ.get("CFMESH_GMSH_OPTIMIZE", "").strip()
+    if env:
+        try:
+            return 1 if int(env) else 0
+        except ValueError:
+            logger.debug("gmsh_wrapper: bad CFMESH_GMSH_OPTIMIZE value %r", env, exc_info=True)
+    return 1
+
+
+def _heal_occ_geometry(gmsh_mod, tag: str) -> None:
+    """Robust-mode OCC healing pre-pass: fix small edges/faces and sew the
+    shape before any meshing.
+
+    The import options must be set before the shape is read, so
+    ``generate_volume_mesh`` calls this only after ``gmsh.open``; the classic
+    import options are still set there for good measure. ``healShapes()`` is
+    the explicit, measurable operation (it returns the healed entities).
+    Best-effort: a failure here must never block meshing — it just leaves the
+    geometry exactly as imported.
+    """
+    try:
+        healed = gmsh_mod.model.occ.healShapes()
+        gmsh_mod.model.occ.synchronize()
+        msg = f"[gmsh] robust[{tag}]: healShapes -> {len(healed)} entities"
+    except Exception as exc:  # noqa: BLE001 — healing is best-effort
+        msg = f"[gmsh] robust[{tag}]: healShapes failed ({exc}); using geometry as-is"
+        logger.warning(msg)
+    logger.info(msg)
+    try:
+        print(msg, flush=True)
+    except Exception:
+        logger.debug("gmsh_wrapper: robust heal message print failed", exc_info=True)
+
+
 def _gmsh_thread_count() -> int:
     """Number of threads GMSH should use for meshing.
 
@@ -2584,7 +2684,32 @@ def generate_volume_mesh(
         logger.debug("gmsh_wrapper: could not reset CharacteristicLengthFactor", exc_info=True)
     filepath_str = str(Path(filepath).resolve())
     output_msh = str(Path(output_msh).resolve())
+
+    # Robust fallback mode (see _gmsh_robust_mode): enable OCC healing at
+    # import time and turn the optimizers off from the very start. The import
+    # options MUST be set before gmsh.open() — they are read while the shape
+    # is converted from OCC.
+    robust = _gmsh_robust_mode()
+    is_step_input = filepath_str.lower().endswith((".step", ".stp"))
+    if robust:
+        msg = ("[gmsh] robust mode ON (POLYFOAMMESH_GMSH_ROBUST=1): "
+               "OCC healing + no optimizer")
+        logger.info(msg)
+        print(msg, flush=True)
+        if is_step_input:
+            for _opt in (
+                "Geometry.OCCFixSmallEdges", "Geometry.OCCFixSmallFaces",
+                "Geometry.OCCSewFaces", "Geometry.OCCFixDegenerated",
+            ):
+                try:
+                    gmsh.option.setNumber(_opt, 1)
+                except Exception:
+                    logger.debug("gmsh_wrapper: robust import option %s not accepted", _opt, exc_info=True)
+
     gmsh.open(filepath_str)
+
+    if robust and is_step_input:
+        _heal_occ_geometry(gmsh, "step")
 
     if filepath_str.lower().endswith(".stl"):
         # A raw STL has no B-Rep topology — gmsh.open() only imports the
@@ -2745,9 +2870,44 @@ def generate_volume_mesh(
     # but recovers in one iteration in most runs, and where it still
     # fails it raises a normal catchable exception. Never measured worse
     # on any test case (cylinder, venturi, box).
-    gmsh.option.setNumber("Mesh.Algorithm", 1)  # MeshAdapt
-    gmsh.option.setNumber("Mesh.Optimize", 1)
-    gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+    # 2D surface algorithm. Default = MeshAdapt (1), which is what shipped.
+    #
+    # Robust mode switches to Delaunay (5). Measured directly on the failing
+    # Parte2.stp (a 0.1 m x 2 m cylinder): with the adaptive size field
+    # installed, MeshAdapt's 2D pass NEVER returns (killed at 120-180 s,
+    # silently stuck after "[0%] Meshing surface 2 (Cylinder, MeshAdapt)"),
+    # while Delaunay finishes the exact same field in 1.6 s and
+    # Frontal-Delaunay in 1.9 s. This is the actual cause of the reported
+    # "stuck on surface 2" hang — not the geometry, the optimizer, or the
+    # passage probe (all three were measured and ruled out). The earlier
+    # MeshAdapt choice remains correct as the DEFAULT because
+    # Frontal-Delaunay segfaults on periodic Cone/Cylinder/BSpline valve CAD
+    # (see the history below); Delaunay is only used under the explicit
+    # robust retry after the default path has already stalled.
+    if robust:
+        algo2d = 5  # Delaunay — robust fallback (measured to complete)
+        _algo2d_msg = ("[gmsh] robust: surface algorithm -> Delaunay (5) "
+                       "instead of MeshAdapt (stalls on this CAD class)")
+        logger.info(_algo2d_msg)
+        print(_algo2d_msg, flush=True)
+    else:
+        algo2d = 1  # MeshAdapt
+    gmsh.option.setNumber("Mesh.Algorithm", algo2d)
+    # Optimizer is configurable and OFF in robust mode. Its iterative
+    # "Improving ..." loop is a known place for a 2D surface mesh to never
+    # converge; skipping it trades a little element quality for guaranteed
+    # completion. CFMESH_GMSH_OPTIMIZE=0/1 allows A/B benchmarking without
+    # changing the default (1).
+    _opt = _resolve_optimize(robust)
+    gmsh.option.setNumber("Mesh.Optimize", _opt)
+    gmsh.option.setNumber("Mesh.OptimizeNetgen", _opt)
+    if _opt == 0:
+        _opt_msg = (
+            "[gmsh] Mesh.Optimize/OptimizeNetgen DISABLED"
+            + (" (robust mode)" if robust else " (CFMESH_GMSH_OPTIMIZE=0)")
+        )
+        logger.info(_opt_msg)
+        print(_opt_msg, flush=True)
 
     if user_lc:
         # Explicit user override: use user's cell sizes directly

@@ -34,6 +34,43 @@ if TYPE_CHECKING:
 # Monotonic clock for elapsed-time measurement (immune to wall-clock jumps).
 _now = time.monotonic
 
+# GMSH stall watchdog. GMSH's surface-meshing loop can hang forever on a bad
+# surface (confirmed live: stuck at 40% on "surface 2"; a venturi looping on
+# "Serializing surface 46") while emitting no output at all. The volume worker
+# tracks the time of the last output line and, if nothing arrives for
+# GMSH_STALL_TIMEOUT_S, kills the process tree and retries ONCE in robust mode
+# (POLYFOAMMESH_GMSH_ROBUST=1: healing + MeshAdapt, no optimization). A healthy
+# run whose output keeps flowing is never touched, however long it takes.
+# Override the threshold with env POLYFOAMMESH_GMSH_STALL_S (seconds).
+GMSH_STALL_TIMEOUT_S = 300.0
+GMSH_STALL_ENV_VAR = "POLYFOAMMESH_GMSH_STALL_S"
+GMSH_ROBUST_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST"
+
+
+def _gmsh_stall_timeout_s() -> float:
+    """Stall threshold in seconds (env POLYFOAMMESH_GMSH_STALL_S overrides).
+
+    Read at call time, not import time, so a test or a user-set env var takes
+    effect per run. A non-positive or non-numeric override is ignored with a
+    warning and the module default is used instead.
+    """
+    raw = os.environ.get(GMSH_STALL_ENV_VAR)
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+            logger.warning(
+                "%s=%r must be > 0; using default %ss",
+                GMSH_STALL_ENV_VAR, raw, GMSH_STALL_TIMEOUT_S,
+            )
+        except ValueError:
+            logger.warning(
+                "%s=%r is not a number; using default %ss",
+                GMSH_STALL_ENV_VAR, raw, GMSH_STALL_TIMEOUT_S,
+            )
+    return GMSH_STALL_TIMEOUT_S
+
 
 def _posix_popen_kwargs() -> dict:
     """Popen kwargs that put a child in its OWN process group/session on POSIX.
@@ -2385,7 +2422,9 @@ def _release_job(proc) -> None:
         pass
 
 
-def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10, proc_holder=None):
+def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
+                       heartbeat_s: float = 10, proc_holder=None,
+                       stall_s: float | None = None, stall_holder=None):
     """Run cmd via Popen, streaming stdout/stderr line-by-line as they
     arrive instead of buffering everything until the process exits.
 
@@ -2408,6 +2447,17 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
     Popen, was never touched and kept running orphaned. Confirmed live:
     Cancel visually reset the UI but the process stayed alive, and
     starting a new run then meant two GMSH processes running at once.
+
+    stall_s: opt-in watchdog threshold, in seconds. When set, the time of the
+    last real output line (stdout OR stderr) is tracked separately from the
+    heartbeat throttle; if no line arrives for stall_s the process tree is
+    killed, :func:`_kill_pid_tree` is used (POSIX/Windows aware), and
+    ``stall_holder["stalled"]`` is set to True with ``elapsed_s`` /
+    ``no_output_s``. ``None`` (default) disables the watchdog entirely, so
+    surface/watertight runs keep their existing behaviour. The heartbeat keeps
+    firing independently and output flowing resets the stall timer — a long but
+    alive run is never killed. The caller (GmshVolumeWorker) owns the retry in
+    robust mode; this helper only kills and reports.
 
     Returns (returncode, stdout_lines, stderr_lines, timed_out).
     """
@@ -2440,6 +2490,11 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     last_activity = [time.monotonic()]
+    # Separate clock for the stall watchdog: last_activity is bumped by the
+    # heartbeat itself (to avoid re-printing it), so it must NOT be used to
+    # decide a stall — a silent child would reset it every heartbeat and the
+    # watchdog would never fire. last_output only moves on a real line.
+    last_output = [time.monotonic()]
 
     # Flood protection: a pathological child (e.g. cartesianMesh grinding on
     # an invalid mesh) can emit thousands of warning lines/sec; forwarding
@@ -2467,6 +2522,7 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
                 line = line.rstrip("\n")
                 _append_capped(sink, line)
                 last_activity[0] = time.monotonic()
+                last_output[0] = last_activity[0]
                 if line.strip():
                     now = time.monotonic()
                     if now - _rate["last_emit"] >= 1.0 / _MAX_LINE_RATE_PER_S:
@@ -2498,6 +2554,11 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
     t_out.start()
     t_err.start()
 
+    # Observability: make the watchdog's presence explicit (and prove it is
+    # NOT armed for paths that pass stall_s=None).
+    if stall_s is not None:
+        on_line(f"watchdog armed: kill after {int(stall_s)}s with no output")
+
     start = time.monotonic()
     timed_out = False
     while True:
@@ -2508,6 +2569,25 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=1
         if now - start > timeout_s:
             timed_out = True
             proc.kill()
+            break
+        if stall_s is not None and now - last_output[0] > stall_s:
+            # No real output for longer than the threshold: GMSH is stuck in a
+            # surface-recovery loop (or equivalent) and would hang forever.
+            # Kill the whole tree, record the numbers for the caller, and get
+            # out — the caller decides whether to retry in robust mode.
+            no_output_s = now - last_output[0]
+            elapsed_s = now - start
+            if stall_holder is not None:
+                stall_holder["stalled"] = True
+                stall_holder["elapsed_s"] = elapsed_s
+                stall_holder["no_output_s"] = no_output_s
+            on_line(
+                f"watchdog fired: no output for {int(no_output_s)}s "
+                f"({int(elapsed_s)}s elapsed) - killing process tree"
+            )
+            _kill_pid_tree(proc.pid)
+            with suppress(Exception):
+                proc.kill()
             break
         if now - last_activity[0] > heartbeat_s:
             on_line(f"... still running ({int(now - start)}s elapsed, "
@@ -2706,24 +2786,65 @@ class GmshVolumeWorker(QObject):
             self.log_line.emit(
                 f"[gmsh] solution-adaptive size field: {self._size_field_file}"
             )
-        try:
-            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
-                cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=env,
-                on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
-                proc_holder=self._proc_holder,
-            )
-        except Exception as exc:
-            if not self._cancelled:
-                self.failed.emit(str(exc))
-            return
 
-        if self._cancelled:
-            self.log_line.emit("[gmsh] Volume generation cancelled.")
-            return
+        # Stall watchdog: GMSH can hang forever in its surface-meshing loop
+        # while emitting nothing. One robust retry (the other lane reads
+        # POLYFOAMMESH_GMSH_ROBUST=1) then an honest failure — never a loop.
+        stall_s = _gmsh_stall_timeout_s()
+        robust = False
+        while True:
+            attempt_env = dict(env)
+            if robust:
+                attempt_env[GMSH_ROBUST_ENV_VAR] = "1"
+            self._proc_holder.clear()
+            stall_holder: dict = {}
+            try:
+                returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                    cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=attempt_env,
+                    on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
+                    proc_holder=self._proc_holder,
+                    stall_s=stall_s,
+                    stall_holder=stall_holder,
+                )
+            except Exception as exc:
+                if not self._cancelled:
+                    self.failed.emit(str(exc))
+                return
 
-        if timed_out:
-            self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
-            return
+            if self._cancelled:
+                self.log_line.emit("[gmsh] Volume generation cancelled.")
+                return
+
+            if timed_out:
+                self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
+                return
+
+            if stall_holder.get("stalled"):
+                no_output_s = stall_holder.get("no_output_s", 0.0)
+                if robust:
+                    # The robust retry stalled too: stop and fail honestly.
+                    # Never loop again — the GUI must not hang.
+                    self.log_line.emit(
+                        "[gmsh] robust retry also stalled (no output for "
+                        f"{int(no_output_s)}s) - giving up."
+                    )
+                    self.failed.emit(
+                        "GMSH volume stalled twice: no output for "
+                        f"{int(no_output_s)}s in normal mode, and again in "
+                        "robust mode (healing + MeshAdapt, no optimization). "
+                        "The surface is likely unmeshable; see the log above."
+                    )
+                    return
+                self.log_line.emit(
+                    "[gmsh] stalled: no output for "
+                    f"{int(no_output_s)}s (surface meshing loop?) - killed; "
+                    "retrying in robust mode (healing + MeshAdapt, no "
+                    "optimization)"
+                )
+                robust = True
+                continue
+
+            break  # attempt completed with real output
 
         # Parse stdout FIRST, even on a non-zero exit: the CLI's own
         # except-block always reports a caught error as JSON on stdout
