@@ -1106,11 +1106,15 @@ def test_min_base_face_fraction_rejects_negative():
 # edge_cap_percentile: opt-in robust inversion-clamp edge cap (default off)
 # ---------------------------------------------------------------------------
 
-def test_edge_cap_percentile_default_off_identity():
+def test_edge_cap_percentile_default_off_identity(monkeypatch):
     """Default (argument absent) must be exactly `0.0`: the written polyMesh
     is byte-identical to the control run that passes `0.0` explicitly, and
     both report the SAME total thickness (the historical
-    `0.5 * min_edge` cap - 0.117851 m on this fixture)."""
+    `0.5 * min_edge` cap - 0.117851 m on this fixture).
+
+    The consume path (default ON since the T6 promotion) is explicitly
+    disabled here: this test pins the HISTORICAL budget behaviour."""
+    monkeypatch.setenv("POLYFOAMMESH_BL_CONSUME", "0")
     case_default = _build_dual_case(WORK_ROOT / "cube_ecap_default")
     case_control = _build_dual_case(WORK_ROOT / "cube_ecap_control")
     res_default = PolyBoundaryLayerEngine(case_default, log=lambda m: None).run(
@@ -1134,7 +1138,10 @@ def test_edge_cap_percentile_default_off_identity():
     assert files_d == files_c, "default-off run must be byte-identical to control"
 
 
-def test_edge_cap_percentile_larger_total_thickness_than_default():
+def test_edge_cap_percentile_larger_total_thickness_than_default(monkeypatch):
+    # Compare against the HISTORICAL default budget: the consume path is the
+    # default since the T6 promotion, so it is switched off explicitly here.
+    monkeypatch.setenv("POLYFOAMMESH_BL_CONSUME", "0")
     """`edge_cap_percentile=50` must produce a LARGER total stack thickness
     than the default (historical min-edge) cap on the same fixture.
 
