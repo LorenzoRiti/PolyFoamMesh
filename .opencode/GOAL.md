@@ -947,3 +947,22 @@ non-positive a ogni scala) -> gate resta OFF, nessuna promozione (regola
 T6 del piano). Corpus spot: nessuna regressione (pipe/box migliorati).
 PROSSIMO (T4b): guardia sliver-aware nel reflow (pin/esclusione dei
 vertici di celle sliver) -> riaccettazione venturi+tubo -> poi T5/T6.
+
+## 2026-10-08 - T4b guardia sliver (consuming BL) - verificata, gate OFF
+
+Guardia sliver-aware: criterio min_edge(cell) < 0.1*target_depth; pin dei
+vertici interni delle celle sliver + fallback per-vertice al budget
+attuale. Verifica mia: ruff + 66 test BL verdi.
+- TUBO: invariato e verde (0 celle pin, mediana 6, checkMesh PASS).
+- VENTURI: 193/21.798 celle pin, 2.691 vertici wall in fallback; il build
+  con gate ON ora passa _validate ma checkMesh REALE fallisce (NO 165.4 vs
+  baseline 97.18, aspect 1818, 251 piramidi). Sweep soglia 0.1-0.5: le
+  inversioni non calano -> il blocker e' la TORSIONE DEI PRISMI su 4.027
+  facce base sliver, non gli sliver del core. Gate OFF, niente promozione.
+- Scoperta importante: _validate interno NON cattura i difetti che
+  checkMesh vede (pyramid/non-ortho) -> per l'accettazione serve SEMPRE
+  checkMesh reale.
+PROSSIMO (T4c): auto-disattivazione del consume sui dual sliver-heavy
+(>X% facce wall sliver -> consume OFF per quel build, loggato): il
+venturi torna identico al baseline, il tubo resta a 6 layer -> candidato
+per la promozione (T6) dopo verifica corpus.
