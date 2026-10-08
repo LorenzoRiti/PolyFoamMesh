@@ -902,3 +902,28 @@ CORPUS default-path (run finale): 3/15 "pass" col criterio del harness
 il confronto coi 6 baseline reali e' pulito.
 PROSSIMO: commit, poi (se serve) estendere il baseline del corpus alle
 geometrie mancanti per rendere il gate significativo.
+
+## 2026-10-08 - VERDETTO BL multi-layer (A+B) - decisione di prodotto
+
+Lane A (BL cotto in GMSH + dual misto): consegnata con verdetto DEFINITIVO.
+- GMSH 4.15.2 NON puo' cuocere prismi 3D: il campo BoundaryLayer supporta
+  solo 2D (3D rimosso in GMSH 2.15.0; aborta su curve adiacenti a due
+  superfici). L'unica via 3D (extrudeBoundaryLayer) richiede il kernel
+  interno, non STEP/STL. Verificato empiricamente: zero prismi sempre.
+  => strada A MORTA PER IL TOOL, non per il codice.
+- Consegnato comunque: dual con input misto tet+prismi e stitching esatto
+  (verificato con checkMesh reale: Mesh OK su prismi sintetici), skip del
+  BL interno se i prismi esistono (anti doppio-BL), gate env default OFF,
+  default path byte-identico (SHA256). 13 test nuovi, suite 1426.
+Lane B (BL che consuma celle): restituita con prova topologica (il top
+del prisma non puo' attaccarsi alla cella successiva senza celle di
+transizione/rimaneggiamento; prototipo conservativo = 55 celle
+non-positive). E' un programma di ricerca, non un fix.
+NOTA: la corsia B ha anche sbagliato il check d'ambiente (checkMesh NON
+mancante: verificato io con source del bashrc - checkMesh/gmshToFoam/
+cartesianMesh presenti in /usr/lib/openfoam/openfoam2512).
+=> Il BL multi-layer su geometrie reali richiede il programma "B"
+(rimaneggiamento con transizioni / morf con solve di displacimento):
+SDD dedicato, settimane. Decisione utente: rilasciare col cap onesto
+(logga "capped N -> k") e mettere il BL multi-layer come titolo
+dell'update successivo, oppure spostare il rilascio.
