@@ -230,3 +230,45 @@ def test_zonal_mode_holds_safety_contract(tmp_path):
     assert sm_total <= inj_total
     assert np.array_equal(smoothed[boundary], injected[boundary])
     assert (sm_vol > 0.0).all()
+
+
+def test_severity_guard_never_raises_max_severity(tmp_path):
+    """C5 contract: with ``guard_severity=True`` the smoother never accepts a
+    step that raises the continuous MAX non-orthogonality or MAX skewness
+    above the mesh it started from, while keeping every existing guarantee
+    (boundary pinned, positive volumes, defect count non-increasing)."""
+    from polyfoammesh.core.poly_smoother import _continuous_metrics
+
+    points, faces, owner, neigh, _patches, n_int, n_cells = _run_dual(tmp_path)
+    boundary = _boundary_vertex_mask(points, faces, n_int)
+    rng = np.random.default_rng(3)
+    injected = points.copy()
+    for v in np.flatnonzero(~boundary):
+        injected[v] += rng.normal(0, 0.15, 3)
+
+    def _worst(pts):
+        sf, cf = _face_geometry(pts, faces)
+        ctr, vol = _cell_centres(sf, cf, owner, neigh, n_int, n_cells)
+        no, sk = _continuous_metrics(
+            sf, cf, ctr, owner, neigh, n_int, pts, faces)
+        return (
+            float(no.max()) if len(no) else 0.0,
+            float(sk.max()) if len(sk) else 0.0,
+            vol,
+        )
+
+    no0, sk0, _ = _worst(injected)
+    guarded, _best = smooth_dual_mesh(
+        injected, faces, owner, neigh, n_int, n_cells,
+        _detect_defects, _face_geometry, _cell_centres,
+        iterations=6, relaxation=0.5, guard_severity=True,
+    )
+    no_g, sk_g, vol_g = _worst(guarded)
+    assert no_g <= no0 * (1.0 + 1e-9) + 1e-9, (no0, no_g)
+    assert sk_g <= sk0 * (1.0 + 1e-9) + 1e-9, (sk0, sk_g)
+    assert (vol_g > 0.0).all()
+    assert np.array_equal(guarded[boundary], injected[boundary])
+    # safety: never worse in total defects either
+    inj_counts, _ = _defects(injected, faces, owner, neigh, n_int, n_cells)
+    g_counts, _ = _defects(guarded, faces, owner, neigh, n_int, n_cells)
+    assert sum(g_counts.values()) <= sum(inj_counts.values())

@@ -487,6 +487,7 @@ def smooth_dual_mesh(
     use_axis_balance: bool = False,
     worst_aspect_thr: float = 0.0,
     zonal_aspect_lam: float = 5000.0,
+    guard_severity: bool = False,
 ) -> tuple[np.ndarray, dict]:
     """Smooth interior dual vertices, keep-best w.r.t. the defect detector.
 
@@ -534,6 +535,18 @@ def smooth_dual_mesh(
     Default ``zonal_aspect_lam`` 5000 ≈ balance vs the base objective at
     cylinder-class scales (measured — re-balance from a scale print when
     applying elsewhere). See notes/zonal_aspect_relaxation_reasoning.md.
+
+    ``guard_severity`` (default False = off, opt-in, P1/C5): rejects any
+    candidate step that raises the current best MAX non-orthogonality or MAX
+    skewness (continuous values, not the threshold-crossing counts). The
+    existing keep-best compares only defect COUNTS, so it accepts a step
+    that lowers the count while raising the max severity of the tail:
+    measured on the venturi dual, smoothing traded non-orthogonality
+    (111.2 -> 97.2 deg) for max skewness (10.84 -> 18.30). With this guard
+    on, a step that worsens either max is skipped and the smoother
+    backtracks/keeps the current best. Default off so the legacy
+    count-based path is byte-identical. See
+    notes/complex_geometry_reasoning.md (C5).
     """
     zonal_on = float(worst_aspect_thr) > 0.0
     if iterations <= 0:
@@ -571,6 +584,17 @@ def smooth_dual_mesh(
         zonal_thr=float(worst_aspect_thr),
     )
     best_counts = dict(counts)
+
+    # C5 max-severity guard state (opt-in): the continuous worst
+    # non-orthogonality / skewness of the CURRENT best, so a candidate that
+    # improves only the counts but raises the tail is rejected.
+    if guard_severity:
+        _no0, _sk0 = _continuous_metrics(
+            sf, cf, ctr, owner, neigh, n_int, points, faces)
+        best_no = float(_no0.max()) if len(_no0) else 0.0
+        best_sk = float(_sk0.max()) if len(_sk0) else 0.0
+    else:
+        best_no = best_sk = 0.0
 
     # Planarity hard guard (2026-09-14): non-ortho/skew are not the only
     # quality axis a Laplacian step can affect. Measured regression: on a
@@ -660,6 +684,18 @@ def smooth_dual_mesh(
                 cand_total = (
                     cand_counts["pyramid"] + cand_counts["non_ortho"] + cand_counts["skew"]
                 )
+                if guard_severity:
+                    _no_c, _sk_c = _continuous_metrics(
+                        sf_c, cf_c, ctr_c, owner, neigh, n_int, cand, faces)
+                    _no_m = float(_no_c.max()) if len(_no_c) else 0.0
+                    _sk_m = float(_sk_c.max()) if len(_sk_c) else 0.0
+                    if (
+                        _no_m > best_no * (1.0 + 1e-9) + 1e-9
+                        or _sk_m > best_sk * (1.0 + 1e-9) + 1e-9
+                    ):
+                        continue
+                else:
+                    _no_m = _sk_m = 0.0
                 if log:
                     log(
                         f"[poly 7/9] smoothing iter {it} [{cand_name}] "
@@ -680,6 +716,7 @@ def smooth_dual_mesh(
                     best_points = cand
                     best_counts = dict(cand_counts)
                     best_planarity = cand_planarity
+                    best_no, best_sk = _no_m, _sk_m
                     cur_points = cand
                     accepted = True
                     break
@@ -707,6 +744,7 @@ def smooth_dual_mesh(
                         best_points = cand
                         best_counts = dict(cand_counts)
                         best_planarity = cand_planarity
+                        best_no, best_sk = _no_m, _sk_m
                         cur_points = cand
                         accepted = True
                         break
