@@ -1041,3 +1041,18 @@ smoothing (C5), feature-angle, triangulate. Restano solo:
 (c) accettare il limite con report onesto (checkMesh gia' dice FAIL e
     l'app lo mostra; C4 = gate di qualita' nel writer = solo reporting).
 Tutto il codice e' committato e verde; il merge resta opt-in.
+
+## 2026-10-08 - P6+P7: BL SUL VENTURI (traguardo del goal)
+
+Verificato dall'orchestratore con checkMesh reale (case 103936, dual dal
+tet backup): 43,782 prismi, 6 layer pieni sul 60.7% del muro (tutto il
+sano; sliver e cappucci esclusi), first layer ratio 1.00.
+checkMesh: pyramids 199 (< 224 del dual-only!), aspect max 209 OK
+(erano 3182), NO 97.1771 / skew 18.3017 / neg 0 = identici al baseline
+(le feature strutturali della gola restano documentate).
+Tubo bit-identico (PASS), corpus bit-identico.
+P6 = esclusione per-faccia sliver (0 layer, vertici pinned, reflow sul
+resto). P7 = esclusione geometrica dei cappucci inlet/outlet (normale
+axis-aligned all'asse di flusso + piano al bbox estremo + patch planare
+>=4 facce, + anello rim), gated OFF per apply_to_all=True (benchmark).
+La barra "BL multi-layer su geometria complessa" e' RAGGIUNTA.

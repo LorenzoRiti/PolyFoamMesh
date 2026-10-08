@@ -157,7 +157,11 @@ def test_consume_support_walk_absent_when_gate_off(monkeypatch):
 # Task 2: core reflow builds the full stack (gated)
 # ---------------------------------------------------------------------------
 
-def test_consume_reflow_builds_full_stack_on_graded_dual():
+def test_consume_reflow_builds_full_stack_on_graded_dual(monkeypatch):
+    # The synthetic box's z-extremes are genuine geometric caps, so the
+    # 2026-10-08 cap criterion would exclude them; neutralise it here to keep
+    # this test focused on the core-reflow multi-cell support.
+    monkeypatch.setattr(bl_poly, "_CONSUME_CAP_MIN_PATCH_FACES", 10 ** 9)
     case = _build_layered_dual(WORK_ROOT / "reflow")
     os.environ["POLYFOAMMESH_BL_CONSUME"] = "1"
     eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
@@ -269,6 +273,10 @@ def test_sliver_guard_pins_cells_and_falls_back_without_touching_healthy_cells(
     case = _build_layered_dual(WORK_ROOT / "sliver_pin")
     eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
     points, faces, owner, neighbour, patches, n_int, sel = _pre(eng, case)
+
+    # the synthetic box's z-extremes are geometric caps; neutralise the cap
+    # criterion so this test isolates the sliver guard.
+    monkeypatch.setattr(bl_poly, "_CONSUME_CAP_MIN_PATCH_FACES", 10 ** 9)
 
     def _pre_at(target_depth):
         return eng._build_precompute(
@@ -412,3 +420,251 @@ def test_consume_auto_disables_and_matches_gate_off_on_sliver_heavy():
     assert np.array_equal(np.asarray(pa[0]), np.asarray(pb[0]))
     assert [list(f) for f in pa[1]] == [list(f) for f in pb[1]]
     assert np.array_equal(np.asarray(pa[2]), np.asarray(pb[2]))
+
+
+# ---------------------------------------------------------------------------
+# T4d: per-face exclusion (replaces the T4c global auto-disable)
+# ---------------------------------------------------------------------------
+
+def test_consume_excluded_faces_is_a_noop_on_the_healthy_graded_dual(monkeypatch):
+    """The accepted healthy dual has no sliver cell at the production stack
+    depth, so the per-face exclusion returns nothing (the consume path is
+    byte-identical to before on the tube-like case)."""
+    # the synthetic box's z-extremes are geometric caps; neutralise the cap
+    # criterion so this test isolates the sliver criterion.
+    monkeypatch.setattr(bl_poly, "_CONSUME_CAP_MIN_PATCH_FACES", 10 ** 9)
+    case = _build_layered_dual(WORK_ROOT / "excl_healthy")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, _patches, n_int, sel = _pre(eng, case)
+    excl, n_excl, frac = eng._consume_excluded_faces(
+        points, faces, owner, neighbour, n_int, sel, 0.30,
+    )
+    assert n_excl == 0 and excl == frozenset() and frac == 0.0
+
+
+def test_consume_excluded_faces_noop_without_a_target_depth():
+    """``target_depth <= 0`` (direct ``_build`` callers) excludes nothing, so
+    a build whose stack was never supplied is untouched by the new rule."""
+    case = _build_layered_dual(WORK_ROOT / "excl_notarget")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, _patches, n_int, sel = _pre(eng, case)
+    assert eng._consume_excluded_faces(
+        points, faces, owner, neighbour, n_int, sel, 0.0,
+    ) == (frozenset(), 0, 0.0)
+
+
+def test_consume_excluded_faces_flags_every_face_when_threshold_is_huge(
+    monkeypatch,
+):
+    """With the sliver threshold forced above every edge, every selected face
+    is sliver-affected (criterion (a) and (b) agree)."""
+    case = _build_layered_dual(WORK_ROOT / "excl_heavy")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, _patches, n_int, sel = _pre(eng, case)
+    monkeypatch.setattr(bl_poly, "_CONSUME_SLIVER_FRAC", 1e9)
+    excl, n_excl, frac = eng._consume_excluded_faces(
+        points, faces, owner, neighbour, n_int, sel, 0.30,
+    )
+    assert n_excl == len(sel) and frac == 1.0
+    assert excl == frozenset(range(len(sel)))
+
+
+def test_consume_exclusion_rings_add_edge_adjacent_faces(monkeypatch):
+    """The 1-ring widening must add exactly the selected faces that share an
+    EDGE with a base-excluded face but are not themselves caught by the
+    vertex-touch criterion (b)."""
+    # cell 0 is forced sliver; its only incident face carries vertices
+    # {10,11,12,13}.  Boundary face E = [10,1,2,3] touches the sliver at
+    # vertex 10 only, so it is excluded by (b); B = [1,2,4,5] shares the
+    # clean edge (1,2) with E and is NOT caught by (b), only by ring 1.
+    points = np.array([
+        [0.0, 0.0, 0.0],        # 0 (unused)
+        [0.5, 0.0, 0.0],        # 1
+        [0.5, 0.5, 0.0],        # 2
+        [0.0, 0.5, 0.0],        # 3
+        [1.0, 0.5, 0.0],        # 4
+        [1.0, 0.0, 0.0],        # 5
+        [0.0, 0.0, 0.0],        # 6
+        [0.0, 0.0, 0.0],        # 7
+        [0.0, 0.0, 0.0],        # 8
+        [0.0, 0.0, 0.0],        # 9
+        [0.2, 0.2, 0.3],        # 10
+        [0.4, 0.2, 0.3],        # 11
+        [0.4, 0.4, 0.3],        # 12
+        [0.2, 0.4, 0.3],        # 13
+    ])
+    faces = [
+        [10, 11, 12, 13],       # internal, owner 0 / neighbour 1
+        [10, 1, 2, 3],          # boundary E, owner 1
+        [1, 2, 4, 5],           # boundary B, owner 1
+    ]
+    owner = np.array([0, 1, 1])
+    neighbour = np.array([1])
+    n_int = 1
+    sel = [0, 1]                # boundary-local ids: E = 0, B = 1
+
+    case = _build_layered_dual(WORK_ROOT / "excl_rings")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    monkeypatch.setattr(eng, "_consume_cell_min_edge",
+                        lambda *a, **k: {0: 1e-6})
+
+    monkeypatch.setattr(bl_poly, "_CONSUME_EXCLUSION_RINGS", 0)
+    excl0, _n0, _f0 = eng._consume_excluded_faces(
+        points, faces, owner, neighbour, n_int, sel, 1.0,
+    )
+    assert excl0 == frozenset({0}), sorted(excl0)
+
+    monkeypatch.setattr(bl_poly, "_CONSUME_EXCLUSION_RINGS", 1)
+    excl1, _n1, _f1 = eng._consume_excluded_faces(
+        points, faces, owner, neighbour, n_int, sel, 1.0,
+    )
+    assert excl1 == frozenset({0, 1}), sorted(excl1)
+
+    monkeypatch.setattr(bl_poly, "_CONSUME_EXCLUSION_RINGS", 2)
+    excl2, _n2, _f2 = eng._consume_excluded_faces(
+        points, faces, owner, neighbour, n_int, sel, 1.0,
+    )
+    assert excl2 == frozenset({0, 1}), sorted(excl2)
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-08: geometric inlet/outlet CAP exclusion
+# ---------------------------------------------------------------------------
+
+def _cap_mesh(n_per_side: int = 4):
+    """A flat 'duct' with two planar caps at the extremes of the flow axis.
+
+    Extents: x = 2 (largest), y = z = 1, so the flow axis is x.  Each cap is a
+    ``n_per_side``-face coplanar patch at xmin/xmax, all wound the same way.
+    Returns ``(points, faces)`` with only the cap faces (``n_int=0``).
+    """
+    pts: list[list[float]] = []
+    faces: list[list[int]] = []
+
+    def cap(xc: float):
+        base = len(pts)
+        ys = np.linspace(0.0, 1.0, n_per_side + 1).tolist()
+        zs = np.linspace(0.0, 1.0, n_per_side + 1).tolist()
+        idx = {}
+        for iy, y in enumerate(ys):
+            for iz, z in enumerate(zs):
+                idx[(iy, iz)] = len(pts)
+                pts.append([xc, y, z])
+        for iy in range(n_per_side):
+            for iz in range(n_per_side):
+                faces.append([
+                    idx[(iy, iz)], idx[(iy + 1, iz)],
+                    idx[(iy + 1, iz + 1)], idx[(iy, iz + 1)],
+                ])
+        return base
+
+    cap(0.0)
+    cap(2.0)
+    return np.array(pts, dtype=float), faces
+
+
+def test_consume_cap_faces_detects_planar_extreme_patch():
+    """A selected planar patch of >=4 axis-aligned faces at the bbox extreme
+    plane on the flow axis is flagged as a cap."""
+    pts, faces = _cap_mesh(4)
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    sel = list(range(len(faces)))
+    caps, info = eng._consume_cap_faces(pts, faces, 0, sel)
+    assert caps == set(sel)
+    assert info["axis_name"] == "x"
+    assert info["n_cap"] == len(faces)
+    assert info["side"] in ("xmin+xmax", "xmin", "xmax")
+
+
+def test_consume_cap_faces_ignores_unselected_caps():
+    """Caps that are NOT selected (the tube case) must not be returned, so a
+    build whose caps are not in the wall set is untouched."""
+    pts, faces = _cap_mesh(4)
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    # only the second cap (the max extreme) is 'selected'
+    half = len(faces) // 2
+    caps, _info = eng._consume_cap_faces(pts, faces, 0, list(range(half, len(faces))))
+    assert caps == set(range(half, len(faces)))
+    # nothing selected at all -> nothing detected
+    caps0, _info0 = eng._consume_cap_faces(pts, faces, 0, [])
+    assert caps0 == set()
+
+
+def test_consume_cap_faces_requires_a_planar_patch(monkeypatch):
+    """A single face (or fewer than the patch minimum) at the extreme is not a
+    cap: the criterion requires a coplanar patch, not one stray face."""
+    pts, faces = _cap_mesh(2)  # 4 faces per cap
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    sel = list(range(len(faces)))
+    monkeypatch.setattr(bl_poly, "_CONSUME_CAP_MIN_PATCH_FACES", 5)
+    caps, _info = eng._consume_cap_faces(pts, faces, 0, sel)
+    assert caps == set()
+
+
+def test_consume_cap_faces_ignores_tilted_faces():
+    """Faces at the extreme plane whose normal is not axis-aligned are not
+    caps (they are wall faces that merely reach the extreme)."""
+    pts, faces = _cap_mesh(4)
+    # tilt the second cap's points so its normals are no longer axis-aligned
+    pts = pts.copy()
+    n_pts = (len(pts) + 1) // 2          # first cap owns the first half
+    n_faces = len(faces) // 2
+    pts[n_pts:, 0] += 0.5 * (pts[n_pts:, 1] - 0.5)
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    sel = list(range(len(faces)))
+    caps, info = eng._consume_cap_faces(pts, faces, 0, sel)
+    assert not (set(range(n_faces, len(faces))) & caps)
+    assert info["n_cap"] == n_faces
+
+
+def test_consume_cap_faces_are_unioned_into_excluded(monkeypatch):
+    """``_consume_excluded_faces`` unions the detected cap faces into its
+    exclusion set (so they get nf=0 downstream)."""
+    pts, faces = _cap_mesh(4)
+    # prepend one internal face so the function's n_cells/neighbour plumbing
+    # has a valid (non-empty) neighbour array, exactly as a real mesh does.
+    centre = np.array([[1.0, 0.5, 0.5]])
+    first = faces[0]
+    faces = [[len(pts), first[0], first[1], first[2]]] + faces
+    pts = np.vstack([pts, centre])
+    owner = np.array([0] + [1] * (len(faces) - 1), dtype=np.int64)
+    neighbour = np.array([1], dtype=np.int64)
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    sel = list(range(len(faces) - 1))
+    # small target depth -> sliver threshold far below every edge, so (a)/(b)
+    # stay empty and only the cap criterion excludes anything.
+    excl, n_excl, frac = eng._consume_excluded_faces(
+        pts, faces, owner, neighbour, 1, sel, 1e-6,
+    )
+    assert excl == frozenset(sel)
+    assert n_excl == len(sel)
+    assert frac == 1.0
+
+
+def test_build_forced_excluded_faces_get_zero_prisms():
+    """``_build`` must give an excluded face 0 layers (no prism) while its
+    healthy neighbours keep the full requested stack, and the histogram must
+    report those zeros (coverage < 100%)."""
+    case = _build_layered_dual(WORK_ROOT / "excl_build")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, owner, neighbour, patches, n_int, sel = _pre(eng, case)
+    assert len(sel) >= 2
+    excluded = frozenset({0, 1})
+    target = float(bl_poly._stack_depths(2, 0.05, 1.2)[-1])
+    pre = eng._build_precompute(
+        points, faces, owner, neighbour, patches, n_int, sel,
+        frozenset(), consume=True, target_depth=target,
+        consume_excluded=excluded,
+    )
+    assert pre["consume_excluded"] == excluded
+    built = eng._build(
+        points, faces, owner, neighbour, patches, n_int, sel,
+        n_layers=2, first_height=0.05, growth=1.2, clamp_factor=0.5,
+        pre=pre, zero_concave=True, consume=True,
+        consume_excluded=excluded,
+    )
+    nf = built["prism_nf"]
+    assert nf[0] == 0 and nf[1] == 0
+    assert any(nf[bi] == 2 for bi in range(len(sel)) if bi not in excluded)
+    assert built["n_faces_dropped"] >= 2
+
