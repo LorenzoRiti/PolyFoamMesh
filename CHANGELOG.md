@@ -69,6 +69,18 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Qualità dual su geometrie complesse (opt-in, keep-best)**: nuovo
+  `repair_concave_cells_keepbest` (merge delle celle concave con gate di
+  **severità massima**: si accetta solo se NO/skew massimi non peggiorano)
+  + `compact_unused_points` (bug latente corretto: il merge lasciava punti
+  orfani → checkMesh "Unused points" hard-fail; corretto anche un
+  `startFace` corrotto al round 2 che faceva SEGFAULTare checkMesh).
+  Misurato con checkMesh reale: **valvola piramidi 340 → 46** (errori NO
+  10 → 1), venturi 224 → 110; sul venturi la barra PASS non è raggiungibile
+  con merge/smoothing (la gola concava è sottorisolita a monte) → tutto
+  opt-in, default byte-identico, corpus invariato (slot1 protetto dal gate
+  di severità). La guardia anti-skew dello smoother resta opt-in (baratta
+  NO per skew).
 - **BL multi-layer "consuming" - ORA DEFAULT**: il motore BL può
   consumare strati di celle dual (rilocazione armonica limitata dei
   vertici interni + guardia anti-inversione per-edge + guardia sliver

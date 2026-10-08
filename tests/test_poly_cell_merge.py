@@ -27,9 +27,11 @@ import polyfoammesh.core.foam_mesh_io as fio
 from polyfoammesh.core.bl_poly import _cell_metrics, _pyramid_violations
 from polyfoammesh.core.poly_cell_merge import (
     _union_find_groups,
+    compact_unused_points,
     find_merge_candidates,
     merge_cell_groups,
     repair_concave_cells_if_safe,
+    repair_concave_cells_keepbest,
 )
 
 WORK_ROOT = space_free_tmp_root() / "cfmesh_bench" / "poly_cell_merge_test"
@@ -263,3 +265,90 @@ def test_find_merge_candidates_returns_pairs_usable_by_union_find():
     assert len(pairs) + n_unresolved == n_concave
     groups = _union_find_groups(pairs)
     assert all(len(g) >= 2 for g in groups)
+
+
+# ---------------------------------------------------------------------------
+# Point compaction + max-severity keep-best gate (P1)
+# ---------------------------------------------------------------------------
+
+
+def test_compact_unused_points_drops_orphans_and_remaps_faces():
+    points = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [9.0, 9.0, 9.0],
+    ])
+    faces = [[0, 1, 2]]
+    pts2, faces2 = compact_unused_points(points, faces)
+    assert len(pts2) == 3
+    assert np.array_equal(pts2, points[:3])
+    assert faces2 == [[0, 1, 2]]
+    used = {v for f in faces2 for v in f}
+    assert used == {0, 1, 2}
+
+
+def test_compact_unused_points_is_noop_when_all_used():
+    points = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    faces = [[0, 1, 2], [0, 2, 1]]
+    pts2, faces2 = compact_unused_points(points, faces)
+    assert len(pts2) == 3
+    assert faces2 == faces
+
+
+def test_repair_concave_cells_keepbest_is_noop_on_healthy_geometry():
+    case = _build_dual_case(WORK_ROOT / "cube_keepbest_noop")
+    poly = case / "constant" / "polyMesh"
+    points, faces, owner, neigh, patches = fio.read_polymesh(poly)
+    faces = [list(f) for f in faces]
+    n_int = len(neigh)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    assert _pyramid_violations(points, faces, owner, neigh, n_int, n_cells) == 0
+
+    pts2, faces2, owner2, neigh2, n_int2, n_cells2, patches2, report = (
+        repair_concave_cells_keepbest(
+            points, faces, owner, neigh, n_int, n_cells, patches)
+    )
+    assert report["applied"] is False
+    assert n_cells2 == n_cells and n_int2 == n_int
+    assert faces2 == faces
+    assert np.array_equal(owner2, owner)
+    assert np.array_equal(neigh2, neigh)
+    assert np.array_equal(pts2, points)
+
+
+def test_repair_concave_cells_keepbest_rejects_max_severity_regression():
+    """The whole point of the max-severity gate: on the real valve dual
+    fixture the merge would cut pyramid violations 863 -> 122 but raises
+    MAX skewness (13.01 -> 14.60). A count-only gate and this gate both
+    reject it; the contract locked here is that the returned mesh is
+    BYTE-IDENTICAL to the input and no returned mesh ever raises the max
+    severity. (On the venturi, where the max stays flat, this same gate
+    ACCEPTS — measured 224 -> 110 wrong-oriented faces with max NO/skew
+    unchanged; see notes/complex_geometry_reasoning.md C1.)"""
+    npz = FIXDIR / "valve_dual.npz"
+    if not npz.exists():
+        pytest.skip("valve_dual.npz fixture not present")
+    data = np.load(npz, allow_pickle=True)
+    points = data["points"]
+    offsets = data["face_offsets"]
+    verts = data["face_verts"]
+    owner = data["owner"]
+    neigh = data["neighbour"]
+    n_int = len(neigh)
+    n_faces = len(offsets) - 1
+    faces = [verts[offsets[i]:offsets[i + 1]].tolist() for i in range(n_faces)]
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    patches = [{"name": "wall", "type": "wall",
+                "nFaces": n_faces - n_int, "startFace": n_int}]
+
+    pts2, faces2, owner2, neigh2, n_int2, n_cells2, _p2, report = (
+        repair_concave_cells_keepbest(
+            points, faces, owner, neigh, n_int, n_cells, patches)
+    )
+    assert report["applied"] is False, report
+    assert "skewmax" in report["reason"], report
+    # rejected -> byte-identical input returned (points are promoted to f64
+    # by the function, so compare values, not dtype)
+    assert np.array_equal(pts2, np.asarray(points, dtype=np.float64))
+    assert faces2 == faces
+    assert np.array_equal(owner2, owner)
+    assert np.array_equal(neigh2, neigh)
+    assert n_cells2 == n_cells and n_int2 == n_int

@@ -979,3 +979,27 @@ Test aggiornati alla nuova semantica (OFF esplicito dove si pinna lo
 storico): 2 in test_bl_poly, 3 in test_bl_consume. Nota onesta: aspect
 delle celle core adiacenti allo stack sale (103 sul tubo; checkMesh OK,
 da tenere d'occhio lato solver).
+
+## 2026-10-08 - P0/P1 geometrie complesse (venturi)
+
+P0 (diagnosi, notes/complex_geometry_reasoning.md): i difetti del dual
+venturi NON sono un bug - 182 celle fallite, 100% di bordo, 151/182
+concave, che avvolgono la GOLA CONCAVA sottorisolita (spread normali 91
+deg vs 6). Detector interno == checkMesh (224=224): manca solo un gate di
+qualita' nel writer. A/B per stadio: collapse aiuta (448->224), planar
+no-op, triangulate peggiora, feature-angle +/-3%.
+P1 (fix, opt-in keep-best, verificato da me: ruff + 18 test, default
+byte-identico):
+- C1 merge celle concave con gate severita' massima: VALVOLA piramidi
+  340->46 (NOerr 10->1, NO/skew migliorano); VENTURI 224->110 (NO/skew
+  invariati) ma resta FAIL (NO 97>70, skew 18.3>4, 110 piramidi).
+- Bug latenti corretti: punti orfani post-merge (checkMesh hard-fail) +
+  patches corrotte al round 2 (SEGFAULT checkMesh).
+- C2 (vertex repair mascherato) = vicolo cieco misurato; C5 (guardia skew
+  smoother) baratta NO per skew -> restano opt-in OFF.
+- Corpus: cylinder/cube_duct/slot1/tube byte-identici ai baseline; slot1
+  protetto dal gate (merge rifiutato).
+Muro misurato: la barra PASS sul venturi e' irraggiungibile con
+merge/smoothing -> serve C3 (refinement dell'input alla gola, a monte).
+PROSSIMO: P1b (C3) - testare sharp-edge field opt-in + sizing locale alla
+gola sul venturi, con keep-best corpus.

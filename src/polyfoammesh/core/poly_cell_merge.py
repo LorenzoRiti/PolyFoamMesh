@@ -249,6 +249,170 @@ def repair_concave_cells_if_safe(points, faces, owner, neigh, n_int, n_cells, pa
     return faces2, owner2, neigh2, n_int2, n_cells2, patches2, report
 
 
+def compact_unused_points(points, faces):
+    """Drop points no remaining face references and remap face vertex ids.
+
+    `merge_cell_groups` removes internal faces; a dual point that was used
+    ONLY by a dropped face becomes orphaned. OpenFOAM's checkMesh reports
+    orphaned points as a hard failure ("Unused points found in the mesh"),
+    so a merge applied to the written mesh MUST compact them. Returns
+    ``(points2, faces2)``; when every point is still used the inputs are
+    returned unchanged (identity, no copy of the point array).
+    """
+    pts = np.asarray(points)
+    used = np.zeros(len(pts), dtype=bool)
+    for f in faces:
+        used[np.asarray(f, dtype=np.int64)] = True
+    if bool(used.all()):
+        return pts, faces
+    keep = np.flatnonzero(used)
+    remap = np.full(len(pts), -1, dtype=np.int64)
+    remap[keep] = np.arange(len(keep), dtype=np.int64)
+    faces2 = [[int(remap[v]) for v in f] for f in faces]
+    return pts[keep], faces2
+
+
+def repair_concave_cells_keepbest(
+    points,
+    faces,
+    owner,
+    neigh,
+    n_int,
+    n_cells,
+    patches,
+    *,
+    max_rounds: int = 2,
+    skew_slack: float = 1e-6,
+    no_slack: float = 1e-6,
+    log=None,
+):
+    """Defect-driven concave-cell merge with a MAX-SEVERITY keep-best gate.
+
+    This is the production-grade sibling of `repair_concave_cells_if_safe`.
+    Where that function gates on defect COUNTS (pyramid + skew-violation
+    counts), this one gates on the two metrics `checkMesh` actually fails
+    on at the tail: the MAXIMUM non-orthogonality (degrees) and the MAXIMUM
+    skewness. It is the gate P1 measured against real checkMesh: on the
+    venturi dual the count-based gate rejected a merge that real checkMesh
+    shows halves the wrong-oriented faces (224 -> 111) with max
+    non-orthogonality and max skewness UNCHANGED, because two extra
+    internal faces crossed the skew COUNT threshold while the worst skew
+    stayed exactly 18.3017. Gating on the max severity accepts that merge;
+    gating on counts does not.
+
+    At every round the candidate merges are applied to a WORKING copy and
+    accepted only when, versus the current accepted mesh:
+
+    * the in-process face-pyramid count STRICTLY decreases
+      (`_detect_defects`, the replica verified to match checkMesh exactly),
+    * max non-orthogonality does not rise above ``no_slack`` (relative),
+    * max skewness does not rise above ``skew_slack`` (relative),
+    * no cell volume becomes non-positive.
+
+    Otherwise the round is reverted and the loop stops. Orphaned points are
+    compacted after the last accepted round (see `compact_unused_points`).
+    Never returns a mesh worse than its input by construction.
+
+    Returns ``(points, faces, owner, neigh, n_int, n_cells, patches, report)``
+    (note: unlike `repair_concave_cells_if_safe`, POINTS are returned because
+    compaction renumbers them).
+    """
+    from polyfoammesh.core.tet_poly_dual import (
+        _cell_centres, _detect_defects, _face_geometry,
+    )
+    from polyfoammesh.core.poly_smoother import _continuous_metrics
+
+    pts = np.asarray(points, dtype=np.float64)
+
+    def _metrics(p, fcs, own, nb, ni, nc):
+        sf, cf = _face_geometry(p, fcs)
+        ctr, vol = _cell_centres(sf, cf, own, nb, ni, nc)
+        _, counts = _detect_defects(p, fcs, sf, cf, ctr, own, nb, ni, nc)
+        no, sk = _continuous_metrics(sf, cf, ctr, own, nb, ni, p, fcs)
+        return {
+            "pyramid": counts["pyramid"],
+            "non_ortho": counts["non_ortho"],
+            "skew_violations": counts["skew"],
+            "no_max": float(no.max()) if len(no) else 0.0,
+            "skew_max": float(sk.max()) if len(sk) else 0.0,
+            "vol_min": float(vol.min()),
+        }
+
+    cur = (faces, np.asarray(owner), np.asarray(neigh), n_int, n_cells)
+    pat = patches
+    base = _metrics(pts, *cur)
+    report = {
+        "applied": False,
+        "rounds": 0,
+        "pyramid_before": base["pyramid"],
+        "no_max_before": base["no_max"],
+        "skew_max_before": base["skew_max"],
+    }
+    for rnd in range(max(0, int(max_rounds))):
+        fcs, own, nb, ni, nc = cur
+        pairs, n_concave, n_unresolved = find_merge_candidates(
+            pts, fcs, own, nb, ni, nc,
+        )
+        groups = _union_find_groups(pairs)
+        if not groups:
+            report.setdefault(
+                "reason",
+                f"no candidate merges at round {rnd} "
+                f"(concave {n_concave}, unresolved {n_unresolved})",
+            )
+            break
+        cand = merge_cell_groups(fcs, own, nb, ni, nc, pat, groups)
+        after = _metrics(pts, cand[0], cand[1], cand[2], cand[3], cand[4])
+        no_ok = after["no_max"] <= base["no_max"] * (1.0 + no_slack) + 1e-12
+        sk_ok = after["skew_max"] <= base["skew_max"] * (1.0 + skew_slack) + 1e-12
+        improved = (
+            after["vol_min"] > 0.0
+            and after["pyramid"] < base["pyramid"]
+            and no_ok
+            and sk_ok
+        )
+        if not improved:
+            report["reason"] = (
+                f"rejected round {rnd}: pyramid {base['pyramid']}->"
+                f"{after['pyramid']}, NOmax {base['no_max']:.4f}->"
+                f"{after['no_max']:.4f}, skewmax {base['skew_max']:.4f}->"
+                f"{after['skew_max']:.4f}, volmin {after['vol_min']:.2e}"
+            )
+            break
+        cur = (cand[0], cand[1], cand[2], cand[3], cand[4])
+        pat = cand[5]
+        base = after
+        report["applied"] = True
+        report["rounds"] = rnd + 1
+        if log is not None:
+            log(
+                f"merge round {rnd}: concave {n_concave} -> pyramid "
+                f"{after['pyramid']}, NOmax {after['no_max']:.4f}, "
+                f"skewmax {after['skew_max']:.4f}"
+            )
+
+    if not report["applied"]:
+        return pts, faces, owner, neigh, n_int, n_cells, patches, report
+
+    fcs, own, nb, ni, nc = cur
+    pts2, fcs2 = compact_unused_points(pts, fcs)
+    final = _metrics(pts2, fcs2, own, nb, ni, nc)
+    report["points_removed"] = int(len(pts) - len(pts2))
+    report["pyramid_after"] = final["pyramid"]
+    report["non_ortho_after"] = final["non_ortho"]
+    report["skew_violations_after"] = final["skew_violations"]
+    report["no_max_after"] = final["no_max"]
+    report["skew_max_after"] = final["skew_max"]
+    report["reason"] = (
+        f"accepted {report['rounds']} round(s): pyramid "
+        f"{report['pyramid_before']}->{final['pyramid']}, NOmax "
+        f"{report['no_max_before']:.4f}->{final['no_max']:.4f}, skewmax "
+        f"{report['skew_max_before']:.4f}->{final['skew_max']:.4f}, "
+        f"points removed {report['points_removed']}"
+    )
+    return pts2, fcs2, own, nb, ni, nc, pat, report
+
+
 def _union_find_groups(pairs: list[tuple[int, int]]) -> list[set[int]]:
     """Collapse a list of (a, b) "merge these" pairs into disjoint groups,
     handling transitive overlaps (a merges with b, b also merges with c ->

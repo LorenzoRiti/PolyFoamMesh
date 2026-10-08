@@ -185,6 +185,9 @@ class TetPolyDualConverter:
         smooth_compactness: bool = False,
         smooth_axis_balance: bool = False,
         smooth_worst_aspect: float = 0.0,
+        smooth_severity_guard: bool = False,
+        merge_concave_cells: bool = False,
+        merge_rounds: int = 2,
     ):
         """
         median_faces
@@ -354,6 +357,27 @@ class TetPolyDualConverter:
             > 0: Freitag-style zonal aspect-ratio threshold — cells whose
             aspect ratio exceeds it get the worst-aspect objective term.
             Must be >= 0 (a negative value raises `ValueError`).
+        merge_concave_cells
+            False (default) = off, byte-identical to a converter built
+            without this argument.  True: after smoothing, run the
+            defect-driven concave-cell merge repair
+            (`poly_cell_merge.repair_concave_cells_keepbest`) on the
+            DUAL-ONLY mesh, before the boundary layer is consumed.  The
+            merge unions cells that fail checkMesh's face-pyramid test with
+            an interior neighbour (the only cell-level lever measured to
+            fix the wrapped-boundary-cell defect), gated by an in-process
+            MAX-SEVERITY keep-best: a round is kept only when the pyramid
+            count strictly falls and max non-orthogonality / max skewness do
+            not rise.  Orphaned points are compacted.  P1 measured (real
+            checkMesh, venturi dual) 224 -> 110 wrong-oriented faces with
+            max non-orthogonality and max skewness unchanged — a large
+            improvement that does NOT reach PASS on its own, so this is
+            opt-in and never changes the default output.  See
+            notes/complex_geometry_reasoning.md (C1).
+        merge_rounds
+            Maximum merge rounds the opt-in repair may apply (default 2;
+            the second round catches cells that only become concave after
+            the first merge).  Ignored when `merge_concave_cells` is False.
         """
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
@@ -404,6 +428,13 @@ class TetPolyDualConverter:
                 f"{smooth_worst_aspect!r}"
             )
         self._smooth_worst_aspect = float(smooth_worst_aspect)
+        # Opt-in C5 max-severity smoothing guard (P1). Default off:
+        # byte-identical to the legacy count-based keep-best.
+        self._smooth_severity_guard = bool(smooth_severity_guard)
+        # Opt-in dual-only concave-cell merge (P1). Default off: the output
+        # is byte-identical to a converter built without it.
+        self._merge_concave_cells = bool(merge_concave_cells)
+        self._merge_rounds = max(1, int(merge_rounds))
         self._last_dissolve_fallbacks = 0
         if self._dissolve_stars > 0.0 and not self._collapse:
             logger.info(
@@ -619,6 +650,7 @@ class TetPolyDualConverter:
                 use_compactness=self._smooth_compactness,
                 use_axis_balance=self._smooth_axis_balance,
                 worst_aspect_thr=self._smooth_worst_aspect,
+                guard_severity=self._smooth_severity_guard,
             )
             if pts is not M.points:
                 M.points = pts
@@ -658,6 +690,51 @@ class TetPolyDualConverter:
                 f"face pyramids, {counts['non_ortho']} non-orthogonality errors, "
                 f"{counts['skew']} skewness errors"
             )
+
+        # Opt-in dual-only concave-cell merge (P1, C1).  Unions cells that
+        # fail the face-pyramid test with an interior neighbour, gated by an
+        # in-process max-severity keep-best (pyramids strictly down, max
+        # non-orthogonality / max skewness not up), so it can never return a
+        # mesh worse than the un-merged one.  It is still opt-in: P1 measured
+        # it does not by itself reach checkMesh PASS on the venturi, and the
+        # quieter tail counts (avg NO, highly-skew faces) move either way, so
+        # the corpus is not yet proven and the default output stays
+        # byte-identical.
+        if self._merge_concave_cells:
+            self._check_cancel()
+            t = time.monotonic()
+            from polyfoammesh.core.poly_cell_merge import (
+                repair_concave_cells_keepbest,
+            )
+
+            (pts2, fcs2, own2, nb2, ni2, nc2, pat2, mrep) = (
+                repair_concave_cells_keepbest(
+                    M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
+                    M.patches, max_rounds=self._merge_rounds, log=self._log,
+                )
+            )
+            if mrep.get("applied"):
+                M.points, M.faces, M.owner, M.neigh = pts2, fcs2, own2, nb2
+                M.n_int, M.n_cells, M.patches = ni2, nc2, pat2
+                best_counts = {
+                    "pyramid": mrep.get("pyramid_after", 0),
+                    "non_ortho": mrep.get("non_ortho_after", 0),
+                    "skew": mrep.get("skew_violations_after", 0),
+                }
+                total = sum(best_counts.values())
+                res.residual_defects = int(total)
+                res.defect_breakdown = dict(best_counts)
+                res.warnings.append("dual merge repair: " + mrep.get("reason", ""))
+                self._log(f"[poly 7/9] dual merge repair: {mrep.get('reason', '')}")
+            else:
+                self._log(
+                    "[poly 7/9] dual merge repair refused: "
+                    + mrep.get("reason", "not applied")
+                )
+            res.stage_times["merge"] = round(time.monotonic() - t, 2)
+            # geometry cached on M is stale after the merge
+            if mrep.get("applied"):
+                M.sf, M.cf = _face_geometry(M.points, M.faces)
 
         t = time.monotonic()
         self._validate(res, M, P)
