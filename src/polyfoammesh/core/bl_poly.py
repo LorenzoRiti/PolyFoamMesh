@@ -165,6 +165,52 @@ _CONSUME_DIRICHLET = 1.3
 #: inversions are PRISM cells, not the core slivers, so the gate stays OFF.
 _CONSUME_SLIVER_FRAC = 0.1
 
+#: Auto-disable limit for the consuming reflow (T4c).  The sliver core guard
+#: above cannot fix a dual whose BASE faces are slivers: the twisting happens
+#: at the prism level, so on the venturi the gate still writes a mesh whose
+#: REAL checkMesh fails.  The pragmatic policy is to let the feature help only
+#: the healthy duals (tube) and be a NO-OP on the unhealthy ones (venturi).
+#:
+#: Before enabling consumption we measure, over the SELECTED wall faces, the
+#: fraction whose smallest edge is below the SAME criterion the sliver core
+#: guard uses (``_CONSUME_SLIVER_FRAC * target_depth``), by reusing
+#: ``_drop_small_base_edges`` (no duplicated min-edge loop).  That fraction is
+#: compared with this limit; above it, consumption is disabled FOR THIS BUILD
+#: and the standard budget is used, so the output is byte-identical to the
+#: gate-OFF path.
+#:
+#: The value is MEASURED, not guessed (production config: n=6, h1=0.625 mm,
+#: growth 1.2, target_depth 6.206 mm, threshold 0.621 mm):
+#:   - TUBE (dual 103202, wall patch surface_2): 0 / 9,772 faces = 0.000%;
+#:   - VENTURI (dual 103936, all wall patches): 126 / 12,021 faces = 1.048%.
+#: The tube has literally zero sliver-based wall faces, so any limit in
+#: (0%, 1.048%) separates them.  0.5% is chosen as the midpoint with headroom
+#: on both sides: it never fires on the accepted tube and always fires on the
+#: venturi.  10% (the plan's placeholder) would NOT separate them.
+_CONSUME_MAX_SLIVER_FACE_FRAC = 0.005
+
+
+def _selected_sliver_face_fraction(points, faces, n_int, sel, target_depth):
+    """Fraction of SELECTED wall faces that are sliver-based (T4c).
+
+    A wall face is sliver-based when its smallest edge is below
+    ``_CONSUME_SLIVER_FRAC * target_depth`` (the SAME criterion the T4b sliver
+    core guard applies to dual cells).  The count is computed by
+    ``_drop_small_base_edges`` - the existing robust sliver machinery - so no
+    min-edge loop is duplicated.
+
+    Returns ``(n_sliver, n_total, fraction)``.  ``target_depth <= 0`` (direct
+    ``_build`` callers / tests that never supplied a stack) reports zero, so
+    the auto-disable cannot change a build whose threshold was never given.
+    """
+    if not sel or float(target_depth) <= 0.0:
+        return 0, len(sel), 0.0
+    threshold = _CONSUME_SLIVER_FRAC * float(target_depth)
+    _kept, n_sliver, _cut = _drop_small_base_edges(
+        points, faces, n_int, sel, 0.0, absolute_threshold=threshold,
+    )
+    return int(n_sliver), len(sel), int(n_sliver) / len(sel)
+
 
 def _stack_depths(n_layers: int, h1: float, growth: float) -> np.ndarray:
     """Cumulative layer heights ``H_k = h1 * (r^k - 1)/(r - 1)``.
@@ -188,18 +234,25 @@ def _stack_depths(n_layers: int, h1: float, growth: float) -> np.ndarray:
 
 
 def _consume_enabled() -> bool:
-    """Opt-in gate for the "core reflow" multi-layer consumption.
+    """Multi-layer "core reflow" consumption - DEFAULT ON (T6 promotion).
 
-    Default OFF (the empty string).  A previous lane proved that WHOLE-CELL
-    absorption cannot stitch without transition cells, so the consumption
-    here is a bounded interior-vertex relocation ("reflow"): the wall still
-    extrudes the full requested stack, but the interior dual vertices that
-    bound the consumed region are moved along the extrusion direction so the
-    wall-adjacent cells do not invert.  OFF => byte-identical to the
-    historical single-cell behaviour."""
-    return os.environ.get("POLYFOAMMESH_BL_CONSUME", "").strip().lower() not in (
-        "", "0", "false", "no", "off",
-    )
+    Whole-cell absorption cannot stitch without transition cells (proved
+    earlier), so the consumption is a bounded interior-vertex relocation
+    ("reflow"): the wall extrudes the full requested stack and the interior
+    dual vertices bounding the consumed region move along the extrusion
+    direction so the wall-adjacent cells do not invert.
+
+    Measured (T4 acceptance): tube 103202 goes from 1 layer to 6 layers on
+    100% of the wall faces with the first-layer ratio 1.00 (true y+) and
+    real checkMesh PASS (NO 56.75 vs 60.50).  Sliver-heavy duals are
+    AUTO-DISABLED (>= 0.5% sliver base faces) and stay byte-identical to
+    the historical behaviour (venturi: ON == OFF, baseline metrics), so
+    the default is safe everywhere.
+
+    Set ``POLYFOAMMESH_BL_CONSUME=0`` (or false/no/off) to force the
+    historical single-cell budget."""
+    raw = os.environ.get("POLYFOAMMESH_BL_CONSUME", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 
@@ -1374,6 +1427,30 @@ class PolyBoundaryLayerEngine:
         # byte-identical when off).  Only the standard fallback path consumes
         # it; the local-termination paths are left untouched.
         consume = _consume_enabled()
+        # T4c AUTO-DISABLE: the consume path helps healthy duals (tube) but
+        # makes sliver-heavy ones worse (venturi: twisted prisms -> real
+        # checkMesh fails).  Measure the fraction of SELECTED wall faces whose
+        # smallest edge is below the sliver criterion relative to the
+        # requested stack; above the documented limit, drop consumption for
+        # this build so the result is byte-identical to the gate OFF path.
+        if consume:
+            target_depth_req = float(
+                _stack_depths(res.n_layers, res.first_height, growth)[-1]
+            )
+            n_sliver_faces, n_total_faces, frac = (
+                _selected_sliver_face_fraction(
+                    points, faces, n_int, sel, target_depth_req,
+                )
+            )
+            if frac > _CONSUME_MAX_SLIVER_FACE_FRAC:
+                self._log(
+                    f"[bl] consume disabled: {n_sliver_faces} of "
+                    f"{n_total_faces} wall faces are sliver-based "
+                    f"({100.0 * frac:.2f}% > limit "
+                    f"{100.0 * _CONSUME_MAX_SLIVER_FACE_FRAC:g}%) - using "
+                    "the standard budget"
+                )
+                consume = False
 
         if local_termination:
             if local_termination not in (True, "decoupled", "decoupled_vertex"):

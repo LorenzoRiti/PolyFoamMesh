@@ -137,7 +137,10 @@ def test_consume_support_walk_reaches_two_layers_on_graded_dual():
     assert sl[w0][1][0] > sl[w0][0][0]
 
 
-def test_consume_support_walk_absent_when_gate_off():
+def test_consume_support_walk_absent_when_gate_off(monkeypatch):
+    # T6 promotion: the consume path is the DEFAULT now, so "gate off" means
+    # the explicit OFF switch.
+    monkeypatch.setenv("POLYFOAMMESH_BL_CONSUME", "0")
     case = _build_layered_dual(WORK_ROOT / "graded_off")
     eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
     points, faces, owner, neighbour, patches, n_int, sel = _pre(eng, case)
@@ -182,10 +185,11 @@ def test_consume_reflow_builds_full_stack_on_graded_dual():
     assert np.all(rel < 1e-8)
 
 
-def test_gate_off_caps_to_supported_layers_on_graded_dual():
-    """Without the gate the historical budget cap applies: the very same
-    case and config build far fewer layers, proving the reflow is what buys
-    the multi-cell stack."""
+def test_gate_off_caps_to_supported_layers_on_graded_dual(monkeypatch):
+    """With the explicit OFF switch the historical budget cap applies: the
+    very same case and config build far fewer layers, proving the reflow is
+    what buys the multi-cell stack.  (T6 promotion: OFF is now explicit.)"""
+    monkeypatch.setenv("POLYFOAMMESH_BL_CONSUME", "0")
     case = _build_layered_dual(WORK_ROOT / "capped")
     eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
     r = eng.run(
@@ -196,13 +200,16 @@ def test_gate_off_caps_to_supported_layers_on_graded_dual():
     assert r.median_layers < 4.0
 
 
-def test_consume_env_default_off():
-    assert _consume_enabled() is False
-    for val in ("1", "true", "ON", "yes"):
+def test_consume_env_default_on_with_explicit_off_switch():
+    """T6 promotion: the consuming path is the DEFAULT; the env var is an
+    explicit OFF switch (previously the default was OFF)."""
+    os.environ.pop("POLYFOAMMESH_BL_CONSUME", None)
+    assert _consume_enabled() is True
+    for val in ("1", "true", "ON", "yes", ""):
         os.environ["POLYFOAMMESH_BL_CONSUME"] = val
         assert _consume_enabled() is True
         os.environ.pop("POLYFOAMMESH_BL_CONSUME")
-    for val in ("", "0", "false", "off", "no"):
+    for val in ("0", "false", "off", "no"):
         os.environ["POLYFOAMMESH_BL_CONSUME"] = val
         assert _consume_enabled() is False
         os.environ.pop("POLYFOAMMESH_BL_CONSUME")
@@ -328,3 +335,80 @@ def test_gate_off_mesh_is_byte_identical_to_no_consume_path():
 def test_consume_off_leaves_bl_poly_constants_untouched():
     """A tiny guard that the gate module is pure (no import-time env read)."""
     assert bl_poly._CONSUME_MAX_LAYERS >= 2
+
+
+# ---------------------------------------------------------------------------
+# T4c: auto-disable when the dual is sliver-heavy
+# ---------------------------------------------------------------------------
+
+def test_selected_sliver_face_fraction_reuses_min_edge_criterion():
+    """The helper counts selected wall faces whose smallest edge is below
+    ``_CONSUME_SLIVER_FRAC * target_depth`` (the sliver-machinery criterion),
+    and is a no-op when no stack depth was supplied."""
+    points = np.array([
+        [0.0, 0.0, 0.0],
+        [0.05, 0.0, 0.0],
+        [0.05, 0.1, 0.0],
+        [0.0, 0.1, 0.0],
+        [1.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [2.0, 1.0, 0.0],
+        [1.0, 1.0, 0.0],
+    ])
+    faces = [[0, 1, 2, 3], [4, 5, 6, 7]]
+    # target 1.0 -> threshold 0.1: face0 (min edge 0.05) is a sliver, face1 not.
+    n_sliver, n_total, frac = bl_poly._selected_sliver_face_fraction(
+        points, faces, 0, [0, 1], 1.0,
+    )
+    assert (n_sliver, n_total) == (1, 2)
+    assert frac == pytest.approx(0.5)
+    # no target depth (direct _build callers) -> no criterion -> no-op
+    assert bl_poly._selected_sliver_face_fraction(
+        points, faces, 0, [0, 1], 0.0,
+    ) == (0, 2, 0.0)
+    # empty selection
+    assert bl_poly._selected_sliver_face_fraction(
+        points, faces, 0, [], 1.0,
+    ) == (0, 0, 0.0)
+
+
+def test_auto_disable_does_not_fire_on_healthy_graded_dual():
+    """The graded dual (the accepted consume case) has no sliver-based wall
+    face at its production stack depth, so the auto-disable leaves the gate
+    on for it."""
+    case = _build_layered_dual(WORK_ROOT / "autodisable_healthy")
+    eng = PolyBoundaryLayerEngine(case, log=lambda _m: None)
+    points, faces, _owner, _neigh, _patches, n_int, sel = _pre(eng, case)
+    target = float(bl_poly._stack_depths(4, 0.05, 1.2)[-1])
+    n_sliver, n_total, frac = bl_poly._selected_sliver_face_fraction(
+        points, faces, n_int, sel, target,
+    )
+    assert n_total == len(sel)
+    assert frac <= bl_poly._CONSUME_MAX_SLIVER_FACE_FRAC
+
+
+def test_consume_auto_disables_and_matches_gate_off_on_sliver_heavy():
+    """With a stack so deep that every wall face is sliver-based, the gate ON
+    must auto-disable and produce a mesh byte-identical to the gate OFF."""
+    case_on = _build_layered_dual(WORK_ROOT / "autodisable_on")
+    case_off = _build_layered_dual(WORK_ROOT / "autodisable_off")
+    logs: list[str] = []
+    os.environ["POLYFOAMMESH_BL_CONSUME"] = "1"
+    r_on = PolyBoundaryLayerEngine(case_on, log=logs.append).run(
+        n_layers=2, first_height=10.0, growth_rate=1.2,
+        apply_to_all=True, terminate_by_budget=True,
+    )
+    os.environ.pop("POLYFOAMMESH_BL_CONSUME", None)
+    r_off = PolyBoundaryLayerEngine(
+        case_off, log=lambda _m: None,
+    ).run(
+        n_layers=2, first_height=10.0, growth_rate=1.2,
+        apply_to_all=True, terminate_by_budget=True,
+    )
+    assert any("consume disabled" in m for m in logs), logs
+    assert r_on.success == r_off.success
+    pa = fio.read_polymesh(case_on / "constant" / "polyMesh")
+    pb = fio.read_polymesh(case_off / "constant" / "polyMesh")
+    assert np.array_equal(np.asarray(pa[0]), np.asarray(pb[0]))
+    assert [list(f) for f in pa[1]] == [list(f) for f in pb[1]]
+    assert np.array_equal(np.asarray(pa[2]), np.asarray(pb[2]))

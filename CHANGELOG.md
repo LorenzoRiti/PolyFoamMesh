@@ -69,20 +69,18 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
-- **BL multi-layer "consuming" (sperimentale, `POLYFOAMMESH_BL_CONSUME=1`)**:
-  il motore BL ora può consumare strati di celle dual (rilocazione armonica
-  limitata dei vertici interni, guardia anti-inversione per-edge), così lo
-  stack completo entra anche dove la prima cella è sottile. **Verificato sul
-  tubo reale**: 6 layer su 100% delle facce (mediana 6), primo strato =
-  richiesto (y+ vero), checkMesh PASS (NO 56.75, skew 1.59) — prima: 1
-  layer. **Bloccato sul venturi**: le inversioni sono **prismi su facce
-  base sliver** (4.027 facce) — la guardia sliver-aware (pin dei vertici
-  sliver + fallback per-vertice) tiene il tubo ma non salva il venturi
-  (checkMesh reale: NO 165 vs baseline 97). La feature resta **gated
-  OFF**; prossimo passo: auto-disattivazione del consumo sui dual
-  "sliver-heavy" (il venturi tornerebbe identico al baseline, il tubo
-  resta migliorato). Default byte-identico con env OFF (hash SHA256
-  verificato).
+- **BL multi-layer "consuming" - ORA DEFAULT**: il motore BL può
+  consumare strati di celle dual (rilocazione armonica limitata dei
+  vertici interni + guardia anti-inversione per-edge + guardia sliver
+  core), così lo stack completo entra anche dove la prima cella è
+  sottile. **Verificato sul tubo reale**: da **1 a 6 layer** su 100% delle
+  facce, primo strato = richiesto (y+ vero), checkMesh PASS (NO 56.75 vs
+  60.50). Sui dual **sliver-heavy** (≥0.5% facce base sliver) il consumo
+  si **auto-disabilita** e il risultato resta identico al comportamento
+  storico (venturi: ON == OFF byte-identico, metriche baseline) — niente
+  regressioni. Per forzare il vecchio comportamento:
+  `POLYFOAMMESH_BL_CONSUME=0`. **Nota**: l'aspect ratio delle celle core
+  adiacenti allo stack cresce (checkMesh accetta, 103 sul tubo).
 - **Dual: input misto tet+prismi con stitching esatto**: il convertitore
   ora accetta mesh di input con prismi (da qualunque sorgente), li
   preserva verbatim nel polyMesh finale e cuce l'interfaccia al core

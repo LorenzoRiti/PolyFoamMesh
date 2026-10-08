@@ -966,3 +966,16 @@ PROSSIMO (T4c): auto-disattivazione del consume sui dual sliver-heavy
 (>X% facce wall sliver -> consume OFF per quel build, loggato): il
 venturi torna identico al baseline, il tubo resta a 6 layer -> candidato
 per la promozione (T6) dopo verifica corpus.
+
+## 2026-10-08 - T6 PROMOZIONE: consuming BL = DEFAULT (verificato)
+
+_consume_enabled() ora default ON (POLYFOAMMESH_BL_CONSUME=0/false/no/off
+per tornare allo storico). Sicurezze: auto-disable sui dual sliver-heavy
+(>=0.5% facce base sliver -> venturi ON == OFF byte-identico, baseline);
+guardie sliver-core e Lipschitz attive; T4 verifica mia sul tubo: 1->6
+layer su 100% delle 9.772 facce, primo strato = richiesto (y+ vero),
+checkMesh PASS (NO 56.75 vs 60.50). Corpus env ON: nessuna regressione.
+Test aggiornati alla nuova semantica (OFF esplicito dove si pinna lo
+storico): 2 in test_bl_poly, 3 in test_bl_consume. Nota onesta: aspect
+delle celle core adiacenti allo stack sale (103 sul tubo; checkMesh OK,
+da tenere d'occhio lato solver).
