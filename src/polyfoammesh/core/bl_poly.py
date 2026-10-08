@@ -189,6 +189,84 @@ _CONSUME_SLIVER_FRAC = 0.1
 #: venturi.  10% (the plan's placeholder) would NOT separate them.
 _CONSUME_MAX_SLIVER_FACE_FRAC = 0.005
 
+#: Last-resort GLOBAL auto-disable limit for the consuming reflow (T4d).  The
+#: T4c policy above removed consumption from the WHOLE mesh as soon as 0.5% of
+#: the wall faces were sliver-based, so the venturi (1.05%) got no consume at
+#: all.  T4d replaces that with PER-FACE EXCLUSION: the sliver-affected wall
+#: faces are dropped from the extrusion (0 layers, no prisms, shell loss
+#: accounted like any unselected face) and the reflow + full stack run on the
+#: REMAINING faces.  The global disable is kept only as a guard against a
+#: degenerate case where (almost) nothing would be left to extrude: above this
+#: fraction of excluded faces the build falls back to the standard budget,
+#: byte-identical to the gate-OFF path.
+#:
+#: Measured (production config): the venturi excludes ~8-9% (sliver base faces
+#: plus every selected face with a vertex in a T4b sliver dual cell), the tube
+#: 0%.  80% leaves a wide margin above the measured exclusion while still
+#: catching a wall whose extrusion would be a no-op.
+_CONSUME_MAX_EXCLUDED_FRAC = 0.8
+
+#: Rings of selected wall faces ADDED around the base per-face exclusion set
+#: (T4d iteration).  A bare (excluded) face whose neighbours are still
+#: extruded shares wall vertices with them; those vertices move to the stack
+#: top and DRAG the bare face (and the core cell behind it) into a negative
+#: volume.  Excluding the 1-ring of edge-adjacent faces removes that shared
+#: move (no extruded face touches the excluded region).  A 2nd ring is needed
+#: on the venturi: with 1 ring the reflow still leaves twisted prism side
+#: faces (real checkMesh NO 120.4 vs the dual-only 97.18); 2 rings reach the
+#: dual-only NO exactly.  Measured (production venturi config):
+#:   0 rings -> 811 excluded (6.75%), validation fails (44 core cells invert);
+#:   1 ring  -> 1172 excluded (9.75%), real NO 120.40, skew 18.30, pyr 289;
+#:   2 rings -> 1631 excluded (13.57%), real NO 97.1771, skew 18.3017, pyr 292;
+#:   3 rings -> 2210 excluded (18.38%), validation fails.
+_CONSUME_EXCLUSION_RINGS = 2
+
+
+#: Geometric inlet/outlet CAP exclusion (2026-10-08).  A selected wall face is
+#: a CAP when ALL of:
+#:   - its normal is axis-aligned within this angle to the DOMAIN's flow axis
+#:     (the bbox axis with the LARGEST extent; internal-flow convention, ties
+#:     resolved to the first/lowest axis),
+#:   - its centroid lies within ``_CONSUME_CAP_PLANE_TOL_FRAC * extent`` of the
+#:     corresponding bbox extreme plane (xmin or xmax on that axis),
+#:   - it belongs to a planar patch: at least ``_CONSUME_CAP_MIN_PATCH_FACES``
+#:     coplanar, co-oriented faces at the same extreme (the patch test runs
+#:     over ALL boundary faces, so a partially selected cap is still seen as a
+#:     patch; only the selected members are excluded).
+#:
+#: Extruding a BL on an inlet/outlet is physically wrong (they are not walls):
+#: on the venturi those prisms are exactly the +68 face-pyramid violations and
+#: the 13 high-aspect cells (min edge ~1.26e-8) measured against the dual-only
+#: baseline.  The faces stay in the SELECTED patch set (removing them broke
+#: validation with non-manifold boundary edges / non-positive cells); they are
+#: left out of the extrusion through the SAME per-face exclusion machinery as
+#: the sliver faces: 0 layers, no prisms, owner cells pinned in the reflow.
+#:
+#: MEASURED (production venturi 103936, real checkMesh): 71 inlet cap faces on
+#: axis x (xmin, patch surface_89) detected; with the rim ring below the final
+#: build is 43,782 prisms, median 6, coverage 60.7%, real NO 97.1771, skew
+#: 18.3017, neg 0, face pyramids 199 (vs dual-only 224; the +68 added cap
+#: violations are gone, all 199 left are pre-existing mid-mesh) and max aspect
+#: 209.2 (vs 3,182.9 before; no cell left above checkMesh's 1,000 error
+#: threshold).  The cap criterion is OFF for ``apply_to_all=True`` runs, where
+#: the caller explicitly asked to extrude EVERY boundary face.
+_CONSUME_CAP_ANGLE_DEG = 1.0
+_CONSUME_CAP_PLANE_TOL_FRAC = 1e-4
+_CONSUME_CAP_MIN_PATCH_FACES = 4
+
+#: Rings of selected wall faces ADDED around a detected cap patch (2026-10-08
+#: iteration).  The venturi outlet cap is NOT in the selected wall set, so the
+#: base criterion cannot exclude it; the BL then terminates against it with a
+#: full stack and the terminator band produces the +68 outlet face-pyramid
+#: violations (measured: 93 wrongOriented faces at x ~ 1.512-1.516 vs the
+#: dual-only 224, all other added violations are mid-mesh reductions).  The
+#: rim ring excludes the selected wall faces edge-adjacent to ANY geometric
+#: cap patch, so the stack tapers off before the cap exactly like the sliver
+#: ring does.  It is only applied when the run has at least one SELECTED cap
+#: (the criterion is a no-op on the tube, whose caps are not selected), which
+#: is what keeps that build bit-identical.
+_CONSUME_CAP_RIM_RING = 1
+
 
 def _selected_sliver_face_fraction(points, faces, n_int, sel, target_depth):
     """Fraction of SELECTED wall faces that are sliver-based (T4c).
@@ -244,10 +322,12 @@ def _consume_enabled() -> bool:
 
     Measured (T4 acceptance): tube 103202 goes from 1 layer to 6 layers on
     100% of the wall faces with the first-layer ratio 1.00 (true y+) and
-    real checkMesh PASS (NO 56.75 vs 60.50).  Sliver-heavy duals are
-    AUTO-DISABLED (>= 0.5% sliver base faces) and stay byte-identical to
-    the historical behaviour (venturi: ON == OFF, baseline metrics), so
-    the default is safe everywhere.
+    real checkMesh PASS (NO 56.75 vs 60.50).  Sliver-heavy duals are handled
+    by PER-FACE EXCLUSION (T4d): the sliver-affected wall faces are left out
+    of the extrusion and the full stack runs on the rest, so a complex part
+    still gets its BL instead of being denied one wholesale.  The old global
+    auto-disable survives only above ``_CONSUME_MAX_EXCLUDED_FRAC`` (80%)
+    excluded faces.
 
     Set ``POLYFOAMMESH_BL_CONSUME=0`` (or false/no/off) to force the
     historical single-cell budget."""
@@ -1427,30 +1507,44 @@ class PolyBoundaryLayerEngine:
         # byte-identical when off).  Only the standard fallback path consumes
         # it; the local-termination paths are left untouched.
         consume = _consume_enabled()
-        # T4c AUTO-DISABLE: the consume path helps healthy duals (tube) but
-        # makes sliver-heavy ones worse (venturi: twisted prisms -> real
-        # checkMesh fails).  Measure the fraction of SELECTED wall faces whose
-        # smallest edge is below the sliver criterion relative to the
-        # requested stack; above the documented limit, drop consumption for
-        # this build so the result is byte-identical to the gate OFF path.
+        # T4d PER-FACE EXCLUSION (replaces the T4c global auto-disable).  The
+        # consume path helps healthy duals (tube) but TWISTED prisms on the
+        # faces touching a sliver dual cell (venturi).  Instead of disabling
+        # consumption for the WHOLE mesh (which denied the venturi any BL),
+        # identify the sliver-affected wall faces and leave only THOSE out of
+        # the extrusion (0 layers, no prisms, shell loss accounted like any
+        # unselected face).  The reflow + full stack then run on the remaining
+        # faces exactly as before.  The old global disable survives only as a
+        # last resort when the exclusion would leave (almost) nothing.
+        consume_excluded: frozenset[int] = frozenset()
         if consume:
             target_depth_req = float(
                 _stack_depths(res.n_layers, res.first_height, growth)[-1]
             )
-            n_sliver_faces, n_total_faces, frac = (
-                _selected_sliver_face_fraction(
-                    points, faces, n_int, sel, target_depth_req,
+            consume_excluded, n_excl, frac_excl = (
+                self._consume_excluded_faces(
+                    points, faces, owner, neighbour, n_int, sel,
+                    target_depth_req,
+                    detect_caps=not apply_to_all,
                 )
             )
-            if frac > _CONSUME_MAX_SLIVER_FACE_FRAC:
+            n_remaining = len(sel) - n_excl
+            if frac_excl > _CONSUME_MAX_EXCLUDED_FRAC or n_remaining <= 0:
                 self._log(
-                    f"[bl] consume disabled: {n_sliver_faces} of "
-                    f"{n_total_faces} wall faces are sliver-based "
-                    f"({100.0 * frac:.2f}% > limit "
-                    f"{100.0 * _CONSUME_MAX_SLIVER_FACE_FRAC:g}%) - using "
+                    f"[bl] consume disabled: {n_excl} of {len(sel)} wall "
+                    f"faces are sliver-affected "
+                    f"({100.0 * frac_excl:.2f}% > limit "
+                    f"{100.0 * _CONSUME_MAX_EXCLUDED_FRAC:g}%) - using "
                     "the standard budget"
                 )
                 consume = False
+                consume_excluded = frozenset()
+            else:
+                self._log(
+                    f"[bl] consume: excluded {n_excl} sliver-affected wall "
+                    f"faces ({100.0 * frac_excl:.2f}% of {len(sel)}) - "
+                    f"full stack on the remaining {n_remaining}"
+                )
 
         if local_termination:
             if local_termination not in (True, "decoupled", "decoupled_vertex"):
@@ -1491,6 +1585,8 @@ class PolyBoundaryLayerEngine:
             target_depth=float(
                 _stack_depths(res.n_layers, res.first_height, growth)[-1]
             ),
+            consume_excluded=consume_excluded,
+            detect_caps=not apply_to_all,
         )
         self._stage_pre_s += time.perf_counter() - _t_pre
         for k, v in pre.get("dual_stats", {}).items():
@@ -1559,6 +1655,7 @@ class PolyBoundaryLayerEngine:
                         zero_concave=True,
                         thin_bnd=thin_bnd, cover_thin=cover_thin,
                         consume=consume,
+                        consume_excluded=consume_excluded,
                     )
                 except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(
@@ -2414,6 +2511,230 @@ class PolyBoundaryLayerEngine:
                 out[nb] = e
         return out
 
+    def _consume_cap_faces(self, points, faces, n_int, sel):
+        """Inlet/outlet CAP faces among the selected wall faces (2026-10-08).
+
+        A selected boundary face is a CAP when its normal is axis-aligned
+        (within ``_CONSUME_CAP_ANGLE_DEG``) to the DOMAIN's flow axis, its
+        centroid lies within ``_CONSUME_CAP_PLANE_TOL_FRAC * extent`` of the
+        corresponding bbox extreme plane, and it belongs to a planar patch of
+        at least ``_CONSUME_CAP_MIN_PATCH_FACES`` coplanar, co-oriented faces
+        at that extreme.  The flow axis is the bbox axis with the largest
+        extent (internal-flow convention; ties go to the lowest axis).
+
+        The patch test runs over ALL boundary faces, so a cap that is only
+        partially selected (or that has no selected faces at all, like the
+        venturi outlet) is still recognised as a planar patch; only the
+        SELECTED members are returned for exclusion.  Returning an empty set
+        on a mesh whose caps are not selected (the tube) is what keeps that
+        build bit-identical.
+
+        Returns ``(cap_local_ids, info)`` where ``cap_local_ids`` is a set of
+        boundary-LOCAL face ids (values in ``sel``) and ``info`` carries the
+        axis name/side and the detected count for logging.
+        """
+        info = {"axis": -1, "axis_name": "", "side": "", "n_cap": 0}
+        sel_list = list(sel)
+        if not sel_list:
+            return set(), info
+        pts = np.asarray(points, dtype=np.float64)
+        lo = pts.min(axis=0)
+        hi = pts.max(axis=0)
+        ext = hi - lo
+        axis = int(np.argmax(ext))
+        axis_name = ("x", "y", "z")[axis]
+        info["axis"] = axis
+        info["axis_name"] = axis_name
+        if ext[axis] <= 0.0:
+            return set(), info
+        tol = _CONSUME_CAP_PLANE_TOL_FRAC * float(ext[axis])
+        cos_tol = float(np.cos(np.radians(_CONSUME_CAP_ANGLE_DEG)))
+        n_bnd = len(faces) - n_int
+        # Group candidate faces by (side, normal sign) over ALL boundary faces.
+        groups: dict[tuple[int, int], list[int]] = {}
+        for bi in range(n_bnd):
+            f = faces[n_int + bi]
+            nv = _newell(pts, f)
+            nm = float(np.linalg.norm(nv))
+            if nm <= 1e-300:
+                continue
+            if abs(float(nv[axis])) / nm < cos_tol:
+                continue
+            c = pts[np.asarray(f)].mean(axis=0)
+            if c[axis] <= lo[axis] + tol:
+                side = 0  # min extreme
+            elif c[axis] >= hi[axis] - tol:
+                side = 1  # max extreme
+            else:
+                continue
+            sign = 0 if nv[axis] > 0.0 else 1
+            groups.setdefault((side, sign), []).append(bi)
+        sel_set = set(sel_list)
+        caps: set[int] = set()
+        cap_all: set[int] = set()
+        sides_used: set[int] = set()
+        for (side, _sign), g in groups.items():
+            if len(g) < _CONSUME_CAP_MIN_PATCH_FACES:
+                continue
+            cap_all.update(g)
+            members = [b for b in g if b in sel_set]
+            if not members:
+                continue
+            caps.update(members)
+            sides_used.add(side)
+        n_direct = len(caps)
+        n_rim = 0
+        # Rim ring: selected wall faces edge-adjacent to ANY geometric cap
+        # patch (including a cap that is not itself selected - the venturi
+        # outlet).  Only when the cap exclusion is active (>=1 selected cap),
+        # so a mesh whose caps are not selected (the tube) is untouched.
+        rim_rings = int(_CONSUME_CAP_RIM_RING)
+        if caps and cap_all and rim_rings > 0:
+            edge_faces: dict[tuple[int, int], list[int]] = {}
+            for bi in sel_list:
+                f = faces[n_int + bi]
+                for k in range(len(f)):
+                    a, b = f[k], f[(k + 1) % len(f)]
+                    key = (a, b) if a < b else (b, a)
+                    edge_faces.setdefault(key, []).append(bi)
+            frontier = set(cap_all)
+            for _ in range(rim_rings):
+                add: set[int] = set()
+                for bi in frontier:
+                    f = faces[n_int + bi]
+                    for k in range(len(f)):
+                        a, b = f[k], f[(k + 1) % len(f)]
+                        key = (a, b) if a < b else (b, a)
+                        for obi in edge_faces.get(key, ()):
+                            if obi not in caps:
+                                add.add(obi)
+                if not add:
+                    break
+                caps |= add
+                frontier = add
+            n_rim = len(caps) - n_direct
+        if sides_used == {0}:
+            side_str = axis_name + "min"
+        elif sides_used == {1}:
+            side_str = axis_name + "max"
+        elif sides_used:
+            side_str = axis_name + "min+" + axis_name + "max"
+        else:
+            side_str = ""
+        info["side"] = side_str
+        info["n_cap"] = n_direct
+        info["n_rim"] = n_rim
+        return caps, info
+
+    def _consume_excluded_faces(self, points, faces, owner, neighbour, n_int,
+                                sel, target_depth, detect_caps: bool = True):
+        """Per-face sliver exclusion for the consuming reflow (T4d).
+
+        Returns ``(excluded, n_excluded, fraction)`` where ``excluded`` is a
+        frozenset of boundary-LOCAL face ids (positions in ``sel``) that must
+        be left OUT of the BL extrusion entirely (0 layers, no prisms, shell
+        loss accounted like any unselected face).  A wall face is excluded
+        when either:
+
+        (a) it is a sliver BASE face - its smallest edge is below
+            ``_CONSUME_SLIVER_FRAC * target_depth``, the SAME criterion the
+            T4b sliver core guard applies to dual cells (counted through the
+            existing ``_drop_small_base_edges`` machinery), OR
+        (b) one of its vertices is a corner of a sliver DUAL CELL - the cell
+            set the T4b guard already computes via ``_consume_cell_min_edge``.
+            This catches the faces whose prisms would be twisted because the
+            cell behind them is nearly flat, even when the wall face's own
+            edges are not tiny.
+
+        ``target_depth <= 0`` (direct ``_build`` callers / tests that never
+        supplied a stack) excludes nothing, so a build whose threshold was
+        never given is unchanged.
+
+        ``detect_caps`` (2026-10-08): run the inlet/outlet cap criterion.  It
+        is OFF for an ``apply_to_all=True`` run, where the caller explicitly
+        asked to extrude EVERY boundary face (including caps), and ON for the
+        wall-only selection the production BL uses.  This keeps the corpus /
+        benchmark builds (``apply_to_all=True``) bit-identical.
+        """
+        sel_list = list(sel)
+        if not sel_list or float(target_depth) <= 0.0:
+            return frozenset(), 0, 0.0
+        pts = np.asarray(points, dtype=np.float64)
+        threshold = _CONSUME_SLIVER_FRAC * float(target_depth)
+        # (a) sliver base faces, reusing the robust sliver machinery.
+        _kept, _n_edge, _cut = _drop_small_base_edges(
+            pts, faces, n_int, sel_list, 0.0, absolute_threshold=threshold,
+        )
+        kept = set(_kept)
+        excluded = {bi for bi in sel_list if bi not in kept}
+        # (b) selected faces touching a sliver dual cell (T4b cell set).
+        n_cells = int(max(owner.max(), neighbour.max())) + 1
+        cell_min = self._consume_cell_min_edge(
+            pts, faces, owner, neighbour, n_int, range(n_cells),
+        )
+        sliver_cells = {c for c, e in cell_min.items() if e < threshold}
+        if sliver_cells:
+            sliver_verts: set[int] = set()
+            for fi, f in enumerate(faces):
+                o = int(owner[fi])
+                nb = int(neighbour[fi]) if fi < n_int else -1
+                if o in sliver_cells or nb in sliver_cells:
+                    sliver_verts.update(int(v) for v in f)
+            for bi in sel_list:
+                if any(int(v) in sliver_verts for v in faces[n_int + bi]):
+                    excluded.add(bi)
+        # (c) inlet/outlet CAP faces (2026-10-08).  A BL on an inlet/outlet is
+        # physically wrong (they are not walls): on the venturi those prisms
+        # are the +68 face-pyramid violations and the 13 high-aspect cells.
+        # The cap test is geometric and independent of the sliver criteria.
+        # The faces stay in the selected patch set - only their EXTRUSION is
+        # suppressed (nf=0), and their owner cells are pinned by the existing
+        # per-face-exclusion plumbing in ``_build_precompute``.
+        cap_faces, cap_info = (self._consume_cap_faces(
+            pts, faces, n_int, sel_list,
+        ) if detect_caps else (set(), {}))
+        if cap_faces:
+            excluded |= cap_faces
+            self._log(
+                f"[bl] consume: excluded {cap_info['n_cap']} inlet/outlet "
+                f"cap face(s) on axis {cap_info['axis_name']} "
+                f"({cap_info['side']})"
+            )
+            if cap_info.get("n_rim"):
+                self._log(
+                    f"[bl] consume: cap rim ring added "
+                    f"{cap_info['n_rim']} selected wall face(s)"
+                )
+        # Widen by edge-adjacency rings (T4d iteration).  A bare face whose
+        # neighbours are still extruded shares wall vertices with them; those
+        # move to the stack top and drag the bare face / its core cell into a
+        # negative volume.  Excluding the ring removes the shared move.
+        rings = int(_CONSUME_EXCLUSION_RINGS)
+        if rings > 0 and excluded:
+            edge_faces: dict[tuple[int, int], list[int]] = {}
+            for bi in sel_list:
+                f = faces[n_int + bi]
+                for k in range(len(f)):
+                    a, b = f[k], f[(k + 1) % len(f)]
+                    key = (a, b) if a < b else (b, a)
+                    edge_faces.setdefault(key, []).append(bi)
+            for _ in range(rings):
+                add: set[int] = set()
+                for bi in excluded:
+                    f = faces[n_int + bi]
+                    for k in range(len(f)):
+                        a, b = f[k], f[(k + 1) % len(f)]
+                        key = (a, b) if a < b else (b, a)
+                        for obi in edge_faces.get(key, ()):
+                            if obi not in excluded:
+                                add.add(obi)
+                if not add:
+                    break
+                excluded |= add
+        n_excluded = len(excluded)
+        return (frozenset(excluded), n_excluded,
+                n_excluded / len(sel_list))
+
     def _consume_reflow(self, pre, hw):
         """Harmonic interior relocation ("core reflow", Task 2).
 
@@ -2512,7 +2833,9 @@ class PolyBoundaryLayerEngine:
                           edge_cap_percentile: float = 0.0,
                           thin_bnd=frozenset(),
                           consume: bool = False,
-                          target_depth: float = 0.0) -> dict:
+                          target_depth: float = 0.0,
+                          consume_excluded=None,
+                          detect_caps: bool = True) -> dict:
         """Part of ``_build`` that does NOT depend on the layer heights or the
         inversion clamp (i.e. on ``first_height``/``clamp_factor``): wall
         vertices, per-vertex normals, the feature-aware angular fade (or the
@@ -2839,7 +3162,25 @@ class PolyBoundaryLayerEngine:
         consume_free = None
         consume_src = consume_dst = consume_elen = None
         cap_dist: dict[int, float] = {}
+        # T4d per-face exclusion: ``run`` computes the set once and passes it
+        # in; direct ``_build`` callers (pre is None) get it computed here so
+        # they see the same behaviour.  The excluded faces are removed from
+        # the extrusion in ``_build`` (0 layers, no prisms).
+        consume_excluded = frozenset(consume_excluded or ())
         if consume:
+            if not consume_excluded and target_depth > 0.0:
+                consume_excluded, n_excl0, frac0 = (
+                    self._consume_excluded_faces(
+                        pts, faces, owner, neighbour, n_int, sel,
+                        target_depth, detect_caps=detect_caps,
+                    )
+                )
+                if n_excl0:
+                    self._log(
+                        f"[bl] consume: excluded {n_excl0} sliver-affected "
+                        f"wall faces ({100.0 * frac0:.2f}% of {len(sel)}) - "
+                        f"full stack on the remaining {len(sel) - n_excl0}"
+                    )
             support_layers, support_cells = self._consume_support_layers(
                 pts, faces, owner, neighbour, n_int, n_cells,
                 wall_verts, wall_face_of, normals,
@@ -2914,12 +3255,20 @@ class PolyBoundaryLayerEngine:
                     int(owner[fi]) in sliver_cells
                     for fi in wall_face_of.get(w, ())
                 )
-            if sliver_cells:
+            # T4d: also PIN the owner cells of the per-face-excluded faces.
+            # Their interior vertices are what the harmonic reflow would move
+            # to open the full stack behind an excluded (sliver) face; pinning
+            # them keeps those cells rigid and stops the reflow dragging the
+            # adjacent CLEAN faces into twisted prisms.
+            pin_cells: set[int] = set(sliver_cells)
+            for bi in consume_excluded:
+                pin_cells.add(int(owner[n_int + bi]))
+            if pin_cells:
                 pin: set[int] = set()
                 for fi, f in enumerate(faces):
                     o = int(owner[fi])
-                    if o in sliver_cells or (
-                        fi < n_int and int(neighbour[fi]) in sliver_cells
+                    if o in pin_cells or (
+                        fi < n_int and int(neighbour[fi]) in pin_cells
                     ):
                         pin.update(int(v) for v in f)
                 pin_free = [v for v in pin if consume_free[v]]
@@ -2928,7 +3277,7 @@ class PolyBoundaryLayerEngine:
                 n_fb = sum(1 for w in wall_verts if support_sliver[w])
                 self._log(
                     f"[bl] consume: sliver guard pinned "
-                    f"{len(sliver_cells):,} dual cell(s) / "
+                    f"{len(pin_cells):,} dual cell(s) / "
                     f"{len(pin_free):,} interior vertex(es); "
                     f"{n_fb:,} wall vertex(es) fall back to the "
                     "single-cell budget"
@@ -2957,6 +3306,7 @@ class PolyBoundaryLayerEngine:
             "consume_dst": consume_dst,
             "consume_elen": consume_elen,
             "consume_cap_dist": cap_dist,
+            "consume_excluded": consume_excluded,
         }
 
     def _build(self, points, faces, owner, neighbour, patches, n_int,
@@ -2970,7 +3320,8 @@ class PolyBoundaryLayerEngine:
                limit_height_gradient: bool = True,
                thin_bnd=frozenset(),
                cover_thin: bool = True,
-               consume: bool = False) -> dict:
+               consume: bool = False,
+               consume_excluded=None) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
 
         ``pre`` is the scale-independent precompute from ``_build_precompute``
@@ -3024,6 +3375,7 @@ class PolyBoundaryLayerEngine:
                 drop_bnd, concavity_criterion=concavity_criterion,
                 edge_cap_percentile=edge_cap_percentile, consume=consume,
                 target_depth=float(_cum_req[-1]),
+                consume_excluded=consume_excluded,
             )
         pts = pre["pts"]
         n_pts = pre["n_pts"]
@@ -3064,6 +3416,18 @@ class PolyBoundaryLayerEngine:
         thin = (frozenset(i for i, fi in enumerate(bnd)
                           if (fi - n_int) in thin_bnd)
                 if thin_bnd else frozenset())
+        # T4d per-face exclusion: translate the boundary-LOCAL ids the
+        # precompute/run computed to POSITIONS in ``bnd`` (same convention as
+        # ``drop_bnd`` / ``thin``).  These faces are left out of the extrusion
+        # entirely (0 layers, no prisms) in both the binary and the
+        # consistency-fixpoint paths below.  When ``_build`` is called with a
+        # ``pre`` built elsewhere, the set travels inside it.
+        consume_excluded = (consume_excluded
+                            or pre.get("consume_excluded") or frozenset())
+        consume_excl = (frozenset(i for i, fi in enumerate(bnd)
+                                  if (fi - n_int) in consume_excluded)
+                        if consume_excluded
+                        else frozenset())
 
         # --- layer heights --------------------------------------------------
         # cumulative: H_k = h1 * (r^k - 1)/(r - 1); H_total = H_n.
@@ -3157,7 +3521,11 @@ class PolyBoundaryLayerEngine:
             # flagged faces: ONE layer (never 0  -  the shell must stay
             # covered so the volume is conserved); degenerate vertices with
             # no extrusion budget force 0 (handled as unselected below)
-            nf0[bi] = min(1, m) if bi in drop_bnd else m
+            # T4d: excluded faces are never extruded (0 layers), in this
+            # consistency-fixpoint path too.
+            nf0[bi] = 0 if bi in consume_excl else (
+                min(1, m) if bi in drop_bnd else m
+            )
         if zero_concave:
             # BINARY semantics: a face is either fully layered or not
             # extruded at all - no intermediate counts, no transition faces.
@@ -3175,6 +3543,14 @@ class PolyBoundaryLayerEngine:
             nf = {}
             nv = {w: 0 for w in wall_verts}
             for bi, fi in enumerate(bnd):
+                # T4d per-face exclusion: a sliver-affected wall face gets NO
+                # prism at all (its shell loss is accounted like any unselected
+                # face) and contributes no vertex budget, so the clean adjacent
+                # faces are not dragged into twisted prisms.  Checked BEFORE
+                # the cover_thin policy, so it applies in every cover pass.
+                if bi in consume_excl:
+                    nf[bi] = 0
+                    continue
                 # COMPLETE-COVERAGE policy (2026-10-07, revised): a face the
                 # input pyramid criterion flagged (drop_bnd) or the robust
                 # sliver filters flagged (thin) is STILL extruded with a
@@ -3287,7 +3663,9 @@ class PolyBoundaryLayerEngine:
                 nf = {}
                 for bi, fi in enumerate(bnd):
                     m = min((nv[v] for v in faces[fi]), default=0)
-                    nf[bi] = min(1, m) if bi in drop_bnd else m
+                    nf[bi] = 0 if bi in consume_excl else (
+                        min(1, m) if bi in drop_bnd else m
+                    )
             hw = {
                 w: (hw0[w] if nv[w] == nv0[w] else
                     (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0))
