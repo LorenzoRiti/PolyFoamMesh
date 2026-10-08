@@ -927,3 +927,23 @@ cartesianMesh presenti in /usr/lib/openfoam/openfoam2512).
 SDD dedicato, settimane. Decisione utente: rilasciare col cap onesto
 (logga "capped N -> k") e mettere il BL multi-layer come titolo
 dell'update successivo, oppure spostare il rilascio.
+
+## 2026-10-08 - Programma B: consuming BL (T1-T3 del piano) - VERIFICATO DA ME
+
+Lane (gia' in volo, reconciliata col piano 2026-10-08-bl-consuming-program.md:
+design corrisponde - support walk + reflow armonico + gate; deviazione
+documentata sul cap di spostamento: per-edge Lipschitz 0.9*edge invece di
+0.9*altezza-cella, motivata da misura).
+VERIFICA MIA sul tubo (103202, dual ricostruito dalla tet backup, env ON,
+n=6 h1=0.625mm robust ON):
+  [bl] consumed 1 interior cell layers (6.206 mm of 6.206 mm)
+  58.632 prismi, 6 layer su 100% delle 9.772 facce, mediana 6, local 6..6
+  primo strato 0.000625 = richiesto (ratio 1.00), checkMesh PASS
+  (NO 56.75, skew 1.594, neg 0). Env OFF: 1 layer, NO 60.50.
+Invariance OFF: hash SHA256 dei 5 file polyMesh == HEAD (dalla lane,
+ricontrollato nel codice: env OFF = no-op). Suite fast 1433, ruff pulito.
+BLOCKER venturi (103936): reflow inverte le celle sliver (246
+non-positive a ogni scala) -> gate resta OFF, nessuna promozione (regola
+T6 del piano). Corpus spot: nessuna regressione (pipe/box migliorati).
+PROSSIMO (T4b): guardia sliver-aware nel reflow (pin/esclusione dei
+vertici di celle sliver) -> riaccettazione venturi+tubo -> poi T5/T6.

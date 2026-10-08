@@ -69,6 +69,16 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **BL multi-layer "consuming" (sperimentale, `POLYFOAMMESH_BL_CONSUME=1`)**:
+  il motore BL ora può consumare strati di celle dual (rilocazione armonica
+  limitata dei vertici interni, guardia anti-inversione per-edge), così lo
+  stack completo entra anche dove la prima cella è sottile. **Verificato sul
+  tubo reale**: 6 layer su 100% delle facce (mediana 6), primo strato =
+  richiesto (y+ vero), checkMesh PASS (NO 56.75, skew 1.59) — prima: 1
+  layer. **Bloccato sul venturi**: le celle sliver si invertono (246 celle
+  non-positive) → la feature resta **gated OFF** finché la guardia
+  sliver-aware non è implementata. Default byte-identico con env OFF
+  (hash SHA256 dei file polyMesh verificato).
 - **Dual: input misto tet+prismi con stitching esatto**: il convertitore
   ora accetta mesh di input con prismi (da qualunque sorgente), li
   preserva verbatim nel polyMesh finale e cuce l'interfaccia al core
