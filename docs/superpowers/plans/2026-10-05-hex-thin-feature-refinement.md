@@ -577,7 +577,7 @@ Record the B-side `max_non_ortho`, `cell_count`, `wall_time_s` per geometry and 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\Programs\Python\Python311;$env:PATH"
 git add -f benchmarks/results/comparison_<ts>.json
-git commit -m "bench: B-side hex thin-feature refinement on gap rows (locale)"
+git commit -m "bench: B-side hex thin-feature refinement on gap rows (local)"
 ```
 
 ---
@@ -618,7 +618,7 @@ The kill criterion governs: any healthy geometry worse by >2°, cube_duct >70, o
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\Programs\Python\Python311;$env:PATH"
 git add -f benchmarks/results/comparison_<ts>.json benchmarks/results/comparison_<ts2>.json
-git commit -m "bench: B-side hex regression runs with thin-feature refinement (locale)"
+git commit -m "bench: B-side hex regression runs with thin-feature refinement (local)"
 ```
 
 ---
@@ -673,7 +673,7 @@ Expected: ruff clean; suite green (≥1234 passed + the new tests; 2 skipped; 1 
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\Programs\Python\Python311;$env:PATH"
 git add notes/non-ortho_reasoning.md .opencode/GOAL.md
-git commit -m "notes: hex thin-feature refinement B-side verdict (locale)"
+git commit -m "notes: hex thin-feature refinement B-side verdict (local)"
 ```
 
 Report to the human: B-side numbers, verdict, and the explicit question —

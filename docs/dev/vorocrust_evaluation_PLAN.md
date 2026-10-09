@@ -1,69 +1,68 @@
-# Valutazione VoroCrust come possibile sostituto del mesher nativo
+# Evaluation of VoroCrust as a possible replacement for the native mesher
 
-Documento di lavoro — stato aggiornato man mano che le fasi procedono.
-Aggiornato al 2026-08-07.
+Working document — state updated as the phases proceed.
+Updated as of 2026-08-07.
 
-## Perché
+## Why
 
-Il mesher nativo cut-cell (`core/native_mesher.py` → `core/hex_poly_dual.py`,
-vedi `docs/poly_mesher_STATO.md`) ha due limiti strutturali che richiederebbero
-riscritture rischiose per essere risolti: lo snapping su pareti parallele alla
-griglia (il dual fallisce con "Non-manifold primal edge" su geometrie come un
-box) e il refinement locale (nessun octree). Entrambi i problemi sono
-strutturali all'approccio cartesiano/cut-cell, non bug da correggere.
+The native cut-cell mesher (`core/native_mesher.py` → `core/hex_poly_dual.py`,
+see `docs/dev/poly_mesher_STATUS.md`) has two structural limits that would require
+risky rewrites to be solved: snapping on walls parallel to the
+grid (the dual fails with "Non-manifold primal edge" on geometries such as a
+box) and local refinement (no octree). Both problems are
+structural to the Cartesian/cut-cell approach, not bugs to be fixed.
 
 [VoroCrust](https://vorocrust.sandia.gov/) (Sandia National Labs, Abdelkader
 et al., *"VoroCrust: Voronoi Meshing Without Clipping"*, ACM Trans. Graph.
-2020) usa un approccio diverso — piazzamento di seed di Voronoi guidato da un
-campo di sizing con garanzie matematiche, **nessuna griglia cartesiana** — che
-elimina strutturalmente entrambi i problemi. Codice open source:
+2020) uses a different approach — placement of Voronoi seeds guided by a
+sizing field with mathematical guarantees, **no Cartesian grid** — which
+structurally eliminates both problems. Open-source code:
 [sandialabs/vorocrust-meshing](https://github.com/sandialabs/vorocrust-meshing),
-licenza **BSD-3-Clause** (uso commerciale ok), C++/CMake/OpenMP.
+**BSD-3-Clause** license (commercial use ok), C++/CMake/OpenMP.
 
-**Limite noto dal paper** (dichiarato dagli stessi autori, sez. 4 "Future
-Work"): al 2020 VoroCrust **non genera boundary layer** — stesso gap del
-nostro percorso nativo oggi. Da riverificare sul codice attuale (2026).
+**Known limit from the paper** (stated by the authors themselves, sec. 4 "Future
+Work"): as of 2020 VoroCrust **does not generate boundary layers** — the same gap as
+our native path today. To be re-verified against the current code (2026).
 
-## Fasi
+## Phases
 
-Ogni fase è bloccata dalla precedente (vedi task tracker). Non iniziare una
-fase finché la precedente non ha un esito registrato qui sotto.
+Each phase is blocked by the previous one (see task tracker). Do not start a
+phase until the previous one has an outcome recorded below.
 
-### Fase 0 — Build in WSL + test OneBox
-**Obiettivo**: verificare che si compili e che il loro stesso test case
-`OneBox` (box con pareti piatte — il nostro identico caso di fallimento)
-produca una mesh valida.
-**Perché WSL e non Windows nativo**: le istruzioni di build Windows nel loro
-repo sono segnalate come "in sviluppo"; WSL è già l'ambiente che questo
-progetto usa in modo affidabile per OpenFOAM/cfMesh.
-**Stato**: IN CORSO.
+### Phase 0 — Build in WSL + OneBox test
+**Goal**: verify that it compiles and that their own test case
+`OneBox` (box with flat walls — our identical failure case)
+produces a valid mesh.
+**Why WSL and not native Windows**: the Windows build instructions in their
+repo are flagged as "under development"; WSL is already the environment this
+project uses reliably for OpenFOAM/cfMesh.
+**Status**: IN PROGRESS.
 
-### Fase 1 — Verifica sul nostro caso reale
-Esportare uno dei nostri STL (quello che rompe `hex_poly_dual`) in `.obj`,
-lanciarlo con VoroCrust, confermare che risolve lo snapping su geometria
-nostra (non solo sul loro test sintetico).
-**Stato**: bloccata da Fase 0.
+### Phase 1 — Verification on our real case
+Export one of our STLs (the one that breaks `hex_poly_dual`) to `.obj`,
+run it with VoroCrust, confirm that it solves snapping on our own
+geometry (not just on their synthetic test).
+**Status**: blocked by Phase 0.
 
-### Fase 2 — Convertitore output → OpenFOAM
-Il formato di output (probabilmente Exodus) va convertito in
-`constant/polyMesh`. `meshio` (già dipendenza del progetto) supporta Exodus —
-riuso, non nuova dipendenza. Analogo a `core/mesh_converter.py` (GMSH .msh →
-OpenFOAM) già esistente.
-**Stato**: bloccata da Fase 1.
+### Phase 2 — Output → OpenFOAM converter
+The output format (probably Exodus) must be converted to
+`constant/polyMesh`. `meshio` (already a project dependency) supports Exodus —
+reuse, not a new dependency. Analogous to `core/mesh_converter.py` (GMSH .msh →
+OpenFOAM) already existing.
+**Status**: blocked by Phase 1.
 
-### Fase 3 — Integrazione come mesher sperimentale
-Wrapper subprocess (stesso pattern di `core/gmsh_wrapper.py`), bridge stile
-`commercial/native_poly_bridge.py`, voce nel menu Tools (stesso trattamento
-"sperimentale, opt-in" dato al Native Poly di oggi — non nel combo mesher
-standard).
-**Stato**: bloccata da Fase 2.
+### Phase 3 — Integration as an experimental mesher
+Subprocess wrapper (same pattern as `core/gmsh_wrapper.py`), bridge in the style of
+`commercial/native_poly_bridge.py`, entry in the Tools menu (same "experimental, opt-in"
+treatment given to today's Native Poly — not in the standard mesher combo).
+**Status**: blocked by Phase 2.
 
-### Fase 4 — Confronto su geometrie reali
-checkMesh, tempi, robustezza su geometrie vere dell'utente vs percorso CFD
-Poly GMSH attuale. Decisione finale: sostituisce il cut-cell nativo o resta
-un percorso sperimentale parallelo.
-**Stato**: bloccata da Fase 3.
+### Phase 4 — Comparison on real geometries
+checkMesh, times, robustness on the user's real geometries vs the current
+GMSH Poly CFD path. Final decision: does it replace the native cut-cell or remain
+a parallel experimental path.
+**Status**: blocked by Phase 3.
 
 ## Log
 
-- 2026-08-07: piano scritto, Fase 0 avviata.
+- 2026-08-07: plan written, Phase 0 started.

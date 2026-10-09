@@ -1,113 +1,113 @@
-# Task 2 — perche' la BL fallisce sul dual di produzione (collapsed) della valvola
+# Task 2 — why the BL fails on the production (collapsed) dual of the valve
 
-Data: 2026-09-09. Scritto prima dei test di Task 2 (la fixture e' stata
-appena rigenerata nel Task 1, quindi i run partono dal converter attuale).
+Date: 2026-09-09. Written before the Task 2 tests (the fixture was
+just regenerated in Task 1, so the runs start from the current converter).
 
-## Fatti misurati (FASE 7, input collapsed production)
+## Measured facts (PHASE 7, collapsed production input)
 
-- facce di bordo: 42.130 (poligoni 4-9 lati) vs 226.542 quad dell'exact;
-- difetti input: 340 wrong cells (checkMesh) / 370 facce pyr (in-process BL);
-- drift di volume: 1,08%;
-- BL decoupled: FALLISCE a tutte e 5 le scale x 3 round — traiettoria pyr
-  per round: 1.0: 470/431; 0.6: 422/406; 0.35: 414/404; 0.2: 422/375;
-  0.1: 444/385; input 370. Il migliore (375 al 0.2 round 2) e' 5 sopra
-  input; le esclusioni si fermano a 2.189 (5,2% delle facce).
-- Controllo exact (stesso converter, stessa sorgente): BL riesce a scala
-  1.0 round 1 con 2.525 esclusioni (1,1% delle facce).
+- boundary faces: 42,130 (4-9 sided polygons) vs 226,542 quads of the exact;
+- input defects: 340 wrong cells (checkMesh) / 370 pyr faces (in-process BL);
+- volume drift: 1.08%;
+- BL decoupled: FAILS at all 5 scales x 3 rounds — pyr
+  trajectory per round: 1.0: 470/431; 0.6: 422/406; 0.35: 414/404; 0.2: 422/375;
+  0.1: 444/385; input 370. The best (375 at 0.2 round 2) is 5 above
+  input; the exclusions stop at 2,189 (5.2% of faces).
+- Exact control (same converter, same source): BL succeeds at scale
+  1.0 round 1 with 2,525 exclusions (1.1% of faces).
 
-## Ipotesi sul perche' (da verificare con la misura)
+## Hypotheses on why (to be verified with measurement)
 
-H1 — **granularita' dell'esclusione (rim)**: nel dual collapsed una faccia
-e' una poligonale per vertice di bordo, ~5x l'area di un quad. Escludere
-una poligonale rimuove molto muro; i prismi di transizione al BORDO della
-zona esclusa generano nuove violazioni piramidali. Il conteggio si ferma
-perche' ogni round rimuove ~tante violazioni quante ne crea al bordo.
-Previsione: i difetti residui stanno a raggio 0-2 poligonali dalla zona
-esclusa, e il conteggio per round cala lentamente (es. 400 -> 30 -> 5 ->
-...) senza arrivare a 0 nei 3 round.
+H1 — **exclusion granularity (rim)**: in the collapsed dual a face
+is a polygon per boundary vertex, ~5x the area of a quad. Excluding
+a polygon removes a lot of wall; the transition prisms at the EDGE of the
+excluded zone generate new pyramid violations. The count stops
+because each round removes ~as many violations as it creates at the edge.
+Prediction: the residual defects lie at radius 0-2 polygons from the excluded
+zone, and the per-round count decreases slowly (e.g. 400 -> 30 -> 5 ->
+...) without reaching 0 in the 3 rounds.
 
-H2 — **difetti input non raggiungibili**: se buona parte dei 370 pyr
-input sta su facce INTERNE (non selezionabili/escludibili), il budget
-"n_pyr <= input" e' stretto e i round extra non bastano. Previsione: sul
-collapsed la quota boundary dei difetti input e' piu' bassa che
-sull'exact (937/1007 = 93% li') — mi aspetto 250-340 su 370 (68-92%).
+H2 — **unreachable input defects**: if a good part of the 370 input pyr
+lies on INTERNAL faces (not selectable/excludable), the budget
+"n_pyr <= input" is tight and the extra rounds are not enough. Prediction: on
+the collapsed the boundary share of input defects is lower than
+on the exact (937/1007 = 93% there) — I expect 250-340 out of 370 (68-92%).
 
-H3 — **piu' round bastano**: il migliore e' 375 vs 370: se il calo per
-round e' lento ma monotono, con 6 round al 0.2 (o 0.1) si chiude.
-Previsione: 60% che `max_rounds=6` chiuda al 0.2 o 0.1 sulla produzione.
+H3 — **more rounds suffice**: the best is 375 vs 370: if the decrease per
+round is slow but monotone, with 6 rounds at 0.2 (or 0.1) it closes.
+Prediction: 60% that `max_rounds=6` closes at 0.2 or 0.1 on production.
 
-H4 — **varianti di esclusione**: se i round non bastano, allargare
-l'esclusione di un anello (V3) chiude probabilmente in 3 round ma perde
-piu' muro; escludere solo i prismi diretti senza allargamento alle celle
-core (V2) probabilmente stalla prima.
+H4 — **exclusion variants**: if the rounds are not enough, widening
+the exclusion by one ring (V3) probably closes in 3 rounds but loses
+more wall; excluding only the direct prisms without widening to the core
+cells (V2) probably stalls earlier.
 
-H5 — **criterio**: `angle_fade` vs `dual_convexity` — su poligonali di
-bordo lisce il fade resta piatto come sull'exact; previsione: nessuna
-differenza sostanziale (bassa priorita').
+H5 — **criterion**: `angle_fade` vs `dual_convexity` — on smooth boundary
+polygons the fade stays flat as on the exact; prediction: no
+substantial difference (low priority).
 
-## Piano di misura (in ordine)
+## Measurement plan (in order)
 
-1. Aggiungere al motore un parametro opt-in `local_max_rounds: int = 3`
-   (default invariato) per testare H3 senza monkey-patch.
-2. Estendere `tools/bench_bl_production_topology.py` con `--max-rounds`.
-3. Run: valvola production collapsed, `decoupled`, `max_rounds=6` (poi 10
-   se 6 non basta). Se chiude: checkMesh reale, numeri, e la proposta
-   opt-in.
-4. Se non chiude: diagnostica residua (classificazione delle facce pyr
-   residue: prism vs core, boundary vs internal) + variante V3
-   (esclusione allargata di 1 anello) via monkey-patch nel tool.
-5. Se nemmeno V3 chiude: scrivere il negativo con la diagnosi e la
-   raccomandazione (mappatura esclusioni->vertici, o niente BL sul
-   collapsed per geometrie concave).
+1. Add an opt-in engine parameter `local_max_rounds: int = 3`
+   (default unchanged) to test H3 without monkey-patching.
+2. Extend `tools/bench_bl_production_topology.py` with `--max-rounds`.
+3. Run: valve production collapsed, `decoupled`, `max_rounds=6` (then 10
+   if 6 is not enough). If it closes: real checkMesh, numbers, and the opt-in
+   proposal.
+4. If it does not close: residual diagnostics (classification of the residual
+   pyr faces: prism vs core, boundary vs internal) + variant V3
+   (exclusion widened by 1 ring) via monkey-patch in the tool.
+5. If even V3 does not close: write the negative with the diagnosis and the
+   recommendation (exclusions->vertices mapping, or no BL on the
+   collapsed for concave geometries).
 
-## Misure fatte
+## Measurements done
 
-### H2 (difetti input non raggiungibili) — misurato
-Sul collapsed: `input pyr: {'total': 370, 'boundary': 360, 'internal': 10}`.
-**97% boundary**, quindi escludibili. H2 falsificata: il budget
-non è strozzato da difetti interni.
+### H2 (unreachable input defects) — measured
+On the collapsed: `input pyr: {'total': 370, 'boundary': 360, 'internal': 10}`.
+**97% boundary**, therefore excludable. H2 falsified: the budget
+is not choked by internal defects.
 
-### H3 (piu' round bastano) — misurato
-Valvola production collapsed, decoupled, `local_max_rounds=6`,
-1.483 s, 25 build, 2.207 esclusioni, stallo 373-378 (0.2) / 379 (0.1
-da round 3 a 5). Mesh invariata. **H3 falsificata**: la conta
-plateau, piu' round non aiutano.
+### H3 (more rounds suffice) — measured
+Valve production collapsed, decoupled, `local_max_rounds=6`,
+1.483 s, 25 builds, 2,207 exclusions, stall 373-378 (0.2) / 379 (0.1
+from round 3 to 5). Mesh unchanged. **H3 falsified**: the count
+plateaus, more rounds do not help.
 
-### H1 (rim) — confermata
-Il cascade plateau e il pattern dei pyr (373-378 vs 370 input,
-con oscillazioni da 373 a 444) e' coerente con esclusioni al rim:
-escludere 2207 poligoni produce un bordo "buco" che fa emergere
-prismi di transizione difettosi; ogni round aggiunge 0-200 esclusioni
-ma la conta netta di pyr oscilla e non scende sotto ~373-379.
+### H1 (rim) — confirmed
+The cascade plateau and the pattern of the pyr (373-378 vs 370 input,
+with oscillations from 373 to 444) is consistent with exclusions at the rim:
+excluding 2207 polygons produces a "hole" edge that brings out
+defective transition prisms; each round adds 0-200 exclusions
+but the net pyr count oscillates and does not fall below ~373-379.
 
-### H6 widen=1 — misurato, falsificata
-Valvola production collapsed, decoupled, `local_exclude_widen=1`,
-`local_max_rounds=6`, 2.064 s, 25 build, **2.207 esclusioni**
-(identico al widen=0: widen a 1 anello non aggiunge facce al set
-escludibile della valvola, presumibilmente perche' la frontiera del
-rim di esclusione e' gia' 1-anello in molte posizioni sul collapsed
-o la pyr-violation al rim non e' semplicemente "spostata di 1
-anello"). Stesso plateau: 0.1 r3-r5 a 379. **H6 widen=1
-falsificata**: allargare l'esclusione di 1 anello non chiude il
-gap (5-10 facce sopra input) e non cambia materialmente il set
-escluso. widen=2 quasi certamente non chiuderà comunque
-(il widening e' locale e non cambia la geometria del rim).
+### H6 widen=1 — measured, falsified
+Valve production collapsed, decoupled, `local_exclude_widen=1`,
+`local_max_rounds=6`, 2.064 s, 25 builds, **2,207 exclusions**
+(identical to widen=0: widening by 1 ring does not add faces to the
+excludable set of the valve, presumably because the frontier of the
+exclusion rim is already 1-ring at many positions on the collapsed
+or the pyr-violation at the rim is not simply "moved by 1
+ring"). Same plateau: 0.1 r3-r5 at 379. **H6 widen=1
+falsified**: widening the exclusion by 1 ring does not close the
+gap (5-10 faces above input) and does not materially change the excluded
+set. widen=2 almost certainly will not close anyway
+(the widening is local and does not change the geometry of the rim).
 
-## Cosa H6 *non* cambia e perché
+## What H6 *does not* change and why
 
-H4 (mapping esclusione -> per-vertice) resta il gap strutturale:
-il binary face granularity su poligonali collapsed non puo' coprire
-il rim in modo continuo. Anche con widen > 0, il cascade aggiunge
-facce al rim di esclusioni esistenti e il gate n_pyr <= input non
-chiude. La soluzione richiede un mapping per-vertice (escludere
-"layers" su vertici incidenti, non intere facce): un cambio
-morfologico al binary exclusion model, non un tweak di parametri.
+H4 (exclusion -> per-vertex mapping) remains the structural gap:
+the binary face granularity on collapsed polygons cannot cover
+the rim continuously. Even with widen > 0, the cascade adds
+faces at the rim of existing exclusions and the gate n_pyr <= input does not
+close. The solution requires a per-vertex mapping (exclude
+"layers" on incident vertices, not whole faces): a morphological
+change to the binary exclusion model, not a parameter tweak.
 
-## Criterio di lettura (aggiornato)
+## Reading criterion (updated)
 
-- H1 confermata, H3 + H6 widen=1 falsificate, H2 confermata: il
-  difetto del BL collapsed sulla valvola non e' chiudibile con
-  exclusion granularity (face + 1 anello). widen=2 atteso NON
-  chiudere; non misurato (costo ~30 min per un risultato atteso
-  negativo). H4 (mapping per-vertice) e' il gap strutturale
-  documentato.
+- H1 confirmed, H3 + H6 widen=1 falsified, H2 confirmed: the
+  defect of the collapsed BL on the valve is not closable with
+  exclusion granularity (face + 1 ring). widen=2 expected NOT to
+  close; not measured (cost ~30 min for an expected
+  negative result). H4 (per-vertex mapping) is the documented structural
+  gap.

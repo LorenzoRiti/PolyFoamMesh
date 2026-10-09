@@ -1,318 +1,317 @@
-# PROMPT — Consolidare tet→poly in UN solo convertitore fatto bene
+# PROMPT — Consolidate tet→poly into ONE well-made converter
 
-Questo è il prompt di lavoro. Leggilo tutto prima di toccare un file.
+This is the work prompt. Read it all before touching a file.
 
 ---
 
-## 0. Contesto operativo
+## 0. Operating context
 
 Repo: `C:\Users\Davide Valoroso\cfmesh-autogui`, branch `master`, base `1513a39`.
 
-- **Python con le dipendenze**: `%LOCALAPPDATA%\Programs\Python\Python311\python.exe`.
-  Il `python` di default sul PATH **non ha** cadquery/gmsh/PySide6. Sbagliare
-  interprete è il primo modo di perdere un'ora.
+- **Python with the dependencies**: `%LOCALAPPDATA%\Programs\Python\Python311\python.exe`.
+  The default `python` on PATH **does not have** cadquery/gmsh/PySide6. Getting the
+  interpreter wrong is the first way to lose an hour.
 - **OpenFOAM 2512** in WSL2 Ubuntu: `source /usr/lib/openfoam/openfoam2512/etc/bashrc`.
-  Attenzione: `cd` verso path con spazi va **quotato**, altrimenti bash dà
-  "too many arguments" in silenzio.
-- **Casi già pronti** in `C:\polybench\` (`ref1..ref3`, `valve1`, `valve2`,
-  `smoke`), ognuno con `constant/polyMesh_tet_backup`: si riparte dalla mesh tet
-  identica senza rifare GMSH. **Usarli** — rigenerare la mesh invalida ogni
-  confronto, perché GMSH non è deterministico.
-- Geometria reale: `C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp`
-  (89 superfici, 3.0 × 0.255 × 0.255 m, 750k–2.2M tet secondo il detail).
+  Warning: `cd` to a path with spaces must be **quoted**, otherwise bash silently gives
+  "too many arguments".
+- **Cases already prepared** in `C:\polybench\` (`ref1..ref3`, `valve1`, `valve2`,
+  `smoke`), each with `constant/polyMesh_tet_backup`: you restart from the identical
+  tet mesh without redoing GMSH. **Use them** — regenerating the mesh invalidates every
+  comparison, because GMSH is not deterministic.
+- Real geometry: `C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp`
+  (89 surfaces, 3.0 × 0.255 × 0.255 m, 750k–2.2M tet depending on the detail).
 
-**Regola non negoziabile**: ogni affermazione sulla qualità della mesh va
-sostenuta da un `checkMesh` reale con numeri reali. Mai "dovrebbe funzionare".
-Confronti solo sulla **stessa** mesh tet. Ogni risultato va riprodotto 2–3 volte
-prima di chiamarlo stabile.
+**Non-negotiable rule**: every claim about mesh quality must be
+supported by a real `checkMesh` with real numbers. Never "it should work".
+Compare only on the **same** tet mesh. Every result must be reproduced 2–3 times
+before calling it stable.
 
 ---
 
-## 1. Da dove si parte (stato misurato, non opinioni)
+## 1. Where we start (measured state, not opinions)
 
-Esistono **tre** implementazioni tet→poly nel repo. È il problema principale.
+There are **three** tet→poly implementations in the repo. That is the main problem.
 
-| file | cos'è | stato |
+| file | what it is | state |
 |---|---|---|
-| `core/tet_poly_dual.py` | dual baricentrico, ~1.200 righe | funziona, è il migliore misurato, agganciato alla GUI |
-| `core/terminal_face.py` | merge di tet (Salinas 2023), 3 varianti | legacy, peggiore su ogni asse |
-| `commercial/tet_poly_volume.py` | tentativo parallelo di un altro agente, ~31 KB | **non lo importa nessuno**, mai misurato |
+| `core/tet_poly_dual.py` | barycentric dual, ~1,200 lines | works, it is the best measured, wired into the GUI |
+| `core/terminal_face.py` | tet merge (Salinas 2023), 3 variants | legacy, worse on every axis |
+| `commercial/tet_poly_volume.py` | parallel attempt by another agent, ~31 KB | **nobody imports it**, never measured |
 
-### Numeri, stessa mesh tet per entrambi i convertitori
+### Numbers, same tet mesh for both converters
 
-**Blocco con foro cilindrico, 251.048 tet**
+**Block with cylindrical bore, 251,048 tet**
 
 | | terminal-face | **dual** |
 |---|---|---|
-| copertura poly | 80,3% (27.420 tet residui) | **100,0%** |
+| poly coverage | 80.3% (27,420 residual tets) | **100.0%** |
 | checkMesh | Failed **2** | **Mesh OK** |
-| facce mal orientate | **1.073** | **0** |
-| max skewness | 4,93 (fail) | 2,25 |
-| max non-ortogonalità | 88,06 | 54,43 |
-| max aspect ratio | 6,98 | 4,47 |
-| celle in uscita | 139.227 | 47.528 |
-| tempo | 17,6 s | 8,8 s |
+| misoriented faces | **1,073** | **0** |
+| max skewness | 4.93 (fail) | 2.25 |
+| max non-orthogonality | 88.06 | 54.43 |
+| max aspect ratio | 6.98 | 4.47 |
+| cells out | 139,227 | 47,528 |
+| time | 17.6 s | 8.8 s |
 
-3 run indipendenti del dual (mesh GMSH nuova ogni volta: 251.048 / 251.508 /
-251.715 tet) → **Mesh OK, 100%, 0 facce mal orientate** tutte e tre.
+3 independent runs of the dual (fresh GMSH mesh each time: 251,048 / 251,508 /
+251,715 tet) → **Mesh OK, 100%, 0 misoriented faces** all three.
 
-**Valvola `Parte4.stp`, 824.661 tet**
+**Valve `Parte4.stp`, 824,661 tet**
 
 | | terminal-face | **dual** |
 |---|---|---|
-| copertura poly | 80% | **100,0%** |
+| poly coverage | 80% | **100.0%** |
 | checkMesh | Failed **4** | Failed **3** |
-| facce mal orientate | **3.545** | **895** |
-| max skewness | 34,94 | 44,33 |
-| errori non-ortogonalità | 5 | 55 |
-| max aspect ratio | **1.240 (FAIL)** | 779 (OK) |
-| tempo | 62,7 s | 33,7 s |
+| misoriented faces | **3,545** | **895** |
+| max skewness | 34.94 | 44.33 |
+| non-orthogonality errors | 5 | 55 |
+| max aspect ratio | **1,240 (FAIL)** | 779 (OK) |
+| time | 62.7 s | 33.7 s |
 
-Secondo run indipendente (1.036.918 tet): 100%, 854 facce, 42 errori
-non-ortogonalità, skew 72,1, Failed 3, **37,7 s** (≈36 s per milione di tet).
+Second independent run (1,036,918 tet): 100%, 854 faces, 42 non-orthogonality
+errors, skew 72.1, Failed 3, **37.7 s** (≈36 s per million tet).
 
-### Perché il dual è l'algoritmo giusto
+### Why the dual is the right algorithm
 
-Non fonde tet. Costruisce il **complesso duale**: una cella per **vertice**
-primale, una faccia interna per **spigolo** primale, e sul bordo una
-suddivisione **esatta** dei triangoli di superficie originali. La copertura al
-100% è strutturale, non ottenuta a forza di soglie.
+It does not merge tet. It builds the **dual complex**: one cell per primal
+**vertex**, one internal face per primal **edge**, and on the boundary an
+**exact** subdivision of the original surface triangles. 100%
+coverage is structural, not obtained by force of thresholds.
 
-Il "clipping del bordo contro il CAD" che `poly_workflow_part2.md` dava per
-quasi irrisolvibile **non esiste** in questa costruzione: vale solo per un duale
-di **Voronoi/circocentrico**. Il duale **mediano** usa punti che stanno già
-esattamente sulla superficie primale, quindi ogni triangolo di bordo (a,b,c) si
-divide nei tre quad planari `[a, mid(ab), centroid(abc), mid(ca)]` che lo
-piastrellano esattamente. Bordo in uscita identico al bordo in ingresso, patch
-per patch. Volume conservato a precisione macchina (drift misurato 0 – 1,1e-16).
-Anche l'orientamento è geometrico e non ambiguo: la faccia duale dello spigolo
-(a,b) separa esattamente le celle di a e b, quindi la normale **deve** puntare
-da a a b — non c'è nessuna euristica di winding da sbagliare.
+The "boundary clipping against the CAD" that `poly_workflow_part2.md` treated as
+nearly unsolvable **does not exist** in this construction: it holds only for a
+**Voronoi/circumcentric** dual. The **median** dual uses points that already lie
+exactly on the primal surface, so every boundary triangle (a,b,c) splits
+into the three planar quads `[a, mid(ab), centroid(abc), mid(ca)]` that tile it
+exactly. Output boundary identical to input boundary, patch
+by patch. Volume conserved to machine precision (measured drift 0 – 1.1e-16).
+Orientation is also geometric and unambiguous: the dual face of edge
+(a,b) separates exactly the cells of a and b, so the normal **must** point
+from a to b — there is no winding heuristic to get wrong.
 
-### Perché la valvola non passa — diagnosi misurata
+### Why the valve does not pass — measured diagnosis
 
-Delle 766–895 piramidi di faccia invertite:
+Of the 766–895 inverted face pyramids:
 
-- **705/766 sono facce di bordo**, non interne;
-- le celle che falliscono hanno **le proprie normali di bordo che spaziano
-  90–134°**, contro **1,1°** di una cella di bordo tipica;
-- il loro **volume è normale** (1,79e-9 contro mediana 2,32e-9) → **non** è un
-  problema di sliver né di qualità del tet.
+- **705/766 are boundary faces**, not internal;
+- the failing cells have **their own boundary normals spanning
+  90–134°**, against **1.1°** for a typical boundary cell;
+- their **volume is normal** (1.79e-9 vs a median of 2.32e-9) → it is **not** a
+  sliver or tet-quality problem.
 
-Conclusione: dove un vertice di bordo primale sta su uno **spigolo di feature
-concavo del CAD**, la sua cella duale avvolge la feature ed è genuinamente
-**non convessa**, quindi il baricentro della cella cade fuori da uno dei suoi
-stessi quad di bordo. La cella resta chiusa, a volume positivo e a tenuta: fallisce
-un check che **assume convessità**. Riguarda 268–462 celle = **0,25–0,29%**.
+Conclusion: where a primal boundary vertex sits on a **concave feature
+edge of the CAD**, its dual cell wraps around the feature and is genuinely
+**non-convex**, so the cell's barycenter falls outside one of its own
+boundary quads. The cell stays closed, positive-volume and sealed: it fails
+a check that **assumes convexity**. It concerns 268–462 cells = **0.25–0.29%**.
 
-### Due riparazioni già provate e bocciate — NON rifarle
+### Two repairs already tried and rejected — do NOT redo them
 
-1. **Agglomerazione defect-driven** (fondere la cella difettosa nel vicino più
-   sano, coppie disgiunte, iterare): peggiora in modo monotono,
-   766 → 839 → 1.225 → 1.835 → 2.929. Fondere due celle duali produce una cella
-   non convessa più grande. Riproduce indipendentemente il muro della sessione
-   terminal-face: **fondere non sistema la forma.** Codice rimosso.
-2. **Split della stella del vertice** (`split_rounds`, ancora nel file, default
-   0): 895 → 1.215 → 1.218. La costruzione è corretta (a tenuta, conserva il
-   volume, tutti gli invarianti passano) ma non paga: spezzare una cella
-   avvolgente in cunei scambia una cella non convessa con parecchie sottili che
-   si invertono per conto loro. **Ha però un bug noto e mai corretto**: usa
-   l'angolo diedro **non segnato**, quindi splitta anche gli spigoli **convessi**
-   a 90° che stavano benissimo. Vedi Fase 3.
+1. **Defect-driven agglomeration** (merge the defective cell into the healthiest
+   neighbor, disjoint pairs, iterate): worsens monotonically,
+   766 → 839 → 1,225 → 1,835 → 2,929. Merging two dual cells produces a larger
+   non-convex cell. It independently reproduces the wall of the terminal-face
+   session: **merging does not fix shape.** Code removed.
+2. **Vertex-star split** (`split_rounds`, still in the file, default
+   0): 895 → 1,215 → 1,218. The construction is correct (sealed, preserves the
+   volume, all invariants pass) but it does not pay: breaking a wrapping cell
+   into wedges swaps one non-convex cell for several thin ones that
+   invert on their own. **It does however have a known, never-fixed bug**: it uses
+   the **unsigned** dihedral angle, so it also splits the **convex** 90°
+   edges that were perfectly fine. See Phase 3.
 
-### L'infrastruttura che vale più del codice
+### The infrastructure that is worth more than the code
 
-`tet_poly_dual.py` contiene una replica in-process delle metriche di checkMesh
-(`_cell_centres`, `_detect_defects`) che **coincide esattamente** con checkMesh
-sul conteggio delle piramidi invertite (895 previste / 895 riportate). È questo
-che rende le misure sopra affidabili senza un round trip in WSL, ed è da
-preservare e testare.
-
----
-
-## 2. La decisione da prendere
-
-**Un solo convertitore: il dual.** Non un flag, non due strade, non un fallback
-al terminal-face. Le ragioni sono misurate, non estetiche: sulla stessa mesh il
-dual domina su copertura, facce mal orientate, aspect ratio, tempo, e su entrambe
-le geometrie. Non esiste uno scenario in cui il terminal-face è la scelta giusta.
-
-Mantenere due convertitori è esattamente la classe di confusione ("quale ha
-prodotto questa mesh?") che è già costata una giornata a questo progetto.
+`tet_poly_dual.py` contains an in-process replica of the checkMesh metrics
+(`_cell_centres`, `_detect_defects`) that **coincides exactly** with checkMesh
+on the inverted-pyramid count (895 predicted / 895 reported). It is this
+that makes the measurements above trustworthy without a WSL round trip, and it is to be
+preserved and tested.
 
 ---
 
-## 3. Il piano
+## 2. The decision to make
 
-### Fase 0 — Consolidamento (mezza giornata)
+**One converter: the dual.** Not a flag, not two paths, not a fallback
+to terminal-face. The reasons are measured, not aesthetic: on the same mesh the
+dual dominates on coverage, misoriented faces, aspect ratio, time, and on both
+geometries. There is no scenario in which terminal-face is the right choice.
 
-**Obiettivo: una sola implementazione, zero codice morto, banco di prova nel repo.**
+Keeping two converters is exactly the class of confusion ("which one produced
+this mesh?") that has already cost this project a day.
 
-1. **Decidere su `commercial/tet_poly_volume.py`.** Prima leggerlo davvero, poi
-   misurarlo con lo stesso banco sulla stessa mesh di `C:\polybench\ref1`. Se non
-   batte il dual (previsione: no), **cancellarlo**. Se ha un'idea migliore su
-   qualche aspetto, portarla nel dual e poi cancellarlo. Non lasciare due duali.
-2. **Estrarre l'I/O in `core/foam_mesh_io.py`.** Oggi `tet_poly_dual.py` importa
-   `TerminalFaceConverter` solo per usarne i lettori statici — dipendenza
-   architetturalmente sbagliata. Spostare lì: lettura points/faces/owner/
-   neighbour/boundary (ASCII **e binario**, `faceList` **e** `faceCompactList`,
-   incluso il fix di `_binary_header_parse` del commit `1513a39`) e la scrittura
-   bulk. Far puntare lì entrambi i convertitori.
-3. **Ritirare il terminal-face dal percorso poly.** Rimuovere la voce di menu
-   `Tools → Polyhedral Converter` e il dispatch a doppio worker. Il modulo può
-   restare in repo marcato legacy, ma non deve più essere raggiungibile dalla GUI.
-   Cancellare le varianti già morte al suo interno (`_merge_leftover_tets`,
-   `_merge_leftovers_safe`, `_augment_disjoint_pair_matching`): i loro numeri
-   sono documentati, il codice non serve più.
-4. **Portare il banco di prova dentro il repo** come `tests/bench_tet_poly.py`.
-   Oggi vive in una scratchpad di sessione e sparirà. Deve: costruire il caso da
-   STEP, `gmshToFoam`, salvare/ripristinare `polyMesh_tet_backup`, convertire,
-   `checkMesh`, ed emettere una **riga di risultato machine-readable** (JSON) con
-   copertura, verdetto, facce mal orientate, skewness, non-ortogonalità, aspect
-   ratio, volume, tempo. Unificare con `tests/bench_tetpoly_dual.py` dell'altro
-   agente, non affiancarlo.
+---
 
-**Criterio di uscita**: un solo `TetPolyConverter` importabile; `ref1` e `valve1`
-riprodotti con i numeri della tabella sopra tramite il banco nel repo.
+## 3. The plan
 
-### Fase 1 — Rete di sicurezza prima di toccare l'algoritmo (mezza giornata)
+### Phase 0 — Consolidation (half a day)
 
-Serve **prima** di modificare la geometria, altrimenti non si sa se un cambio ha
-migliorato o rotto.
+**Goal: a single implementation, zero dead code, a test bench in the repo.**
 
-1. **Test unitari** su mesh minuscole costruite a mano (niente GMSH, niente WSL):
-   - un singolo tet → una cella duale per vertice, chiusa, volume positivo;
-   - due tet che condividono una faccia;
-   - un cubo tetraedrizzato: verifica chiusura (Σ vettori area = 0 per cella),
-     volume totale conservato, ordinamento upper-triangular, `owner < neighbour`,
-     nessun punto inutilizzato, ogni triangolo di bordo → esattamente 3 quad
-     nella patch giusta;
-   - rifiuto di un input non-tet (prismi/boundary layer) con messaggio chiaro;
-   - rollback: se la scrittura fallisce, il `polyMesh` originale resta intatto.
-2. **Test di regressione delle metriche**: verificare che
-   `_detect_defects` continui a coincidere con checkMesh sul conteggio delle
-   piramidi (oggi 895/895 sulla valvola). Se questa corrispondenza si rompe,
-   ogni misura successiva diventa inaffidabile.
+1. **Decide on `commercial/tet_poly_volume.py`.** First really read it, then
+   measure it with the same bench on the same mesh as `C:\polybench\ref1`. If it does not
+   beat the dual (prediction: no), **delete it**. If it has a better idea on
+   some aspect, bring it into the dual and then delete it. Do not leave two duals.
+2. **Extract the I/O into `core/foam_mesh_io.py`.** Today `tet_poly_dual.py` imports
+   `TerminalFaceConverter` only to use its static readers — an architecturally
+   wrong dependency. Move there: reading points/faces/owner/
+   neighbour/boundary (ASCII **and binary**, `faceList` **and** `faceCompactList`,
+   including the `_binary_header_parse` fix of commit `1513a39`) and the bulk
+   writing. Point both converters there.
+3. **Retire terminal-face from the poly path.** Remove the menu entry
+   `Tools → Polyhedral Converter` and the double-worker dispatch. The module may
+   stay in the repo marked legacy, but it must no longer be reachable from the GUI.
+   Delete the already-dead variants inside it (`_merge_leftover_tets`,
+   `_merge_leftovers_safe`, `_augment_disjoint_pair_matching`): their numbers
+   are documented, the code is no longer needed.
+4. **Bring the test bench into the repo** as `tests/bench_tet_poly.py`.
+   Today it lives in a session scratchpad and will disappear. It must: build the case from
+   STEP, `gmshToFoam`, save/restore `polyMesh_tet_backup`, convert,
+   `checkMesh`, and emit a **machine-readable result row** (JSON) with
+   coverage, verdict, misoriented faces, skewness, non-orthogonality, aspect
+   ratio, volume, time. Unify with `tests/bench_tetpoly_dual.py` of the other
+   agent, do not keep both.
 
-**Criterio di uscita**: i test girano in < 30 s senza WSL e senza GMSH.
+**Exit criterion**: a single importable `TetPolyConverter`; `ref1` and `valve1`
+reproduced with the numbers of the table above through the bench in the repo.
 
-### Fase 2 — Validazione che conta davvero: far girare un solver (mezza giornata)
+### Phase 1 — Safety net before touching the algorithm (half a day)
 
-**Questo è il pezzo che oggi manca completamente e vale più di chiudere le 895
-facce.** `checkMesh: Mesh OK` è geometria, non dice che ci si può calcolare sopra.
+Needed **before** modifying the geometry, otherwise you do not know whether a change
+improved or broke it.
 
-1. Sul caso blocco, mesh poly: impostare un caso reale (`potentialFoam` come
-   smoke, poi `simpleFoam` laminare o `scalarTransportFoam`) e **farlo
-   convergere**. Registrare residui e numero di iterazioni.
-2. Fare lo stesso sulla mesh **tet** dello stesso caso e confrontare: portata,
-   caduta di pressione, volume totale. Devono coincidere entro tolleranza fisica.
-   È questo che dimostra che la conversione è conservativa in pratica, non solo
+1. **Unit tests** on tiny hand-built meshes (no GMSH, no WSL):
+   - a single tet → one dual cell per vertex, closed, positive volume;
+   - two tet sharing one face;
+   - a tetrahedralized cube: verify closure (Σ area vectors = 0 per cell),
+     total volume conserved, upper-triangular ordering, `owner < neighbour`,
+     no unused point, every boundary triangle → exactly 3 quads
+     in the right patch;
+   - rejection of a non-tet input (prisms/boundary layer) with a clear message;
+   - rollback: if the write fails, the original `polyMesh` stays intact.
+2. **Metric regression tests**: verify that
+   `_detect_defects` keeps coinciding with checkMesh on the pyramid
+   count (today 895/895 on the valve). If this correspondence breaks,
+   every subsequent measurement becomes unreliable.
+
+**Exit criterion**: the tests run in < 30 s without WSL and without GMSH.
+
+### Phase 2 — The validation that really matters: run a solver (half a day)
+
+**This is the piece that is completely missing today and is worth more than closing the 895
+faces.** `checkMesh: Mesh OK` is geometry, it does not say you can compute on it.
+
+1. On the block case, poly mesh: set up a real case (`potentialFoam` as a
+   smoke test, then laminar `simpleFoam` or `scalarTransportFoam`) and **make it
+   converge**. Record residuals and iteration count.
+2. Do the same on the **tet** mesh of the same case and compare: flow rate,
+   pressure drop, total volume. They must coincide within physical tolerance.
+   It is this that proves the conversion is conservative in practice, not only
    in `checkMesh`.
-3. Ripetere sulla valvola. Se converge nonostante i 3 check falliti, è
-   un'informazione **enorme**: significa che la barra corretta non era `Mesh OK`.
-   Se diverge, si sa esattamente perché la Fase 3 conta.
+3. Repeat on the valve. If it converges despite the 3 failed checks, it is
+   **enormous** information: it means the correct bar was not `Mesh OK`.
+   If it diverges, you know exactly why Phase 3 matters.
 
-**Criterio di uscita**: un caso poly che converge, con numeri confrontati contro
-il tet, salvati nella documentazione.
+**Exit criterion**: a poly case that converges, with numbers compared against
+the tet, saved in the documentation.
 
-### Fase 3 — Chiudere il divario sulla valvola (1–2 giorni, con stop rule)
+### Phase 3 — Close the gap on the valve (1–2 days, with a stop rule)
 
-Il difetto è la non convessità su feature **concave**. In ordine di costo
-crescente. **Fermarsi al primo che funziona.**
+The defect is non-convexity on **concave** features. In order of increasing
+cost. **Stop at the first one that works.**
 
-1. **Split solo sui vertici concavi** (il lead economico mai testato).
-   Il tentativo esistente usa l'angolo diedro non segnato e quindi splitta anche
-   gli spigoli convessi, che stavano bene — probabile causa del peggioramento
-   895→1.215. Serve un test di concavità **con segno**: per uno spigolo di bordo
-   (a,b) condiviso dai triangoli T1 (normale uscente n1, vertice opposto p1) e T2
-   (n2, p2), lo spigolo è concavo se `(p2 − centroid(T1)) · n1 > 0`.
-   **Verificare numericamente questo test su un cubo (tutti convessi) e su una
-   scanalatura (concavi noti) prima di usarlo** — sbagliare il segno qui fa
-   sembrare fallita l'idea giusta, che è esattamente quello che è già successo.
-   Poi splittare solo i vertici che sono (a) incidenti ad almeno uno spigolo
-   concavo **e** (b) attualmente difettosi.
-2. **Se i cunei restano troppo sottili**: partizionare solo lo strato di tet a
-   contatto col bordo invece di propagare il taglio per tutta la stella. Le celle
-   risultanti sono più compatte.
-3. **Se anche questo fallisce**: il problema non è nel convertitore, è a monte.
-   Valutare defeaturing o una mesh tet consapevole degli spigoli di feature —
-   e questo va aperto come **cambio separato e revisionato**, non nascosto nel
-   commit del convertitore.
+1. **Split only on concave vertices** (the cheap lead never tested).
+   The existing attempt uses the unsigned dihedral angle and therefore splits also
+   the convex edges, which were fine — the probable cause of the worsening
+   895→1,215. A **signed** concavity test is needed: for a boundary edge
+   (a,b) shared by triangles T1 (outward normal n1, opposite vertex p1) and T2
+   (n2, p2), the edge is concave if `(p2 − centroid(T1)) · n1 > 0`.
+   **Verify this test numerically on a cube (all convex) and on a
+   groove (known concave) before using it** — getting the sign wrong here makes
+   the right idea look failed, which is exactly what has already happened.
+   Then split only the vertices that are (a) incident to at least one concave
+   edge **and** (b) currently defective.
+2. **If the wedges remain too thin**: partition only the tet layer in
+   contact with the boundary instead of propagating the cut through the whole
+   star. The resulting cells are more compact.
+3. **If this also fails**: the problem is not in the converter, it is upstream.
+   Consider defeaturing or a tet mesh aware of the feature edges —
+   and this must be opened as a **separate, reviewed change**, not hidden in the
+   converter's commit.
 
-**Stop rule**: se dopo il punto 2 la valvola non passa, **fermarsi e riportare
-onestamente**. Non inventare un quarto algoritmo di conversione. "Copertura
-100%, qualità migliore del convertitore precedente su ogni asse, restano N celle
-non convesse su giunzioni concave del CAD per la ragione Y" è un risultato
-accettabile e prezioso. Continuare a inventare euristiche è ripetere il muro di
-ieri con un altro nome.
+**Stop rule**: if after point 2 the valve does not pass, **stop and report
+honestly**. Do not invent a fourth conversion algorithm. "100% coverage,
+better quality than the previous converter on every axis, N non-convex cells
+remain on concave junctions of the CAD for reason Y" is an acceptable and valuable
+result. Continuing to invent heuristics is repeating yesterday's wall with another name.
 
-Da provare in combinazione, non da solo: `median_faces=True`. A/B sulla valvola:
-`False` → 895 facce / skew 44,3; `True` → 766 facce / skew 470. Nessuno dei due
-domina; potrebbe cambiare in combinazione con lo split corretto.
+Try in combination, not alone: `median_faces=True`. A/B on the valve:
+`False` → 895 faces / skew 44.3; `True` → 766 faces / skew 470. Neither
+dominates; it could change in combination with the correct split.
 
-### Fase 4 — Prodotto: renderlo onesto in GUI (mezza giornata)
+### Phase 4 — Product: make it honest in the GUI (half a day)
 
-1. **Un solo percorso poly**, nessun toggle, con la riga di log che nomina sempre
-   il convertitore e l'esito (già implementata, va mantenuta).
-2. **Dire il cambio di conteggio celle.** Si passa da 824k tet a 152k celle poly.
-   È il normale e desiderabile guadagno del poliedrico, ma senza spiegarlo la
-   prima reazione è "mi ha buttato via l'80% della mesh". Il log deve dire
-   celle prima → dopo, copertura poly, e che per una data risoluzione target
-   bisogna **meshare più fine a monte**.
-3. **Quality gate esplicito.** Decidere e implementare cosa succede quando
-   `checkMesh` fallisce sulla mesh poly: tenerla con warning visibile, oppure
-   fare rollback al tet. **È una scelta di prodotto, va chiesta a Lorenzo, non
-   decisa dal codice.** Qualunque sia, deve essere visibile nel log e reversibile
-   (il backup tet esiste già).
-4. Controllare che `_auto_quality_fix()` (~riga 3133 di `main_window.py`) resetti
-   il proprio stato fra un tentativo e l'altro: quella classe di bug ha morso due
-   volte in una sola sessione.
+1. **A single poly path**, no toggle, with the log line that always names
+   the converter and the outcome (already implemented, keep it).
+2. **State the cell count change.** It goes from 824k tet to 152k poly cells.
+   It is the normal and desirable gain of the polyhedral approach, but without explaining it
+   the first reaction is "it threw away 80% of my mesh". The log must state
+   cells before → after, poly coverage, and that for a given target resolution
+   you must **mesh finer upstream**.
+3. **Explicit quality gate.** Decide and implement what happens when
+   `checkMesh` fails on the poly mesh: keep it with a visible warning, or
+   roll back to the tet. **It is a product choice, to be asked of Lorenzo, not
+   decided by the code.** Whatever it is, it must be visible in the log and reversible
+   (the tet backup already exists).
+4. Check that `_auto_quality_fix()` (~line 3133 of `main_window.py`) resets
+   its own state between attempts: that class of bug has bitten twice
+   in a single session.
 
-### Fase 5 — Documentazione e chiusura
+### Phase 5 — Documentation and closure
 
-Un solo documento, `docs/poly_converter.md`, che sostituisce
-`poly_workflow_part2.md`, `poly_dual_converter.md` e `poly_dual_handoff.md`.
-Deve contenere: l'algoritmo e **perché** il bordo non richiede clipping; la
-tabella dei numeri misurati; le riparazioni bocciate **con i loro numeri**; il
-limite residuo e la sua causa geometrica; come riprodurre tutto.
-Aggiornare `poly_workflow_part2.md` con un rimando, non lasciarlo a contraddire
-lo stato reale.
-
----
-
-## 4. Criteri di accettazione finali
-
-Non considerarlo finito finché, su **entrambi** blocco e valvola, non puoi
-mostrare:
-
-1. **Copertura poly**: percentuale reale. Non arrotondata per eccesso, non il
-   migliore di più run.
-2. **checkMesh**: la riga `Failed N mesh checks` **completa**, o `Mesh OK`.
-3. **Facce mal orientate**: conteggio esatto, confrontato con il terminal-face
-   sulla **stessa** mesh tet (1.073 sul blocco, 3.545 sulla valvola).
-4. **Max skewness e max non-ortogonalità**: valori esatti, segnalando
-   esplicitamente se sono categorie di fallimento **nuove**.
-5. **Un solver che converge** su mesh poly, con i risultati confrontati contro
-   la mesh tet (Fase 2).
-6. **Tempo** a scala reale (1–2M tet). Riferimento attuale: ≈36 s per milione.
-   Non regredire di un ordine di grandezza senza dichiararlo come trade-off.
-7. **Stabilità**: 3 run sullo stesso input, numeri riportati tutti e tre.
-8. **Un solo convertitore** raggiungibile dalla GUI, e nessun modulo duale
-   orfano nel repo.
+A single document, `docs/poly_converter.md`, that replaces
+`poly_workflow_part2.md`, `poly_dual_converter.md` and `poly_dual_handoff.md`.
+It must contain: the algorithm and **why** the boundary needs no clipping; the
+table of measured numbers; the rejected repairs **with their numbers**; the
+residual limit and its geometric cause; how to reproduce everything.
+Update `poly_workflow_part2.md` with a cross-reference, do not let it contradict
+the real state.
 
 ---
 
-## 5. Cosa NON fare
+## 4. Final acceptance criteria
 
-- Non aggiungere un quarto algoritmo di conversione. Se Fase 3 punti 1–2
-  falliscono, il problema è a monte del convertitore.
-- Non rifare agglomerazione o split non segnato: entrambi misurati, entrambi
-  peggiorativi, numeri sopra.
-- Non lasciare due implementazioni "per sicurezza". È il fallimento che questo
-  piano esiste per chiudere.
-- Non toccare la pipeline di generazione tet (`gmsh_wrapper.py`,
-  `openfoam_runner.py` lato GMSH, il flusso tet di `main_window.py`) per
-  "aiutare" la conversione poly. Se serve, è un cambio trasversale separato e
-  revisionato a parte.
-- Non dichiarare un successo da un solo run: GMSH non è deterministico.
-- Non cambiare in silenzio quale convertitore ha prodotto un risultato.
+Do not consider it finished until, on **both** block and valve, you can
+show:
+
+1. **Poly coverage**: real percentage. Not rounded up, not the
+   best of several runs.
+2. **checkMesh**: the **complete** `Failed N mesh checks` line, or `Mesh OK`.
+3. **Misoriented faces**: exact count, compared with terminal-face
+   on the **same** tet mesh (1,073 on the block, 3,545 on the valve).
+4. **Max skewness and max non-orthogonality**: exact values, flagging
+   explicitly whether they are **new** failure categories.
+5. **A solver that converges** on poly mesh, with results compared against
+   the tet mesh (Phase 2).
+6. **Time** at real scale (1–2M tet). Current reference: ≈36 s per million.
+   Do not regress by an order of magnitude without declaring it as a trade-off.
+7. **Stability**: 3 runs on the same input, numbers reported for all three.
+8. **A single converter** reachable from the GUI, and no orphan dual module
+   in the repo.
+
+---
+
+## 5. What NOT to do
+
+- Do not add a fourth conversion algorithm. If Phase 3 points 1–2
+  fail, the problem is upstream of the converter.
+- Do not redo agglomeration or the unsigned split: both measured, both
+  worsening, numbers above.
+- Do not leave two implementations "for safety". It is the failure this
+  plan exists to close.
+- Do not touch the tet generation pipeline (`gmsh_wrapper.py`,
+  `openfoam_runner.py` on the GMSH side, the tet flow of `main_window.py`) to
+  "help" the poly conversion. If needed, it is a separate, cross-cutting change
+  reviewed apart.
+- Do not declare success from a single run: GMSH is not deterministic.
+- Do not silently change which converter produced a result.

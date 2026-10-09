@@ -183,7 +183,7 @@ Bypass in an emergency with `git commit --no-verify`.
 ## Documentation for developers/maintainers
 
 - **Rebuild exe + installer** (PyInstaller one-dir + Inno Setup):
-  [docs/dev/DISTRIBUZIONE.md](docs/dev/DISTRIBUZIONE.md)
+  [docs/dev/DISTRIBUTION.md](docs/dev/DISTRIBUTION.md)
 - **Internal technical notes** (handoff, polyhedral mesher status, development
   logs): [docs/dev/](docs/dev/) — not needed to use the app, useful only for
   those who touch the meshing engine

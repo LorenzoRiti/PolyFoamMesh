@@ -155,7 +155,7 @@ class NativeMeshResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     out_dir: str = ""
-    # Fase 5 (scoping in docs/poly_mesher_STATO.md 6.1): BL SIZING only --
+    # Fase 5 (scoping in docs/poly_mesher_STATUS.md 6.1): BL SIZING only --
     # bl_engine's y+ calculator wired onto the native path, same numbers it
     # already feeds cfMesh's meshDict. NOT prism-layer insertion: no cells
     # are added to the mesh above. Populated only when `flow` is passed to
@@ -298,7 +298,7 @@ class NativeMesher:
         self._cancel_cb = cancel
         self._margin = float(margin)
         self._fallback_majority = bool(fallback_majority)
-        # Fase 4b (scoping in docs/poly_mesher_STATO.md 6.1): graded
+        # Fase 4b (scoping in docs/poly_mesher_STATUS.md 6.1): graded
         # background grid in the margin/pad band around the surface's tight
         # bounding box. Cell size stays exactly `cell_size` (uniform) inside
         # the tight bbox -- surface capture is byte-identical to the
@@ -309,9 +309,9 @@ class NativeMesher:
         # external flow); it does NOT solve local refinement near a small
         # internal feature away from the domain boundary -- that needs a
         # true octree with hanging-node face handling, not attempted here
-        # (see poly_mesher_STATO.md 6.1 for why).
+        # (see poly_mesher_STATUS.md 6.1 for why).
         self._margin_growth = float(margin_growth)
-        # Fase 5 (scoping in docs/poly_mesher_STATO.md 6.1): optional flow
+        # Fase 5 (scoping in docs/poly_mesher_STATUS.md 6.1): optional flow
         # conditions to size a boundary layer recommendation for the wall
         # patches via commercial.bl_engine.BLEngine -- the same y+/first-
         # layer-height calculator already used for the GMSH/cfMesh path,

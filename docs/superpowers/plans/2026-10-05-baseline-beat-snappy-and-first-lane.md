@@ -30,7 +30,7 @@
 - Stash: `src/polyfoammesh/core/bl_poly.py` (experimental `transition_zone`, never validated)
 - Revert: `src/polyfoammesh/core/native_mesher.py` (unreachable refinement dead code)
 - Delete: `test_new_features.py` (scratch, hardcoded `C:/polybench` paths)
-- Commit: `docs/superpowers/specs/2026-09-22-beat-snappy-benchmark-design.md`, `docs/superpowers/plans/2026-09-22-beat-snappy-benchmark.md`, `docs/superpowers/plans/2026-10-05-baseline-beat-snappy-e-prima-lane.md`
+- Commit: `docs/superpowers/specs/2026-09-22-beat-snappy-benchmark-design.md`, `docs/superpowers/plans/2026-09-22-beat-snappy-benchmark.md`, `docs/superpowers/plans/2026-10-05-baseline-beat-snappy-and-first-lane.md`
 
 **Interfaces:**
 - Consumes: nothing
@@ -39,7 +39,7 @@
 - [ ] **Step 1: Stash the experimental BL change**
 
 ```powershell
-git stash push -m "bl: transition_zone experimental (non validato)" -- src/polyfoammesh/core/bl_poly.py
+git stash push -m "bl: transition_zone experimental (not validated)" -- src/polyfoammesh/core/bl_poly.py
 ```
 
 Expected: stash created; `git stash list` shows the entry.
@@ -63,8 +63,8 @@ Expected: file gone.
 - [ ] **Step 4: Commit the roadmap documents**
 
 ```powershell
-git add docs/superpowers/specs/2026-09-22-beat-snappy-benchmark-design.md docs/superpowers/plans/2026-09-22-beat-snappy-benchmark.md docs/superpowers/plans/2026-10-05-baseline-beat-snappy-e-prima-lane.md
-git commit -m "docs: beat-snappy spec e piano baseline (locale)"
+git add docs/superpowers/specs/2026-09-22-beat-snappy-benchmark-design.md docs/superpowers/plans/2026-09-22-beat-snappy-benchmark.md docs/superpowers/plans/2026-10-05-baseline-beat-snappy-and-first-lane.md
+git commit -m "docs: beat-snappy spec and baseline plan (local)"
 ```
 
 - [ ] **Step 5: Verify the tree and the baseline**
@@ -135,7 +135,7 @@ A harness bug is: traceback in the parent log, a missing record, `child exited 2
 
 ```powershell
 git add benchmarks/results/comparison_*.json benchmarks/results/LEADERBOARD.md
-git commit -m "bench: baseline fast tier vs snappy (locale)"
+git commit -m "bench: baseline fast tier vs snappy (local)"
 ```
 
 If Step 4 changed code/tests, include those paths in the same or a separate commit.
@@ -181,7 +181,7 @@ Expected: no rows. `timed_out=True` rows are terrain-B data for Task 4, not a re
 
 ```powershell
 git add benchmarks/results/comparison_*.json benchmarks/results/LEADERBOARD.md
-git commit -m "bench: baseline full-tier leaderboard vs snappy (locale)"
+git commit -m "bench: baseline full-tier leaderboard vs snappy (local)"
 ```
 
 **Acceptance:** 50 records (or documented exclusions in `warnings`), no budget violation, official `LEADERBOARD.md`, committed.
@@ -305,7 +305,7 @@ Add an `## Avanzamento 2026-10-05` section to `.opencode/GOAL.md` summarizing: f
 
 ```powershell
 git add notes/<lane-slug>_reasoning.md .opencode/GOAL.md
-git commit -m "notes: <lane> prediction + A-side baseline (locale)"
+git commit -m "notes: <lane> prediction + A-side baseline (local)"
 ```
 
 Then STOP and report to the user: baseline pass rates, top 3 gaps, chosen lane, prediction — and ask whether to proceed with the follow-up fix plan.

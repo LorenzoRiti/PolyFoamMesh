@@ -409,7 +409,7 @@ cell count, iteration progress every 25 steps with residuals, solve finish with
 convergence status, indicator stats + peak location, cells marked + target
 sizing, size-field lattice shape + predicted cells, budget relaxation, remesh
 before/after counts, cell-count recalibration, QoI + % change, and the stop
-reason. Lorenzo's "tutto deve essere esplicito nel log" requirement is met by
+reason. Lorenzo's "everything must be explicit in the log" requirement is met by
 the engine; the GUI just has to connect `log_line` to the panel.
 
 

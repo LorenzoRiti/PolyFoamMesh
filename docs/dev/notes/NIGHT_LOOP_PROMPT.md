@@ -370,7 +370,7 @@ y1=1.0e-3 m, 10 layers; total thickness matches 0.37·L/Re^0.2.
 
 **Now wired to the GUI** (`tests/test_bl_gui_wiring.py` pins the whole chain).
 The Boundary Layers group takes velocity, fluid and wall treatment, and
-"Calcola strati dalla fisica (y+)" derives nLayers / first-layer thickness /
+"Compute layers from physics (y+)" derives nLayers / first-layer thickness /
 growth ratio, reporting Re and the y+ target back to the user. Widget ranges had
 to be widened (nLayers was capped at 10, the thickness fraction floored at 0.001)
 — both silently truncated what the physics asked for on wall-resolved cases.

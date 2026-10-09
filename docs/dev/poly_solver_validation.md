@@ -1,71 +1,71 @@
-# FASE 0 — Solver validation sulla valvola: il difetto concavo del dual è un limite, non un bug
+# PHASE 0 — Solver validation on the valve: the dual's concave defect is a limit, not a bug
 
-> Misurato 2026-08-10 con `tools/poly_solver_validation.py --case valve1`.
-> Tool: `tools/poly_solver_validation.py` (adattato in questa sessione per
-> accettare `--case ref1|valve1` e `--variant default|production`, con log
-> completo e parse di residui/iterazioni/continuity).
+> Measured 2026-08-10 with `tools/poly_solver_validation.py --case valve1`.
+> Tool: `tools/poly_solver_validation.py` (adapted in this session to
+> accept `--case ref1|valve1` and `--variant default|production`, with full
+> log and parsing of residuals/iterations/continuity).
 
 ## Setup
 
-- Geometria: `C:\polybench\valve1` (valvola reale, 89 superfici B-Rep).
-- Backup tet intatto: `constant/polyMesh_tet_backup` — 824.661 tetraedri.
-- Inlet = `surface_77` (tappo piatto a x = +1.5227), outlet = `surface_89`
-  (tappo piatto a x = −1.4773) — le due estremità dell'asse principale,
-  scelte misurando centroidi/aree delle patch dal backup.
-- BC: U = uniformFixedValue (1 0 0) sull'inlet, p = 0 sull'outlet, pareti
-  zeroGradient. Identiche su tet e poly.
-- Solver: potentialFoam (OpenFOAM v2512, WSL), GAMG su Phi,
+- Geometry: `C:\polybench\valve1` (real valve, 89 B-Rep surfaces).
+- Intact tet backup: `constant/polyMesh_tet_backup` — 824,661 tetrahedra.
+- Inlet = `surface_77` (flat cap at x = +1.5227), outlet = `surface_89`
+  (flat cap at x = −1.4773) — the two ends of the main axis,
+  chosen by measuring patch centroids/areas from the backup.
+- BC: U = uniformFixedValue (1 0 0) on the inlet, p = 0 on the outlet, walls
+  zeroGradient. Identical on tet and poly.
+- Solver: potentialFoam (OpenFOAM v2512, WSL), GAMG on Phi,
   nNonOrthogonalCorrectors 3.
-- Poly: dual baricentrico (variante `default` = parametri del convertitore,
-  la stessa che produce 852 facce mal orientate / 1027 difetti residui sulla
-  baseline pinnata).
+- Poly: barycentric dual (variant `default` = converter parameters,
+  the same one that produces 852 misoriented faces / 1027 residual defects on
+  the pinned baseline).
 
-## Numeri misurati
+## Measured numbers
 
-| Metrica | TET (824.661) | POLY (152.086) | Esito |
+| Metric | TET (824,661) | POLY (152,086) | Outcome |
 |---|---|---|---|
-| potentialFoam | converge, "End" | converge, "End" | nessun FATAL |
-| GAMG su Phi: initial → final residual | 8.34e-3 → 3.07e-5 (3 it) | 4.87e-4 → 4.60e-6 (2 it) | poly converge più a fondo |
-| Continuity error (bilancio di massa risolto) | 8.71e-3 | 7.83e-4 | **poly 11× più conservativa** |
-| Continuity relativa al flusso (0.0483 m³/s) | 18% | **1.6%** | |
+| potentialFoam | converges, "End" | converges, "End" | no FATAL |
+| GAMG on Phi: initial → final residual | 8.34e-3 → 3.07e-5 (3 it) | 4.87e-4 → 4.60e-6 (2 it) | poly converges deeper |
+| Continuity error (solved mass balance) | 8.71e-3 | 7.83e-4 | **poly 11× more conservative** |
+| Continuity relative to the flow rate (0.0483 m³/s) | 18% | **1.6%** | |
 | Interpolated velocity error | 8.8e-8 | 6.3e-5 | |
-| Volume totale | 0.121835 | 0.121835 | **0.00%** |
-| Flusso prescritto all'inlet (area) | 0.0482551 | 0.0482551 | **0.00%** (subdivisione esatta) |
+| Total volume | 0.121835 | 0.121835 | **0.00%** |
+| Prescribed inlet flow (area) | 0.0482551 | 0.0482551 | **0.00%** (exact subdivision) |
 
-Il flusso risolto (phi) non viene scritto da potentialFoam in questa
-configurazione (nessuna dir `1/`), quindi la portata in/out è misurata come:
-flusso prescritto all'inlet (identico per costruzione) + bilancio di massa
-risolto = "Continuity error" del log (l'imbalance in/out che il solver
-riporta dopo la convergenza).
+The solved flux (phi) is not written by potentialFoam in this
+configuration (no `1/` dir), so the in/out flow rate is measured as:
+prescribed inlet flow (identical by construction) + solved mass balance =
+the log's "Continuity error" (the in/out imbalance the solver
+reports after convergence).
 
-## Decisione
+## Decision
 
-**G3 non è un bug: è un limite documentato di un check (face pyramids) che
-assume convessità su celle che il solver digerisce senza problemi.**
+**G3 is not a bug: it is a documented limit of a check (face pyramids) that
+assumes convexity on cells the solver digests without problems.**
 
-Evidenza:
+Evidence:
 
-1. La mesh poly della valvola — con 852 facce "incorrectly oriented" per
-   checkMesh — **risolve e converge** con potentialFoam (residuo finale
-   4.6e-6, 2 iterazioni GAMG), nessun FATAL, nessuna divergenza.
-2. **Conserva la portata meglio del tet da cui deriva**: continuity error
-   1.6% del flusso (tet: 18%). Il difetto (0.25% delle celle, non convesse
-   sulle giunzioni concave del CAD) non inquina il bilancio di massa.
-3. Volume conservato a 0.00% (subdivisione esatta della superficie).
+1. The valve's poly mesh — with 852 faces "incorrectly oriented" per
+   checkMesh — **solves and converges** with potentialFoam (final residual
+   4.6e-6, 2 GAMG iterations), no FATAL, no divergence.
+2. **It conserves the flow rate better than the tet it derives from**: continuity error
+   1.6% of the flow (tet: 18%). The defect (0.25% of the cells, non-convex
+   on the CAD's concave junctions) does not contaminate the mass balance.
+3. Volume conserved to 0.00% (exact subdivision of the surface).
 
-Conseguenza: **FASE 3 (taglio planare del difetto concavo) NON va fatta**.
-Tutto il budget va su G1/G2 (BL selettivo per patch + terminazione locale
-dei layer), che colpiscono ogni caso, non solo le geometrie patologiche.
-La stop rule della Fase 3 non si applica perché la premessa («la mesh è
-inutilizzabile») è falsa.
+Consequence: **PHASE 3 (planar cutting of the concave defect) must NOT be done**.
+The whole budget goes to G1/G2 (selective BL per patch + local
+layer termination), which affect every case, not only pathological
+geometries. Phase 3's stop rule does not apply because the premise ("the mesh is
+unusable") is false.
 
-## Cosa NON è stato misurato
+## What was NOT measured
 
-- Residuo/portata con un solver completo (simpleFoam/rhoSimpleFoam): fuori
-  scopo della Fase 0 (potentialFoam è il più economico e sufficiente per la
-  decisione). Se in futuro servisse, il tool accetta già
-  `--case valve1 --variant production` (parametri del runner GUI:
-  median_faces=True, wedge_cells=True) e andrebbe ri-eseguito con quel
-  variant — oggi il confronto è sulla variante che pinna la baseline.
-- Phi scritto su disco (la configurazione controlDict non produce `1/`):
-  il bilancio in/out si legge dal log, non da un file di campo.
+- Residual/flow rate with a complete solver (simpleFoam/rhoSimpleFoam): outside
+  Phase 0's scope (potentialFoam is the cheapest and sufficient for the
+  decision). Should it be needed in the future, the tool already accepts
+  `--case valve1 --variant production` (GUI runner parameters:
+  median_faces=True, wedge_cells=True) and it would need to be re-run with that
+  variant — today the comparison is on the variant that pins the baseline.
+- Phi written to disk (the controlDict configuration does not produce `1/`):
+  the in/out balance is read from the log, not from a field file.

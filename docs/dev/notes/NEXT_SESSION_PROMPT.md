@@ -34,8 +34,8 @@ numbers, not reassurance):
 the flow is under-resolved, and remesh finer there. Built, working, validated.
 
 **(B) The automatic mesh was far too coarse to be usable.** This is a
-long-standing complaint ("questo è un problema che ho dall'inizio dello sviluppo
-della GUI"). He builds 9M-cell meshes in a commercial tool with MANUAL
+long-standing complaint ("this is a problem I have had since the start of the GUI's
+development"). He builds 9M-cell meshes in a commercial tool with MANUAL
 refinement; this app's auto mode was giving 750k–2.2M and he suspected that was
 too few. **He was right, and the cause is now found and fixed** — see Part 3.
 
@@ -304,7 +304,7 @@ count, iteration progress every 25 steps with residuals, solve finish with
 convergence status, indicator stats + peak location, cells marked + target
 sizing, lattice shape + predicted cells, budget relaxation, remesh before/after,
 recalibration, QoI + % change, stop reason. **Lorenzo has repeatedly insisted
-"tutto deve essere esplicito nel log"** — connect `log_line` to the visible panel,
+"everything must be explicit in the log"** — connect `log_line` to the visible panel,
 not just a Python logger. See `gui/log_tags.py` for colourising.
 
 ### 4.3 Verify the short-solve hypothesis (still UNMEASURED)

@@ -334,7 +334,7 @@ scoped. Commit `1061a88`. Dettagli in
 - Parte 2 (verifica piena): full suite 1206 passed / 2 skipped
   (venturi-throat, tessellation-dependent) / 1 xfailed preesistente /
   0 failed in ~14 min; `ruff check src/ tests/` pulito. Zero regressioni.
-- Parte 3 (handoff): `docs/dev/STATO_PRE_PUSH_2026-09-17.md` — temi dal
+- Parte 3 (handoff): `docs/dev/STATE_PRE_PUSH_2026-09-17.md` — temi dal
   9/9, default dichiarati invariati con prova, tabella opt-in con numeri,
   lista scarti onesti, limiti residui, ambito non toccato (installer, CI,
   commercial, pyproject: zero commit dal 9/9 verificato).
@@ -898,7 +898,7 @@ Corsie atterrate e verificate DA ME:
   IDENTICI, box_obstacle +8% prismi/-2 NO, venturi migliorato. Nessuna
   regressione. Campo comunque reso opt-in (keep-best).
 CORPUS default-path (run finale): 3/15 "pass" col criterio del harness
-(met� geometrie senza baseline registrata -> FAIL per definizione), ma
+(met� geometrie senza baseline registrata -> FAIL per definizione), ma
 il confronto coi 6 baseline reali e' pulito.
 PROSSIMO: commit, poi (se serve) estendere il baseline del corpus alle
 geometrie mancanti per rendere il gate significativo.

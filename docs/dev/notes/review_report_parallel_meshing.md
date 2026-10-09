@@ -33,8 +33,8 @@
 |-------|----------|--------|--------|
 | `import threading` | Present | Line 6 | ✅ PASS |
 | `bufsize=4096` in `subprocess.Popen` | Present | Line 139: `bufsize=4096` | ✅ PASS |
-| stderr drain thread (separato) | Present | Lines 144-152: `_drain_stderr()` reads stderr in daemon thread | ✅ PASS |
-| finally join corretto | Present | Lines 177-178: `join(timeout=2)` with `is_alive()` guard | ✅ PASS |
+| stderr drain thread (separate) | Present | Lines 144-152: `_drain_stderr()` reads stderr in daemon thread | ✅ PASS |
+| finally join correct | Present | Lines 177-178: `join(timeout=2)` with `is_alive()` guard | ✅ PASS |
 
 ### Details
 - Stderr reader spawns as `daemon=True` (line 150) — appropriate for cleanup

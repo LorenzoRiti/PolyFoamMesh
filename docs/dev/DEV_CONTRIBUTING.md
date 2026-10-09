@@ -1,190 +1,190 @@
-# CONTRIBUTO — chiusura mesher poliedrico + boundary layer (FASE 0 + FASE 1)
+# CONTRIBUTION — closing the polyhedral mesher + boundary layer (PHASE 0 + PHASE 1)
 
-> Compilato da Reasonix, 2026-08-10. Blocco obbligatorio §10 del megaprompt.
-> I numeri qui sotto sono tutti misurati (checkMesh WSL reale, engine in-process,
-> solver WSL), mai assunti.
+> Compiled by Reasonix, 2026-08-10. Mandatory §10 block of the megaprompt.
+> The numbers below are all measured (real WSL checkMesh, in-process engine,
+> WSL solver), never assumed.
 
 ```python
 CONTRIBUTO = {
     "autore": "Reasonix (2026-08-10)",
 
     "comprensione": """
-    Il percorso di produzione è: STL/STEP -> GMSH tet (Windows nativo) ->
-    gmshToFoam -> TetPolyDualConverter (dual baricentrico/mediano, 100% poly,
-    bordo = suddivisione esatta dei triangoli in 3 quad planari) ->
-    PolyBoundaryLayerEngine (prismi di parete, puro numpy) -> checkMesh.
-    Il difetto residuo della valvola: dove un vertice primale di bordo sta su
-    uno spigolo di feature CONCAVO del CAD, la cella duale avvolge l'angolo ed
-    è genuinamente non convessa -> il centroide cade fuori da una sua quad di
-    bordo -> fallisce il check 'face pyramids' di checkMesh (852 facce, 0.25%
-    delle celle). Le celle sono chiuse, a volume positivo, watertight: fallisce
-    un check che ASSUME convessità. Le strade a livello di convertitore
-    (agglomerazione, split segnato/non segnato, wedge cells, median_faces)
-    sono chiuse con numeri (§3 megaprompt). Il mesher nativo cartesiano
-    (hex_poly_dual) è un ramo sperimentale separato (menu Tools), non il
-    percorso di produzione qui trattato. Il mio lavoro copre FASE 0 (decisione
-    sul difetto), FASE 1 (BL selettivo per patch) e la macchina FASE 2
-    (conteggio layer variabile); la graduazione n->n-1->...->0 completa resta
-    limitata dalla chiusura sulle mesh concave reali (numeri in
-    fase_2_esito). Il collasso delle facce di bordo (collapse_smooth_edges)
-    è dell'agente parallelo.
+    The production path is: STL/STEP -> GMSH tet (native Windows) ->
+    gmshToFoam -> TetPolyDualConverter (barycentric/median dual, 100% poly,
+    boundary = exact subdivision of the triangles into 3 planar quads) ->
+    PolyBoundaryLayerEngine (wall prisms, pure numpy) -> checkMesh.
+    The residual defect of the valve: where a primal boundary vertex sits on
+    a CONCAVE feature edge of the CAD, the dual cell wraps around the corner and
+    is genuinely non-convex -> the centroid falls outside one of its boundary
+    quads -> it fails checkMesh's 'face pyramids' check (852 faces, 0.25%
+    of the cells). The cells are closed, positive-volume, watertight: it fails
+    a check that ASSUMES convexity. The converter-level avenues
+    (agglomeration, signed/unsigned split, wedge cells, median_faces)
+    are closed with numbers (§3 megaprompt). The native Cartesian
+    mesher (hex_poly_dual) is a separate experimental branch (Tools menu), not the
+    production path treated here. My work covers PHASE 0 (decision
+    on the defect), PHASE 1 (selective BL per patch) and the PHASE 2
+    machinery (variable layer count); the complete n->n-1->...->0
+    gradation remains limited by closure on real concave meshes (numbers in
+    fase_2_esito). The boundary-face collapse (collapse_smooth_edges)
+    is the parallel agent's work.
     """,
 
     "fase_0_esito": """
-    potentialFoam sulla valvola (stessa geometria, stesse BC, tet 824.661 vs
-    poly 152.086):
-      - entrambi convergono (End, nessun FATAL);
-      - residuo finale GAMG su Phi: tet 3.07e-5 (3 it), poly 4.60e-6 (2 it);
-      - Continuity error: tet 8.71e-3 (18% del flusso), poly 7.83e-4 (1.6%);
+    potentialFoam on the valve (same geometry, same BC, tet 824,661 vs
+    poly 152,086):
+      - both converge (End, no FATAL);
+      - final GAMG residual on Phi: tet 3.07e-5 (3 it), poly 4.60e-6 (2 it);
+      - Continuity error: tet 8.71e-3 (18% of the flow), poly 7.83e-4 (1.6%);
       - volume: 0.121835 vs 0.121835 (0.00%);
-      - flusso prescritto all'inlet: 0.0482551 vs 0.0482551 (0.00%).
-    DECISIONE: G3 NON è un bug — è un limite documentato di un check che
-    assume convessità su celle che il solver digerisce perfettamente. La poly
-    della valvola risolve, converge e conserva la portata MEGLIO del tet da
-    cui deriva. FASE 3 (taglio planare) NON va fatta; stop rule rispettata
-    perché la premessa è falsa. Report completo: docs/poly_solver_validation.md.
+      - prescribed inlet flow: 0.0482551 vs 0.0482551 (0.00%).
+    DECISION: G3 is NOT a bug — it is a documented limit of a check that
+    assumes convexity on cells the solver digests perfectly. The valve's
+    poly solves, converges and conserves the flow rate BETTER than the tet it
+    derives from. PHASE 3 (planar cutting) must NOT be done; stop rule respected
+    because the premise is false. Full report: docs/poly_solver_validation.md.
     """,
 
     "fase_2_esito": """
-    Macchina FASE 2 (conteggio layer variabile / terminazione locale)
-    implementata e verificata su mesh sane; il gate valvola NON è chiuso,
-    con numeri:
-    - bl_poly.py: conteggio per-vertice nv (criterio angle_fade: n_layers se
-      fade>=0.5, conteggio che rientra nel budget se concavo), conteggio per
-      faccia nf = min sui vertici, fixpoint di consistenza (nv[v] = min delle
-      facce incidenti — rende il conteggio uniforme per componente connessa e
-      garantisce la chiusura), gate piramidi RILASSATO (il BL è valido se NON
-      AGGIUNGE violazioni: n_pyr_after <= n_pyr_before), facce segnalate come
-      concave (violazioni piramide dell'INPUT) ridotte a 1 layer.
-    - Verificato: cubo 6/6 test (chiusura 0 celle, volume 1e-6, conteggi
-      derivati, anche con facce forzate a 1 layer — n_prism_cells == n_facce);
-      gate FASE 1 ri-verificato PASS (cilindro e cubo: BL ok, conteggio
-      prismi ok, checkMesh Mesh OK — la regressione è preservata perché le
-      mesh sane hanno fade>=0.5 ovunque e nv=n_layers).
-    - Gate valvola NON raggiunto (tre strategie misurate, tutte falliscono la
-      CHIUSURA — non solo il criterio piramidi):
-        * costruzione non vincolata (gradi diversi per facce adiacenti +
-          facce di transizione): 199 celle non chiuse (rel 9.5e-1), 1722 s;
-        * fixpoint (conteggio uniforme per componente): 63.252 celle non
-          chiuse (rel 9.8e-1), 1397 s;
-        * facce violate droppate a 0 layer: volume non conservato (0.984 vs
-          1.0 — lo shell sotto le facce droppate resta vuoto).
-    - Causa radice misurata: angle_fade >= 0.8 su TUTTI i 226.538 vertici di
-      parete della valvola — la concavità delle celle duali NON è rilevabile
-      dal fade delle normali di parete (le quad di bordo stanno su superfici
-      lisce); i 1007 difetti piramide dell'input (937 facce di bordo, 64
-      patch) sono l'unico rilevatore, ma estrudere O saltare quelle facce
-      rompe chiusura o volume. La graduazione n->n-1->...->0 richiede le
-      facce di transizione che chiudono il gradino — implementate e rimosse
-      perché irraggiungibili (l'invariante del fixpoint le rende codice
-      morto) e non verificabili sulla valvola.
-    - Verdetto onesto: la terminazione locale funziona per la concavità
-      rilevabile dal fade (verificata a livello di meccanismo sul cubo), ma
-      NON chiude G2 sulla valvola. Il fallback globale su 5 scale resta il
-      comportamento della valvola (mesh invariata, BL assente) — con il gate
-      rilassato e la segnalazione delle facce violate ora il fallback ha un
-      percorso in più, ma la chiusura resta il collo di bottiglia.
+    PHASE 2 machinery (variable layer count / local termination)
+    implemented and verified on healthy meshes; the valve gate is NOT closed,
+    with numbers:
+    - bl_poly.py: per-vertex count nv (angle_fade criterion: n_layers if
+      fade>=0.5, count that fits the budget if concave), per-face
+      count nf = min over the vertices, consistency fixpoint (nv[v] = min of the
+      incident faces — makes the count uniform per connected component and
+      guarantees closure), RELAXED pyramids gate (the BL is valid if it does NOT
+      ADD violations: n_pyr_after <= n_pyr_before), faces flagged as
+      concave (pyramid violations of the INPUT) reduced to 1 layer.
+    - Verified: cube 6/6 tests (closure 0 cells, volume 1e-6, derived
+      counts, even with faces forced to 1 layer — n_prism_cells == n_faces);
+      PHASE 1 gate re-verified PASS (cylinder and cube: BL ok, prism
+      count ok, checkMesh Mesh OK — the regression is preserved because healthy
+      meshes have fade>=0.5 everywhere and nv=n_layers).
+    - Valve gate NOT reached (three strategies measured, all fail
+      CLOSURE — not just the pyramids criterion):
+        * unconstrained construction (different degrees for adjacent faces +
+          transition faces): 199 non-closed cells (rel 9.5e-1), 1722 s;
+        * fixpoint (uniform count per component): 63,252 non-closed
+          cells (rel 9.8e-1), 1397 s;
+        * violated faces dropped to 0 layers: volume not conserved (0.984 vs
+          1.0 — the shell under the dropped faces stays empty).
+    - Measured root cause: angle_fade >= 0.8 on ALL 226,538 wall vertices
+      of the valve — the concavity of the dual cells is NOT detectable
+      from the fade of the wall normals (the boundary quads sit on smooth
+      surfaces); the 1007 pyramid defects of the input (937 boundary faces, 64
+      patches) are the only detector, but extruding OR skipping those faces
+      breaks closure or volume. The n->n-1->...->0 gradation requires the
+      transition faces that close the step — implemented and removed
+      because unreachable (the fixpoint invariant makes them dead
+      code) and not verifiable on the valve.
+    - Honest verdict: local termination works for the concavity
+      detectable from the fade (verified at the mechanism level on the cube), but
+      does NOT close G2 on the valve. The global fallback over 5 scales remains the
+      valve's behavior (mesh unchanged, BL absent) — with the relaxed gate
+      and the flagging of violated faces the fallback now has one more
+      path, but closure remains the bottleneck.
     """,
 
     "cosa_ho_implementato": """
-    FASE 1 (BL selettivo per patch, chiude G1):
-    - src/cfmesh_autogui/core/bl_poly.py: _select_faces non auto-chiude più la
-      selezione; al bordo BL/non-BL le facce laterali dei prismi giacciono NEL
-      PIANO della parete adiacente e diventano facce di BOUNDARY della patch
-      senza BL, possedute dai prismi (nFaces della patch non-BL cresce,
-      startFace ricalcolato); le facce di parete non selezionate muovono i
-      vertici di parete condivisi all'ultimo layer (senza questo la cella
-      vicina resta aperta: misurato 8 celle non chiuse, max rel 4.43e-3, con
-      la costruzione a facce interne della bozza parallela). Numeri prima/dopo
-      sul cubo con patch wall+inlet: prima il BL parziale falliva su TUTTE le
-      scale (validazione: celle non chiuse); dopo successo a scale=1.0,
-      volume conservato, 12 celle prisma (2 layer x 6 facce), 16 facce di
-      terminazione.
-    - Verifica reale checkMesh (tools/bench_bl_poly_partial.py), 2 geometrie:
-        A) cilindro con patch nominate inlet/outlet/wall: BL su wall, 72
-           prismi = 3 layer x 24 facce di parete, 48 terminazioni,
+    PHASE 1 (selective BL per patch, closes G1):
+    - src/cfmesh_autogui/core/bl_poly.py: _select_faces no longer auto-closes the
+      selection; at the BL/non-BL boundary the side faces of the prisms lie IN THE
+      PLANE of the adjacent wall and become BOUNDARY faces of the patch
+      without BL, owned by the prisms (nFaces of the non-BL patch grows,
+      startFace recomputed); the unselected wall faces move the shared wall
+      vertices to the last layer (without this the neighboring cell stays
+      open: measured 8 non-closed cells, max rel 4.43e-3, with
+      the internal-face construction of the parallel draft). Before/after numbers
+      on the cube with wall+inlet patches: before, the partial BL failed on ALL
+      scales (validation: non-closed cells); after, success at scale=1.0,
+      volume conserved, 12 prism cells (2 layers x 6 faces), 16
+      termination faces.
+    - Real checkMesh verification (tools/bench_bl_poly_partial.py), 2 geometries:
+        A) cylinder with patches named inlet/outlet/wall: BL on wall, 72
+           prisms = 3 layers x 24 wall faces, 48 terminations,
            checkMesh MESH OK;
-        B) cubo duct idem: 81 celle (72 prisma + 9 poly), skew 2.18,
+        B) cube duct same: 81 cells (72 prism + 9 poly), skew 2.18,
            non-ortho max 44.8, checkMesh MESH OK.
-    - src/cfmesh_autogui/core/openfoam_runner.py: apply_to_all hardcoded
-      rimosso; default = solo patch wall (type 'wall' o nome *wall*), fallback
-      geometrico poly_geo_wall_patch_names (infer_patch_roles) per casi GMSH
-      grezzi, fallback finale apply_to_all con warning; applyToAll dalla GUI.
-    - src/cfmesh_autogui/gui/params_panel.py: get_bl_params() ora porta
-      applyToAll (checkbox prima morta sul percorso poly).
-    - tools/poly_solver_validation.py: parametrizzato per caso (ref1/valve1)
-      e variante (default/production), log completo, parse residui/iterazioni/
+    - src/cfmesh_autogui/core/openfoam_runner.py: hardcoded apply_to_all
+      removed; default = only wall patches (type 'wall' or name *wall*), geometric
+      fallback poly_geo_wall_patch_names (infer_patch_roles) for raw GMSH
+      cases, final fallback apply_to_all with warning; applyToAll from the GUI.
+    - src/cfmesh_autogui/gui/params_panel.py: get_bl_params() now carries
+      applyToAll (a checkbox previously dead on the poly path).
+    - tools/poly_solver_validation.py: parameterized per case (ref1/valve1)
+      and variant (default/production), full log, parsing of residuals/iterations/
       continuity.
-    - tools/bench_bl_poly_partial.py: nuovo (gate FASE 1 con checkMesh reale).
-    - tests/: test_bl_poly.py (terminatori come boundary faces, conteggi
-      derivati dal mesh), test_openfoam_runner.py (poly_wall_patch_names +
+    - tools/bench_bl_poly_partial.py: new (PHASE 1 gate with real checkMesh).
+    - tests/: test_bl_poly.py (terminators as boundary faces, counts
+      derived from the mesh), test_openfoam_runner.py (poly_wall_patch_names +
       poly_geo_wall_patch_names), test_bl_gui_wiring.py (applyToAll).
     """,
 
     "proposta_personale": """
-    La verifica FASE 0 ha mostrato che la poly della valvola conserva la
-    portata 11 volte meglio del tet (continuity 7.8e-4 vs 8.7e-3). Proposta
-    misurabile: aggiungere alla pipeline un METADATO di qualità 'solver-ready'
-    (convergenza potentialFoam + continuity error) esposto nel report del
-    worker poly, invece del solo checkMesh-verde. Oggi la GUI giudica 'ok' con
-    checkMesh, che sulla valvola dice FAIL anche se il solver digerisce la mesh
-    benissimo. L'esperimento che la verificherebbe: eseguire il percorso GUI
-    completo sulla valvola e confrontare il verdetto checkMesh (Failed 3) con
-    il verdetto potenziale (converge, 1.6%) — il gap è la misura di quanto
-    l'UX stia scoraggiando l'utente da mesh utili.
+    The PHASE 0 verification showed that the valve's poly conserves the
+    flow rate 11 times better than the tet (continuity 7.8e-4 vs 8.7e-3). Measurable
+    proposal: add to the pipeline a 'solver-ready' quality METADATA
+    (potentialFoam convergence + continuity error) exposed in the poly
+    worker's report, instead of only checkMesh-green. Today the GUI judges 'ok' by
+    checkMesh, which on the valve says FAIL even though the solver digests the mesh
+    very well. The experiment that would verify it: run the full GUI path
+    on the valve and compare the checkMesh verdict (Failed 3) with
+    the potential verdict (converges, 1.6%) — the gap is the measure of how much
+    the UX is discouraging the user from useful meshes.
     """,
 
     "limiti_residui": """
-    - G2 NON chiuso sulla valvola: la macchina FASE 2 (conteggio variabile,
-      gate piramidi rilassato, facce concave segnalate) è implementata e
-      verificata su mesh sane (cubo 6/6, gate FASE 1 PASS), ma la CHIUSURA
-      fallisce sulla valvola in tutte le strategie misurate (199 / 63.252
-      celle non chiuse; il drop a 0 layer perde il volume). La concavità
-      della valvola non è rilevabile dal fade (misurato: fade >= 0.8 su
-      tutti i 226.538 vertici) — dettagli e numeri in fase_2_esito.
-    - FASE 3 non fatta: la FASE 0 ha mostrato che non serve (limite
-      documentato).
-    - Il test lento test_valve_fixture_bl_invariants (BL full sulla fixture
-      valvola 1.05M punti) impiega decine di minuti; la suite rapida lo
-      esclude. Il percorso full-BL non è cambiato (output identico con
+    - G2 NOT closed on the valve: the PHASE 2 machinery (variable count,
+      relaxed pyramids gate, flagged concave faces) is implemented and
+      verified on healthy meshes (cube 6/6, PHASE 1 gate PASS), but CLOSURE
+      fails on the valve in all measured strategies (199 / 63,252
+      non-closed cells; the drop to 0 layers loses the volume). The valve's
+      concavity is not detectable from the fade (measured: fade >= 0.8 on
+      all 226,538 vertices) — details and numbers in fase_2_esito.
+    - PHASE 3 not done: PHASE 0 showed it is not needed (documented
+      limit).
+    - The slow test test_valve_fixture_bl_invariants (full BL on the
+      valve fixture 1.05M points) takes tens of minutes; the fast suite
+      excludes it. The full-BL path is unchanged (identical output with
       apply_to_all=True).
-    - poly_wall_patch_names non usa infer_patch_type di meshdict_gen perché
-      quella funzione (semantica cfMesh) classifica QUALSIASI nome sconosciuto
-      come wall — inadatta al default BL; il criterio esplicito (type wall /
-      nome *wall*) + fallback geometrico è la semantica corretta.
+    - poly_wall_patch_names does not use meshdict_gen's infer_patch_type because
+      that function (cfMesh semantics) classifies ANY unknown name
+      as wall — unsuitable for the BL default; the explicit criterion (type wall /
+      name *wall*) + geometric fallback is the correct semantics.
     """,
 
     "regressioni": """
-    Verdi: tests/test_bl_poly.py (5 veloci), tests/test_bl_gui_wiring.py (6),
-    tests/test_openfoam_runner.py (6 su 7; test_mesh_worker escluso: lancia
-    cartesianMesh WSL, minuti, pre-esistente), tests/test_tet_poly_dual.py +
+    Green: tests/test_bl_poly.py (5 fast), tests/test_bl_gui_wiring.py (6),
+    tests/test_openfoam_runner.py (6 of 7; test_mesh_worker excluded: it launches
+    WSL cartesianMesh, minutes, pre-existing), tests/test_tet_poly_dual.py +
     tests/test_poly_smoother.py (17).
-    Suite completa offline: 926 passed, 1 skipped; 4 FAILED tutti
-    pre-esistenti/ambientali, nessuno nel territorio FASE 0/FASE 1:
-      - test_native_mesher.py::test_cube_exact_volume_and_counts: fallisce
-        IDENTICAMENTE su HEAD~1 (0.97559375 vs 1.0 — ramo cartesiano
-        sperimentale, non toccato);
-      - test_watertight_meshdict::...do_not_need_a_qt_event_loop: flake
-        ordine-sensitivo documentato in residual_risks.md, passa in isolamento;
-      - test_baramflow_roundtrip::test_exported_case_loads_in_openfoam e
-        test_e2e_workflow::test_full_workflow: richiedono WSL + cartesianMesh
-        esterno (ambientali, fuori dal percorso poly+BL).
-    Baseline valvola: tools/valve_defect_baseline.py --conv-only = PASS
-    (1027 difetti residui, 852 piramidi, volume conservato) — invariata.
-    Test lento test_valve_fixture_bl_invariants (full-BL sulla fixture valvola
-    1.05M punti): non completato in sessione (>75 min CPU; percorso full-BL
-    equivalente al precedente, limite G2 documentato).
-    Nessuna regressione nel territorio FASE 0/FASE 1.
+    Full offline suite: 926 passed, 1 skipped; 4 FAILED all
+    pre-existing/environmental, none in the PHASE 0/PHASE 1 territory:
+      - test_native_mesher.py::test_cube_exact_volume_and_counts: fails
+        IDENTICALLY on HEAD~1 (0.97559375 vs 1.0 — experimental Cartesian
+        branch, not touched);
+      - test_watertight_meshdict::...do_not_need_a_qt_event_loop: order-sensitive
+        flake documented in residual_risks.md, passes in isolation;
+      - test_baramflow_roundtrip::test_exported_case_loads_in_openfoam and
+        test_e2e_workflow::test_full_workflow: require WSL + external
+        cartesianMesh (environmental, outside the poly+BL path).
+    Valve baseline: tools/valve_defect_baseline.py --conv-only = PASS
+    (1027 residual defects, 852 pyramids, volume conserved) — unchanged.
+    Slow test test_valve_fixture_bl_invariants (full-BL on the valve fixture
+    1.05M points): not completed in session (>75 min CPU; full-BL path
+    equivalent to the previous one, G2 limit documented).
+    No regression in the PHASE 0/PHASE 1 territory.
     """,
 }
 ```
 
-## File toccati (FASE 0 + FASE 1)
+## Files touched (PHASE 0 + PHASE 1)
 
-- `src/cfmesh_autogui/core/bl_poly.py` — terminazione a boundary faces + vertici mossi
-- `src/cfmesh_autogui/core/openfoam_runner.py` — default wall-only + fallback geometrico
-- `src/cfmesh_autogui/gui/params_panel.py` — applyToAll nel percorso poly
-- `tools/poly_solver_validation.py` — FASE 0 (valvola)
-- `tools/bench_bl_poly_partial.py` — gate FASE 1 (nuovo)
+- `src/cfmesh_autogui/core/bl_poly.py` — termination at boundary faces + moved vertices
+- `src/cfmesh_autogui/core/openfoam_runner.py` — wall-only default + geometric fallback
+- `src/cfmesh_autogui/gui/params_panel.py` — applyToAll on the poly path
+- `tools/poly_solver_validation.py` — PHASE 0 (valve)
+- `tools/bench_bl_poly_partial.py` — PHASE 1 gate (new)
 - `tests/test_bl_poly.py`, `tests/test_openfoam_runner.py`, `tests/test_bl_gui_wiring.py`
-- `docs/poly_solver_validation.md` (nuovo), `docs/residual_risks.md`
+- `docs/poly_solver_validation.md` (new), `docs/residual_risks.md`

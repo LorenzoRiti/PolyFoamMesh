@@ -1,116 +1,116 @@
-# FASE 6 — early-exit: ragionamento PRIMA dei test
+# FASE 6 — early-exit: reasoning BEFORE the tests
 
-Data: 2026-09-09. Scritto prima di qualsiasi run della variante early-exit
-proposta per ridurre il tempo sulla valvola (37 min nel decoupled, 15
-build totali quando 4 scale grosse falliscono prima che 0.1 validi).
+Date: 2026-09-09. Written before any run of the early-exit variant
+proposed to reduce the time on the valve (37 min in decoupled, 15
+total builds when 4 coarse scales fail before 0.1 validates).
 
-## Punto di partenza: l'early-exit "esci alla prima scala valida" ESISTE GIÀ
+## Starting point: the early-exit "exit at the first valid scale" ALREADY EXISTS
 
-L'engine `_run_local_termination` (e il loop fallback in `run()`)
-controlla `if ok: return self._accept_built(...)` ad ogni `ok, msg =
-self._validate(...)`. Appena una scala + un round validano, il loop
-esce e scrive la mesh. Sul cilindro/cubo/groove1 (casi sani) il
-successo arriva a 1.0 round 0: il loop fa **1 sola build** e termina
-(cilindro: 17,8 s). Su slot1 (medio) il successo arriva a 1.0 round 1
-dopo 132 esclusioni: **2 build** (36,8 s). Sulla valvola *nessuna*
-delle 4 scale grosse (1.0, 0.6, 0.35, 0.2) valida: servono 12 build
-sprecate + 3 build a 0.1 = 15 build totali. Quindi l'early-exit
-"fermati alla prima scala valida" **è già attivo**; il "tempo
-perso" sulla valvola non è un bug di "non esce", è che solo 0.1
-funziona davvero.
+The engine `_run_local_termination` (and the fallback loop in `run()`)
+checks `if ok: return self._accept_built(...)` at every `ok, msg =
+self._validate(...)`. As soon as a scale + a round validate, the loop
+exits and writes the mesh. On the cylinder/cube/groove1 (healthy cases) the
+success comes at 1.0 round 0: the loop does **1 single build** and ends
+(cylinder: 17.8 s). On slot1 (medium) the success comes at 1.0 round 1
+after 132 exclusions: **2 builds** (36.8 s). On the valve *none* of the
+4 coarse scales (1.0, 0.6, 0.35, 0.2) validates: it takes 12 wasted builds
++ 3 builds at 0.1 = 15 total builds. So the early-exit
+"stop at the first valid scale" **is already active**; the "time
+lost" on the valve is not a bug of "not exiting", it is that only 0.1
+actually works.
 
-## Dove si può risparmiare davvero
+## Where you can really save
 
-Sulla valvola, le 4 scale grosse sono tutte "ugualmente inutili" (pyr
-count 1010-1019 > 1007 input). Se dopo che 1.0 round 0 fallisce
-saltassi 0.6/0.35/0.2 e andassi diretto a 0.1, risparmierei 9 build
-(3 round × 3 scale) = ~15 min sulla valvola. La domanda è: questa
-euristica è SICURA in generale?
+On the valve, the 4 coarse scales are all "equally useless" (pyr
+count 1010-1019 > 1007 input). If after 1.0 round 0 fails I
+skipped 0.6/0.35/0.2 and went straight to 0.1, I would save 9 builds
+(3 rounds × 3 scales) = ~15 min on the valve. The question is: is this
+heuristic SAFE in general?
 
-## Strategia proposta (opt-in, default invariato)
+## Proposed strategy (opt-in, default unchanged)
 
-Nuovo parametro engine: `run(..., local_termination=..., 
-early_exit_intermediates: bool = False)`. Quando True E siamo in
-modalità `local_termination` (decoupled o carry) E la scala 1.0 round
-0 ha fallito, le scale intermedie (0.6, 0.35, 0.2) vengono skippate
-e si procede direttamente a 0.1.
+New engine parameter: `run(..., local_termination=..., 
+early_exit_intermediates: bool = False)`. When True AND we are in
+`local_termination` mode (decoupled or carry) AND scale 1.0 round
+0 failed, the intermediate scales (0.6, 0.35, 0.2) are skipped
+and it proceeds directly to 0.1.
 
-## Ipotesi e rischi
+## Hypotheses and risks
 
-- **Ipotesi implicita**: "se 1.0 round 0 fallisce, le intermedie non
-  aiuteranno" — nella valvola è vero (le 4 scale hanno pyr simile
-  1010-1019, e solo 0.1 ha pyr ≤ 1007 = input). Non è universalmente
-  vero: in teoria un caso futuro potrebbe avere pyr_input=1050, pyr a
-  1.0=1070, pyr a 0.6=1048, pyr a 0.1=1060 — le intermedie aiutano.
-  In quel caso skip_intermediates fallirebbe a 0.1 e il run
-  fallirebbe pulito (mesh invariata). Documento questo come rischio
-  accettabile per l'opt-in.
-- **Su healthy**: skip non si attiva (1.0 round 0 valida prima che
-  qualsiasi euristica scatti). Stesso risultato di decoupled senza
-  flag.
-- **Su slot1 (medio)**: 1.0 round 0 fallisce (50 pyr > 42 input) ma
-  round 1 valida. Lo skip si attiverebbe? Dipende: skip è "se 1.0
-  round 0 ha fallito, salta intermedie". Round 0 fallisce, skip si
-  attiva, intermedie skippate, 0.1 tentato. Ma 0.1 sulla slot1 con
-  set di esclusioni da 1.0 (carry mode) o set pulito (decoupled)
-  potrebbe non validare (la slot1 standard a 0.1?). Non abbiamo
-  misure di slot1 a 0.1. Possibile che decoupled + skip + slot1
-  fallisca. Documento il rischio: la euristica ottimizza la valvola
-  al costo potenziale di slot1 (e simili "medi che validano a 1.0 con
-  1 round di exclusion"). Se succede, documentiamo e decidiamo.
+- **Implicit hypothesis**: "if 1.0 round 0 fails, the intermediates will not
+  help" — on the valve it is true (the 4 scales have similar pyr
+  1010-1019, and only 0.1 has pyr ≤ 1007 = input). It is not universally
+  true: in theory a future case could have pyr_input=1050, pyr at
+  1.0=1070, pyr at 0.6=1048, pyr at 0.1=1060 — the intermediates help.
+  In that case skip_intermediates would fail at 0.1 and the run
+  would fail cleanly (mesh unchanged). I document this as an acceptable
+  risk for the opt-in.
+- **On healthy**: skip does not activate (1.0 round 0 validates before
+  any heuristic triggers). Same result as decoupled without
+  the flag.
+- **On slot1 (medium)**: 1.0 round 0 fails (50 pyr > 42 input) but
+  round 1 validates. Would the skip activate? It depends: skip is "if 1.0
+  round 0 failed, skip intermediates". Round 0 fails, skip
+  activates, intermediates skipped, 0.1 tried. But 0.1 on slot1 with
+  the exclusion set from 1.0 (carry mode) or a clean set (decoupled)
+  might not validate (standard slot1 at 0.1?). We have no
+  slot1 measurements at 0.1. It is possible that decoupled + skip + slot1
+  fails. I document the risk: the heuristic optimizes the valve
+  at the potential cost of slot1 (and similar "medium cases that validate at 1.0 with
+  1 round of exclusion"). If it happens, we document and decide.
 
-## Previsioni sulla valvola (con decoupled + skip)
+## Predictions on the valve (with decoupled + skip)
 
-- Scala 1.0: 1 build (round 0, fail). Esclusioni accumulate dentro 1.0:
-  ~2.000-3.000 (in decoupled, set resettato dopo — quindi irrilevanti).
-- Skip 0.6, 0.35, 0.2: 0 build risparmiate.
-- Scala 0.1: 3 build (round 0 fail, round 1 fail, round 2 valida).
-  Esclusioni: 1.946+112+0 = 2.058 (identico al decoupled, perché
-  decoupled resetta le esclusioni a 0.1).
-- Totale: **4 build** vs 15 attuali. **Tempo previsto**: ~4 × ~100-120 s
-  = **400-500 s** vs 2.215 s. Saving: ~30 min (~80% più veloce).
-- checkMesh: dovrebbe essere identico al decoupled (885 wrong, Failed 4,
-  skew 47,6, aspect 15.419).
-- Prismi: 445.716 (identico).
+- Scale 1.0: 1 build (round 0, fail). Exclusions accumulated within 1.0:
+  ~2,000-3,000 (in decoupled, set reset afterwards — so irrelevant).
+- Skip 0.6, 0.35, 0.2: 0 builds saved.
+- Scale 0.1: 3 builds (round 0 fail, round 1 fail, round 2 validates).
+  Exclusions: 1,946+112+0 = 2,058 (identical to decoupled, because
+  decoupled resets the exclusions at 0.1).
+- Total: **4 builds** vs 15 today. **Expected time**: ~4 × ~100-120 s
+  = **400-500 s** vs 2,215 s. Saving: ~30 min (~80% faster).
+- checkMesh: it should be identical to decoupled (885 wrong, Failed 4,
+  skew 47.6, aspect 15,419).
+- Prisms: 445,716 (identical).
 
-## Previsioni sui casi sani
+## Predictions on healthy cases
 
-- Skip non si attiva mai (1.0 round 0 valida). Risultato identico al
-  decoupled: scala 1.0, spessore pieno, aspect invariato.
+- Skip never activates (1.0 round 0 validates). Result identical to
+  decoupled: scale 1.0, full thickness, aspect unchanged.
 
-## Previsioni su slot1 (rischio)
+## Predictions on slot1 (risk)
 
-- 1.0 round 0 fallisce (50 pyr > 42). Skip si attiva. 0.6/0.35/0.2
-  skippate. 0.1 tentato: con decoupled + skip, le esclusioni partono
-  dal set pulito (decoupled reset). A 0.1, pyr a 0.1 round 0: ???.
-  Non abbiamo misure. Se pyr_round0_0.1 ≤ 42 (input), valida. Altrimenti
-  round 1/2 con exclusion progressive. Probabilmente simile al
-  thin-first su slot1: 0 escl, valida al primo round. **Ipotesi**:
-  skip su slot1 = identico al thin-first (scala 0.1, 0 escl, 80.004
-  prismi). Ma è una previsione, non una misura.
+- 1.0 round 0 fails (50 pyr > 42). Skip activates. 0.6/0.35/0.2
+  skipped. 0.1 tried: with decoupled + skip, the exclusions start
+  from the clean set (decoupled reset). At 0.1, pyr at 0.1 round 0: ???.
+  We have no measurements. If pyr_round0_0.1 ≤ 42 (input), it validates. Otherwise
+  round 1/2 with progressive exclusions. Probably similar to
+  thin-first on slot1: 0 excl, validates at the first round. **Hypothesis**:
+  skip on slot1 = identical to thin-first (scale 0.1, 0 excl, 80,004
+  prisms). But it is a prediction, not a measurement.
 
-## Cosa misurare
+## What to measure
 
-1. Engine: implementare `early_exit_intermediates` opt-in + 1 test
-   (healthy cube con skip=True = identico a decoupled senza skip).
-2. Bench: aggiungere `--early-exit-intermediates` flag al
-   `tools/bench_bl_thinfirst.py` e misurare:
-   - cilindro/cubo/groove1/slot1 con skip=True vs decoupled (no
-     skip): devono essere identici per i sani, e per slot1 verifico
-     se la euristica regge o meno.
-   - valvola con decoupled+skip: 4 build attese, ~400-500 s attesi,
-     2.058 escl attese, 445.716 prismi attesi, checkMesh 885 atteso.
+1. Engine: implement `early_exit_intermediates` opt-in + 1 test
+   (healthy cube with skip=True = identical to decoupled without skip).
+2. Bench: add the `--early-exit-intermediates` flag to
+   `tools/bench_bl_thinfirst.py` and measure:
+   - cylinder/cube/groove1/slot1 with skip=True vs decoupled (no
+     skip): they must be identical for the healthy ones, and for slot1 I verify
+     whether the heuristic holds or not.
+   - valve with decoupled+skip: 4 builds expected, ~400-500 s expected,
+     2,058 excl expected, 445,716 prisms expected, checkMesh 885 expected.
 
-## Criterio di lettura
+## Reading criterion
 
-- Se valvola decoupled+skip = 2.058 escl, 445.716 prismi, ~450 s
-  (~8x più veloce del decoupled): la euristica funziona, è un
-  candidato per il default *quando* la terminazione locale verrà
-  abilitata (con la caveat documentata del rischio su slot1).
-- Se slot1 decoupled+skip fallisce o degrada: la euristica è
-  troppo aggressiva; va misurata una versione "skip solo se 1.0 round
-  0 fallisce con pyr_count_round0 ≥ pyr_count_round0 della scala più fine
-  già tentata" (cioè skip solo se la pyr peggiora monotonicamente).
-- Se valvola decoupled+skip dà risultato diverso da decoupled
-  (es. più esclusioni o non valida): l'euristica ha rotto qualcosa,
-  va rivista o rimossa.
+- If valve decoupled+skip = 2,058 excl, 445,716 prisms, ~450 s
+  (~8x faster than decoupled): the heuristic works, it is a
+  candidate for the default *when* the local termination gets
+  enabled (with the documented caveat of the slot1 risk).
+- If slot1 decoupled+skip fails or degrades: the heuristic is
+  too aggressive; a version "skip only if 1.0 round
+  0 fails with pyr_count_round0 ≥ pyr_count_round0 of the finest scale
+  already tried" must be measured (i.e. skip only if the pyr worsens monotonically).
+- If valve decoupled+skip gives a different result from decoupled
+  (e.g. more exclusions or does not validate): the heuristic broke something,
+  it must be revised or removed.

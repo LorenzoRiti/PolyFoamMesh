@@ -1,66 +1,66 @@
-# Prompt agente — blindare concorrenza e log (anti-freeze)
+# Agent prompt — hardening concurrency and logging (anti-freeze)
 
-Usa questo file come task prompt per una sessione agente dedicata al
-**blindaggio** del codice GUI: chiudere il debito residuo dopo
-`TaskManager` e la burst protection del log panel.
+Use this file as a task prompt for a session dedicated to the
+**hardening** of the GUI code: closing the residual debt after
+`TaskManager` and the log panel's burst protection.
 
-Documenti correlati:
+Related documents:
 
-- `docs/concurrency.md` — pattern canonico (autoritativo)
-- `.slim/deepwork/hardening-anti-freeze.md` — audit e fasi del deepwork
-- `.slim/deepwork/freeze-meshing-valve.md` — regressione white-screen su run verbosi
-- `docs/found_while_hardening.md` — bug trovati durante il pass (solo report, no fix qui)
+- `docs/concurrency.md` — canonical (authoritative) pattern
+- `.slim/deepwork/hardening-anti-freeze.md` — deepwork audit and phases
+- `.slim/deepwork/freeze-meshing-valve.md` — white-screen regression on verbose runs
+- `docs/found_while_hardening.md` — bugs found during the pass (report only, no fix here)
 
 ---
 
-## Contesto
+## Context
 
 **Repo:** `C:\Users\Davide Valoroso\cfmesh-autogui`  
 **Stack:** Python 3.11, PySide6, WSL2 + OpenFOAM 2512  
-**Branch di partenza:** `master` (commit `87e744f` o successivo)
+**Starting branch:** `master` (commit `87e744f` or later)
 
-**Problema già visto in sessioni reali:** freeze UI, white screen, Windows
-"Not Responding" su run verbosi (cartesianMesh, flood di warning GMSH).
+**Problem already seen in real sessions:** UI freeze, white screen, Windows
+"Not Responding" on verbose runs (cartesianMesh, flood of GMSH warnings).
 
-**Architettura target già introdotta:**
+**Target architecture already introduced:**
 
-| Modulo | Ruolo |
-|--------|-------|
-| `src/cfmesh_autogui/gui/task_runner.py` | `TaskManager` — unico owner di QThread/worker |
+| Module | Role |
+|--------|------|
+| `src/cfmesh_autogui/gui/task_runner.py` | `TaskManager` — sole owner of QThread/worker |
 | `src/cfmesh_autogui/gui/log_panel.py` | burst cap + `setMaximumBlockCount` |
-| `src/cfmesh_autogui/gui/main_window.py` | `_submit_task()` come entry point per lavoro lungo |
+| `src/cfmesh_autogui/gui/main_window.py` | `_submit_task()` as the entry point for long work |
 
-**Commit recente rilevante:** `87e744f` — re-entry guard spostati su
-`_tasks.is_running(...)`, rimossi alcuni `wait()` sulla GUI thread. Resta
-debito tecnico (vedi sotto).
-
----
-
-## Obiettivo
-
-Blindare il codice così che:
-
-1. Nessun modulo tocchi `QThread` direttamente tranne `task_runner.py`
-2. Nessun `thread.wait()` / `thread.quit()` sulla GUI thread
-3. Nessun doppio avvio task — re-entry guard centralizzato
-4. Log flood non possa saturare la GUI thread
-5. Shutdown/cancel torni UI utilizzabile in **< 2 s**
-6. Test di regressione coprano i casi reali di freeze
+**Recent relevant commit:** `87e744f` — re-entry guards moved to
+`_tasks.is_running(...)`, some `wait()` on the GUI thread removed. Technical debt
+remains (see below).
 
 ---
 
-## Lavoro da fare (in ordine)
+## Goal
 
-### 1. Eliminare `_cleanup_thread` e gli attr `_*_thread` residui
+Harden the code so that:
+
+1. No module touches `QThread` directly except `task_runner.py`
+2. No `thread.wait()` / `thread.quit()` on the GUI thread
+3. No double task start — centralized re-entry guard
+4. Log flood cannot saturate the GUI thread
+5. Shutdown/cancel returns the UI to usable in **< 2 s**
+6. Regression tests cover the real freeze cases
+
+---
+
+## Work to do (in order)
+
+### 1. Eliminate `_cleanup_thread` and the residual `_*_thread` attrs
 
 **File:** `src/cfmesh_autogui/gui/main_window.py`
 
-- Cercare tutte le chiamate a `_cleanup_thread(...)` e sostituirle con:
-  - `self._tasks.cancel("<task_name>")` se il task potrebbe essere attivo
-  - oppure solo reset dell'attr `_*_worker = None` se il task è già finito
-- Rimuovere `_cleanup_thread` se non serve più
-- Rimuovere ogni attr `_*_thread` non più usato
-- Verificare che `_submit_task()` resti l'unico modo per avviare lavoro lungo
+- Find all calls to `_cleanup_thread(...)` and replace them with:
+  - `self._tasks.cancel("<task_name>")` if the task might be active
+  - or just resetting the attr `_*_worker = None` if the task is already finished
+- Remove `_cleanup_thread` if it is no longer needed
+- Remove every `_*_thread` attr that is no longer used
+- Verify that `_submit_task()` remains the only way to start long work
 
 **Acceptance:**
 
@@ -68,110 +68,110 @@ Blindare il codice così che:
 rg "_cleanup_thread|_gmsh_thread|_watertight_thread|_samr_thread|thread\.wait|thread\.quit" src/cfmesh_autogui/gui/main_window.py
 ```
 
-→ zero match su lifecycle manuale (eccetto commenti/doc)
+→ zero matches on manual lifecycle (except comments/docs)
 
 ---
 
-### 2. Centralizzare i re-entry guard
+### 2. Centralize the re-entry guards
 
 **File:** `src/cfmesh_autogui/gui/main_window.py`
 
-Ogni azione utente che avvia lavoro deve controllare
-`self._tasks.is_running(name)` con il **task name canonico**, non label tipo
+Every user action that starts work must check
+`self._tasks.is_running(name)` with the **canonical task name**, not labels like
 `_gmsh_worker`.
 
-**Task names standard:**
+**Standard task names:**
 
-| Task name | Descrizione |
+| Task name | Description |
 |-----------|-------------|
-| `gmsh_volume` | volume mesh GMSH |
+| `gmsh_volume` | GMSH volume mesh |
 | `gmsh_convert` | gmshToFoam |
 | `feature_detect` | gap/feature detection |
 | `checkmesh` | checkMesh |
-| `wsl_check` | validazione WSL/OpenFOAM |
-| `parallel_mesh` | meshing parallelo |
-| `polydual` | conversione poly dual |
-| `autopoly` | autopoly nativo |
+| `wsl_check` | WSL/OpenFOAM validation |
+| `parallel_mesh` | parallel meshing |
+| `polydual` | poly dual conversion |
+| `autopoly` | native autopoly |
 | `samr` | solution-adaptive refinement |
-| `quality_fix` | ciclo quality fix |
-| `watertight` | check watertight |
-| `export` | export case |
+| `quality_fix` | quality fix cycle |
+| `watertight` | watertight check |
+| `export` | case export |
 | `decompose` | decompose |
 
-Messaggi log/UI → nomi user-friendly; guard interno → sempre `task_name`.
+Log/UI messages → user-friendly names; internal guard → always `task_name`.
 
 **Acceptance:**
 
-- Nessun `getattr(self, "_*_thread")` rimasto
-- Nessun `thread.isRunning()` rimasto in `main_window.py`
+- No `getattr(self, "_*_thread")` left
+- No `thread.isRunning()` left in `main_window.py`
 
 ---
 
-### 3. TaskManager — chiudere i buchi di lifecycle
+### 3. TaskManager — close the lifecycle holes
 
 **File:** `src/cfmesh_autogui/gui/task_runner.py`
 
-- Verificare che `_force_cleanup` e `shutdown` non lascino task in `_tasks`
-  con `state == "running"`
-- Dopo `_force_cleanup`, assicurarsi che `_release` venga sempre chiamato
-  (no leak di `_retired`)
-- Semplificare `_finalize`: rimuovere ramo morto `finished` vs `else`
-- Documentare esplicitamente che `thread.wait()` in `shutdown` è last-resort
-  e non va replicato altrove
+- Verify that `_force_cleanup` and `shutdown` do not leave tasks in `_tasks`
+  with `state == "running"`
+- After `_force_cleanup`, ensure `_release` is always called
+  (no `_retired` leak)
+- Simplify `_finalize`: remove the dead `finished` vs `else` branch
+- Explicitly document that `thread.wait()` in `shutdown` is a last resort
+  and must not be replicated elsewhere
 
 **Acceptance (test):**
 
-- submit → cancel → `mgr.running == []` entro 2 s
-- submit → shutdown → nessun thread `isRunning()` dopo budget
-- doppio submit stesso name → secondo rifiutato
+- submit → cancel → `mgr.running == []` within 2 s
+- submit → shutdown → no thread `isRunning()` after budget
+- double submit with the same name → second rejected
 
 ---
 
-### 4. LogPanel — hardening burst + thread safety
+### 4. LogPanel — burst hardening + thread safety
 
 **File:** `src/cfmesh_autogui/gui/log_panel.py`
 
-Mantenere:
+Keep:
 
 - cross-thread append via `QMetaObject.invokeMethod(..., QueuedConnection)`
-- `_BURST_PENDING_CAP` drop con contatore `_dropped`
+- `_BURST_PENDING_CAP` drop with a `_dropped` counter
 - `document().setMaximumBlockCount(_MAX_LOG_LINES)`
 
-Verificare:
+Verify:
 
-- `clear_log()` azzera `_pending` e `_dropped`
-- opzionale: escape HTML su testo grezzo prima degli highlight `[ERROR]`,
-  `[WARN]`, ecc.
-- **non** reintrodurre prune O(n) con cursor walk
+- `clear_log()` resets `_pending` and `_dropped`
+- optional: HTML escaping on raw text before the `[ERROR]`,
+  `[WARN]`, etc. highlights
+- do **not** reintroduce the O(n) prune with cursor walk
 
 **Acceptance:**
 
-- `tests/test_log_flood.py` passa
-- flood 50k linee da worker thread: `_pending <= cap`, nota "soppresse"
-  visibile, UI pumpabile
+- `tests/test_log_flood.py` passes
+- flood of 50k lines from a worker thread: `_pending <= cap`, "suppressed"
+  note visible, UI pumpable
 
 ---
 
-### 5. Subprocess live throttle (seconda linea di difesa)
+### 5. Subprocess live throttle (second line of defense)
 
 **File:** `src/cfmesh_autogui/core/openfoam_runner.py` (`_stream_subprocess`)
 
-Confermare che:
+Confirm that:
 
-- tutte le linee finiscono in `stdout_lines` / `stderr_lines` per analisi
-  finale
-- `on_line` live è throttled (~50 linee/s) con nota soppressione
-- ogni worker che streamma log usa questo path, non
-  `Popen` + emit diretto unbounded
+- all lines end up in `stdout_lines` / `stderr_lines` for final
+  analysis
+- the live `on_line` is throttled (~50 lines/s) with a suppression note
+- every worker that streams logs uses this path, not
+  `Popen` + direct unbounded emit
 
 **Acceptance:**
 
-- `test_stream_subprocess_throttles_live_lines_but_captures_all` passa
-- nessun worker fa loop `for line in proc.stdout: emit(line)` senza throttle
+- `test_stream_subprocess_throttles_live_lines_but_captures_all` passes
+- no worker does a loop `for line in proc.stdout: emit(line)` without throttle
 
 ---
 
-### 6. Audit anti-pattern in tutta la codebase
+### 6. Anti-pattern audit across the codebase
 
 ```powershell
 rg "QThread\(|\.wait\(|processEvents\(|time\.sleep\(" src/
@@ -179,97 +179,97 @@ rg "thread\.start\(|moveToThread\(" src/ --glob '!**/task_runner.py'
 rg "threading\.Thread\(" src/
 ```
 
-Per ogni hit:
+For every hit:
 
-- lavoro lungo → migrare a `TaskManager.submit`
-- test/utility → ok, ma documentare
-- sulla GUI thread → spostare o eliminare
+- long work → migrate to `TaskManager.submit`
+- test/utility → ok, but document it
+- on the GUI thread → move or eliminate
 
-Consultare la tabella audit in `.slim/deepwork/hardening-anti-freeze.md`
-(sezione Phase 1) per priorità.
+Consult the audit table in `.slim/deepwork/hardening-anti-freeze.md`
+(Phase 1 section) for priorities.
 
 ---
 
-### 7. Test di regressione da aggiungere/rafforzare
+### 7. Regression tests to add/strengthen
 
 **File:** `tests/test_task_runner.py`, `tests/test_log_flood.py`
 
-Aggiungere se mancanti:
+Add if missing:
 
-- cancel durante subprocess (`kill_hook` invocato)
-- task con `finished` a 2 arg (duck-typed worker)
-- re-entry guard su nomi reali (`gmsh_volume`, `checkmesh`)
-- shutdown con 2+ task concorrenti
-- log flood + task attivo insieme (GUI resta responsiva)
+- cancel during subprocess (`kill_hook` invoked)
+- task with `finished` taking 2 args (duck-typed worker)
+- re-entry guard on real names (`gmsh_volume`, `checkmesh`)
+- shutdown with 2+ concurrent tasks
+- log flood + active task together (GUI stays responsive)
 
-**Vincoli test:**
+**Test constraints:**
 
 - `QT_QPA_PLATFORM=offscreen`
-- niente sleep lunghi; usare timeout e predicate loop
-- non testare `terminate()` come path principale su Windows (GIL race),
-  solo cooperative cancel
-- **non** eseguire test WSL/openfoam_runner pesanti in locale se noti timeout
-  (vedi note in `hardening-anti-freeze.md`)
+- no long sleeps; use timeouts and predicate loops
+- do not test `terminate()` as the main path on Windows (GIL race),
+  only cooperative cancel
+- do **not** run heavy WSL/openfoam_runner tests locally if you know they time out
+  (see notes in `hardening-anti-freeze.md`)
 
 ---
 
-## Regole non negoziabili
+## Non-negotiable rules
 
-- **NON** introdurre un secondo pattern di concorrenza
-- **NON** fare `wait()` sulla GUI thread in codice nuovo
-- **NON** connettere plain Python callables con `QueuedConnection` ai signal
-  Qt worker
-- **NON** aumentare scope oltre hardening (no refactor estetici non correlati)
-- Diff minimo; commenti solo dove spiegano failure mode reali osservati
-- Bug non fixati → `docs/found_while_hardening.md`, non commit misti
+- **DO NOT** introduce a second concurrency pattern
+- **DO NOT** do `wait()` on the GUI thread in new code
+- **DO NOT** connect plain Python callables with `QueuedConnection` to Qt worker
+  signals
+- **DO NOT** increase scope beyond hardening (no unrelated aesthetic refactors)
+- Minimal diff; comments only where they explain real observed failure modes
+- Unfixed bugs → `docs/found_while_hardening.md`, not mixed commits
 
 ---
 
 ## Definition of Done
 
-- [ ] Zero lifecycle QThread manuale fuori da `task_runner.py`
-- [ ] Tutti i long-running job passano da `_submit_task` / `TaskManager.submit`
-- [ ] Re-entry guard uniformi su task name canonici
+- [ ] Zero manual QThread lifecycle outside `task_runner.py`
+- [ ] All long-running jobs go through `_submit_task` / `TaskManager.submit`
+- [ ] Re-entry guards uniform on canonical task names
 - [ ] Log flood bounded + subprocess throttled
-- [ ] Test verdi:
+- [ ] Green tests:
 
   ```powershell
   python -m pytest tests/test_task_runner.py tests/test_log_flood.py -q
   ```
 
-- [ ] Nessun file in `.opencode/` committato
-- [ ] `docs/concurrency.md` aggiornato se cambia il contratto pubblico
+- [ ] No file in `.opencode/` committed
+- [ ] `docs/concurrency.md` updated if the public contract changes
 
 ---
 
-## Output atteso dall'agente
+## Expected agent output
 
-1. Diff focalizzato con spiegazione breve per ogni cambio
-2. Elenco dei pattern anti-freeze rimossi (file + linea)
-3. Risultato pytest
-4. Debiti residui accettati esplicitamente (es. `wait()` solo in shutdown
+1. Focused diff with a short explanation for each change
+2. List of anti-freeze patterns removed (file + line)
+3. pytest result
+4. Residual debts explicitly accepted (e.g. `wait()` only in shutdown
    last-resort)
 
 ---
 
-## Comandi utili
+## Useful commands
 
 ```powershell
-# Stato repo
+# Repo state
 git status
 git diff
 
-# Audit rapido
+# Quick audit
 rg "_cleanup_thread|_thread|isRunning|processEvents" src/cfmesh_autogui/gui/
 
-# Test subset hardening
+# Hardening test subset
 python -m pytest tests/test_task_runner.py tests/test_log_flood.py -q
 ```
 
 ---
 
-## Note per l'orchestratore
+## Notes for the orchestrator
 
-Se altri agenti lavorano in parallelo su `main_window.py` o
-`openfoam_runner.py`, rileggere il file prima di editare e mantenere le
-modifiche **additive**. Non riformattare file condivisi.
+If other agents are working in parallel on `main_window.py` or
+`openfoam_runner.py`, re-read the file before editing and keep the
+changes **additive**. Do not reformat shared files.
