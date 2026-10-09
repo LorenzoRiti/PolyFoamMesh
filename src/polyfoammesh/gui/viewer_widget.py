@@ -827,7 +827,7 @@ class ViewerWidget(QWidget):
             QTimer.singleShot(0, self._position_measure_summary)
         except Exception as exc:
             logger.error("Failed to initialize VTK plotter: %s", exc)
-            self._add_no_viewer_label(f"Errore: {exc}")
+            self._add_no_viewer_label(f"Error: {exc}")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2029,8 +2029,8 @@ class ViewerWidget(QWidget):
                     )
                 if show_dec:
                     self._plotter.add_text(
-                        f"Visualizzazione semplificata ({n_cells:,} celle). "
-                        "Il file di mesh reale \u00e8 invariato.",
+                        f"Simplified view ({n_cells:,} cells). "
+                        "The real mesh file is unchanged.",
                         color=self._text_color, font_size=10,
                     )
                 self._plotter.view_isometric()
@@ -2038,7 +2038,7 @@ class ViewerWidget(QWidget):
                 self._reload_patch_panel_async()
             except Exception as exc:
                 logger.error("Plotter display failed (internal VTU): %s", exc)
-                self._show_mesh_too_large(f"Errore display: {exc}")
+                self._show_mesh_too_large(f"Display error: {exc}")
 
         def on_failed(_name, msg):
             self._mesh_display_in_progress = False
@@ -2119,21 +2119,21 @@ class ViewerWidget(QWidget):
                     self._pvdata_to_name[actor.GetAddressAsString("")] = name
                 if show_decimated:
                     self._plotter.add_text(
-                        f"Visualizzazione semplificata ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} facce). "
-                        "Il file di mesh reale \u00e8 invariato.",
+                        f"Simplified view ({total_faces:,} \u2192 ~{int(total_faces*self.DECIMATE_TARGET):,} faces). "
+                        "The real mesh file is unchanged.",
                         color=self._text_color, font_size=10,
                     )
                 self._plotter.view_isometric()
                 self._plotter.render()
             except Exception as exc:
                 logger.error("Plotter display failed (mesh patches): %s", exc)
-                self._show_mesh_too_large(f"Errore display: {exc}")
+                self._show_mesh_too_large(f"Display error: {exc}")
 
         def on_failed(_name, msg):
             self._mesh_display_in_progress = False
             self._cancel_display_timeout()
             logger.warning("Mesh patches load failed: %s", msg)
-            self._show_mesh_too_large(f"Errore caricamento: {msg}")
+            self._show_mesh_too_large(f"Load error: {msg}")
 
         self._vtk_tasks.submit(
             "vtk_display", FunctionWorker(work),
@@ -2229,7 +2229,7 @@ class ViewerWidget(QWidget):
         self._view_selector.blockSignals(True)
         self._view_selector.setCurrentIndex(-1)
         self._view_selector.blockSignals(False)
-        msg = "Usa ParaView per visualizzare la mesh"
+        msg = "Use ParaView to view the mesh"
         if reason:
             msg += f" ({reason})"
         self._stats_label.setText(msg)

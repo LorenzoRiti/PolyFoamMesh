@@ -695,7 +695,7 @@ class PolyAggregator:
                     bl_exc,
                 )
 
-        # Tentativo 2: GMSH senza BL (se il primo non è riuscito)
+        # Attempt 2: GMSH without BL (if the first attempt failed)
         if not bl_ok:
             logger.info("GMSH tet mesh without BL...")
             try:

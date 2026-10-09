@@ -1131,8 +1131,8 @@ class RetryRunner(QObject):
                     "[WARN] Boundary layers failed. Retrying without BL..."
                 )
                 self._on_log(
-                    "[SUBSTITUTED] Algoritmo sostituito: boundary layer "
-                    "disattivato (fallisce su questa geometria)."
+                    "[SUBSTITUTED] Algorithm substituted: boundary layer "
+                    "disabled (it fails on this geometry)."
                 )
                 self._on_log("[fallback] Regenerating meshDict without boundaryLayers.")
             try:
@@ -1153,8 +1153,8 @@ class RetryRunner(QObject):
         if error.error_type == ErrorType.NONE:
             if self._on_log:
                 self._on_log(
-                    "[error-detail] Nessun pattern specifico riconosciuto "
-                    "— clicca 'Show Log' per il log completo."
+                    "[error-detail] No specific pattern recognised "
+                    "- click 'Show Log' for the full log."
                 )
                 self._on_log(
                     "[error-detail] Raw exit code: %d | Last 5 lines:\n  %s"

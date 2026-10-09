@@ -155,6 +155,65 @@ def test_rename_boundary_patch_missing_file(tmp_path):
         rename_boundary_patch(tmp_path, "a", "b")
 
 
+_FIELD = """\
+FoamFile
+{
+    class       volScalarField;
+}
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    surface_1
+    {
+        type            zeroGradient;
+    }
+    surface_2
+    {
+        type            fixedValue;
+        value           uniform 1;
+    }
+}
+"""
+
+
+def test_rename_patch_in_fields_rewrites_and_backs_up(tmp_path):
+    from polyfoammesh.core.boundary_reader import rename_patch_in_fields
+
+    for name in ("p", "U", "k"):
+        (tmp_path / "0").mkdir(exist_ok=True)
+        (tmp_path / "0" / name).write_text(_FIELD, encoding="latin-1")
+
+    touched = rename_patch_in_fields(tmp_path, "surface_1", "inlet")
+
+    assert sorted(p.name for p in touched) == ["U", "k", "p"]
+    text = (tmp_path / "0" / "p").read_text("latin-1")
+    assert "    inlet\n" in text
+    assert "    surface_1\n" not in text
+    assert "    surface_2\n" in text  # untouched sibling
+    # one-time backup keeps the original name
+    assert (tmp_path / "0" / "p.bak").read_text("latin-1") == _FIELD
+
+
+def test_rename_patch_in_fields_noop_when_no_zero_dir(tmp_path):
+    from polyfoammesh.core.boundary_reader import rename_patch_in_fields
+
+    assert rename_patch_in_fields(tmp_path / "nocase", "a", "b") == []
+
+
+def test_rename_patch_in_fields_skips_fields_without_the_patch(tmp_path):
+    from polyfoammesh.core.boundary_reader import rename_patch_in_fields
+
+    (tmp_path / "0").mkdir()
+    (tmp_path / "0" / "p").write_text(
+        _FIELD.replace("surface_1", "wall"), encoding="latin-1",
+    )
+    assert rename_patch_in_fields(tmp_path, "surface_1", "inlet") == []
+
+
 # ---------------------------------------------------------------------------
 # Step 2: boundary-manifold validation (checkMesh "multiply connected")
 # ---------------------------------------------------------------------------

@@ -177,6 +177,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PolyFoamMesh")
         self.resize(1400, 900)
 
+        # Tame every popup: Qt message boxes grow as wide as their longest
+        # line, which left dialogs mostly-empty and huge (user report).
+        # The filter below caps the text width so long messages WRAP
+        # instead of stretching the window.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
         self._of_config = OFConfig()
         self._meshes: list[trimesh.Trimesh] = []  # ✅ F-009
         self._original_shape: cq.Shape | None = None
@@ -1800,18 +1808,33 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            from polyfoammesh.core.boundary_reader import rename_boundary_patch
+            from polyfoammesh.core.boundary_reader import (
+                rename_boundary_patch,
+                rename_patch_in_fields,
+            )
 
             rename_boundary_patch(case_dir, old_name, new_name)
+            # Keep the 0/ fields consistent too: a field still listing the
+            # old name makes OpenFOAM/BaramFlow abort on load (and the
+            # BaramFlow export refuses the case).
+            touched = []
+            try:
+                touched = rename_patch_in_fields(case_dir, old_name, new_name)
+            except Exception:  # noqa: BLE001 - mesh rename already applied
+                logger.exception("Field patch rename failed (best effort)")
         except Exception as exc:  # noqa: BLE001 - revert on any failure
             logger.exception("Generated-mesh patch rename failed")
             self._viewer.revert_patch_name(new_name, old_name)
             QMessageBox.warning(self, "Rename failed", str(exc))
             return
         self._viewer.apply_case_patch_rename(old_name, new_name)
+        fields_note = (
+            f", {len(touched)} field(s) updated in 0/" if touched else ""
+        )
         self._log.append_log(
             f"{Tag.PATCH} Renamed mesh patch '{old_name}' \u2192 '{new_name}' "
-            "(written to constant/polyMesh/boundary; backup: boundary.bak)."
+            f"(written to constant/polyMesh/boundary{fields_note}; "
+            "backup: boundary.bak)."
         )
 
     def _on_pick_refinement(self):
@@ -5884,6 +5907,24 @@ class MainWindow(QMainWindow):
         for a in (attr_thread, attr_worker):
             if hasattr(self, a):
                 setattr(self, a, None)
+
+    #: Popup text is wrapped and capped to this pixel width: Qt message
+    #: boxes otherwise grow as wide as their longest line, leaving huge
+    #: half-empty dialogs (user report: "troppo larghi, molto spazio vuoto").
+    _POPUP_TEXT_MAX_WIDTH = 480
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API name
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QMessageBox
+
+        if event.type() == QEvent.Show and isinstance(obj, QMessageBox):
+            try:
+                for label in obj.findChildren(QLabel):
+                    label.setWordWrap(True)
+                    label.setMaximumWidth(self._POPUP_TEXT_MAX_WIDTH)
+            except Exception:  # noqa: BLE001 - cosmetics must never crash
+                pass
+        return super().eventFilter(obj, event)
 
     def closeEvent(self, event):
         s = self._settings()
