@@ -69,6 +69,11 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Doppio pulsante Cancel durante un run**: `set_meshing_state(True)`
+  rietichettava ancora il pulsante "Generate Mesh" come "Cancel" rosso
+  (retaggio di quando il Cancel dedicato non esisteva), quindi durante la
+  mesh se ne vedevano **due**. Ora il pulsante run resta "Generate Mesh"
+  (disabilitato) e l'unico stop è il Cancel dedicato sotto "Reset All".
 - **Qualità dual su geometrie complesse (opt-in, keep-best)**: nuovo
   `repair_concave_cells_keepbest` (merge delle celle concave con gate di
   **severità massima**: si accetta solo se NO/skew massimi non peggiorano)
@@ -77,22 +82,34 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
   `startFace` corrotto al round 2 che faceva SEGFAULTare checkMesh).
   Misurato con checkMesh reale: **valvola piramidi 340 → 46** (errori NO
   10 → 1), venturi 224 → 110; sul venturi la barra PASS non è raggiungibile
-  con merge/smoothing (la gola concava è sottorisolita a monte) → tutto
-  opt-in, default byte-identico, corpus invariato (slot1 protetto dal gate
-  di severità). La guardia anti-skew dello smoother resta opt-in (baratta
-  NO per skew).
+  con merge/smoothing — la causa è **topologica** (il dual a una cella per
+  vertice di bordo non può essere convesso attraverso la piega concava
+  della gola; provato: nemmeno con input 8.6× più fine cambia), quindi
+  tutto opt-in, default byte-identico, corpus invariato (slot1 protetto
+  dal gate di severità). La guardia anti-skew dello smoother resta opt-in
+  (baratta NO per skew).
 - **BL multi-layer "consuming" - ORA DEFAULT**: il motore BL può
   consumare strati di celle dual (rilocazione armonica limitata dei
   vertici interni + guardia anti-inversione per-edge + guardia sliver
   core), così lo stack completo entra anche dove la prima cella è
   sottile. **Verificato sul tubo reale**: da **1 a 6 layer** su 100% delle
   facce, primo strato = richiesto (y+ vero), checkMesh PASS (NO 56.75 vs
-  60.50). Sui dual **sliver-heavy** (≥0.5% facce base sliver) il consumo
-  si **auto-disabilita** e il risultato resta identico al comportamento
-  storico (venturi: ON == OFF byte-identico, metriche baseline) — niente
-  regressioni. Per forzare il vecchio comportamento:
+  60.50). Per forzare il vecchio comportamento:
   `POLYFOAMMESH_BL_CONSUME=0`. **Nota**: l'aspect ratio delle celle core
   adiacenti allo stack cresce (checkMesh accetta, 103 sul tubo).
+- **BL multi-layer anche sulle geometrie complesse (venturi)**: sui dual
+  con facce sliver il consumo non si spegne più globalmente — le facce
+  **sliver-affected** (bordo sliver, vertice in cella sliver, +2 anelli
+  di adiacenza) vengono **escluse dall'estrusione** (0 layer lì, celle
+  pinned nel reflow: niente prismi torti) e lo stack completo gira sul
+  muro sano. I **cappucci inlet/outlet** sono esclusi geometricamente
+  (normale allineata all'asse di flusso + piano al bbox estremo + patch
+  planare ≥4 facce, + anello rim): non sono pareti. **Verificato sul
+  venturi reale** (checkMesh reale, dual dal backup): 43.782 prismi,
+  mediana **6 layer** sul 60.7% del muro (tutto il sano), primo strato
+  = richiesto, e checkMesh **migliore del baseline dual-only**: pyramids
+  **199 < 224**, aspect max **209 OK** (erano 3182), NO/skew/neg
+  identici. Tubo e corpus bit-identici.
 - **Dual: input misto tet+prismi con stitching esatto**: il convertitore
   ora accetta mesh di input con prismi (da qualunque sorgente), li
   preserva verbatim nel polyMesh finale e cuce l'interfaccia al core

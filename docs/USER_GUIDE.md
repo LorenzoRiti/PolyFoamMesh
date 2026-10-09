@@ -195,6 +195,11 @@ Boundary layers are inserted by the poly mesher (CFD Poly path). In the
 - **Robust boundary layer (recommended)**: drops sliver base faces and lets
   the engine cap the stack to what the mesh can actually hold. Use it for
   real parts.
+- **Complex geometry**: the engine builds the full stack on the healthy
+  wall and automatically leaves out the faces it cannot grow from -
+  sliver faces and the inlet/outlet caps (which are not walls). The log
+  reports how many faces were excluded; the layers on the rest are the
+  requested ones.
 - **Everything is automatic**: enabling the boundary layer computes the
   layers from the flow conditions on the spot, and the values update
   themselves when you change Velocity / Fluid / Wall treatment. Edit the
