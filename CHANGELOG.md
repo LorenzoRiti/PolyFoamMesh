@@ -9,6 +9,13 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Aggiunto
 
+- **Export diretto OpenFOAM** (menu Export Mesh → "OpenFOAM Case
+  Folder..."): copia la case in una cartella scelta, **senza** i
+  requisiti dell'export BaramFlow (che rifiuta le case con i campi 0/
+  incompleti). Esporta mesh + system + campi se presenti: basta per
+  lanciarla direttamente in OpenFOAM (WSL/Linux: `foamRun`,
+  `simpleFoam`). Gli artefatti rigenerabili e pesanti restano fuori
+  (processor*, VTK_view, mesh.msh, backup tet).
 - **Manuale utente completo in inglese** (`docs/USER_GUIDE.md`), riscritto
   per la UI corrente: workflow, viewer, boundary layer (con lettura del
   log), refinement, temi e troubleshooting.
