@@ -1,311 +1,310 @@
-# Fix del mesher automatico — stato e continuazione
+# Automatic mesher fix — state and continuation
 
-Contesto: l'utente ha segnalato che il mesher automatico (percorso
-"Polymesh"/GMSH, quello che "Automatic" seleziona di default dopo il rebrand
-di Reasonix in `839b020`) rifinisce "a caso" — anche in geometrie dove non
-dovrebbe, e anche quando l'utente pensa di non aver selezionato nulla di
-automatico. Ha chiesto: 1) un vero interruttore ON/OFF, 2) che ON funzioni
-bene (rifinisce solo dove serve: curvature, spigoli, strettoie).
+Context: the user reported that the automatic mesher (the
+"Polymesh"/GMSH path, the one "Automatic" selects by default after Reasonix's
+rebrand in `839b020`) refines "randomly" — even in geometries where it
+should not, and even when the user thinks they have not selected anything
+automatic. They asked for: 1) a real ON/OFF switch, 2) that ON works
+well (refines only where needed: curvature, edges, constrictions).
 
-## Diagnosi (confermata da tre fonti indipendenti)
+## Diagnosis (confirmed by three independent sources)
 
-1. **Il codice**: `src/cfmesh_autogui/gui/params_panel.py`, il checkbox
-   `_adaptive_sizing_check` era `setVisible(False)` + `setChecked(False)` +
-   commento "Superseded by the Mesh Fineness slider" — **morto**. In
-   `main_window.py:_start_gmsh_volume_worker` la condizione era
-   `if adaptive or max_cells_target > 0:` e `max_cells_target` (derivato
-   dallo slider Mesh Fineness) **non è mai zero** (`_slider_to_cells` mappa
-   0..20 su 10K..20M) → il percorso adattivo partiva SEMPRE, il checkbox
-   era irraggiungibile. Non esisteva alcun modo di ottenere sizing
-   manuale/uniforme dalla GUI.
-2. **La documentazione ufficiale GMSH**: "When mesh element sizes are fully
+1. **The code**: `src/cfmesh_autogui/gui/params_panel.py`, the checkbox
+   `_adaptive_sizing_check` was `setVisible(False)` + `setChecked(False)` +
+   the comment "Superseded by the Mesh Fineness slider" — **dead**. In
+   `main_window.py:_start_gmsh_volume_worker` the condition was
+   `if adaptive or max_cells_target > 0:` and `max_cells_target` (derived
+   from the Mesh Fineness slider) **is never zero** (`_slider_to_cells` maps
+   0..20 to 10K..20M) → the adaptive path started ALWAYS, the checkbox
+   was unreachable. There was no way to get manual/uniform sizing
+   from the GUI.
+2. **The official GMSH documentation**: "When mesh element sizes are fully
    specified by a mesh size field, it is often desirable to set
    `MeshSizeFromPoints = 0; MeshSizeFromCurvature = 0;
-   MeshSizeExtendFromBoundary = 0` to prevent over-refinement." Il codice
-   faceva l'esatto contrario: `_configure_adaptive_sizing` in
-   `gmsh_wrapper.py` costruiva field espliciti e ben progettati (Distance/
-   Threshold sulle curve piccole, Ball sulle strettoie, un campo di
-   curvatura a-priori bounded via `setSizeCallback`) e POI lasciava ATTIVO
-   anche il motore di curvatura nativo di GMSH (`MeshSizeFromCurvature=1`),
-   che non ha idea di quali feature curve contino per la CFD — chiede N
-   elementi per cerchio OVUNQUE, limitato solo dal
-   `CharacteristicLengthMin` GLOBALE. Una feature genuinamente piccola in
-   un punto del CAD (uno smusso di fabbricazione da 0.25mm su una valvola
-   da 3m) abbassa quel minimo globale, e il motore nativo lo applica poi a
-   OGNI superficie curva del pezzo, indipendentemente dalla rilevanza. Il
-   callback del campo di curvatura fatto bene (`min(lc, target)`) non può
-   proteggersene: `min()` prende sempre il valore più fine, quindi il
-   motore nativo (senza limite) vince sempre sul nostro campo bounded.
-3. **Pratica commerciale** (Pointwise, ANSYS Fluent Meshing, cfMesh):
-   "curvature-based" + "proximity/gap-based" local sizing sono i due
-   ingredienti standard — che il codice AVEVA GIÀ (rilevamento curve
-   piccole in `_scan_feature_sizes`, rilevamento gap in
-   `_detect_surface_gaps`), solo annegati dal motore nativo sopra.
+   MeshSizeExtendFromBoundary = 0` to prevent over-refinement." The code
+   did the exact opposite: `_configure_adaptive_sizing` in
+   `gmsh_wrapper.py` built explicit, well-designed fields (Distance/
+   Threshold on small curves, Ball on constrictions, an a-priori bounded
+   curvature field via `setSizeCallback`) and THEN left ACTIVE
+   also GMSH's native curvature engine (`MeshSizeFromCurvature=1`),
+   which has no idea which curve features matter for CFD — it requests N
+   elements per circle EVERYWHERE, limited only by the GLOBAL
+   `CharacteristicLengthMin`. A genuinely small feature in
+   one spot of the CAD (a manufacturing fillet of 0.25mm on a 3m valve)
+   lowers that global minimum, and the native engine then applies it to
+   EVERY curved surface of the part, regardless of relevance. The
+   properly made curvature-field callback (`min(lc, target)`) cannot
+   protect itself: `min()` always takes the finer value, so the
+   native engine (without a limit) always wins over our bounded field.
+3. **Commercial practice** (Pointwise, ANSYS Fluent Meshing, cfMesh):
+   "curvature-based" + "proximity/gap-based" local sizing are the two
+   standard ingredients — which the code ALREADY HAD (small-curve
+   detection in `_scan_feature_sizes`, gap detection in
+   `_detect_surface_gaps`), only drowned by the native engine above.
 
-Un secondo difetto, minore ma reale, trovato durante l'indagine:
-`_scan_feature_sizes` classificava "piccola" la curva nel 25° percentile
-di lunghezza **relativo alle altre curve del pezzo**, senza un pavimento
-assoluto legato alla scala del pezzo. Su una geometria uniforme (un tubo
-semplice, un condotto dritto — nessuna vera struttura "corpo grande /
-smusso piccolo") il quartile più corto veniva comunque marcato "feature
-piccola" e rifinito localmente, perché un quartile più corto esiste
-sempre per costruzione statistica.
+A second defect, minor but real, found during the investigation:
+`_scan_feature_sizes` classified as "small" the curve in the 25th percentile
+of length **relative to the other curves of the part**, without an absolute
+floor tied to the part scale. On a uniform geometry (a simple tube,
+a straight duct — no real "large body / small fillet" structure) the
+shortest quartile was still marked "small feature" and refined locally,
+because a shortest quartile always exists by statistical construction.
 
-## Fix applicati (committati nel working tree, non ancora in git commit)
+## Fixes applied (committed in the working tree, not yet in a git commit)
 
-File toccati:
+Files touched:
 - `src/cfmesh_autogui/core/gmsh_wrapper.py`
-  - `_configure_adaptive_sizing`: disattivati
+  - `_configure_adaptive_sizing`: disabled
     `Mesh.CharacteristicLengthFromCurvature`, `Mesh.MeshSizeFromCurvature`,
-    `Mesh.MeshSizeFromPoints`, `Mesh.MeshSizeExtendFromBoundary` (tutti a
-    0). Il sizing ora dipende SOLO dai field espliciti (Distance/
-    Threshold/Ball + il campo di curvatura a-priori bounded). Il percorso
-    manuale/esplicito (`if user_lc:`) NON è stato toccato — lì la
-    curvatura nativa di GMSH è comportamento normale e atteso per un
-    sizing min/max senza field, non è la fonte del difetto segnalato
-    (era semplicemente irraggiungibile prima di questo fix).
-  - `_scan_feature_sizes`: aggiunto un tetto assoluto
-    `small_cutoff = min(small_cutoff, max_extent * 0.08)` — una curva è
-    "piccola" solo se lo è anche in senso assoluto rispetto al pezzo, non
-    solo relativo alle altre curve. Non altera il caso di riferimento
-    (valvola 3m/smussi 0.25mm: il quartile lì è già ben sotto l'8%).
+    `Mesh.MeshSizeFromPoints`, `Mesh.MeshSizeExtendFromBoundary` (all set to
+    0). Sizing now depends ONLY on the explicit fields (Distance/
+    Threshold/Ball + the a-priori bounded curvature field). The
+    manual/explicit path (`if user_lc:`) was NOT touched — there
+    GMSH's native curvature is normal, expected behavior for a
+    min/max sizing without fields, and is not the source of the reported
+    defect (it was simply unreachable before this fix).
+  - `_scan_feature_sizes`: added an absolute cap
+    `small_cutoff = min(small_cutoff, max_extent * 0.08)` — a curve is
+    "small" only if it is also small in an absolute sense relative to the part, not
+    only relative to the other curves. Does not alter the reference case
+    (valve 3m/fillets 0.25mm: the quartile there is already well below 8%).
 - `src/cfmesh_autogui/gui/params_panel.py`
-  - Il checkbox è ora **visibile**, nella tab "Mesh" sotto lo slider Mesh
-    Fineness (non più sepolto in Advanced), **checked di default** (ON =
-    consigliato), con tooltip che spiega ON/OFF in italiano.
-  - Rimosso il secondo checkbox morto in Advanced che sovrascriveva quello
-    vero con uno nascosto (bug di duplicazione trovato durante il fix).
-  - `_on_adaptive_sizing_toggled` ora rende `_max_cell`/`_min_cell`
-    (scheda Advanced) **davvero editabili** quando OFF, non solo grigi
-    cosmeticamente — prima erano sempre read-only e ignorati comunque.
+  - The checkbox is now **visible**, in the "Mesh" tab under the Mesh
+    Fineness slider (no longer buried in Advanced), **checked by default** (ON =
+    recommended), with a tooltip explaining ON/OFF in Italian.
+  - Removed the second dead checkbox in Advanced that overrode the real
+    one with a hidden one (duplication bug found during the fix).
+  - `_on_adaptive_sizing_toggled` now makes `_max_cell`/`_min_cell`
+    (Advanced tab) **actually editable** when OFF, not just cosmetically
+    greyed out — before they were always read-only and ignored anyway.
 - `src/cfmesh_autogui/gui/main_window.py`
-  - `_start_gmsh_volume_worker`: la condizione ora è `if adaptive:` (letta
-    dal vero stato del checkbox), non più `if adaptive or
-    max_cells_target > 0:`. `max_cells_target` viene passato al worker
-    SOLO quando adattivo è ON (nel percorso manuale non serve e non viene
-    letto da `generate_volume_mesh`).
+  - `_start_gmsh_volume_worker`: the condition is now `if adaptive:` (read
+    from the real checkbox state), no longer `if adaptive or
+    max_cells_target > 0:`. `max_cells_target` is passed to the worker
+    ONLY when adaptive is ON (on the manual path it is not needed and is not
+    read by `generate_volume_mesh`).
 
-Test nuovi (tutti verdi, nessuna dipendenza WSL/GMSH reale):
-- `tests/test_adaptive_sizing_curvature.py` — 5 test: il motore nativo di
-  curvatura è disattivato nel percorso adattivo (con e senza il campo
-  a-priori); i limiti min/max restano impostati; una geometria uniforme
-  non marca curve come "piccole"; una feature genuinamente piccola resta
-  marcata correttamente.
-- `tests/test_slider_cell_sizing.py` — 2 test aggiunti: il checkbox è
-  reale/visibile/ON di default; OFF rende Max/Min Cell Size editabili e
-  ON li rimette read-only.
+New tests (all green, no WSL/GMSH-real dependency):
+- `tests/test_adaptive_sizing_curvature.py` — 5 tests: the native curvature
+  engine is disabled on the adaptive path (with and without the a-priori
+  field); the min/max limits stay set; a uniform geometry
+  does not mark curves as "small"; a genuinely small feature stays
+  correctly marked.
+- `tests/test_slider_cell_sizing.py` — 2 tests added: the checkbox is
+  real/visible/ON by default; OFF makes Max/Min Cell Size editable and
+  ON puts them back read-only.
 
-Verificato: `pytest tests/test_adaptive_sizing_curvature.py
-tests/test_slider_cell_sizing.py -q` → 13/13 verdi.
-`python -m py_compile` / `ast.parse` su tutti e tre i file GUI/core
-toccati → nessun errore di sintassi.
+Verified: `pytest tests/test_adaptive_sizing_curvature.py
+tests/test_slider_cell_sizing.py -q` → 13/13 green.
+`python -m py_compile` / `ast.parse` on all three touched GUI/core
+files → no syntax errors.
 
-## Secondo fix (dopo screenshot utente con Polymesh su una staffa piegata)
+## Second fix (after a user screenshot with Polymesh on a bent bracket)
 
-L'utente ha rilanciato l'app con i fix sopra e ha mostrato uno screenshot:
-mesh Poly, `checkMesh` **PASS** con numeri oggettivamente buoni (skew 3.10,
-non-ortho 53.8 — migliori della media documentata in questo progetto),
-39.276 celle da 306.759 tet (rapporto ~7.8×, coerente col duale
-baricentrico), conteggio quasi identico alla stima geometrica (~39K). Il
-budget quindi NON stava esplodendo — ma visivamente la mesh sulla
-superficie appariva uniformemente "grezza/granulosa" ovunque, senza un
-gradiente visibile fine-vicino-alla-piega / grossa-nel-piano-piatto.
+The user relaunched the app with the fixes above and showed a screenshot:
+Poly mesh, `checkMesh` **PASS** with objectively good numbers (skew 3.10,
+non-ortho 53.8 — better than the average documented in this project),
+39,276 cells from 306,759 tet (ratio ~7.8×, consistent with the barycentric
+dual), count almost identical to the geometric estimate (~39K). The
+budget therefore was NOT exploding — but visually the mesh on the
+surface appeared uniformly "rough/grainy" everywhere, without a
+visible gradient fine-near-the-bend / coarse-in-the-flat-plane.
 
-Causa trovata (secondo bug reale, indipendente dal primo):
-`DistMax` del campo Threshold sulle curve piccole era
-`max(small_cutoff * 20, min_size * 40)`, **senza alcun tetto assoluto**.
-Con il tetto dell'8% di `max_extent` già applicato a `small_cutoff` (primo
-fix), il caso peggiore dava `DistMax = max_extent * 1.6` — **più grande
-dell'intero pezzo**. `DistMax` è il raggio entro cui il campo "risale" da
-fine a `coarse_max`: se supera le dimensioni del pezzo, la rampa non
-completa MAI, e tutto il pezzo resta dentro la zona "ancora fine" — da qui
-l'assenza di gradiente visibile, anche con un conteggio celle totale
-corretto.
+Cause found (second real bug, independent of the first):
+`DistMax` of the Threshold field on small curves was
+`max(small_cutoff * 20, min_size * 40)`, **without any absolute cap**.
+With the 8% cap of `max_extent` already applied to `small_cutoff` (first
+fix), the worst case gave `DistMax = max_extent * 1.6` — **larger
+than the entire part**. `DistMax` is the radius within which the field "ramps up" from
+fine to `coarse_max`: if it exceeds the dimensions of the part, the ramp never
+completes, and the whole part stays inside the "still fine" zone — hence
+the absence of a visible gradient, even with a correct total cell
+count.
 
 Fix: `dist_max = min(max(small_cutoff*20, min_size*40), max_extent*0.15)`
-— la zona di influenza resta un vicinato genuinamente locale (15% del
-pezzo), non può più ingoiare l'intera geometria. Non tocca il caso di
-riferimento (valvola 3m/smussi 0.25mm: lì il valore naturale è già ben
-sotto 0.45m).
+— the influence zone stays a genuinely local neighborhood (15% of the
+part), it can no longer swallow the entire geometry. Does not touch the
+reference case (valve 3m/fillets 0.25mm: there the natural value is already well
+below 0.45m).
 
-**Bug collaterale trovato applicando questo cap**: `DistMin` (calcolato
-come `max(small_cutoff*2, min_size*4)`) può arrivare a `max_extent*0.16`
-nello stesso caso limite — **più grande** del nuovo tetto di `DistMax`
-(`max_extent*0.15`), il che invertirebbe i due parametri del campo
-(DistMin > DistMax, non valido). Aggiunto `dist_min = min(dist_min,
-dist_max * 0.5)` per garantire l'ordine corretto in ogni caso.
+**Collateral bug found while applying this cap**: `DistMin` (computed
+as `max(small_cutoff*2, min_size*4)`) can reach `max_extent*0.16` in the
+same limiting case — **larger** than the new `DistMax` cap
+(`max_extent*0.15`), which would invert the two field parameters
+(DistMin > DistMax, invalid). Added `dist_min = min(dist_min,
+dist_max * 0.5)` to guarantee the correct order in every case.
 
-Test aggiunti in `tests/test_adaptive_sizing_curvature.py`
+Tests added in `tests/test_adaptive_sizing_curvature.py`
 (`test_dist_max_never_exceeds_a_local_neighbourhood_of_the_part`):
-verifica che `DistMax <= max_extent*0.15` e `DistMin < DistMax` nel caso
-limite (small_cutoff al tetto). 6/6 verdi insieme agli altri test del
-primo fix (totale 14/14 con `test_slider_cell_sizing.py`).
+verifies that `DistMax <= max_extent*0.15` and `DistMin < DistMax` in the
+limiting case (small_cutoff at the cap). 6/6 green together with the other tests of the
+first fix (total 14/14 with `test_slider_cell_sizing.py`).
 
-**Non ancora verificato**: se questo secondo fix risolve DAVVERO
-l'aspetto visivo lamentato dall'utente — serve un nuovo run sulla stessa
-geometria (la staffa piegata dello screenshot) per vedere se ora compare
-un gradiente visibile (fine solo vicino alla piega, grosso nei pannelli
-piatti). Non ho il file CAD per riprodurlo autonomamente. **Se il
-problema persiste dopo questo fix**, il prossimo sospetto è la regola
-"cells_across" (sizing del bulk dalla sezione trasversale, non dalle
-feature locali) — chiedere il log completo (`Show Log` nell'app, riga
+**Not yet verified**: whether this second fix REALLY solves
+the visual appearance complained about by the user — a new run on the same
+geometry (the bent bracket from the screenshot) is needed to see whether a
+visible gradient now appears (fine only near the bend, coarse in the flat
+panels). I do not have the CAD file to reproduce it autonomously. **If the
+problem persists after this fix**, the next suspect is the
+"cells_across" rule (bulk sizing from the cross-section, not from
+local features) — ask for the full log (`Show Log` in the app, line
 `Adaptive sizing: min=... max=... small_curves=.../... gaps=...
-surfaces=...`) per avere i numeri reali invece di ipotizzare.
+surfaces=...`) to have the real numbers instead of hypothesizing.
 
-## Terzo fix — il viewer, non il mesher (probabile causa reale dello screenshot)
+## Third fix — the viewer, not the mesher (probable real cause of the screenshot)
 
-L'utente ha chiesto esplicitamente: "la mesh vorrei vederla come surface
-with edges però senza dentro i tetra, solo i poly visibili". Controllando
-`src/cfmesh_autogui/gui/viewer_widget.py` ho trovato che **sia** "Volume
-Mesh" **sia** "Surface + Edges" caricavano lo STESSO `internal.vtu`
-(l'intero volume) e lo disegnavano con `style="wireframe"` su TUTTE le
-celle — non solo il bordo esterno. Guardando il mesh da fuori, si vedono
-sovrapposti in proiezione schermo gli spigoli interni di TUTTE le celle
-del volume (nel caso dello screenshot, 39.276 celle) — questo produce
-esattamente l'effetto "rumore/grana" visto nello screenshot,
-**indipendentemente da quanto sia ben graduata la mesh**. È molto
-probabile che questo, non i due fix precedenti sul sizing, sia la causa
-reale di quanto lamentato — una mesh perfettamente graduata (fine solo
-vicino alla piega, grossa nei pannelli piatti) avrebbe comunque
-quell'aspetto se vista con questa modalità di rendering.
+The user explicitly asked: "I would like to see the mesh as surface
+with edges but without the tet inside, only the poly visible". Checking
+`src/cfmesh_autogui/gui/viewer_widget.py` I found that **both** "Volume
+Mesh" **and** "Surface + Edges" loaded the SAME `internal.vtu`
+(the entire volume) and drew it with `style="wireframe"` on ALL
+cells — not just the outer boundary. Looking at the mesh from outside, the internal
+edges of ALL the cells of the volume appear overlaid in screen projection
+(in the screenshot's case, 39,276 cells) — this produces
+exactly the "noise/grain" effect seen in the screenshot,
+**regardless of how well graded the mesh is**. It is very
+likely that this, not the two previous sizing fixes, is the real
+cause of the complaint — a perfectly graded mesh (fine only
+near the bend, coarse in the flat panels) would still have
+that appearance if viewed with this rendering mode.
 
-Fix: nuovo metodo statico `ViewerWidget._prepare_internal_vtu_grid(grid,
-mode)` in `viewer_widget.py` — quando `mode == "surface_edges"`, applica
-`grid.extract_surface(algorithm="dataset_surface")` (il `vtkGeometryFilter`
-di VTK) PRIMA del wireframe: tiene solo le facce di bordo esterne, e le
-tiene come poligoni veri (una faccia pentagonale di una cella poly resta
-un pentagono, non viene triangolata — verificato: un pentagono/quad non
-diventa mai un triangolo). "Volume Mesh" resta invariato (esiste apposta
-per ispezionare l'interno).
+Fix: new static method `ViewerWidget._prepare_internal_vtu_grid(grid,
+mode)` in `viewer_widget.py` — when `mode == "surface_edges"`, it applies
+`grid.extract_surface(algorithm="dataset_surface")` (VTK's
+`vtkGeometryFilter`) BEFORE the wireframe: it keeps only the external boundary faces, and
+keeps them as real polygons (a pentagonal face of a poly cell stays
+a pentagon, it is not triangulated — verified: a pentagon/quad never
+becomes a triangle). "Volume Mesh" stays unchanged (it exists on purpose
+to inspect the interior).
 
-Verificato con una fixture analitica (2 esaedri unitari adiacenti,
-condividono una faccia): 2 celle volumetriche → **10** facce di bordo
-esatte (12 totali − 2 condivise, escluse correttamente), tutte quad, zero
-triangoli. `algorithm="dataset_surface"` fissato esplicitamente contro un
-FutureWarning di PyVista sul cambio di default.
+Verified with an analytic fixture (2 adjacent unit hexahedra,
+sharing one face): 2 volume cells → **10** exact boundary faces
+(12 total − 2 shared, correctly excluded), all quads, zero
+triangles. `algorithm="dataset_surface"` explicitly pinned against a
+PyVista FutureWarning about the default changing.
 
-Test: `tests/test_viewer_surface_only.py` — 3/3 verdi, nessuna dipendenza
-da dataset di esempio bundled (fixture costruita a mano, deterministica).
+Test: `tests/test_viewer_surface_only.py` — 3/3 green, no dependency
+on the bundled sample dataset (fixture built by hand, deterministic).
 
-**Non ancora verificato**: il rendering vero in GUI (serve un run reale
-con `Show Mesh` → "Surface + Edges" per confermare visivamente). La logica
-è isolata e testata, l'aspetto finale su schermo no.
+**Not yet verified**: the real rendering in the GUI (a real run is needed
+with `Show Mesh` → "Surface + Edges" to confirm visually). The logic
+is isolated and tested, the final on-screen appearance is not.
 
-## Quarto fix — il vero bug: il dispatch iniziale ignorava il menu a tendina
+## Fourth fix — the real bug: the initial dispatch ignored the drop-down menu
 
-Dopo il terzo fix (`extract_surface` + `style="surface"` per "Surface +
-Edges") l'utente ha rilanciato l'app e ha visto **ancora** i tet/celle
-interne visibili. La causa non era nel rendering che avevo appena
-corretto — era un secondo bug, indipendente, nel percorso che decide
-COSA disegnare al primo caricamento dopo il meshing:
+After the third fix (`extract_surface` + `style="surface"` for "Surface +
+Edges") the user relaunched the app and saw the internal tet/cells **still**
+visible. The cause was not in the rendering I had just
+fixed — it was a second bug, independent, in the path that decides
+WHAT to draw on the first load after meshing:
 
-- `show_mesh()` imposta il menu a tendina su "Surface + Edges"
-  (`_view_selector.setCurrentIndex(...)`, con `blockSignals(True)` per
-  evitare un doppio trigger) e poi schedula `_delayed_display_mesh()`
+- `show_mesh()` sets the drop-down menu to "Surface + Edges"
+  (`_view_selector.setCurrentIndex(...)`, with `blockSignals(True)` to
+  avoid a double trigger) and then schedules `_delayed_display_mesh()`
   via `QTimer.singleShot`.
-- `_delayed_display_mesh()` chiamava **sempre e comunque**
-  `self._display_mesh()` — la modalità "Volume Mesh" (wireframe
-  dell'intero volume interno) — **ignorando completamente** cosa il menu
-  a tendina mostrava. Il commento nel codice spiegava solo perché non si
-  usa `_on_view_changed` (per evitare un doppio avvio di foamToVTK), ma
-  la chiamata diretta era rimasta agganciata a `_display_mesh()` invece
-  che a `_display_surface_edges()` — probabilmente un residuo di una
-  versione precedente in cui "Volume Mesh" era la vista di default
-  (coerente con un vecchio commit nel log: "fix: switch viewer to Volume
-  Mesh automatically after meshing", poi il default è cambiato a
-  "Surface + Edges" senza aggiornare questo punto).
+- `_delayed_display_mesh()` called **always and regardless**
+  `self._display_mesh()` — the "Volume Mesh" mode (wireframe
+  of the entire internal volume) — **completely ignoring** what the drop-down
+  menu showed. The comment in the code explained only why it does not
+  use `_on_view_changed` (to avoid a double start of foamToVTK), but
+  the direct call had remained hooked to `_display_mesh()` instead
+  of `_display_surface_edges()` — probably a leftover of a
+  previous version in which "Volume Mesh" was the default view
+  (consistent with an old commit in the log: "fix: switch viewer to Volume
+  Mesh automatically after meshing", then the default changed to
+  "Surface + Edges" without updating this point).
 
-Risultato pratico: il menu mostrava "Surface + Edges" selezionato, ma la
-mesh EFFETTIVAMENTE disegnata era sempre il wireframe completo del
-volume — il fix precedente su `_display_surface_edges()` non aveva
-alcun effetto perché quel metodo non veniva mai chiamato in questo
-percorso.
+Practical result: the menu showed "Surface + Edges" selected, but the
+mesh EFFECTIVELY drawn was always the full wireframe of the
+volume — the previous fix on `_display_surface_edges()` had no
+effect because that method was never called on this
+path.
 
-Fix: `_delayed_display_mesh()` ora legge `_view_selector.currentIndex()`
-e dispatcha esplicitamente su `_display_surface_edges()` /
-`_display_cad()` / `_display_mesh()` di conseguenza, invece di chiamare
-sempre `_display_mesh()`.
+Fix: `_delayed_display_mesh()` now reads `_view_selector.currentIndex()`
+and dispatches explicitly to `_display_surface_edges()` /
+`_display_cad()` / `_display_mesh()` accordingly, instead of calling
+always `_display_mesh()`.
 
-**Nota tecnica**: il file `viewer_widget.py` contiene mojibake
-preesistente (em-dash UTF-8 doppiamente ri-codificati, `â€"` invece di
-`—`) in diversi commenti — non causato da questa sessione, ma ha reso
-il primo tentativo di modifica con lo strumento Edit silenzioso/fallito
-per mancata corrispondenza di stringa. Risolto scrivendo ed eseguendo
-uno script Python dedicato con newline `\r\n` espliciti (il file usa
-CRLF) invece di affidarsi al matching di stringa esatto dello strumento
-di editing. Non ho ripulito il mojibake preesistente altrove nel file
-(fuori scope).
+**Technical note**: the file `viewer_widget.py` contains pre-existing
+mojibake (UTF-8 em-dashes doubly re-encoded, `â€"` instead of
+`—`) in several comments — not caused by this session, but it made
+the first edit attempt with the Edit tool silent/failed
+due to a string mismatch. Resolved by writing and running a dedicated
+Python script with explicit `\r\n` newlines (the file uses
+CRLF) instead of relying on the edit tool's exact string
+matching. I did not clean the pre-existing mojibake elsewhere in the file
+(out of scope).
 
-Test: `tests/test_viewer_delayed_display_dispatch.py` — 4/4 verdi.
-Costruisce un `ViewerWidget` "nudo" con `ViewerWidget.__new__(...)` (non
-`object.__new__`, che PySide6/Shiboken rifiuta per le sottoclassi
-`QObject`) e verifica il dispatch corretto per ognuna delle 3 modalità
-più il caso selettore disabilitato.
+Test: `tests/test_viewer_delayed_display_dispatch.py` — 4/4 green.
+Builds a "bare" `ViewerWidget` with `ViewerWidget.__new__(...)` (not
+`object.__new__`, which PySide6/Shiboken rejects for `QObject`
+subclasses) and verifies the correct dispatch for each of the 3 modes
+plus the disabled-selector case.
 
-**Verificato con un run reale** (non mock, non WSL — GMSH vero +
-rendering VTK vero offscreen):
+**Verified with a real run** (not mock, not WSL — real GMSH +
+real offscreen VTK rendering):
 
-1. `generate_volume_mesh` su `sample_cad/cylinder_test.stl` (GMSH reale):
+1. `generate_volume_mesh` on `sample_cad/cylinder_test.stl` (real GMSH):
    `Adaptive sizing: min=0.00010 max=0.00020 small_curves=0/2 gaps=0
-   surfaces=3` → **0 curve marcate "piccole" su un cilindro semplice**,
-   conferma diretta del tetto assoluto dell'8% su geometria vera, non solo
-   sulla fixture sintetica del test. Mesh generata senza errori (11.335
-   tet a "fine", 1140 a "medium").
+   surfaces=3` → **0 curves marked "small" on a simple cylinder**,
+   direct confirmation of the 8% absolute cap on real geometry, not just
+   on the synthetic test fixture. Mesh generated without errors (11,335
+   tet at "fine", 1140 at "medium").
 2. `ViewerWidget._prepare_internal_vtu_grid` + `add_mesh(style="surface",
-   show_edges=True)` su una mesh poliedrica vera (celle a 5 facce,
-   triangoli+quad, non hex/tet) → screenshot offscreen: superficie piena
-   ombreggiata, spigoli veri visibili, **nessuna diagonale spuria di
-   triangolazione**. Confermato che 18 facce di bordo (su 6 celle
-   poliedriche, 5 facce ciascuna = 30 totali − 12 condivise) restano
-   poligoni veri (`{3, 4}` vertici, non tutte triangolate a 3).
+   show_edges=True)` on a real polyhedral mesh (5-face cells,
+   triangles+quads, not hex/tet) → offscreen screenshot: full
+   shaded surface, real edges visible, **no spurious
+   triangulation diagonal**. Confirmed that 18 boundary faces (out of 6
+   polyhedral cells, 5 faces each = 30 total − 12 shared) stay
+   real polygons (`{3, 4}` vertices, not all triangulated to 3).
 
-**Ancora non verificato**: il click-through vero della GUI desktop (non ho
-strumenti di controllo interattivo del desktop in questa sessione) — la
-verifica sopra usa gli stessi identici componenti (stesso GMSH, stesso
-metodo statico del viewer, stessa chiamata `add_mesh`) ma non un run
-dell'app impacchettata dall'utente.
+**Still not verified**: the true click-through of the desktop GUI (I have no
+interactive desktop-control tools in this session) — the verification above uses
+the exact same components (same GMSH, same
+viewer static method, same `add_mesh` call) but not a run
+of the user-packaged app.
 
-## NON fatto / verificare alla ripresa
+## NOT done / to verify on resumption
 
-1. **Suite completa non ancora conclusa**: `pytest tests/ -q -k "not
-   bench"` è stato lanciato in background (~00:50 avvio) e non ha ancora
-   prodotto output dopo diversi minuti pur consumando CPU attivamente
-   (confermato con `Get-Process`) — probabile fase di collection lenta
-   (import pesanti: gmsh, cadquery, pyvista su ~100+ file di test) più che
-   un hang. **Alla ripresa: leggere l'output di quel comando prima di
-   dichiarare qualunque cosa conclusa.** Se emergono fallimenti nei file
-   GUI (`test_bl_gui_wiring.py`, `test_mesher_buttons.py`, eventuali test
-   che leggono `_adaptive_sizing_check`/`_max_cells_target`/`_max_cell`/
-   `_min_cell` per posizione o stato precedente), sono la priorità
-   immediata da correggere prima di considerare il fix chiuso.
-2. **Percorso cfMesh (WSL)**: controllato `meshdict_gen.py` —
-   `build_object_refinements` è opt-in puro (nessuna zona = nessun
-   refinement), non sembra avere l'equivalente del motore nativo sempre
-   acceso. Non approfondito oltre per limiti di tempo; se il sintomo
-   "raffina a caso" si ripresenta anche selezionando esplicitamente
-   cfMesh (non Polymesh/Automatic), guardare lì.
-3. **Verifica visiva reale**: non è stato lanciato un mesh vero (né via
-   GUI né headless) su una geometria di test per CONFERMARE visivamente
-   che il nuovo comportamento produca una mesh sensata (rifinita solo
-   vicino a feature vere) — i test coprono la logica delle opzioni GMSH e
-   il wiring GUI, non l'esito su una mesh reale. **Prossimo passo
-   concreto**: prendere `sample_cad/` o un caso in `C:/polybench`,
-   generare con Automatic ON e OFF, confrontare visivamente/con checkMesh.
-4. **Commit**: nulla di questo è ancora stato committato (working tree
-   condiviso con Reasonix — verificare `git status`/`git diff` prima,
-   Reasonix potrebbe aver toccato `params_panel.py` di nuovo nel
-   frattempo per la Fase 2 del BL).
-5. Non ho toccato `commercial/mesh_engine.py`/`autopoly_bridge.py` — se
-   "Automatic" instrada anche lì per certe geometrie (non verificato
-   quanto in profondità copra `_resolve_auto_mesher`), potrebbe esserci
-   un terzo punto con lo stesso pattern "flag sempre-vero" da controllare.
+1. **Full suite not yet finished**: `pytest tests/ -q -k "not
+   bench"` was launched in the background (~00:50 start) and has not yet
+   produced output after several minutes while actively consuming CPU
+   (confirmed with `Get-Process`) — likely a slow collection phase
+   (heavy imports: gmsh, cadquery, pyvista on ~100+ test files) rather than
+   a hang. **On resumption: read the output of that command before
+   declaring anything finished.** If failures emerge in the GUI
+   files (`test_bl_gui_wiring.py`, `test_mesher_buttons.py`, any test
+   that reads `_adaptive_sizing_check`/`_max_cells_target`/`_max_cell`/
+   `_min_cell` by position or previous state), they are the immediate
+   priority to fix before considering the fix closed.
+2. **cfMesh (WSL) path**: checked `meshdict_gen.py` —
+   `build_object_refinements` is purely opt-in (no zone = no
+   refinement), it does not seem to have the equivalent of the always-on
+   native engine. Not investigated further due to time limits; if the symptom
+   "refines randomly" reappears even when explicitly selecting
+   cfMesh (not Polymesh/Automatic), look there.
+3. **Real visual verification**: no real mesh was launched (neither via
+   GUI nor headless) on a test geometry to visually CONFIRM
+   that the new behavior produces a sensible mesh (refined only
+   near real features) — the tests cover the logic of the GMSH options and
+   the GUI wiring, not the outcome on a real mesh. **Next concrete
+   step**: take `sample_cad/` or a case in `C:/polybench`,
+   generate with Automatic ON and OFF, compare visually/with checkMesh.
+4. **Commit**: none of this has been committed yet (working tree
+   shared with Reasonix — verify `git status`/`git diff` first,
+   Reasonix may have touched `params_panel.py` again in the
+   meantime for BL Phase 2).
+5. I did not touch `commercial/mesh_engine.py`/`autopoly_bridge.py` — if
+   "Automatic" also routes there for certain geometries (not verified
+   how deeply it covers `_resolve_auto_mesher`), there could be
+   a third point with the same "always-true flag" pattern to check.
 
-## Come riprendere
+## How to resume
 
 ```
 cd "C:\Users\Davide Valoroso\cfmesh-autogui"
-git status --short   # cosa è mio, cosa è di Reasonix, prima di toccare altro
-# leggere l'esito della suite completa (se il processo bash è ancora vivo,
-# aspettare la notifica; altrimenti rilanciare):
+git status --short   # what is mine, what is Reasonix's, before touching anything else
+# read the outcome of the full suite (if the bash process is still alive,
+# wait for the notification; otherwise relaunch):
 "/c/Users/Davide Valoroso/AppData/Local/Programs/Python/Python311/python.exe" -m pytest tests/ -q -k "not bench" --tb=short
 ```

@@ -518,7 +518,7 @@ unchanged, no passing row starts failing.
 ```powershell
 $env:PATH = "$env:LOCALAPPDATA\Programs\Python\Python311;$env:PATH"
 git add -f benchmarks/results/comparison_<ts>.json
-git commit -m "bench: B-side poly star dissolution on gap rows (locale)"
+git commit -m "bench: B-side poly star dissolution on gap rows (local)"
 ```
 
 ---

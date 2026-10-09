@@ -1,65 +1,65 @@
-# Buglog e note fuori-lane / decisioni trasversali
+# Buglog and out-of-lane notes / cross-cutting decisions
 
-Trovare un problema fuori dalla propria lane? Annotalo qui con file+riga e
-una riga di descrizione. Non sistemarlo "già che ci sei".
+Found a problem outside your lane? Note it here with file+line and
+one line of description. Do not fix it "while you're at it".
 
-## [2026-09-08] Lane F — misure di igiene repo (clone size)
+## [2026-09-08] Lane F — repo hygiene measurements (clone size)
 
-Clone del repo pubblico, oggetti raggiungibili (misurato via
+Clone of the public repo, reachable objects (measured via
 `git rev-list --objects` + `cat-file --batch-check`):
 
-- `origin/master` (il branch nuovo con il rename): **98.1 MB** —
-  `.py` 43 MB (storia normale, ~300 commit), `.npz` 27.3 MB
-  (`tests/fixtures/valve_dual.npz`, unico fixture grande tracciato),
-  `.log` 12.3 MB + `.exe` 11.3 MB = **~23 MB di junk storico NON più nel
-  tree** (`.opencode/opencode-loop/loop.log`, `tools/innosetup/*.exe`).
-- `origin/main` (default pubblico, NON toccato dal rewrite): **37.0 MB**,
-  contiene ancora `src/cfmesh_autogui/` (vecchio nome).
+- `origin/master` (the new branch with the rename): **98.1 MB** —
+  `.py` 43 MB (normal history, ~300 commits), `.npz` 27.3 MB
+  (`tests/fixtures/valve_dual.npz`, the only large tracked fixture),
+  `.log` 12.3 MB + `.exe` 11.3 MB = **~23 MB of historical junk NO longer in
+  the tree** (`.opencode/opencode-loop/loop.log`, `tools/innosetup/*.exe`).
+- `origin/main` (public default, NOT touched by the rewrite): **37.0 MB**,
+  still contains `src/cfmesh_autogui/` (old name).
 
-Decisioni:
+Decisions:
 
-- **`valve_dual.npz` resta tracciato.** È sotto il limite GitHub (100 MB),
-  i test che lo usano sono `@pytest.mark.slow` (saltati in CI) e lo
-  rigenerano via `tools/poly_fixture_builder.py --regression-fixture`.
-  Passarlo a Git LFS richiederebbe `git lfs migrate` = riscrittura storia
-  + force-push sul pubblico = **decisione dell'utente, non presa qui**
-  (vedi regole MEGA_PLAN: mai force-push senza conferma esplicita).
-- **Junk storico (~23 MB)**: i blob `.log`/`.exe` non tracciati nel tree
-  gonfiano ogni clone ma rimuoverli richiede riscrittura storia +
-  force-push. **Annotato per decisione utente**, non toccato.
-- `.gitignore`: deduplicate le voci `dist/` / `build/` (erano 2x).
-- `tools/bench_*.py`: **tutti mantenuti** (commit 2026-09-08, import
-  `polyfoammesh` puliti, `bench_bl_poly_partial.py` è il gate della Lane B)
-  → nessuna cancellazione.
+- **`valve_dual.npz` stays tracked.** It is under the GitHub limit (100 MB),
+  the tests that use it are `@pytest.mark.slow` (skipped in CI) and it is
+  regenerated via `tools/poly_fixture_builder.py --regression-fixture`.
+  Moving it to Git LFS would require `git lfs migrate` = history rewrite
+  + force-push on the public repo = **user decision, not made here**
+  (see MEGA_PLAN rules: never force-push without explicit confirmation).
+- **Historical junk (~23 MB)**: the `.log`/`.exe` blobs not tracked in the tree
+  bloat every clone but removing them requires a history rewrite +
+  force-push. **Noted for user decision**, not touched.
+- `.gitignore`: deduplicated the `dist/` / `build/` entries (they were 2x).
+- `tools/bench_*.py`: **all kept** (commit 2026-09-08, `polyfoammesh`
+  imports clean, `bench_bl_poly_partial.py` is the Lane B gate)
+  → no deletions.
 
-## [2026-09-08] FUORI LANE — default branch pubblico = codice vecchio
+## [2026-09-08] OUT OF LANE — public default branch = old code
 
-`origin/main` (default del repo pubblico) contiene ancora
-`src/cfmesh_autogui/` (pre-rename). Il codice nuovo e rinominato vive su
-`master` (`origin/master`). Implicazione per la Lane G: un visitatore del
-repo vede `main` come default → nome vecchio. **Decisione trasversale per
-l'utente**: portare il default branch su `master` (o unire) prima/dopo la
-release. Non toccato da nessuna lane per evitare conflitti.
+`origin/main` (default of the public repo) still contains
+`src/cfmesh_autogui/` (pre-rename). The new, renamed code lives on
+`master` (`origin/master`). Implication for Lane G: a visitor of the
+repo sees `main` as default → old name. **Cross-cutting decision for
+the user**: move the default branch to `master` (or merge) before/after the
+release. Not touched by any lane to avoid conflicts.
 
-## [2026-09-08] FUORI LANE — README.md:151 claim obsoleto
+## [2026-09-08] OUT OF LANE — README.md:151 stale claim
 
-`README.md:151` afferma `dist/PolyFoamMesh.exe` ma l'artefatto reale nel
-working copy è `dist/CFMesh-AutoGUI/` (build pre-rename, non tracciata).
-README è il file più conteso (regole MEGA_PLAN): non toccato, annotato qui
-per l'utente.
+`README.md:151` claims `dist/PolyFoamMesh.exe` but the real artifact in the
+working copy is `dist/CFMesh-AutoGUI/` (pre-rename build, not tracked).
+README is the most contended file (MEGA_PLAN rules): not touched, noted here
+for the user.
 
-## [2026-09-09] FUORI LANE — read_label_list: binario scambiato per ASCII
+## [2026-09-09] OUT OF LANE — read_label_list: binary mistaken for ASCII
 
-Trovato durante la FASE 2 (gate salute Lane B), **risolto sul posto** perché
-bloccava la verifica: `core/foam_mesh_io.py::read_label_list` usava
-`b")" in probe` come prova di ASCII; un payload binario OpenFOAM con un byte
-0x29 nei primi 64 byte (indice cella 41/296/10537...) passava per ASCII, il
-parser per-linea restituiva una lista VUOTA e `_rename_cylinder_patches`
-riscriveva il polyMesh con `neighbour 0` →dual conversion fallita a monte.
-Riprodotto al 100% su un `neighbour` reale di gmshToFoam (404 KB binari →
-0 elementi). Fix: ASCII solo se TUTTI i byte del probe sono
+Found during PHASE 2 (Lane B health gate), **fixed in place** because
+it blocked verification: `core/foam_mesh_io.py::read_label_list` used
+`b")" in probe` as ASCII proof; an OpenFOAM binary payload with a byte
+0x29 in the first 64 bytes (cell index 41/296/10537...) passed as ASCII, the
+per-line parser returned an EMPTY list and `_rename_cylinder_patches`
+rewrote the polyMesh with `neighbour 0` →dual conversion failed upstream.
+Reproduced 100% on a real gmshToFoam `neighbour` (404 KB binary →
+0 elements). Fix: ASCII only if ALL the probe bytes are
 `[ \t\n\r\v\f-0-9)]`. Regression:
 `tests/test_local_refinement_boxes.py::test_read_label_list_binary_payload_with_0x29_byte`.
-Nota per il futuro: gmshToFoam scrive il polyMesh in BINARY quando il
-controlDict del case ha `writeFormat binary` (lo skeleton del bench lo ha);
-i reader gestiscono entrambi i formati — non assumere ASCII.
+Note for the future: gmshToFoam writes the polyMesh in BINARY when the
+case's controlDict has `writeFormat binary` (the bench skeleton does);
+the readers handle both formats — do not assume ASCII.

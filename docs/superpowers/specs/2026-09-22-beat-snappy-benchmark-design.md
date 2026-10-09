@@ -1,4 +1,4 @@
-# Design: PolyFoamMesh vs snappyHexMesh — Benchmark e Affidabilità
+# Design: PolyFoamMesh vs snappyHexMesh — Benchmark and Reliability
 
 Date: 2026-09-22
 Status: APPROVED (design sections) — awaiting spec review, then implementation plan

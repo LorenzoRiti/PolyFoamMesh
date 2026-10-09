@@ -1,61 +1,61 @@
 # Split-rounds re-measurement on the regenerated valve fixture (FASE 6 follow-up)
 
-Data: 2026-09-09. Scritto PRIMA della misura. Le voci `docs/residual_risks.md`
-§Polyhedral Conversion e `docs/dev/handoff_poly_bl_deepseek.md`
-(line 93) dicono: "split_rounds remains disabled: measured to add cost
+Date: 2026-09-09. Written BEFORE the measurement. The entries `docs/residual_risks.md`
+§Polyhedral Conversion and `docs/dev/handoff_poly_bl_deepseek.md`
+(line 93) say: "split_rounds remains disabled: measured to add cost
 without reducing defects on the reference part. Re-measure before
-enabling." La misura originale (352 vertici concavi non-migliorano)
-risale al converter pre-FASE 7 (pre-smoothing-default,
-pre-`_solve_global_windings`, pre-fixture-rigenerata). Il converter
-attuale potrebbe dare un risultato diverso: bug-fix, smoothing di
-default, e winding solver globale hanno cambiato il panorama.
+enabling." The original measurement (352 concave vertices not-improving)
+dates to the pre-FASE 7 converter (pre-smoothing-default,
+pre-`_solve_global_windings`, pre-regenerated-fixture). The current converter
+may give a different result: bug-fixes, default smoothing, and the global
+winding solver changed the landscape.
 
-## Misura
+## Measurement
 
-- `TetPolyDualConverter(case, split_rounds=N)` con N=0 (baseline) e
-  N=1 (split). Tutto il resto invariato (default del converter sul
-  tet backup della valvola in `C:/polybench/valve1`).
+- `TetPolyDualConverter(case, split_rounds=N)` with N=0 (baseline) and
+  N=1 (split). Everything else unchanged (converter defaults on the
+  valve tet backup in `C:/polybench/valve1`).
 - Output per run: `res.residual_defects`, `res.defect_breakdown`
   (pyramid / non_ortho / skew), `res.volume_before/_after/_drift`,
-  `res.time_s` (tempo della conversione).
-- Confronto A/B sui tre numeri, docstring current converter.
+  `res.time_s` (conversion time).
+- A/B comparison on the three numbers, current converter docstring.
 
-## Cosa mi aspetto
+## What I expect
 
-Il commento storico ("adds ~20s per round for nothing") fu misurato
-sul converter pre-FASE 7. Predico che la sostanza NON cambia: il
-keep-best del converter seleziona il round col minor conteggio di
-difetti, e se nessun round riduce i difetti il "miglior" è il primo
-(round 0), e i round successivi sono scartati. Cioe' in totale il
-risultato finale sara' equivalente a split_rounds=0.
+The historical comment ("adds ~20s per round for nothing") was measured
+on the pre-FASE 7 converter. I predict that the substance does NOT change: the
+converter's keep-best selects the round with the fewest
+defects, and if no round reduces the defects the "best" is the first
+(round 0), and the subsequent rounds are discarded. That is, in total the
+final result will be equivalent to split_rounds=0.
 
-Predico (numeri attesi sul fixture rigenerato, modalita' default):
-- split_rounds=0: residual_defects ~X (la fixture e' "fresh" 863/9/14.58
-  vs il vecchio 895/55/44.3; la differenza del converter recente
-  dovrebbe essere misurabile ma non eclatante);
-- split_rounds=1: residual_defects <= X (non-migliora nella storia
-  documentata; lo split del vertex star rompe la c in piu' piccole
-  che a loro volta violano il pyramid test, keep-best scarta);
-- tempo: N=1 dovra' essere piu' alto di N=0 (almeno un round
-  in piu'); la differenza sara' dell'ordine di decine di secondi
-  (piccola, su un converter di ~100s).
+I predict (expected numbers on the regenerated fixture, default mode):
+- split_rounds=0: residual_defects ~X (the fixture is "fresh" 863/9/14.58
+  vs the old 895/55/44.3; the difference of the recent converter
+  should be measurable but not striking);
+- split_rounds=1: residual_defects <= X (does not improve in the documented
+  history; the split of the vertex star breaks it into smaller pieces
+  that in turn violate the pyramid test, keep-best discards);
+- time: N=1 will have to be higher than N=0 (at least one
+  more round); the difference will be on the order of tens of seconds
+  (small, on a ~100s converter).
 
-Onestamente: 70% che la misura conferma lo status quo; 30% che
-qualcosa e' cambiato (es. il smoothing di default e il winding solver
-globale hanno cambiato il panorama e la split adesso potrebbe
-aiutare, oppure creare difetti dove prima non ne creava). In entrambi
-i casi il risultato sara' onesto.
+Honestly: 70% that the measurement confirms the status quo; 30% that
+something has changed (e.g. the default smoothing and the global winding
+solver changed the landscape and the split might now
+help, or create defects where it previously did not). In either
+case the result will be honest.
 
-## Criterio di lettura
+## Reading criterion
 
-- Se i numeri confermano (split_rounds non aiuta): documento onesto,
-  nessun cambiamento al default (split_rounds=0 resta off).
-- Se cambiano (split_rounds ora aiuta, oppure crea difetti dove
-  prima non ne creava): documento il finding, propongo l'aggiornamento
-  della nota in `docs/residual_risks.md` §Polyhedral Conversion, e in
-  un commit separato (se l'utente conferma) l'eventuale
-  abilitazione. Per questa sessione: solo misura + docs, **nessun
-  default cambiato**.
+- If the numbers confirm (split_rounds does not help): honest document,
+  no change to the default (split_rounds=0 stays off).
+- If they change (split_rounds now helps, or creates defects where
+  previously it did not): document the finding, propose updating
+  the note in `docs/residual_risks.md` §Polyhedral Conversion, and in
+  a separate commit (if the user confirms) the possible
+  enabling. For this session: only measurement + docs, **no
+  default changed**.
 
-Il working dir per la misura e' `C:/polybench2/split_rounds_rebench/`
-(per specchiarsi col pattern FASE 7/H4).
+The working dir for the measurement is `C:/polybench2/split_rounds_rebench/`
+(to mirror the FASE 7/H4 pattern).

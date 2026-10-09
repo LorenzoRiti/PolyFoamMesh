@@ -1,151 +1,151 @@
-# thin-first generalizza oltre la valvola? — Ragionamento PRIMA dei test
+# Does thin-first generalize beyond the valve? — Reasoning BEFORE the tests
 
-Data: 2026-09-09. Scritto prima di qualsiasi run di FASE 4.
-La scoperta thin-first (valvola: 9,5x meno esclusioni, +8,5% prismi,
-~5x più veloce) va verificata su cilindro, cubo duct, groove1, slot1.
+Date: 2026-09-09. Written before any FASE 4 run.
+The thin-first discovery (valve: 9.5x fewer exclusions, +8.5% prisms,
+~5x faster) must be verified on cylinder, cube duct, groove1, slot1.
 
-## Fatto da spiegare (misurato, FASE 3)
+## Fact to explain (measured, FASE 3)
 
-Sulla valvola, l'engine `_run_local_termination` con scale
-spessa→sottile [(1.0,0.5), (0.6,0.35), (0.35,0.2), (0.2,0.1), (0.1,0.05)]
-accumula 19.625 esclusioni alle scale 1.0/0.6/0.35/0.2 (le warning
-mostrano i fallimenti solo a quelle scale) e a 0.1 valida col set
-portato. Se invece si parte a 0.1 con la logica iterativa di
-produzione, in 3 round si chiude con 2.058 esclusioni (91% delle quali
-è il seed predicibile).
+On the valve, the engine `_run_local_termination` with scales
+thick→thin [(1.0,0.5), (0.6,0.35), (0.35,0.2), (0.2,0.1), (0.1,0.05)]
+accumulates 19,625 exclusions at scales 1.0/0.6/0.35/0.2 (the warnings
+show the failures only at those scales) and at 0.1 it validates with the carried
+set. If instead one starts at 0.1 with the production iterative logic,
+in 3 rounds it closes with 2,058 exclusions (91% of which
+is the predictable seed).
 
-Domanda: è un comportamento specifico della valvola (unica geometria
-con difetti input gravi) o generalizza?
+Question: is it a behavior specific to the valve (the only geometry
+with severe input defects) or does it generalize?
 
-## Meccanica che sospetto
+## Mechanics I suspect
 
-In `_run_local_termination` ogni round di una scala più spessa di
-un'altra, a parità di difetti geometrici, è PIÙ PERMISSIVO sui
-prismi: altezze più grandi producono meno volume negativo e meno
-pyramid violations per prisma, ma possono nascondere
-whack-a-mole — la faccia esclusa apre un difetto al suo bordo
-(perimetro del dropped region), che viene "risolto" solo al
-prossimo tentativo. A scala più sottile, ogni difetto che affiora
-resta affiorante e l'esclusione è più chirurgica.
+In `_run_local_termination` each round of a scale thicker than
+another, with the same geometric defects, is MORE PERMISSIVE on the
+prisms: larger heights produce less negative volume and fewer
+pyramid violations per prism, but they can hide
+whack-a-mole — the excluded face opens a defect at its edge
+(perimeter of the dropped region), which is "resolved" only at the
+next attempt. At a thinner scale, each defect that surfaces
+stays surfaced and the exclusion is more surgical.
 
-Dalla sezione `zero_concave` di `_build`: una faccia è scartata se
-(bi in drop_bnd) OR (any vertex fade<0.5) OR (max_h<=0). Il seed è
-deterministico da `pre`. La parte iterativa copre le facce che
-"appartengono" a celle core con difetti nelle facce nuove o prismi
-invertiti.
+From the `zero_concave` section of `_build`: a face is discarded if
+(bi in drop_bnd) OR (any vertex fade<0.5) OR (max_h<=0). The seed is
+deterministic from `pre`. The iterative part covers the faces that
+"belong" to core cells with defects in the new faces or inverted
+prisms.
 
-## Previsioni
+## Predictions
 
-### Cilindro (dual 10.618 celle, n_bnd 24.936, pyr=0, low_fade=0)
+### Cylinder (dual 10,618 cells, n_bnd 24,936, pyr=0, low_fade=0)
 
-- `_build` su cilindro: tutti i vertici hanno fade=1 (smooth), max_h
-  ampio; nessun drop_bnd; nessun low-fade.
-- Previsione: **thin-first identico a thick-first**. La prima scala che
-  esegue è round 0 → validate → scritta. Identici in tempo, prisms,
-  metriche. Vantaggio = 0.
+- `_build` on cylinder: all vertices have fade=1 (smooth), max_h
+  large; no drop_bnd; no low-fade.
+- Prediction: **thin-first identical to thick-first**. The first scale it
+  runs is round 0 → validate → written. Identical in time, prisms,
+  metrics. Advantage = 0.
 
-### Cubo duct (dual 9 celle, n_bnd 36, pyr=0, low_fade=0)
+### Cube duct (dual 9 cells, n_bnd 36, pyr=0, low_fade=0)
 
-- Previsione: **identico al thick-first** (no difetti, esce round 0).
-  Vantaggio = 0.
+- Prediction: **identical to thick-first** (no defects, exits round 0).
+  Advantage = 0.
 
-### Groove1 (dual 682 celle, n_bnd 3.372, pyr=4, low_fade=2, seed=18)
+### Groove1 (dual 682 cells, n_bnd 3,372, pyr=4, low_fade=2, seed=18)
 
-- LT thick-first ha prodotto 10.062 prismi (3 layer × 3.354 facce =
-  3.372 - 18 seed) con 0 esclusioni iterative. Scala 1.0, round 0,
+- LT thick-first produced 10,062 prisms (3 layers × 3,354 faces =
+  3,372 - 18 seed) with 0 iterative exclusions. Scale 1.0, round 0,
   validate.
-- LT thin-first inizia da 0.1: qui max_h è scalato di 0.1 (più piccolo);
-  ma fade=1 ovunque eccetto i 2 low-fade → stesso seed.
-- Previsione: **identico al thick-first** (0 esclusioni in entrambi,
-  stessa prisma count). Vantaggio = 0.
+- LT thin-first starts from 0.1: here max_h is scaled by 0.1 (smaller);
+  but fade=1 everywhere except the 2 low-fade → same seed.
+- Prediction: **identical to thick-first** (0 exclusions in both,
+  same prism count). Advantage = 0.
 
-### Slot1 (dual 9.372 celle, n_bnd 26.754, pyr=42, low_fade=17, seed=86)
+### Slot1 (dual 9,372 cells, n_bnd 26,754, pyr=42, low_fade=17, seed=86)
 
-- LT thick-first: 79.614 prismi, 216 senza BL (86 seed + 132 iterative,
+- LT thick-first: 79,614 prisms, 216 without BL (86 seed + 132 iterative,
   overlap 2), 0 negative.
-- LT thin-first inizia da 0.1: max_h ridotto di 0.1, ma fade=1 fuori dai
-  17 vertici. Possibile che la scala ridotta riveli più difetti di
-  pyramid su prismi sottili (effetto non catturato da `_validate` a
-  scala 1.0). Incertezza: pyr_input è 42, sopra la soglia.
-- Previsione: **thin-first leggermente peggiore o uguale in % esclusioni**
-  (qualche prism in più da escludere iterativamente a 0.1), ma
-  **dovrebbe comunque validare in 1-2 round** perché il seed a 0.1
-  è comunque 86 e la geometria è la stessa.
-- Se thin-first AUMENTA le esclusioni vs thick-first: è un segnale che
-  il "vantaggio valvola" non è generale ma dipende dal fatto che la
-  valvola ha 1.007 difetti input (un ordine di grandezza sopra slot1):
-  thick-first ha abbastanza "bilancio di esclusione" alle scale spesse
-  da "pagare" il costo di riparazione, mentre thin-first deve escludere
-  tutto subito a 0.1. Su slot1 con 42 difetti, lo spazio di manovra è
-  molto più piccolo.
+- LT thin-first starts from 0.1: max_h reduced by 0.1, but fade=1 outside
+  the 17 vertices. It is possible that the reduced scale reveals more
+  pyramid defects on thin prisms (an effect not captured by `_validate` at
+  scale 1.0). Uncertainty: pyr_input is 42, above the threshold.
+- Prediction: **thin-first slightly worse or equal in % exclusions**
+  (a few more prisms to exclude iteratively at 0.1), but
+  **it should still validate in 1-2 rounds** because the seed at 0.1
+  is 86 anyway and the geometry is the same.
+- If thin-first INCREASES the exclusions vs thick-first: it is a signal that
+  the "valve advantage" is not general but depends on the fact that the
+  valve has 1,007 input defects (an order of magnitude above slot1):
+  thick-first has enough "exclusion budget" at the thick scales
+  to "pay" the repair cost, while thin-first must exclude
+  everything at once at 0.1. On slot1 with 42 defects, the room for
+  manoeuvre is much smaller.
 
-## Cosa mi aspetto di vedere in totale
+## What I expect to see in total
 
-- Se thin-first = thick-first su cilindro/cubo/groove1 (zero esclusioni
-  in entrambi gli ordini) e slot1 è entro ~2x in un senso o nell'altro:
-  il "vantaggio valvola" è reale ma non generalizza come miglioramento
-  su tutti i casi — è una proprietà della valvola (grossi difetti input
-  dove lo spazio di manovra alle scale spesse è grande).
-- Predittore: in un caso con difetti input nulli o minimi, l'ordine non
-  conta (entrambi escono a round 0 scala 1.0 o 0.1 indifferentemente).
-  In un caso con difetti medi (slot1), thin-first è ≤ thick-first. Solo
-  in un caso con difetti grandi (valvola) thin-first batte thick-first.
+- If thin-first = thick-first on cylinder/cube/groove1 (zero exclusions
+  in both orders) and slot1 is within ~2x one way or the other:
+  the "valve advantage" is real but does not generalize as an improvement
+  on all cases — it is a property of the valve (large input defects
+  where the room for manoeuvre at the thick scales is large).
+- Predictor: in a case with null or minimal input defects, the order does not
+  matter (both exit at round 0 scale 1.0 or 0.1 indifferently).
+  In a case with medium defects (slot1), thin-first is ≤ thick-first. Only
+  in a case with large defects (valve) does thin-first beat thick-first.
 
-## Criterio di lettura
+## Reading criterion
 
-- thin-first ≠ thick-first sul cilindro/cubo → confido in me.
-- groove1 identico → conferma la neutralità dell'ordine su difetti minimi.
-- slot1 ≤ thick-first → conferma che il "vantaggio valvola" scala con
-  l'ampiezza dei difetti input, non è una magia.
-- slot1 > thick-first → segnale che l'inversione non è universalmente
-  positiva e che thin-first va abilitato come opzione, non come default.
+- thin-first ≠ thick-first on the cylinder/cube → trust me.
+- groove1 identical → confirms the neutrality of the order on minimal defects.
+- slot1 ≤ thick-first → confirms that the "valve advantage" scales with
+  the magnitude of the input defects, it is not magic.
+- slot1 > thick-first → signal that the inversion is not universally
+  positive and that thin-first must be enabled as an option, not as a default.
 
-# RISULTATI (compilati dopo il run, 2026-09-09)
+# RESULTS (filled in after the run, 2026-09-09)
 
-## Misure (tools/bench_bl_thinfirst.py, checkMesh reale)
+## Measurements (tools/bench_bl_thinfirst.py, real checkMesh)
 
-| Geometria | THICK (1.0→0.1) | THIN (0.1→1.0) |
+| Geometry | THICK (1.0→0.1) | THIN (0.1→1.0) |
 |---|---|---|
-| cilindro | ok, scala 1.0, 74.808 prismi, 0 escl, 17,9 s, aspect 18,3 | ok, **scala 0.1**, 74.808, 0 escl, 17,0 s, **aspect 104,3** |
-| cubo duct | ok, scala 1.0, 108, 0 escl, 0,0 s, aspect 78,7 | ok, **scala 0.1**, 108, 0 escl, 0,0 s, **aspect 781,6** |
-| groove1 | ok, scala 1.0, 10.062, 0 escl, 2,0 s, aspect 15,9 | ok, **scala 0.1**, 10.062, 0 escl, 1,9 s, **aspect 90,8** |
-| slot1 | ok, scala 1.0, 79.614, 132 escl iterative (216 totali), 36,5 s, aspect 16,7 | ok, **scala 0.1**, 80.004, **0 escl iterative** (86 totali = seed), 17,9 s, **aspect 128,5** |
+| cylinder | ok, scale 1.0, 74,808 prisms, 0 excl, 17.9 s, aspect 18.3 | ok, **scale 0.1**, 74,808, 0 excl, 17.0 s, **aspect 104.3** |
+| cube duct | ok, scale 1.0, 108, 0 excl, 0.0 s, aspect 78.7 | ok, **scale 0.1**, 108, 0 excl, 0.0 s, **aspect 781.6** |
+| groove1 | ok, scale 1.0, 10,062, 0 excl, 2.0 s, aspect 15.9 | ok, **scale 0.1**, 10,062, 0 excl, 1.9 s, **aspect 90.8** |
+| slot1 | ok, scale 1.0, 79,614, 132 iterative excl (216 total), 36.5 s, aspect 16.7 | ok, **scale 0.1**, 80,004, **0 iterative excl** (86 total = seed), 17.9 s, **aspect 128.5** |
 
-Tutte le mesh sono Mesh OK in entrambe le modalità; il thick-first
-riproduce esattamente i risultati LT di FASE 3 (patch fedele).
+All meshes are Mesh OK in both modes; thick-first
+reproduces exactly the FASE 3 LT results (faithful patch).
 
-## Il risultato vero: thin-first riduce lo spessore richiesto di 10x
+## The real result: thin-first reduces the requested thickness by 10x
 
-Su TUTTE e 4 le geometrie THIN valida al PRIMO tentativo (scala 0.1):
-l'altezza `first_height` richiesta (5e-3) viene scritta come 5e-4, in
-silenzio. Il rapporto aspect ~6-10x lo dimostra (cubo: 781,6/78,7 =
-9,93x). Stessi prismi (stesso numero di layer), stessa topologia, ma
-BL 10x più sottile del richiesto.
+On ALL 4 geometries THIN validates at the FIRST attempt (scale 0.1):
+the requested `first_height` (5e-3) is written as 5e-4, in
+silence. The aspect ratio ~6-10x proves it (cube: 781.6/78.7 =
+9.93x). Same prisms (same number of layers), same topology, but
+a BL 10x thinner than requested.
 
-I due effetti sono INTRECCIATI: il vantaggio del thin-first (evitare
-le esclusioni accumulate dalle scale spesse) esiste solo dove una scala
-spessa fallisce davvero (slot1: 0 vs 132; valvola: 2.058 vs 19.625), e
-lì è reale; ma "accetta la prima scala che valida" significa accettare
-la 0.1 anche dove la 1.0 funzionerebbe, degradando l'y+ di 10x.
+The two effects are INTERTWINED: the thin-first advantage (avoiding
+the exclusions accumulated by the thick scales) exists only where a thick
+scale actually fails (slot1: 0 vs 132; valve: 2,058 vs 19,625), and
+there it is real; but "accept the first scale that validates" means accepting
+0.1 even where 1.0 would work, degrading y+ by 10x.
 
-## Previsioni vs misure (onesto)
+## Predictions vs measurements (honest)
 
-- cilindro/cubo/groove1: previsto "identico a thick-first" — **SBAGLIATO**
-  nello spessore/scala/aspect (stessa topologia, ma scala 0.1 e aspect
-  6-10x peggiore). La meccanica ("esce al round 0") era giusta, avevo
-  mancato che il round 0 di thin-first È la scala 0.1.
-- slot1: previsto "uguale o leggermente peggiore in % esclusioni" —
-  **sbagliato in segno** (0 vs 132, quindi meglio), giusto nella
-  meccanica (valida in 1 round); mancato del tutto l'effetto spessore.
-- Il predittore FASE 3 (pyr_input) resta valido: il vantaggio compare
-  solo dove pyr_input > 0 e cresce col numero di difetti.
+- cylinder/cube/groove1: predicted "identical to thick-first" — **WRONG**
+  in thickness/scale/aspect (same topology, but scale 0.1 and aspect
+  6-10x worse). The mechanics ("exits at round 0") were right, I had
+  missed that round 0 of thin-first IS scale 0.1.
+- slot1: predicted "equal or slightly worse in % exclusions" —
+  **wrong in sign** (0 vs 132, so better), right in the
+  mechanics (validates in 1 round); missed the thickness effect entirely.
+- The FASE 3 predictor (pyr_input) remains valid: the advantage appears
+  only where pyr_input > 0 and grows with the number of defects.
 
-## Conclusione
+## Conclusion
 
-L'inversione cieca dell'ordine NON va proposta come default: su mesh
-sane viola il contratto del `first_height` richiesto. La variante da
-misurare (lavoro futuro, non implementata) è **decoupled**: prova la
-scala richiesta per prima; scendendo di scala NON portare le esclusioni
-accumulate (reset al cambio scala). Così la valvola otterrebbe ~2.058
-esclusioni come thin-first senza degradare i casi sani. Da misurare
-prima di qualsiasi proposta.
+A blind inversion of the order must NOT be proposed as default: on healthy
+meshes it violates the requested `first_height` contract. The variant to
+measure (future work, not implemented) is **decoupled**: try the
+requested scale first; when stepping down in scale do NOT carry the accumulated
+exclusions (reset at the scale change). This way the valve would obtain ~2,058
+exclusions like thin-first without degrading the healthy cases. To be measured
+before any proposal.

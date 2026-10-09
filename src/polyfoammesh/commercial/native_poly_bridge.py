@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 class NativePolyParams:
     detail_level: str = "medium"
     cell_size: float = 0.0  # 0 => auto from geometry bbox (suggest_cell_sizes)
-    # Fase 4b (docs/poly_mesher_STATO.md 6.1): graded margin band, NOT
+    # Fase 4b (docs/poly_mesher_STATUS.md 6.1): graded margin band, NOT
     # per-region refinement near the surface -- see the module note below.
     # 1.0 = uniform grid (unchanged default).
     margin_growth: float = 1.0

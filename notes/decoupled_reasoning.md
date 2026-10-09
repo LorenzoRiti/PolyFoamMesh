@@ -1,134 +1,134 @@
-# FASE 5 — variante "decoupled": previsione PRIMA dei test
+# FASE 5 — "decoupled" variant: prediction BEFORE the tests
 
-Data: 2026-09-09. Scritto prima di lanciare le misure della variante
-decoupled appena implementata nel motore
-(`run(local_termination="decoupled")`, opt-in, default invariato).
+Date: 2026-09-09. Written before launching the measurements of the variant
+just implemented in the engine
+(`run(local_termination="decoupled")`, opt-in, default unchanged).
 
-## Cosa fa la variante (implementata in `bl_poly.py`)
+## What the variant does (implemented in `bl_poly.py`)
 
-Stesso loop di `_run_local_termination` (max 3 round per scala, scale
-1.0 -> 0.6 -> 0.35 -> 0.2 -> 0.1), ma con il set di esclusioni
-AZZERATO al cambio di scala (`decoupled=True`):
-- prima si prova la scala RICHIESTA (1.0, spessore pieno);
-- se valida, la mesh esce a spessore pieno (niente degradazione 10x del
-  thin-first puro);
-- se fallisce, si scende di scala con un set di esclusioni NUOVO: le
-  esclusioni accumulate a una scala grossa non "avvelenano" le scale
-  sottili;
-- la modalità legacy `local_termination=True` (carry, default del
-  percorso opt-in) resta byte-identica: il reset scatta solo con
-  `"decoupled"`, che è esplicitamente richiesto.
-Il conteggio finale riportato da `res.stats["local_excluded_faces"]` è
-quello della scala che ha validato.
+Same loop as `_run_local_termination` (max 3 rounds per scale, scales
+1.0 -> 0.6 -> 0.35 -> 0.2 -> 0.1), but with the exclusion set
+RESET at the scale change (`decoupled=True`):
+- first it tries the REQUESTED scale (1.0, full thickness);
+- if valid, the mesh comes out at full thickness (no 10x degradation of
+  the pure thin-first);
+- if it fails, it steps down in scale with a NEW exclusion set: the
+  exclusions accumulated at a coarse scale do not "poison" the thin
+  scales;
+- the legacy mode `local_termination=True` (carry, default of the
+  opt-in path) stays byte-identical: the reset triggers only with
+  `"decoupled"`, which is explicitly requested.
+The final count reported by `res.stats["local_excluded_faces"]` is
+that of the scale that validated.
 
-## Perché dovrebbe risolvere il problema
+## Why it should solve the problem
 
-- FASE 4 ha mostrato che il thin-first puro vince in esclusioni/prismi ma
-  degrada lo spessore (valida sempre a 0.1, anche quando 1.0 andrebbe
-  bene). La causa era l'ORDINE: accettare la prima scala che valida.
-- La causa delle 19.625 esclusioni thick-first sulla valvola era il
-  TRASPORTO delle esclusioni tra scale: le scale grosse escludono facce
-  che a 0.1 sarebbero valide (whack-a-mole), e il set continua a
-  crescere. Misura FASE 3: partendo puliti a 0.1 servono 2.058
-  esclusioni.
-- Decoupled combina i due: prova 1.0 (spessore pieno); solo se fallisce
-  scende, e ogni scala ripaga solo i propri difetti.
+- FASE 4 showed that pure thin-first wins in exclusions/prisms but
+  degrades the thickness (it always validates at 0.1, even when 1.0 would be
+  fine). The cause was the ORDER: accepting the first scale that validates.
+- The cause of the 19,625 thick-first exclusions on the valve was the
+  TRANSPORT of exclusions across scales: the coarse scales exclude faces
+  that at 0.1 would be valid (whack-a-mole), and the set keeps
+  growing. FASE 3 measurement: starting clean at 0.1 needs 2,058
+  exclusions.
+- Decoupled combines the two: try 1.0 (full thickness); only if it fails
+  does it step down, and each scale repays only its own defects.
 
-## Previsioni
+## Predictions
 
-### Cilindro, cubo duct, groove1 (sani, validano a 1.0 round 0)
+### Cylinder, cube duct, groove1 (healthy, validate at 1.0 round 0)
 
-- Il reset non entra mai in gioco (successo alla prima scala, primo
+- The reset never comes into play (success at the first scale, first
   round).
-- Previsione: **identici al thick-first** in tutto: scala 1.0, stessi
-  prismi (74.808 / 108 / 10.062), 0 esclusioni, aspect max 18,3 / 78,7 /
-  15,9 (spessore pieno). Tempo identico.
+- Prediction: **identical to thick-first** in everything: scale 1.0, same
+  prisms (74,808 / 108 / 10,062), 0 exclusions, aspect max 18.3 / 78.7 /
+  15.9 (full thickness). Identical time.
 
-### Slot1 (medio, valida a 1.0 dopo 1 round di esclusioni)
+### Slot1 (medium, validates at 1.0 after 1 round of exclusions)
 
-- Anche qui il reset non entra in gioco: fallimento e successo restano
-  DENTRO la scala 1.0 (round 0 fallisce con 50 piramidi > 42 input,
-  round 1 valida dopo 132 esclusioni).
-- Previsione: **identico al thick-first**: scala 1.0, 79.614 prismi, 132
-  esclusioni iterative (216 totali), aspect 16,7, ~36 s. (Migliore del
-  thin-first sullo spessore: aspect 16,7 vs 128,5.)
+- Here too the reset does not come into play: failure and success remain
+  WITHIN scale 1.0 (round 0 fails with 50 pyramids > 42 input,
+  round 1 validates after 132 exclusions).
+- Prediction: **identical to thick-first**: scale 1.0, 79,614 prisms, 132
+  iterative exclusions (216 total), aspect 16.7, ~36 s. (Better than
+  thin-first on thickness: aspect 16.7 vs 128.5.)
 
-### Valvola (il caso che conta)
+### Valve (the case that matters)
 
-- Scala 1.0: 3 round, fallisce (come thick-first: 50 -> 6 -> 6 volumi
-  negativi), esclusioni accumulate ~2.000-4.000 DENTRO la scala 1.0;
-- scala 0.6: set azzerato, 3 round, fallisce (come thick-first: ~1.019
-  piramidi > 1.007);
-- 0.35 / 0.2: idem, falliscono con i propri set freschi;
-- scala 0.1 con set NUOVO: dovrebbe riprodurre ESATTAMENTE il run
-  thin-first (stesso codice, stesso input): 3 round, 1.946 + 112 + 0 =
-  **2.058 esclusioni iterative**, **445.716 prismi**, checkMesh
-  **885 facce male orientate** (vs 895 input), skew ~47,6, aspect max
-  ~15.419, "Failed 4".
-- Tempo previsto: ~15 build (3+3+3+3+3) x ~95-115 s = **24-30 min**
-  (nessun guadagno di tempo: le scale grosse vengono comunque tentate;
-  il guadagno sono le esclusioni, non il tempo).
-- Rischio previsto: basso. Il percorso 0.1 è deterministico e identico
-  a quello già misurato due volte (stage2e e FASE 3 thin).
-  Unica incertezza: quante esclusioni accumulano le scale grosse PRIMA
-  del reset (non influenzano il risultato finale, solo i warning).
+- Scale 1.0: 3 rounds, fails (like thick-first: 50 -> 6 -> 6 negative
+  volumes), exclusions accumulated ~2,000-4,000 WITHIN scale 1.0;
+- scale 0.6: set reset, 3 rounds, fails (like thick-first: ~1,019
+  pyramids > 1,007);
+- 0.35 / 0.2: same, they fail with their own fresh sets;
+- scale 0.1 with a NEW set: it should reproduce EXACTLY the
+  thin-first run (same code, same input): 3 rounds, 1,946 + 112 + 0 =
+  **2,058 iterative exclusions**, **445,716 prisms**, checkMesh
+  **885 wrongly oriented faces** (vs 895 input), skew ~47.6, aspect max
+  ~15,419, "Failed 4".
+- Expected time: ~15 builds (3+3+3+3+3) x ~95-115 s = **24-30 min**
+  (no time gain: the coarse scales are tried anyway;
+  the gain is the exclusions, not the time).
+- Expected risk: low. The 0.1 path is deterministic and identical
+  to the one already measured twice (stage2e and FASE 3 thin).
+  Only uncertainty: how many exclusions the coarse scales accumulate BEFORE
+  the reset (they do not affect the final result, only the warnings).
 
-## Obiettivo dell'utente e criterio di successo
+## User objective and success criterion
 
-- Valvola: ~2.058 esclusioni (non 19.625) + spessore/`scale` = 0.1
-  (nessuna alternativa lì) + checkMesh non peggiore del thin-first.
-- Casi sani: scala 1.0 piena (nessuna degradazione dello spessore).
-- Se il decoupled NON riduce le esclusioni della valvola sotto ~3.000,
-  la mia spiegazione (trasporto tra scale = causa) è sbagliata e va
-  riscritta.
-- Se i casi sani non restano a 1.0, c'è un bug nell'implementazione.
+- Valve: ~2,058 exclusions (not 19,625) + thickness/`scale` = 0.1
+  (no alternative there) + checkMesh not worse than thin-first.
+- Healthy cases: full scale 1.0 (no thickness degradation).
+- If decoupled does NOT reduce the valve exclusions below ~3,000,
+  my explanation (transport across scales = cause) is wrong and must be
+  rewritten.
+- If the healthy cases do not stay at 1.0, there is a bug in the implementation.
 
-# RISULTATI (compilati dopo il run, 2026-09-09)
+# RESULTS (filled in after the run, 2026-09-09)
 
-## Casi sani (misura, tools/bench_bl_thinfirst.py, checkMesh reale)
+## Healthy cases (measurement, tools/bench_bl_thinfirst.py, real checkMesh)
 
-| Geometria | THICK | THIN | DECOUPLED |
+| Geometry | THICK | THIN | DECOUPLED |
 |---|---|---|---|
-| cilindro | scala 1.0, 74.808, 0 escl, aspect 18,3 | scala 0.1, aspect 104,3 | **scala 1.0, 74.808, 0 escl, aspect 18,3** |
-| cubo duct | scala 1.0, 108, aspect 78,7 | scala 0.1, aspect 781,6 | **scala 1.0, 108, aspect 78,7** |
-| groove1 | scala 1.0, 10.062, aspect 15,9 | scala 0.1, aspect 90,8 | **scala 1.0, 10.062, aspect 15,9** |
-| slot1 | scala 1.0, 79.614, 132 escl, aspect 16,7 | scala 0.1, 80.004, 0 escl, aspect 128,5 | **scala 1.0, 79.614, 132 escl, aspect 16,7** |
+| cylinder | scale 1.0, 74,808, 0 excl, aspect 18.3 | scale 0.1, aspect 104.3 | **scale 1.0, 74,808, 0 excl, aspect 18.3** |
+| cube duct | scale 1.0, 108, aspect 78.7 | scale 0.1, aspect 781.6 | **scale 1.0, 108, aspect 78.7** |
+| groove1 | scale 1.0, 10,062, aspect 15.9 | scale 0.1, aspect 90.8 | **scale 1.0, 10,062, aspect 15.9** |
+| slot1 | scale 1.0, 79,614, 132 excl, aspect 16.7 | scale 0.1, 80,004, 0 excl, aspect 128.5 | **scale 1.0, 79,614, 132 excl, aspect 16.7** |
 
-DECOUPLED è identico a THICK in tutto: previsione confermata al 100%.
-Il reset non scatta mai perché il successo arriva dentro la scala 1.0.
+DECOUPLED is identical to THICK in everything: prediction confirmed 100%.
+The reset never triggers because the success comes within scale 1.0.
 
-## Valvola
+## Valve
 
-- successo a scala 0.1, **2.058 esclusioni** (previste), **445.716
-  prismi** (previsti), 3.684 facce senza BL = 1,63% (come thin-first);
-- checkMesh: 885 facce male orientate vs 895 input, "Failed 4", skew
-  47,6, aspect max 15.419, non-ortho 55 — identico al thin-first;
-- traiettoria dei warning: fallimenti a 1.0 (50→6→6 volumi negativi),
-  0.6 (42 neg → 1.037/1.020 piramidi), 0.35 (15/1 neg → 1.017), 0.2
-  (4/1 neg → 1.016), poi 0.1 fresco al terzo round (1.946+112) valida;
-- **tempo 2.215 s (37 min)**: più lento della previsione (24-30 min) e
-  più lento sia del thin (305 s) sia del thick (1.602 s). Causa: prova
-  comunque tutte le scale (15 build, 3 round ciascuna) e al 0.1 serba
-  il costo dei 3 round freschi. Il vantaggio è nelle esclusioni/prismi,
-  non nel tempo.
+- success at scale 0.1, **2,058 exclusions** (predicted), **445,716
+  prisms** (predicted), 3,684 faces without BL = 1.63% (like thin-first);
+- checkMesh: 885 wrongly oriented faces vs 895 input, "Failed 4", skew
+  47.6, aspect max 15,419, non-ortho 55 — identical to thin-first;
+- warning trajectory: failures at 1.0 (50→6→6 negative volumes),
+  0.6 (42 neg → 1,037/1,020 pyramids), 0.35 (15/1 neg → 1,017), 0.2
+  (4/1 neg → 1,016), then fresh 0.1 at the third round (1,946+112) validates;
+- **time 2,215 s (37 min)**: slower than predicted (24-30 min) and
+  slower than both thin (305 s) and thick (1,602 s). Cause: it tries
+  all the scales anyway (15 builds, 3 rounds each) and at 0.1 it pays
+  the cost of the 3 fresh rounds. The advantage is in the exclusions/prisms,
+  not in the time.
 
-## Confronto finale (valvola)
+## Final comparison (valve)
 
-| Variante | escl. iter. | senza BL | prismi | checkMesh | tempo |
+| Variant | excl. iter. | without BL | prisms | checkMesh | time |
 |---|---|---|---|---|---|
-| THICK (legacy) | 19.625 | 21.208 (9,36%) | 410.668 | 891 wrong, Failed 4 | 1.602 s |
-| THIN (sperim.) | 2.058 | 3.684 (1,63%) | 445.716 | 885 wrong, Failed 4 | 305 s |
-| **DECOUPLED** | **2.058** | **3.684 (1,63%)** | **445.716** | **885 wrong, Failed 4** | **2.215 s** |
+| THICK (legacy) | 19,625 | 21,208 (9.36%) | 410,668 | 891 wrong, Failed 4 | 1,602 s |
+| THIN (experimental) | 2,058 | 3,684 (1.63%) | 445,716 | 885 wrong, Failed 4 | 305 s |
+| **DECOUPLED** | **2,058** | **3,684 (1.63%)** | **445,716** | **885 wrong, Failed 4** | **2,215 s** |
 
-## Conclusione
+## Conclusion
 
-La variante decoupled centra l'obiettivo: cattura il vantaggio
-thin-first (9,5x meno esclusioni, +8,5% prismi, checkMesh migliore)
-SENZA degradare lo spessore sui casi sani (scala 1.0 piena). È la
-candidata naturale per la semantica della terminazione locale quando
-verrà abilitata: "spessore richiesto se possibile, solo i difetti
-pagano". Resta il costo in tempo sulle geometrie difettose; una
-possibile ottimizzazione (saltare le scale intermedie / riusare le
-esclusioni quando la firma del fallimento è la stessa) va misurata a
-parte. Nessun default cambiato (`local_termination` resta off di
-default; `True` mantiene la semantica carry misurata in FASE 2/3).
+The decoupled variant hits the objective: it captures the thin-first
+advantage (9.5x fewer exclusions, +8.5% prisms, better checkMesh)
+WITHOUT degrading the thickness on healthy cases (full scale 1.0). It is the
+natural candidate for the local termination semantics when
+it gets enabled: "requested thickness if possible, only the defects
+pay". The time cost on defective geometries remains; a
+possible optimization (skip the intermediate scales / reuse the
+exclusions when the failure signature is the same) must be measured
+separately. No default changed (`local_termination` stays off by
+default; `True` keeps the carry semantics measured in FASE 2/3).

@@ -3,257 +3,257 @@
 ## Repository
 `C:\Users\Davide Valoroso\cfmesh-autogui`
 
-## Missione
-Setacciare l'intera app `cfmesh-autogui` dalla prima all'ultima riga, trovare OGNI bug esistente e fixarlo. Non fermarti finché non hai ispezionato TUTTI i file .py e verificato che TUTTI i bottoni/tab/menu/item facciano quello che devono.
+## Mission
+Comb the entire `cfmesh-autogui` app from the first to the last line, find EVERY existing bug and fix it. Do not stop until you have inspected ALL the .py files and verified that ALL buttons/tabs/menus/items do what they should.
 
-## Vincoli assoluti
-1. **NON ripetere bug già fixati** — tieni traccia in `_buglog.md`. Leggilo all'inizio.
-2. **Priorità**: crash runtime > logica sbagliata > UI rotto/bottone che non fa niente > performance > code smell.
-3. **Ogni fix DEVE**:
-   - Identificare file:linea con `Read`
-   - Spiegare il bug in Italiano (cosa succede, cosa dovrebbe succedere)
-   - Applicare fix con `Edit`
-   - Verificare con `python -m py_compile`
-4. **Ogni iterazione** almeno 1 nuovo bug trovato e fixato.
-5. **Alla fine di ogni iterazione**: compila TUTTI i file modificati, aggiorna `_buglog.md`, chiama `opencode_loop_goal_progress`.
-6. **Se un fix è complesso** (>5 righe o multi-file), spiega il piano prima di eseguire.
+## Absolute constraints
+1. **DO NOT repeat already-fixed bugs** — keep track in `_buglog.md`. Read it at the start.
+2. **Priority**: runtime crash > wrong logic > broken UI/button that does nothing > performance > code smell.
+3. **Every fix MUST**:
+   - Identify file:line with `Read`
+   - Explain the bug in Italian (what happens, what should happen)
+   - Apply the fix with `Edit`
+   - Verify with `python -m py_compile`
+4. **Every iteration** at least 1 new bug found and fixed.
+5. **At the end of every iteration**: compile ALL modified files, update `_buglog.md`, call `opencode_loop_goal_progress`.
+6. **If a fix is complex** (>5 lines or multi-file), explain the plan before executing.
 
 ---
 
-## PROTocollo DI ISPEZIONE (in ordine, segui TUTTI i passi)
+## INSPECTION PROTOCOL (in order, follow ALL the steps)
 
-### FASE 1 — BOTTONI E UI (src/cfmesh_autogui/gui/)
+### PHASE 1 — BUTTONS AND UI (src/cfmesh_autogui/gui/)
 
-Per OGNI file in gui/:
+For EVERY file in gui/:
 
 **main_window.py:**
-- Leggi `_setup_ribbon()` — ogni bottone ribbon ha un `clicked.connect`? Il destinatario esiste?
-- Leggi `_setup_menu()` — ogni menu action ha trigger funzionante? `Ctrl+Q` è registrato? `Ctrl+R`, `Ctrl+N`, `Ctrl+M` funzionano?
-- Leggi `_setup_workflow_tree()` — `itemClicked` connesso? I tab index nella mappa sono corretti?
-- Leggi `_on_ribbon_tab()` — tab_index_map copre tutti i bottoni ribbon?
-- Leggi `_on_workflow_item_clicked()` — tab_map e ribbon_tab coprono tutti gli stage?
-- Leggi `_on_new_case_wizard()` — i nomi degli attributi di `self._params` esistono? (`_detail_combo` esiste? `_bl_checkbox` esiste?)
-- Leggi `_on_quick_mesh()` — parametri corretti? Usa `get_detail_level()` o hardcoded?
-- Leggi `_on_auto_fix_quality()` — thread safety? `deleteLater`? Connessioni duplicate?
-- Leggi `_on_export_mesh()` — il parser di OF polyMesh è corretto? Usa meshio?
-- Leggi `_on_export_pdf()` — `quality_data` ha struttura giusta per `MeshReportPDF.generate()`?
-- Leggi `_on_load_step()` — `_loaded_step_path` settato per STL? Per STEP?
-- Leggi `_on_run_meshing()` — `case_dir` creato correttamente? `guarded_finished` controlla `my_id`? Feature detection valori validati?
-- Leggi `_on_meshing_finished()` — auto-recovery: cell size aumenta o diminuisce? Log è accurato? `write_meshdict` ridondante?
-- Leggi `_launch_checkmesh()` — thread quit/wait? `deleteLater`?
-- Leggi `_on_checkmesh_finished()` — `report.case_dir` esiste su `MeshQualityReport`?
-- Leggi `_on_launch_paraview()` — shell corretto per Windows? `subprocess.Popen` cattura eccezioni?
-- Leggi `closeEvent()` — runner terminato? gmsh shutdown? settings salvati?
+- Read `_setup_ribbon()` — does every ribbon button have a `clicked.connect`? Does the recipient exist?
+- Read `_setup_menu()` — does every menu action have a working trigger? Is `Ctrl+Q` registered? Do `Ctrl+R`, `Ctrl+N`, `Ctrl+M` work?
+- Read `_setup_workflow_tree()` — is `itemClicked` connected? Are the tab indexes in the map correct?
+- Read `_on_ribbon_tab()` — does tab_index_map cover all ribbon buttons?
+- Read `_on_workflow_item_clicked()` — do tab_map and ribbon_tab cover all stages?
+- Read `_on_new_case_wizard()` — do the `self._params` attribute names exist? (`_detail_combo` exists? `_bl_checkbox` exists?)
+- Read `_on_quick_mesh()` — correct parameters? Does it use `get_detail_level()` or hardcoded?
+- Read `_on_auto_fix_quality()` — thread safety? `deleteLater`? Duplicate connections?
+- Read `_on_export_mesh()` — is the OF polyMesh parser correct? Does it use meshio?
+- Read `_on_export_pdf()` — does `quality_data` have the right structure for `MeshReportPDF.generate()`?
+- Read `_on_load_step()` — is `_loaded_step_path` set for STL? For STEP?
+- Read `_on_run_meshing()` — is `case_dir` created correctly? Does `guarded_finished` check `my_id`? Feature detection values validated?
+- Read `_on_meshing_finished()` — auto-recovery: does cell size increase or decrease? Is the log accurate? Redundant `write_meshdict`?
+- Read `_launch_checkmesh()` — thread quit/wait? `deleteLater`?
+- Read `_on_checkmesh_finished()` — does `report.case_dir` exist on `MeshQualityReport`?
+- Read `_on_launch_paraview()` — correct shell for Windows? Does `subprocess.Popen` catch exceptions?
+- Read `closeEvent()` — runner terminated? gmsh shutdown? settings saved?
 
 **params_panel.py:**
-- `_on_quick_mesh()` — parent traversal funziona? Widget hierarchy cambia?
-- `_on_suggest_sizes()` — `suggest_cell_sizes` chiamato con `_suggest_meshes` popolato?
-- `_on_template_selected()` — path template esiste? JSON parsato correttamente?
-- `_on_detail_changed()` — label aggiornata? map 0-4 corretta?
-- `_validate_params()` — max > min controllato?
-- `_on_mesher_changed()` — poly_check visibilità toggle?
-- `set_all_enabled()` — TUTTI i widget elencati? Nessuno dimenticato?
-- `save_params()` / `restore_params()` — chiavi coincidono con QSettings schema?
+- `_on_quick_mesh()` — does parent traversal work? Does the widget hierarchy change?
+- `_on_suggest_sizes()` — is `suggest_cell_sizes` called with `_suggest_meshes` populated?
+- `_on_template_selected()` — does the template path exist? JSON parsed correctly?
+- `_on_detail_changed()` — label updated? Correct 0-4 map?
+- `_validate_params()` — max > min checked?
+- `_on_mesher_changed()` — poly_check visibility toggle?
+- `set_all_enabled()` — ALL widgets listed? None forgotten?
+- `save_params()` / `restore_params()` — do the keys match the QSettings schema?
 
 **viewer_widget.py:**
-- `_init_vtk()` — pyvistaqt import safe? fallisce graceful?
-- `_on_pick_toggled()` / `_on_measure_toggled()` — mutual exclusion con blockSignals?
-- `_on_mesh_picked()` — `pvdata_to_name` popolato? memory_address stabile?
-- `_display_cad()` / `_display_mesh()` — clear prima di add? edge_color corretto per background?
-- `_on_section_toggled()` — face count check prima di clip?
-- `read_openfoam_mesh_patches()` — cache funziona? boundary parsing matcha?
+- `_init_vtk()` — pyvistaqt import safe? fails gracefully?
+- `_on_pick_toggled()` / `_on_measure_toggled()` — mutual exclusion with blockSignals?
+- `_on_mesh_picked()` — `pvdata_to_name` populated? memory_address stable?
+- `_display_cad()` / `_display_mesh()` — clear before add? edge_color correct for background?
+- `_on_section_toggled()` — face count check before clip?
+- `read_openfoam_mesh_patches()` — cache works? boundary parsing matches?
 
 **quality_panel.py:**
-- `_load_thresholds()` — QSettings default type corretto?
-- `show_report()` — metriche attese esistono? fallisce graceful se mancano?
-- `_on_export_pdf()` — case_hint da raw_log funziona? `MeshReportPDF.generate()` parametri corretti?
-- `_on_auto_fix()` — signal `fix_requested` connesso in main_window?
+- `_load_thresholds()` — correct QSettings default type?
+- `show_report()` — do the expected metrics exist? fails gracefully if missing?
+- `_on_export_pdf()` — case_hint from raw_log works? `MeshReportPDF.generate()` correct parameters?
+- `_on_auto_fix()` — signal `fix_requested` connected in main_window?
 
 **new_case_wizard.py:**
-- `Step1GeometryPage.registerField("geometry_path*", ...)` — required field funziona?
+- `Step1GeometryPage.registerField("geometry_path*", ...)` — required field works?
 - `Step2MeshSettingsPage` — registered fields match `get_params()`?
-- `NewCaseWizard.get_params()` — tutti i campi presenti?
+- `NewCaseWizard.get_params()` — all fields present?
 
 **pdf_report.py:**
-- `generate()` — `quality_data` può essere dict nudo o con "metrics" key? gestisce entrambi?
-- `_status()` threshold corrette? (nonortho: warn 65 fail 85, skew: warn 4 fail 10, aspect: warn 1000 fail 5000)
+- `generate()` — can `quality_data` be a bare dict or have a "metrics" key? Does it handle both?
+- `_status()` correct thresholds? (nonortho: warn 65 fail 85, skew: warn 4 fail 10, aspect: warn 1000 fail 5000)
 
 **about_dialog.py:**
-- `_make_logo()` — QPainter iniziato/finito? memory leak?
+- `_make_logo()` — QPainter started/finished? memory leak?
 - `_qt_version()` — import safe?
 
 **app.py:**
-- `_init_i18n()` — path traduttore esiste?
+- `_init_i18n()` — translator path exists?
 - `_load_plugins()` — `plugin_base.py` import safe? `on_install` exception safe?
 
 **log_panel.py:**
-- `append_log()` — thread-safe? html injection? scrollbar esiste?
+- `append_log()` — thread-safe? html injection? scrollbar exists?
 
 **theme.py, style.py, design_tokens.py, branding.py, constants.py, log_tags.py, settings_migration.py:**
-- Import circolari? Costanti definite prima dell'uso? Migration version parsing?
+- Circular imports? Constants defined before use? Migration version parsing?
 
 ---
 
-### FASE 2 — CORE LOGIC (src/cfmesh_autogui/core/)
+### PHASE 2 — CORE LOGIC (src/cfmesh_autogui/core/)
 
 **openfoam_runner.py:**
-- `MeshWorker.run()` — thread reader interrupt? `_stop_reader` + `_reader_done` Event corretti?
-- `_kill_process_tree()` — Windows `taskkill /T` funziona? `wsl --terminate` fallback?
-- `RetryRunner._on_attempt_finished()` — exit 15 gestito? BL fallback funziona? `_on_finished` riceve 3 argomenti?
-- `RetryRunner._cleanup_previous()` — thread quit/wait/deleteLater ordine corretto? (B14 fix)
-- `PolyDualWorker.run()` — `self.finished.emit(case_dir)` — **case_dir è definito?** (NameError!)
-- `CheckMeshWorker.run()` — timeout 120s adeguato? output parsing?
-- `QualityFixWorker._on_checkmesh_result()` — `self._kwargs.get("boundary_cell_size")` passato da main_window?
-- `parse_checkmesh_output()` — regex per tutte le metriche? Min volume regex copre notazione scientifica?
-- `analyze_error()` — pattern matching per TUTTI gli error cfMesh conosciuti?
-- `_extract_detail()` — ultime N righe con keyword error?
+- `MeshWorker.run()` — reader thread interrupt? `_stop_reader` + `_reader_done` Event correct?
+- `_kill_process_tree()` — Windows `taskkill /T` works? `wsl --terminate` fallback?
+- `RetryRunner._on_attempt_finished()` — exit 15 handled? BL fallback works? Does `_on_finished` receive 3 arguments?
+- `RetryRunner._cleanup_previous()` — thread quit/wait/deleteLater correct order? (B14 fix)
+- `PolyDualWorker.run()` — `self.finished.emit(case_dir)` — **is case_dir defined?** (NameError!)
+- `CheckMeshWorker.run()` — 120s timeout adequate? output parsing?
+- `QualityFixWorker._on_checkmesh_result()` — `self._kwargs.get("boundary_cell_size")` passed from main_window?
+- `parse_checkmesh_output()` — regex for all metrics? Does the Min volume regex cover scientific notation?
+- `analyze_error()` — pattern matching for ALL known cfMesh errors?
+- `_extract_detail()` — last N lines with error keyword?
 
 **geometry.py:**
-- `load_step()` — eccezione OCP catchata? Workplane.val() safe?
-- `load_stl()` — ASCII multi-solid parsing corretto? temp file puliti? binary STL gestito?
-- `load_geometry()` — dispatcher per estensione corretto?
-- `classify_faces_auto()` — normale normalizzata? tolleranza adeguata? fallback su altri assi?
-- `tessellate_patches()` — >50% failure raise RuntimeError? tolerance/angle_tolerance parametri?
-- `analyze_local_thickness()` — allocazione per-patch con floor? weighted average vs min-strategy?
-- `suggest_cell_sizes()` — fallback bbox se sampling fallisce? clamping corretto?
+- `load_step()` — OCP exception caught? Workplane.val() safe?
+- `load_stl()` — ASCII multi-solid parsing correct? temp files cleaned? binary STL handled?
+- `load_geometry()` — extension dispatcher correct?
+- `classify_faces_auto()` — normalized normal? adequate tolerance? fallback on other axes?
+- `tessellate_patches()` — >50% failure raises RuntimeError? tolerance/angle_tolerance parameters?
+- `analyze_local_thickness()` — per-patch allocation with floor? weighted average vs min-strategy?
+- `suggest_cell_sizes()` — bbox fallback if sampling fails? correct clamping?
 - `validate_cell_sizes()` — max > bbox/2 clamped? min > max/2 clamped? ratio warning?
-- `compute_volume()` / `estimate_cell_count()` — volume non-finite? avg_cell <= 0?
+- `compute_volume()` / `estimate_cell_count()` — non-finite volume? avg_cell <= 0?
 
 **meshdict_gen.py:**
-- `build_meshdict_lines()` — sintassi FoamFile corretta? boundaryLayers v2512 syntax? regex patch names con caratteri speciali?
-- `write_meshdict()` — system_dir creata? encoding ASCII?
+- `build_meshdict_lines()` — correct FoamFile syntax? boundaryLayers v2512 syntax? regex patch names with special characters?
+- `write_meshdict()` — system_dir created? ASCII encoding?
 
 **boundary_reader.py:**
-- `parse_boundary()` — commenti OF rimossi? regex multi-patch? FoamFile header skipato?
+- `parse_boundary()` — OF comments removed? multi-patch regex? FoamFile header skipped?
 
 **case_setup.py:**
-- `setup_case()` — tutti i file creati? 0/p, 0/U, 0/k, 0/omega, transportProperties, turbulenceProperties? dimensioni corrette? BC mappate per nome patch?
+- `setup_case()` — all files created? 0/p, 0/U, 0/k, 0/omega, transportProperties, turbulenceProperties? correct dimensions? BCs mapped by patch name?
 
 **mesh_converter.py:**
-- `msh_to_of_polymesh()` — cell_phys_map per physical group tag? boundary face extraction corretta? startFace calcolato bene? punti/faces/owner/neighbour/boundary scritti in formato OF valido?
+- `msh_to_of_polymesh()` — cell_phys_map per physical group tag? correct boundary face extraction? startFace computed well? points/faces/owner/neighbour/boundary written in valid OF format?
 
 **validation.py:**
-- `validate_cell_size()` — ranges corretti? bbox check? warning per estremi?
+- `validate_cell_size()` — correct ranges? bbox check? warning for extremes?
 - `validate_bl_params()` — nLayers 1-10? thicknessRatio >0 <=1? expansionRatio 1-2?
-- `validate_settings()` — TUTTE le chiavi QSettings validate?
+- `validate_settings()` — ALL QSettings keys validated?
 
 **gmsh_wrapper.py:**
 - `_ensure_gmsh()` — double-checked locking thread-safe?
-- `compute_sizing()` — bounding box calcolata? curvature estimation?
+- `compute_sizing()` — bounding box computed? curvature estimation?
 - `generate_surface_stl()` — 2D mesh generation? STL export? physical groups mapping?
 - `generate_volume_mesh()` — 3D mesh + BL? BoundaryLayer field config? MSH export?
 
 **feature_detector.py:**
-- `analyze_step()` — cache key con mtime? curvature da getCurvature? dihedral angle mesh-based?
-- GMSH initialize/finalize bilanciati? mesh.clear() chiamato?
-- Gap detection è placeholder o reale?
+- `analyze_step()` — cache key with mtime? curvature from getCurvature? mesh-based dihedral angle?
+- GMSH initialize/finalize balanced? mesh.clear() called?
+- Is gap detection a placeholder or real?
 
 **stl_writer.py:**
 - `heal_mesh()` — process/validate? degenerate faces? fill_holes? merge_vertices? fix_normals?
-- `write_binary_stl()` / `write_ascii_stl()` — patch name sanitized? formato STL valido?
-- `export_surface_file()` — constant/triSurface/ creata?
+- `write_binary_stl()` / `write_ascii_stl()` — patch name sanitized? valid STL format?
+- `export_surface_file()` — constant/triSurface/ created?
 
 ---
 
-### FASE 3 — COMMERCIAL MODULES (src/cfmesh_autogui/commercial/)
+### PHASE 3 — COMMERCIAL MODULES (src/cfmesh_autogui/commercial/)
 
-Per OGNI file in commercial/:
+For EVERY file in commercial/:
 
 **quick_mesh.py, one_click_run.py, geometry_pipeline.py, mesh_engine.py, quality_engine.py, bc_editor.py, solver_setup.py, template_engine.py, exporter.py, parallel_mesh.py, amr.py, bl_engine.py, cad_healer.py, fault_tolerant.py, mosaic.py, monitor.py, optimizer.py, batch_mesh.py, cloud_mesh.py, journal.py, watertight.py:**
 
-- Import lazy funziona (global module variables)?
-- Ogni funzione ha type hints?
-- Ogni dataclass/class ha campi consistenti?
-- Octopoda logging presente?
-- eccezioni catchate? falliscono graceful?
-- UI integration points (main_window calls) esistono?
+- Lazy import works (global module variables)?
+- Does every function have type hints?
+- Does every dataclass/class have consistent fields?
+- Octopoda logging present?
+- Exceptions caught? fail gracefully?
+- UI integration points (main_window calls) exist?
 
 ---
 
-### FASE 4 — INTEGRAZIONE (cross-module)
+### PHASE 4 — INTEGRATION (cross-module)
 
-- `main_window.py` importa `compute_sizing` come `gmsh_compute_sizing` — nome coincide con `gmsh_wrapper.py` export?
-- `main_window.py` importa `from_step as gmsh_read_step` — esiste in `gmsh_wrapper.py`?
-- `commercial/quick_mesh.py` usa `_lazy_geom().suggest_cell_sizes(...)` — signature matching?
-- `commercial/mesh_engine.py` chiamato da `main_window._on_run_meshing()`? O solo da `quick_mesh.py`?
-- `setup_case()` chiamato da `_on_meshing_finished` — patches formato corretto? (`boundary_reader.PatchInfo`)
-- `export_surface_file()` chiamato da `_on_run_meshing()` prima di `write_meshdict()`?
-- `gmsh_shutdown()` chiamato in `closeEvent()`?
+- Does `main_window.py` import `compute_sizing` as `gmsh_compute_sizing` — does the name match the `gmsh_wrapper.py` export?
+- Does `main_window.py` import `from_step as gmsh_read_step` — does it exist in `gmsh_wrapper.py`?
+- Does `commercial/quick_mesh.py` use `_lazy_geom().suggest_cell_sizes(...)` — signature matching?
+- Is `commercial/mesh_engine.py` called by `main_window._on_run_meshing()`? Or only by `quick_mesh.py`?
+- Is `setup_case()` called by `_on_meshing_finished` — patches in correct format? (`boundary_reader.PatchInfo`)
+- Is `export_surface_file()` called by `_on_run_meshing()` before `write_meshdict()`?
+- Is `gmsh_shutdown()` called in `closeEvent()`?
 
 ---
 
-### FASE 5 — COMPILAZIONE FINALE
+### PHASE 5 — FINAL COMPILATION
 
-Dopo aver ispezionato TUTTI i file:
+After inspecting ALL the files:
 ```powershell
 Get-ChildItem -Path "C:\Users\Davide Valoroso\cfmesh-autogui\src\cfmesh_autogui" -Filter "*.py" -Recurse | ForEach-Object { python -m py_compile $_.FullName }
 ```
 
-Se un file non compila -> fixa -> ripeti.
+If a file does not compile -> fix -> repeat.
 
 ---
 
-### FASE 6 — REPORT FINALE
+### PHASE 6 — FINAL REPORT
 
-Crea/aggiorna `_buglog.md` con formato:
+Create/update `_buglog.md` with this format:
 ```markdown
 # Bug Log
 
-## Iterazione 1
-- **[CRITICO]** `core/openfoam_runner.py:851` — NameError: `case_dir` undefined in PolyDualWorker.run() -> fix: `self._case_dir`
-- **[CRITICO]** `gui/main_window.py:1455` — AttributeError: `_params._detail_combo` non esiste (ParamsPanel usa _detail_slider) -> fix: setValue su slider
-- **[CRITICO]** `gui/main_window.py:1258` — Stale checkMesh check: `report.case_dir` non esiste su MeshQualityReport -> fix: rimosso
-- **[CRITICO]** `gui/main_window.py:519` — STL import non setta `_loaded_step_path` -> fix: aggiunto
+## Iteration 1
+- **[CRITICAL]** `core/openfoam_runner.py:851` — NameError: `case_dir` undefined in PolyDualWorker.run() -> fix: `self._case_dir`
+- **[CRITICAL]** `gui/main_window.py:1455` — AttributeError: `_params._detail_combo` does not exist (ParamsPanel uses _detail_slider) -> fix: setValue on slider
+- **[CRITICAL]** `gui/main_window.py:1258` — Stale checkMesh check: `report.case_dir` does not exist on MeshQualityReport -> fix: removed
+- **[CRITICAL]** `gui/main_window.py:519` — STL import does not set `_loaded_step_path` -> fix: added
 
-## Iterazione 2
-- ... nuovi bug ...
+## Iteration 2
+- ... new bugs ...
 
-## Iterazione N
+## Iteration N
 - ...
 ```
 
 ---
 
-## CHECKLIST FINALE (tutti i bottoni/tab/menu)
+## FINAL CHECKLIST (all buttons/tabs/menus)
 
-- [ ] Home ribbon tab → mostra tab 0
-- [ ] Geometry ribbon tab → mostra tab 0 (Geometry)
-- [ ] Mesh ribbon tab → mostra tab 1 (Mesh)
-- [ ] Advanced ribbon tab → mostra tab 2 (Advanced)
-- [ ] Quality ribbon tab → mostra tab 3 (Quality)
-- [ ] New Case ribbon button → apre wizard
+- [ ] Home ribbon tab → shows tab 0
+- [ ] Geometry ribbon tab → shows tab 0 (Geometry)
+- [ ] Mesh ribbon tab → shows tab 1 (Mesh)
+- [ ] Advanced ribbon tab → shows tab 2 (Advanced)
+- [ ] Quality ribbon tab → shows tab 3 (Quality)
+- [ ] New Case ribbon button → opens wizard
 - [ ] Quick Mesh ribbon button → auto-suggest + run
 - [ ] Load STEP button → file dialog
-- [ ] Auto-Suggest Cell Sizes → calcola e applica
-- [ ] Generate Mesh button → avvia meshing (si disabilita durante run)
-- [ ] Cancel button (stesso btn, testo cambia) → ferma run
-- [ ] Reset All → pulisce tutto
-- [ ] Enable Boundary Layers checkbox → mostra/nasconde form
-- [ ] Detail slider 0-4 → label cambia
-- [ ] Mesher combobox → nasconde poly_check per GMSH direct
+- [ ] Auto-Suggest Cell Sizes → computes and applies
+- [ ] Generate Mesh button → starts meshing (disables during run)
+- [ ] Cancel button (same btn, text changes) → stops run
+- [ ] Reset All → clears everything
+- [ ] Enable Boundary Layers checkbox → shows/hides form
+- [ ] Detail slider 0-4 → label changes
+- [ ] Mesher combobox → hides poly_check for GMSH direct
 - [ ] New Case Wizard Step 1 → Browse, Test Cylinder, Drag&Drop
 - [ ] New Case Wizard Step 2 → detail combo, cell sizes, BL
 - [ ] New Case Wizard Step 3 → quality criteria list
-- [ ] File > Load Geometry → funziona
-- [ ] File > Recent Geometry Files → popolato
-- [ ] File > Create Test Cylinder → geometry creata
+- [ ] File > Load Geometry → works
+- [ ] File > Recent Geometry Files → populated
+- [ ] File > Create Test Cylinder → geometry created
 - [ ] File > Export Mesh > CGNS/VTU → export
 - [ ] File > Export Mesh > PDF Quality Report → export
 - [ ] File > Set Case Directory → dialog
 - [ ] File > Exit (Ctrl+Q) → close
 - [ ] Edit > Undo/Redo → cell size changes undoable
-- [ ] View > Theme > Light/Dark/System → tema cambia
-- [ ] Tools > Launch ParaView → avvia paraview
+- [ ] View > Theme > Light/Dark/System → theme changes
+- [ ] Tools > Launch ParaView → launches paraview
 - [ ] Help > Keyboard Shortcuts → dialog
 - [ ] Help > About → dialog
 - [ ] Viewer > Display combobox → CAD / Volume Mesh
-- [ ] Viewer > Background combobox → cambia sfondo
+- [ ] Viewer > Background combobox → changes background
 - [ ] Viewer > Section Cut checkbox → clip plane
 - [ ] Viewer > Select Patch checkbox → pick mode
 - [ ] Viewer > Measure checkbox → distance tool
 - [ ] Workflow tree click → tab + ribbon sync
 - [ ] Drag & Drop STEP/STL → load geometry
-- [ ] Status bar: progress bar, cell count, messaggi
+- [ ] Status bar: progress bar, cell count, messages
 - [ ] Ctrl+O → load file
 - [ ] Ctrl+R → start meshing / cancel
 - [ ] Ctrl+N → reset

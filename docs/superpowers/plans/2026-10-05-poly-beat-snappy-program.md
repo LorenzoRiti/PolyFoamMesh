@@ -127,7 +127,7 @@
 ### Task 10: Docs, GOAL, final report
 
 - [ ] Update `.opencode/GOAL.md` (Italian, numbers verbatim, promoted/killed per phase); tick/append note verdicts; append `docs/residual_risks.md` if a new limitation is found.
-- [ ] Final verification: `ruff` + fast suite; commit `docs: poly beat-snappy program results (locale)`.
+- [ ] Final verification: `ruff` + fast suite; commit `docs: poly beat-snappy program results (local)`.
 - [ ] Report to the human: per-phase numbers, pass rate before/after, what beats snappy and what does not, next options.
 
 ---

@@ -1,156 +1,156 @@
-# Campo di sizing dal passaggio locale (local passage width) — algoritmo nuovo
+# Sizing field from the local passage width — new algorithm
 
-Contesto: dopo i fix del giro precedente (toggle reale, tetti su DistMax/
-DistMin, viewer che mostra solo il bordo), l'utente ha chiesto: "non
-esistono algoritmi seri di meshing automatico open source? ma seri" e poi
-"sviluppa un algoritmo di meshing sizing automatico, che capisce dove
-raffinare e raffina dove serve... con ricerche approfondite".
+Context: after the fixes of the previous round (real toggle, caps on DistMax/
+DistMin, viewer showing only the boundary), the user asked: "aren't there
+any serious open-source automatic meshing algorithms? but serious" and then
+"develop an automatic meshing sizing algorithm that understands where to
+refine and refines where needed... with in-depth research".
 
-## Ricerca fatta prima di scrivere codice
+## Research done before writing code
 
-1. **GMSH ha già un algoritmo ufficiale serio**: `Mesh.AutomaticMeshSizeField`
-   (asse mediano + curvatura, mantenuto dal team GMSH). **Verificato con un
-   test diretto**: il nostro build (wheel pip) fallisce con `"Gmsh has to be
-   compiled with HXT and P4EST"`. **Verificato anche che conda-forge non lo
-   builda** (letta la recipe `meta.yaml` del feedstock): non è disponibile
-   senza compilare GMSH da sorgente con P4EST+MPI — costo alto, non un
-   semplice cambio di pacchetto.
-2. **Fondamento matematico confermato**: la quantità che ogni mesher serio
-   usa per "capire dove serve rifinire" è la **local feature size** (LFS) —
-   distanza dall'asse mediano del solido — approssimata classicamente coi
-   **poli di Voronoi** (Amenta & Bern, alla base di CGAL e di GMSH stesso).
-3. **Tentativo Voronoi-poles, fallito numericamente**: prototipo su un
-   campionamento sparso/strutturato (due piani paralleli) — risultati
-   sbagliati di un ordine di grandezza. È un problema noto e documentato in
-   letteratura (il metodo richiede campionamento denso e non degenere,
-   gestione robusta di celle di Voronoi illimitate/degeneri). Scartato per
-   rischio di fragilità troppo alto rispetto al beneficio.
-4. **Trovata l'alternativa giusta già nel repo**: `core/geometry.py` ha
-   già un ray-caster vettorizzato e testato (`_sample_thickness_one_mesh`,
-   usato da `analyze_local_thickness`) — ma **collassa tutto a statistiche
-   globali** (p1/p5/p10...) per il pulsante "Auto-Suggest Cell Sizes"
-   (oggi nascosto), buttando via esattamente l'informazione spaziale
-   ("DOVE è stretto") che serve per rifinire solo dove serve.
-5. **Validato con tre esperimenti prima di toccare codice di produzione**:
-   - due piani paralleli con gap noto = 0.1 → range dei valori confuso
-     inizialmente per un errore di orientamento delle normali (il ray-cast
-     misura la larghezza del volume che la mesh RACCHIUDE, cioè il dominio
-     fluido in un caso CFD — non lo spessore della parete solida);
-   - un singolo box sottile (rappresenta un canale stretto) → **0.1000
-     esatto**; un cubo grande (camera aperta) → **2.0000 esatto**;
-   - **il test decisivo**: un venturi vero, un'UNICA mesh connessa
-     largo→stretto→largo (corpo di rivoluzione) → **1.99 ai due lati larghi
-     (atteso 2.0), 0.34 alla gola (atteso ~0.30)** — campo genuinamente
-     locale, non una statistica per corpo.
-   - **confermato anche su GMSH vero e su un venturi.stl reale**
-     (`C:/cfmesh_poly_bench/venturi.stl`): il campo scende monotonicamente
-     lungo l'asse (0.121 → 0.075 su 10 bucket), minimo assoluto 0.00075.
+1. **GMSH already has a serious official algorithm**: `Mesh.AutomaticMeshSizeField`
+   (medial axis + curvature, maintained by the GMSH team). **Verified with a
+   direct test**: our build (pip wheel) fails with `"Gmsh has to be
+   compiled with HXT and P4EST"`. **Also verified that conda-forge does not
+   build it** (read the feedstock `meta.yaml` recipe): it is not available
+   without compiling GMSH from source with P4EST+MPI — high cost, not a
+   simple package change.
+2. **Mathematical foundation confirmed**: the quantity that every serious mesher
+   uses to "understand where to refine" is the **local feature size** (LFS) —
+   distance from the medial axis of the solid — classically approximated with
+   **Voronoi poles** (Amenta & Bern, the basis of CGAL and of GMSH itself).
+3. **Voronoi-poles attempt, failed numerically**: prototype on a
+   sparse/structured sampling (two parallel planes) — results
+   wrong by an order of magnitude. It is a known and documented problem in
+   the literature (the method requires dense, non-degenerate sampling and
+   robust handling of unbounded/degenerate Voronoi cells). Discarded for
+   a risk of fragility too high compared to the benefit.
+4. **Found the right alternative already in the repo**: `core/geometry.py` already
+   has a vectorized and tested ray-caster (`_sample_thickness_one_mesh`,
+   used by `analyze_local_thickness`) — but it **collapses everything to global
+   statistics** (p1/p5/p10...) for the "Auto-Suggest Cell Sizes" button
+   (now hidden), throwing away exactly the spatial information
+   ("WHERE it is narrow") that is needed to refine only where needed.
+5. **Validated with three experiments before touching production code**:
+   - two parallel planes with known gap = 0.1 → range of values confused
+     initially by a normal-orientation error (the ray-cast
+     measures the width of the volume the mesh ENCLOSES, i.e. the fluid
+     domain in a CFD case — not the thickness of the solid wall);
+   - a single thin box (represents a narrow channel) → **0.1000
+     exact**; a large cube (open chamber) → **2.0000 exact**;
+   - **the decisive test**: a real venturi, a SINGLE connected mesh
+     wide→narrow→wide (body of revolution) → **1.99 at the two wide sides
+     (expected 2.0), 0.34 at the throat (expected ~0.30)** — a genuinely
+     local field, not a per-body statistic.
+   - **also confirmed on real GMSH and on a real venturi.stl**
+     (`C:/cfmesh_poly_bench/venturi.stl`): the field decreases monotonically
+     along the axis (0.121 → 0.075 over 10 buckets), absolute minimum 0.00075.
 
-## Cosa ho implementato
+## What I implemented
 
 ### `core/geometry.py`
 - **`sample_thickness_field(mesh, n_samples, bbox_max, seed) -> (points,
-  thickness)`** — nuova funzione, variante di `_sample_thickness_one_mesh`
-  che restituisce anche i PUNTI (non solo i valori), necessaria per un
-  campo spaziale. Duplica ~30 righe della logica di ray-casting invece di
-  refactorizzare la funzione esistente: `_sample_thickness_one_mesh` è già
-  usata in produzione (Auto-Suggest), toccarla comportava un rischio di
-  regressione non necessario per un guadagno di pulizia del codice.
+  thickness)`** — new function, a variant of `_sample_thickness_one_mesh`
+  that also returns the POINTS (not just the values), needed for a
+  spatial field. Duplicates ~30 lines of the ray-casting logic instead of
+  refactoring the existing function: `_sample_thickness_one_mesh` is already
+  used in production (Auto-Suggest), touching it entailed a regression risk
+  unnecessary for a code-cleanliness gain.
 
 ### `core/gmsh_wrapper.py`
-- **`_extract_boundary_trimesh(gmsh_mod)`** — estrae l'intera superficie
-  discreta già tassellata da GMSH (tutte le entità 2D, non superficie per
-  superficie) come un unico `trimesh.Trimesh`, usando i node tag di GMSH
-  come chiave di vertice condivisa (niente merge per tolleranza di
-  coordinate — la mesh di GMSH è già conforme alle giunzioni). Verificato:
-  su un box 2×1×0.5, watertight, volume esatto 1.0.
+- **`_extract_boundary_trimesh(gmsh_mod)`** — extracts the entire discrete
+  surface already tessellated by GMSH (all 2D entities, not surface by
+  surface) as a single `trimesh.Trimesh`, using GMSH node tags
+  as the shared vertex key (no merge by coordinate
+  tolerance — the GMSH mesh is already conforming at the junctions). Verified:
+  on a 2×1×0.5 box, watertight, exact volume 1.0.
 - **`_sample_passage_thickness_field(gmsh_mod, h_min, h_max, cells_across,
-  max_samples)`** — orchestratore: estrae il bordo, chiama
-  `sample_thickness_field`, converte spessore → dimensione target
-  (`clamp(thickness / cells_across, h_min, h_max)`). Degrada a "nessun
-  campionamento" su qualunque eccezione (mai blocca la meshatura).
-- **`_configure_curvature_size_field`**: esteso con parametri opzionali
-  `passage_points`/`passage_target_sizes`, uniti all'insieme di punti PRIMA
-  del rilassamento growth-rate — così la transizione tra la strettoia e la
-  curvatura circostante è anch'essa gradita, non un salto netto.
-- **`_configure_adaptive_sizing`**: il vecchio ciclo di campi Ball basato
-  su `_detect_surface_gaps` (distanza bounding-box tra coppie di
-  superfici — una proxy, non la distanza vera, cieca a strettoie formate
-  da più di due superfici) è **sostituito** dalla chiamata al nuovo campo
-  di spessore. `_detect_surface_gaps` stessa **non è stata rimossa**: serve
-  ancora altrove per l'euristica di rischio polyDualMesh (conteggio gap,
-  uso completamente diverso dal sizing) — bug trovato e corretto durante
-  l'implementazione: avevo rimosso la variabile `gaps` insieme al ciclo
-  Ball, rompendo quell'euristica; rimessa.
+  max_samples)`** — orchestrator: extracts the boundary, calls
+  `sample_thickness_field`, converts thickness → target size
+  (`clamp(thickness / cells_across, h_min, h_max)`). Degrades to "no
+  sampling" on any exception (never blocks meshing).
+- **`_configure_curvature_size_field`**: extended with optional parameters
+  `passage_points`/`passage_target_sizes`, merged into the point set BEFORE
+  the growth-rate relaxation — so the transition between the constriction and the
+  surrounding curvature is also gradual, not a sharp jump.
+- **`_configure_adaptive_sizing`**: the old cycle of Ball fields based on
+  `_detect_surface_gaps` (bounding-box distance between pairs of
+  surfaces — a proxy, not the true distance, blind to constrictions formed
+  by more than two surfaces) is **replaced** by the call to the new thickness
+  field. `_detect_surface_gaps` itself **was not removed**: it is
+  still needed elsewhere for the polyDualMesh risk heuristic (gap count,
+  a completely different use from sizing) — a bug found and fixed during
+  implementation: I had removed the `gaps` variable together with the Ball
+  cycle, breaking that heuristic; put back.
 
-## Verificato (non solo unit test isolati)
+## Verified (not just isolated unit tests)
 
-- **GMSH vero, no WSL**, su `sample_cad/cylinder_test.stl`: mesh generata
-  correttamente (5.317 tet), nessuna eccezione, `passage_samples=6000` nel
+- **Real GMSH, no WSL**, on `sample_cad/cylinder_test.stl`: mesh generated
+  correctly (5,317 tet), no exception, `passage_samples=6000` in the
   log.
-- **GMSH vero su un venturi reale** (`C:/cfmesh_poly_bench/venturi.stl`):
-  51.614 tet, nessun crash, campo di spessore verificato scendere
-  monotonicamente verso la gola (vedi sopra).
-- **6/6 test nuovi verdi** (`tests/test_passage_thickness_field.py`):
-  4 puramente trimesh/numpy (portabili, no GMSH), 2 con GMSH vero (box
-  semplice, veloce, no WSL).
-- **23/23 test preesistenti verdi** (`test_geometry.py`,
-  `test_cell_sizing.py`, `test_sizing_resolves_features.py`) — `
-  analyze_local_thickness` e il resto della pipeline di sizing esistente
-  non sono stati toccati/rotti.
-- **27/27 test della sessione precedente ancora verdi** (adaptive sizing,
-  slider, viewer) — nessuna regressione incrociata.
+- **Real GMSH on a real venturi** (`C:/cfmesh_poly_bench/venturi.stl`):
+  51,614 tet, no crash, thickness field verified to decrease
+  monotonically toward the throat (see above).
+- **6/6 new tests green** (`tests/test_passage_thickness_field.py`):
+  4 purely trimesh/numpy (portable, no GMSH), 2 with real GMSH (simple
+  box, fast, no WSL).
+- **23/23 pre-existing tests green** (`test_geometry.py`,
+  `test_cell_sizing.py`, `test_sizing_resolves_features.py`) —
+  `analyze_local_thickness` and the rest of the existing sizing pipeline
+  were not touched/broken.
+- **27/27 tests from the previous session still green** (adaptive sizing,
+  slider, viewer) — no cross regression.
 
-## Nota a margine osservata, non causata da questo lavoro
+## Side note observed, not caused by this work
 
-Durante i run reali compare due volte `Error: Unknown OpenCASCADE entity
-of dimension 1 with tag N` — stampato da GMSH durante "Meshing 1D" su
-input STL (percorso `classifySurfaces`/`createGeometry`, geometria
-discreta senza vero kernel OCC). **Non blocca la meshatura** (confermato:
-mesh generata correttamente in tutti i run) e non sembra originare da
-`_extract_boundary_trimesh` (che non chiama nessuna API OCC-specific,
-solo `getNodes`/`getElements`) — plausibilmente pre-esistente al lavoro di
-oggi, legato al percorso di ricostruzione STL→geometria discreta già
-documentato altrove nel codice (`_scan_feature_sizes`'s fallback per
-"STL input goes through classifySurfaces()..."). Non approfondito oltre
-per limiti di tempo — se compare anche su un checkout pulito prima di
-questa sessione, è confermato non causato da questo lavoro.
+During the real runs, `Error: Unknown OpenCASCADE entity
+of dimension 1 with tag N` appears twice — printed by GMSH during "Meshing 1D" on
+STL input (`classifySurfaces`/`createGeometry` path, discrete geometry
+with no real OCC kernel). **It does not block meshing** (confirmed:
+mesh generated correctly in all runs) and does not appear to originate from
+`_extract_boundary_trimesh` (which calls no OCC-specific API,
+only `getNodes`/`getElements`) — plausibly pre-existing to today's work,
+tied to the STL→discrete-geometry reconstruction path already
+documented elsewhere in the code (`_scan_feature_sizes`'s fallback for
+"STL input goes through classifySurfaces()..."). Not investigated further
+due to time limits — if it also appears on a clean checkout before
+this session, it is confirmed not caused by this work.
 
-## NON fatto / da verificare alla ripresa
+## NOT done / to verify on resumption
 
-1. **Non ho confrontato con checkMesh reale (WSL)** il "prima vs dopo"
-   sulla stessa geometria (es. venturi) per misurare l'effetto sul
-   conteggio celle/qualità — solo verificato che la generazione non si
-   rompe e che il campo è geometricamente corretto. Prossimo passo naturale
-   (richiede WSL, quindi da coordinare per non contendere risorse).
-2. **BUG TROVATO E CORRETTO durante la stesura di questo stesso
-   checkpoint**: il codice usava `df.get("min_thick_cells", 8)`, ma
-   `_GMSH_DETAIL` (il dizionario dei livelli in gmsh_wrapper.py) **non ha
-   affatto quella chiave** — esiste solo in `core/geometry.py`'s
-   `_DETAIL_PRESETS` (usato per l'Auto-Suggest, dizionario diverso). Il
-   default `8` veniva quindi usato SEMPRE, silenziosamente, per ogni
-   livello di dettaglio — lo slider "Mesh Fineness" non aveva alcun
-   effetto sul numero di celle attraverso la strettoia. Corretto:
-   `df.get("cells_across", 8)`, che riusa la chiave che ESISTE davvero in
-   `_GMSH_DETAIL` ed è già tarata per livello (8/13/20/32/48). Verificato
-   di nuovo dopo il fix: 12/12 test verdi.
-3. **Performance su parti molto grandi**: `max_samples=6000` di default
-   è lo stesso ordine di grandezza già usato per il campo di curvatura
-   (20.000) ma più basso — non misurato il tempo di ray-casting su una
-   geometria con centinaia di migliaia di triangoli di bordo (il venturi
-   di test ne aveva poche migliaia). trimesh senza `pyembree` installato
-   può essere lento su mesh molto dense — da profilare su un caso reale
-   grande prima di dichiarare la performance a posto.
-4. **Non wired nella GUI come opzione visibile** — è un miglioramento
-   dell'algoritmo esistente dietro il toggle "Rifinitura automatica" già
-   presente, non richiede nuova UI, ma non è stato comunicato/documentato
-   all'utente finale nell'app stessa (tooltip, changelog).
+1. **I did not compare with real checkMesh (WSL)** the "before vs after"
+   on the same geometry (e.g. venturi) to measure the effect on the
+   cell count/quality — only verified that generation does not
+   break and that the field is geometrically correct. Natural next step
+   (requires WSL, so to be coordinated to avoid competing for resources).
+2. **BUG FOUND AND FIXED while writing this same
+   checkpoint**: the code used `df.get("min_thick_cells", 8)`, but
+   `_GMSH_DETAIL` (the dictionary of levels in gmsh_wrapper.py) **does not have
+   that key at all** — it exists only in `core/geometry.py`'s
+   `_DETAIL_PRESETS` (used for Auto-Suggest, a different dictionary). The
+   default `8` was therefore used ALWAYS, silently, for every
+   detail level — the "Mesh Fineness" slider had no
+   effect on the number of cells through the constriction. Fixed:
+   `df.get("cells_across", 8)`, which reuses the key that REALLY EXISTS in
+   `_GMSH_DETAIL` and is already tuned per level (8/13/20/32/48). Verified
+   again after the fix: 12/12 tests green.
+3. **Performance on very large parts**: `max_samples=6000` by default
+   is the same order of magnitude already used for the curvature field
+   (20,000) but lower — the ray-casting time was not measured on a
+   geometry with hundreds of thousands of boundary triangles (the test
+   venturi had a few thousand). trimesh without `pyembree` installed
+   can be slow on very dense meshes — to be profiled on a real large
+   case before declaring the performance is fine.
+4. **Not wired in the GUI as a visible option** — it is an improvement
+   of the existing algorithm behind the "Automatic refinement" toggle already
+   present, it requires no new UI, but it was not communicated/documented
+   to the end user in the app itself (tooltip, changelog).
 
-## File toccati
+## Files touched
 
-- `src/cfmesh_autogui/core/geometry.py` (+funzione nuova, nessuna modifica
-  a codice esistente)
-- `src/cfmesh_autogui/core/gmsh_wrapper.py` (2 funzioni nuove, 1 estesa
-  con parametri opzionali, 1 sostituzione di logica in
+- `src/cfmesh_autogui/core/geometry.py` (+new function, no change
+  to existing code)
+- `src/cfmesh_autogui/core/gmsh_wrapper.py` (2 new functions, 1 extended
+  with optional parameters, 1 logic replacement in
   `_configure_adaptive_sizing`)
-- `tests/test_passage_thickness_field.py` (nuovo, 6 test)
+- `tests/test_passage_thickness_field.py` (new, 6 tests)
