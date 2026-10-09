@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         export_menu.addAction("Mesh (.msh)...", lambda: self._on_export_mesh("gmsh"))
         export_menu.addAction("Abaqus (.inp)...", lambda: self._on_export_mesh("abaqus"))
         export_menu.addSeparator()
+        export_menu.addAction("OpenFOAM Case Folder...", self._on_export_openfoam)
         export_menu.addAction("BaramFlow Case Folder...", self._on_export_baramflow)
         export_menu.addAction("PDF Quality Report...", self._on_export_pdf)
         fm.addSeparator()
@@ -4987,6 +4988,83 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Export failed")
         logger.error("Export failed: %s", msg)
         QMessageBox.critical(self, "Export Error", msg)
+
+    def _on_export_openfoam(self):
+        """Export the case folder directly for OpenFOAM (no BaramFlow rules).
+
+        The BaramFlow export refuses a case whose 0/ fields are missing or
+        incomplete; running OpenFOAM directly does not need those - the
+        mesh, system and whatever fields exist are enough (user request:
+        "mi serve anche quella diretta per openfoam").  App artifacts
+        (processor*, VTK_view, mesh.msh, tet backup) are left out.
+        """
+        if not self._case_dir:
+            QMessageBox.warning(self, "No Mesh", "Generate a mesh first.")
+            return
+
+        dest_parent = QFileDialog.getExistingDirectory(
+            self, "Choose Destination Folder for OpenFOAM Case",
+            str(Path(self._case_dir).parent),
+        )
+        if not dest_parent:
+            return
+
+        dest = Path(dest_parent).resolve() / Path(self._case_dir).name
+        if dest == Path(self._case_dir).resolve():
+            QMessageBox.warning(
+                self, "Invalid Destination",
+                "Choose a different folder than the current case directory.",
+            )
+            return
+        if dest.exists():
+            reply = QMessageBox.question(
+                self, "Overwrite?",
+                f"'{dest}' already exists. Overwrite its contents?",
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        from polyfoammesh.core.openfoam_export import export_openfoam_case
+
+        try:
+            self._status.showMessage("Exporting OpenFOAM case...")
+            self._progress.setRange(0, 0)
+            self._progress.setVisible(True)
+            self._ribbon_btns["cancel"].setVisible(True)
+            case_dir = self._case_dir
+
+            def _work(worker):
+                return export_openfoam_case(case_dir, dest_parent)
+
+            def _done(_name, out):
+                self._progress.setVisible(False)
+                self._ribbon_btns["cancel"].setVisible(False)
+                self._refresh_workflow(exported=True)
+                self._log.append_log(
+                    f"{Tag.EXPORT} OpenFOAM case exported: {out}"
+                )
+                QMessageBox.information(
+                    self, "Export Complete",
+                    f"Case exported to:\n{out}\n\n"
+                    "Run it directly with OpenFOAM (e.g. in WSL: "
+                    "foamRun or simpleFoam).",
+                )
+
+            def _bad(_name, msg):
+                self._progress.setVisible(False)
+                self._ribbon_btns["cancel"].setVisible(False)
+                logger.error("OpenFOAM export failed: %s", msg)
+                self._log.append_log(f"{Tag.ERROR} OpenFOAM export failed: {msg}")
+                QMessageBox.critical(self, "Export Failed", str(msg))
+
+            self._submit_task(
+                "openfoam_export", FunctionWorker(_work),
+                on_finished=_done, on_failed=_bad,
+                heartbeat_timeout_s=600.0,
+            )
+        except Exception as e:
+            logger.error("OpenFOAM export failed: %s", e)
+            QMessageBox.critical(self, "Export Error", str(e))
 
     def _on_export_baramflow(self):
         """Export a self-contained OpenFOAM case folder ready to open in BaramFlow.
