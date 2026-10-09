@@ -30,7 +30,7 @@ def _make_case(root: Path) -> Path:
     )
     system = case / "system"
     system.mkdir()
-    for name in ("controlDict", "fvSchemes", "fvSolution"):
+    for name in ("controlDict", "fvSchemes", "fvSolution", "decomposeParDict"):
         (system / name).write_text("// sys", encoding="utf-8")
     zero = case / "0"
     zero.mkdir()
@@ -40,6 +40,11 @@ def _make_case(root: Path) -> Path:
     (case / "VTK_view").mkdir()
     (case / "VTK_view" / "mesh.vtp").write_text("vtp", encoding="utf-8")
     (case / "mesh.msh").write_text("msh", encoding="utf-8")
+    # stale run data a clean export must drop
+    (case / "postProcessing").mkdir()
+    (case / "100").mkdir()
+    (case / "local.cfg").write_text("np: 1", encoding="utf-8")
+    (case / "mycase.foam").write_text("", encoding="utf-8")
     return case
 
 
@@ -54,11 +59,48 @@ def test_exports_mesh_system_and_fields_without_app_artifacts(tmp_path):
     assert (dest / "constant" / "transportProperties").is_file()
     assert (dest / "system" / "controlDict").is_file()
     assert (dest / "0" / "p").is_file()
+    # decomposeParDict is kept for the direct export (handy for parallel)
+    assert (dest / "system" / "decomposeParDict").is_file()
     # App artifacts are left out (large, regenerable).
     assert not (dest / "processor0").exists()
     assert not (dest / "VTK_view").exists()
     assert not (dest / "mesh.msh").exists()
     assert not (dest / "constant" / "polyMesh_tet_backup").exists()
+    # Stale run data is left out too.
+    assert not (dest / "postProcessing").exists()
+    assert not (dest / "100").exists()
+    assert not (dest / "local.cfg").exists()
+    assert not (dest / "mycase.foam").exists()
+
+
+def test_case_copy_ignore_baramflow_drops_our_decompose_par_dict(tmp_path):
+    """BaramFlow writes its own decomposeParDict: shipping ours makes its
+    setup fail (stale np / existing processor dirs) and the run cannot
+    write results (user report 2026-10-09)."""
+    from polyfoammesh.core.openfoam_export import case_copy_ignore
+
+    case = _make_case(tmp_path)
+    baram = case_copy_ignore(case, for_baramflow=True)
+    assert baram(case / "system", ["controlDict", "decomposeParDict"]) == {
+        "decomposeParDict"
+    }
+    # ... while the direct export keeps it
+    direct = case_copy_ignore(case)
+    assert direct(case / "system", ["controlDict", "decomposeParDict"]) == set()
+
+
+def test_case_copy_ignore_top_level_set(tmp_path):
+    from polyfoammesh.core.openfoam_export import case_copy_ignore
+
+    case = _make_case(tmp_path)
+    ignore = case_copy_ignore(case)
+    names = [p.name for p in case.iterdir()]
+    dropped = ignore(case, names)
+    assert {
+        "processor0", "VTK_view", "postProcessing", "100",
+        "mesh.msh", "local.cfg", "mycase.foam",
+    } <= dropped
+    assert {"0", "constant", "system"} & dropped == set()
 
 
 def test_mesh_only_case_exports_without_zero_dir(tmp_path):
