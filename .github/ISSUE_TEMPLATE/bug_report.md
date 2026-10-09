@@ -1,27 +1,27 @@
 ---
 name: Bug report
-about: Segnala un problema riproducibile
+about: Report a reproducible problem
 title: ""
 labels: bug
 ---
 
-**Descrizione**
-Cosa succede, cosa ti aspettavi.
+**Description**
+What happens, what you expected.
 
-**Come riprodurlo**
+**How to reproduce it**
 1.
 2.
 
-**Geometria**
-STEP/STL usato (allega se possibile, o descrivi le caratteristiche: dimensioni, watertight sì/no).
+**Geometry**
+STEP/STL used (attach if possible, or describe the characteristics: dimensions, watertight yes/no).
 
-**Ambiente**
-- Versione PolyFoamMesh:
+**Environment**
+- PolyFoamMesh version:
 - Windows:
-- WSL2 + OpenFOAM installato: sì/no
+- WSL2 + OpenFOAM installed: yes/no
 
 **Log**
-Incolla `%APPDATA%\polyfoammesh\logs\app.log` (o la parte rilevante).
+Paste `%APPDATA%\polyfoammesh\logs\app.log` (or the relevant part).
 
-**Hai controllato [docs/residual_risks.md](../../docs/residual_risks.md)?**
-sì/no — elenca i limiti già noti.
+**Did you check [docs/residual_risks.md](../../docs/residual_risks.md)?**
+yes/no — it lists the already known limitations.

@@ -1,43 +1,43 @@
 # Contributing to PolyFoamMesh
 
-Grazie per l'interesse. Il progetto è giovane come open source: issue e PR
-sono benvenute, ma tieni presente che è mantenuto da una persona sola.
+Thanks for your interest. The project is young as open source: issues and PRs
+are welcome, but keep in mind that it is maintained by a single person.
 
-## Setup ambiente di sviluppo
+## Development environment setup
 
 ```bash
 pip install -e ".[test]"
 pip install ruff
 ```
 
-Requisiti runtime: Python 3.11+, GMSH (`pip install gmsh`), opzionalmente
-OpenFOAM v2512 in WSL2 per i percorsi cfMesh/checkMesh — vedi [README](README.md).
+Runtime requirements: Python 3.11+, GMSH (`pip install gmsh`), optionally
+OpenFOAM v2512 in WSL2 for the cfMesh/checkMesh paths — see [README](README.md).
 
-## Prima di aprire una PR
+## Before opening a PR
 
 ```bash
 ruff check src/ tests/
 pytest tests/ -m "not slow and not wsl" -q
 ```
 
-Questi due comandi sono lo stesso gate che gira in CI
-([.github/workflows/ci.yml](.github/workflows/ci.yml)). I test marcati `slow`
-o `wsl` richiedono un ambiente Windows+WSL2+OpenFOAM reale e non girano su
-CI: eseguili in locale se la tua modifica tocca quei percorsi.
+These two commands are the same gate that runs in CI
+([.github/workflows/ci.yml](.github/workflows/ci.yml)). The tests marked `slow`
+or `wsl` require a real Windows+WSL2+OpenFOAM environment and do not run in
+CI: run them locally if your change touches those paths.
 
-## Segnalare un bug
+## Reporting a bug
 
-Apri una issue con: geometria di input (o una minimale che riproduce il
-problema), comando/percorso usato in GUI, log da `%APPDATA%\polyfoammesh\logs\app.log`.
+Open an issue with: input geometry (or a minimal one that reproduces the
+problem), command/path used in the GUI, log from `%APPDATA%\polyfoammesh\logs\app.log`.
 
-## Limiti noti
+## Known limitations
 
-Prima di segnalare un comportamento come bug, controlla
-[docs/residual_risks.md](docs/residual_risks.md) — elenca i limiti già
-noti e documentati (timeout su mesh molto grandi, casi di geometria concava,
-ecc.).
+Before reporting a behaviour as a bug, check
+[docs/residual_risks.md](docs/residual_risks.md) — it lists the already
+known and documented limitations (timeouts on very large meshes, concave
+geometry cases, etc.).
 
-## Licenza dei contributi
+## Contribution license
 
-Il progetto è GPLv3 ([LICENSE](LICENSE)). Contribuendo accetti che il tuo
-codice venga distribuito sotto la stessa licenza.
+The project is GPLv3 ([LICENSE](LICENSE)). By contributing you accept that your
+code is distributed under the same license.
