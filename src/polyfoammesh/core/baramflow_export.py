@@ -158,6 +158,16 @@ def export_case(case_dir: Path | str, dest_parent: Path | str) -> Path:
     if dest == case_dir:
         raise ValueError("Destination must differ from the source case directory.")
 
-    shutil.copytree(case_dir, dest, dirs_exist_ok=True)
+    # Ship a CLEAN case: app artifacts and stale run data (processor*,
+    # VTK_view, mesh.msh, tet backup, postProcessing, previous results,
+    # local.cfg/*.foam, our decomposeParDict) make BaramFlow's own setup
+    # fail and the solver unable to write results (user report
+    # 2026-10-09: "after the run BaramFlow cannot write the results").
+    from polyfoammesh.core.openfoam_export import case_copy_ignore
+
+    shutil.copytree(
+        case_dir, dest, dirs_exist_ok=True,
+        ignore=case_copy_ignore(case_dir, for_baramflow=True),
+    )
     logger.info("Exported BaramFlow case to %s", dest)
     return dest
