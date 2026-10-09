@@ -372,33 +372,14 @@ class ParamsPanel(QWidget):
         # it exactly when it helps (groove1/slot1-style concave junctions)
         # without degrading the cases where the standard path already wins.
 
-        # 2026-10-06: ONE robust-BL flag bundles the two measured fixes
-        # (benchmark combo: poly 9/10 vs snappy 6/10). The edge filter drops
-        # sliver-EDGE base faces (0.9 x median) so the per-vertex inversion
-        # clamp stops capping every stack at the smallest sliver edge, and
-        # the budget termination reduces the layer count at FULL size instead
-        # of squeezing pancake stacks. Opt-in, unchecked by default: on
-        # geometries with many sliver faces ~20% of wall AREA loses its
-        # prisms, so it stays a user choice, never a default. The concave
-        # closure checkbox above is a DIFFERENT mechanism (per-vertex
-        # exclusions) and stays separate on purpose.
-        self._bl_robust = QCheckBox("Robust boundary layer (recommended, experimental)")
-        self._bl_robust.setToolTip(
-            "Enables the two boundary-layer fixes measured on the benchmark "
-            "(poly 9/10 vs snappy 6/10):\n"
-            "• sliver-face filter: excludes wall faces with a tiny edge "
-            "(< 0.9 x median) from extrusion, which otherwise cap the height "
-            "of the WHOLE stack (0.5*min_edge clamp) and produce squashed, "
-            "non-orthogonal prisms up to 146°;\n"
-            "• budget termination: where space is insufficient, reduces the "
-            "NUMBER of layers at full size instead of compressing every layer "
-            "into a squashed stack.\n"
-            "Measured on a real checkMesh: cube_duct 80.6→58.9 (PASS), "
-            "venturi 146→74, concave 105→66.8 (PASS). Cost: on geometries "
-            "with many sliver faces ~20% of the wall AREA is left without "
-            "prisms."
-        )
-        bl_form.addRow(self._bl_robust)
+        # 2026-10-06: the robust-BL bundle (sliver-edge filter 0.9 + budget
+        # termination, the benchmark combo: poly 9/10 vs snappy 6/10) used to
+        # be a checkbox. It is now ALWAYS ON whenever the BL is enabled - it
+        # measured better everywhere and a checkbox the user must know to
+        # tick is exactly the kind of knob this app avoids (user request:
+        # "basta spuntare enable boundary layers e lui si inserisce"). The
+        # concave closure is a DIFFERENT mechanism (per-vertex exclusions)
+        # and stays automatic in the worker fallback chain.
 
         # Physical inputs: the layer parameters above are derived from these
         # rather than guessed, which is how commercial meshers do it.
@@ -1296,13 +1277,12 @@ class ParamsPanel(QWidget):
             "applyToAll": self._bl_apply_all.isChecked(),
             # concave closure is now automatic (worker fallback chain), so
             # no 'concaveClosure' key is emitted any more.
-            # 2026-10-06 BL quality fixes (poly path, opt-in, default off):
-            # ONE flag bundles the sliver-edge base-face filter (0.9) and the
-            # budget termination; 0.0/False reproduce the historical path.
-            "minBaseEdgeFraction": (
-                0.9 if self._bl_robust.isChecked() else 0.0
-            ),
-            "terminateByBudget": self._bl_robust.isChecked(),
+            # BL quality fixes (poly path): the sliver-edge base-face filter
+            # (0.9) and the budget termination are now ALWAYS ON when the BL
+            # is enabled - measured best across the benchmark (poly 9/10 vs
+            # snappy 6/10) and no longer a user choice (no checkbox).
+            "minBaseEdgeFraction": 0.9,
+            "terminateByBudget": True,
         }
 
     def get_bl_apply_all(self) -> bool:

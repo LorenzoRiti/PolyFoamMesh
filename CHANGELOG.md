@@ -69,6 +69,13 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **Deselezione della faccia/patch nel viewer**: click sullo sfondo
+  vuoto ora **deseleziona davvero** (il vecchio codice usava
+  `pick_mouse_position`, che su un click a vuoto restituisce l'attore
+  *stale* del picker VTK: "niente colpito" non si verificava mai) e
+  ricliccare la patch evidenziata la **deseleziona** (toggle). Rimosso
+  anche il fallback su `picked_actor`, che ri-selezionava la patch
+  precedente a ogni click a vuoto.
 - **Doppio pulsante Cancel durante un run**: `set_meshing_state(True)`
   rietichettava ancora il pulsante "Generate Mesh" come "Cancel" rosso
   (retaggio di quando il Cancel dedicato non esisteva), quindi durante la
@@ -242,6 +249,17 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Modificato
 
+- **Robust boundary layer sempre attivo**: la casella "Robust boundary
+  layer (recommended, experimental)" è stata rimossa — il bundle
+  misurato (filtro facce sliver 0.9 + terminazione a budget) ora si
+  attiva **da solo** quando si spunta "Enable Boundary Layers". Niente
+  più knob da sapere: spunti il BL e lui entra con le impostazioni
+  giuste.
+- **Dock sinistro ordinato**: la tabella patch ora **riempie** lo spazio
+  sotto il workflow (era cappata a 140px con una banda grigia vuota
+  sopra) e il titolo "Patches" ha lo stesso stile di "Next action": la
+  colonna sinistra è una lista ordinata (Workflow → Next action →
+  Patches).
 - **Chiusura concava automatica**: il worker ritenta da solo
   `decoupled_vertex` (H4) quando il percorso standard fallisce, poi
   dimezza il primo strato. Si attiva dove serve (giunzioni concave:

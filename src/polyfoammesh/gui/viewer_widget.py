@@ -863,7 +863,13 @@ class ViewerWidget(QWidget):
         layout = QVBoxLayout(self._patch_panel)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(2)
-        layout.addWidget(QLabel("Patches"))
+        title = QLabel("Patches")
+        # Same style as the "Next action" title so the left dock reads as
+        # one ordered column (user request: make the app look tidy).
+        title.setStyleSheet(
+            "padding: 6px 4px 0 4px; font-size: 10px; font-weight: bold;"
+        )
+        layout.addWidget(title)
         self._patch_table = QTableWidget(0, 3)
         self._patch_table.setHorizontalHeaderLabels(["Name", "Faces", "Type"])
         self._patch_table.verticalHeader().setVisible(False)
@@ -878,8 +884,10 @@ class ViewerWidget(QWidget):
         self._patch_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._patch_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._patch_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self._patch_table.setMaximumHeight(140)
-        self._patch_table.setMinimumHeight(60)
+        # No height cap: the table fills the left dock below the workflow
+        # hint instead of leaving a dead gray band above it (user request:
+        # the dock looked unordered).
+        self._patch_table.setMinimumHeight(120)
         self._patch_table.itemSelectionChanged.connect(self._on_patch_row_selected)
         self._patch_table.itemChanged.connect(self._on_patch_item_changed)
         self._patch_table.itemDoubleClicked.connect(self._on_patch_item_double_clicked)
@@ -1624,18 +1632,25 @@ class ViewerWidget(QWidget):
         # with a DIFFERENT address than the pv.PolyData we built, so that
         # lookup never matched and Select Patch silently did nothing.
         # The actor object itself is never copied, so match on that instead.
-        if actor is None:
-            actor = self._plotter.picked_actor if self._plotter else None
+        #
+        # No `picked_actor` fallback on a None actor: the plotter's picker
+        # keeps the last actor on a miss, so the fallback re-selected the
+        # previous patch on every empty click (part of the un-clearable
+        # selection bug, user report).
         if actor is None:
             return
         addr = actor.GetAddressAsString("")
         name = self._pvdata_to_name.get(addr)
-        if name is not None:
-            logger.info("Picked patch '%s'", name)
-            self._select_patch_row(name)
-            self.face_picked.emit(name)
-        else:
+        if name is None:
             logger.debug("Picked actor addr=%s not in mapping", addr)
+            return
+        if name == getattr(self, "_selected_patch_name", None):
+            # Clicking the highlighted patch again clears it (toggle).
+            self._clear_patch_selection()
+            return
+        logger.info("Picked patch '%s'", name)
+        self._select_patch_row(name)
+        self.face_picked.emit(name)
 
     def is_showing_cad(self) -> bool:
         """True while the CAD surface is the displayed geometry."""
@@ -1676,15 +1691,27 @@ class ViewerWidget(QWidget):
             logger.debug("click-deselect observer unavailable: %s", exc)
 
     def _on_viewer_click(self, *_args) -> None:
-        """Left click anywhere: if nothing is hit, clear the selection."""
+        """Left click anywhere: if nothing is hit, clear the selection.
+
+        Uses a FRESH vtkPropPicker instead of ``pick_mouse_position()``:
+        the VTK picker keeps its last actor on a miss, so the old code
+        could never see "nothing" and the selection was un-clearable
+        (user report).  A new picker has no previous state, so an empty
+        click reliably returns no actor.
+        """
         if self._plotter is None:
             return
         if getattr(self, "_selected_patch_name", None) is None:
             return
+        actor = None
         try:
-            res = self._plotter.pick_mouse_position()
-            actor = res[0] if isinstance(res, tuple) else res
-        except Exception:
+            import vtk
+
+            x, y = self._plotter.iren.get_event_position()
+            picker = vtk.vtkPropPicker()
+            picker.Pick(x, y, 0, self._plotter.renderer)
+            actor = picker.GetActor()
+        except Exception:  # noqa: BLE001 - deselect is best effort
             actor = None
         if actor is None:
             self._clear_patch_selection()
