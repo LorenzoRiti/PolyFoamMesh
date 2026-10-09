@@ -44,6 +44,8 @@ def test_default_mesher_is_polymesh_and_fem_is_gone(panel):
     assert panel.get_mesher_type() == "gmsh_direct_poly"
     assert set(_buttons(panel)) == {"cfmesh", "gmsh_direct_poly"}
     assert "gmsh_direct" not in _buttons(panel)
+    # Polymesh comes FIRST, cfMesh second (user request 2026-10-09).
+    assert [k for _b, k in panel._mesher_keys] == ["gmsh_direct_poly", "cfmesh"]
 
 
 def test_cfd_poly_forces_conversion_on_and_hides_checkbox(panel):
@@ -58,10 +60,14 @@ def test_switching_back_to_cfmesh_restores_checkbox(panel):
     buttons["cfmesh"].click()
     assert panel.get_mesher_type() == "cfmesh"
     # cfMesh keeps the optional "Convert to polyhedral mesh" checkbox visible
+    # and UNCHECKED by default (user request 2026-10-09: the hex-dominant
+    # mesh is the point there; poly conversion is opt-in).
     assert not panel._poly_check.isHidden()
+    assert not panel._poly_check.isChecked()
     buttons["gmsh_direct_poly"].click()
     assert panel.get_mesher_type() == "gmsh_direct_poly"
     assert panel._poly_check.isHidden()
+    assert panel._poly_check.isChecked()
 
 
 def test_set_all_enabled_toggles_mesher_buttons(panel):

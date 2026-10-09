@@ -494,6 +494,17 @@ class ParamsPanel(QWidget):
         # resolved via PATH. Windows text kept byte-identical.
         _w = _platform_mesher_wording()
 
+        # Polymesh is the DEFAULT path and comes FIRST (user request: the
+        # poly route is the product's core, cfMesh is the alternative).
+        _add_mesher_btn(
+            f"Polymesh  (poly, {_w['no_of_label']})",
+            "gmsh_direct_poly",
+            "Polyhedral mesh from our Polymesh mesher: barycentric-dual\n"
+            "rebuild — 100% polyhedral coverage, ~5.5x lower cell count\n"
+            f"(STAR-CCM+ style). Ideal for CFD. {_w['no_of_sentence']}\n"
+            "Works best with real STEP/CAD input.",
+            checked=True,
+        )
         _add_mesher_btn(
             f"Cartesian cfMesh  ({_w['of_req']})",
             "cfmesh",
@@ -503,17 +514,6 @@ class ParamsPanel(QWidget):
             "convert the hex-dominant mesh to polyhedral (polyDualMesh).\n"
             "The dual of a cartesian mesh stays very regular/grid-like\n"
             "(boundary cells ~99% quadrilaterals).",
-        )
-        # Polymesh is the DEFAULT path (user request: the poly route is the
-        # product's core, cfMesh is the optional alternative).
-        _add_mesher_btn(
-            f"Polymesh  (poly, {_w['no_of_label']})",
-            "gmsh_direct_poly",
-            "Polyhedral mesh from our Polymesh mesher: barycentric-dual\n"
-            "rebuild — 100% polyhedral coverage, ~5.5x lower cell count\n"
-            f"(STAR-CCM+ style). Ideal for CFD. {_w['no_of_sentence']}\n"
-            "Works best with real STEP/CAD input.",
-            checked=True,
         )
         # "FEM Tetra (GMSH)" was removed (user request): a pure tet mesh for
         # FEM solvers was a niche that duplicated the GMSH stage; the
@@ -638,7 +638,7 @@ class ParamsPanel(QWidget):
         )
         adv_layout.addWidget(self._poly_check)
         # Sync the "Convert to polyhedral mesh" checkbox to the mesher
-        # button selected at startup (default cfMesh -> checkbox visible).
+        # selected at startup (default Polymesh -> forced ON + hidden).
         self._on_mesher_changed(self.get_mesher_type())
 
         # Cell sizes are derived from the Mesh Fineness slider (single
@@ -1882,10 +1882,10 @@ class ParamsPanel(QWidget):
     def _on_mesher_changed(self, key: str) -> None:
         # "Polymesh" (gmsh_direct_poly) forces the poly conversion ON and
         # hides the checkbox (nothing to forget); "FEM Tetra" (gmsh_direct)
-        # forces it OFF; "Cartesian cfMesh" keeps the manual checkbox —
-        # poly there is optional either way (its hex-dual is grid-like/
-        # regular regardless). This mirrors the previous dropdown behaviour
-        # exactly, keyed by the pipeline values get_mesher_type() returns.
+        # forces it OFF; "Cartesian cfMesh" shows the manual checkbox,
+        # UNCHECKED by default (user request: with cfMesh the conversion
+        # must not be ticked out of the box - the hex-dominant mesh is the
+        # point there; the user enables the poly dual explicitly if wanted).
         if key == "gmsh_direct_poly":
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(True)
@@ -1894,6 +1894,7 @@ class ParamsPanel(QWidget):
             self._poly_check.setChecked(False)
         else:  # cfmesh
             self._poly_check.setVisible(True)
+            self._poly_check.setChecked(False)
 
     def save_params(self, s):
         s.setValue("params/detail_slider", self._detail_slider.value())
