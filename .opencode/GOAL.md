@@ -1056,3 +1056,16 @@ resto). P7 = esclusione geometrica dei cappucci inlet/outlet (normale
 axis-aligned all'asse di flusso + piano al bbox estremo + patch planare
 >=4 facce, + anello rim), gated OFF per apply_to_all=True (benchmark).
 La barra "BL multi-layer su geometria complessa" e' RAGGIUNTA.
+
+## 2026-10-08 - FREEZE PER IL RILASCIO (decisione utente)
+
+Feature congelate: si finalizza il rilascio. Il programma "rewrite del
+dual" (costruzione del bordo per superare il muro topologico del venturi
+NO 97/skew 18) e' rimandato AL PROSSIMO CICLO, da pianificare come
+programma dedicato. In chiusura: (1) ri-validazione benchmark completa
+con la nuova semantica BL [in corso]; (2) CHANGELOG aggiornato (P6/P7,
+doppio Cancel, accuratezza topologica P5) + USER_GUIDE (BL su geometrie
+complesse); (3) al verde del benchmark: header versione nel CHANGELOG +
+bump _version.py + build installer. Nota onesta per il rilascio: il
+venturi resta "Failed 3" per le feature strutturali della gola (identiche
+al baseline dual-only, il BL non le peggiora e migliora pyramids/aspect).
