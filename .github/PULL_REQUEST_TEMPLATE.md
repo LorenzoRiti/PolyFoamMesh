@@ -1,32 +1,32 @@
 ---
 name: Pull Request
-about: Proposta di modifica
+about: Proposed change
 title: ""
 labels: []
 assignees: []
 ---
 
-## Cosa fa
+## What it does
 
-<!-- Una o due frasi: cosa cambia, perché. -->
+<!-- One or two sentences: what changes, why. -->
 
-## Verifiche fatte
+## Checks performed
 
-Prima di aprire la PR assicurati che il gate di CI passi in locale:
+Before opening the PR, make sure the CI gate passes locally:
 
 ```bash
 ruff check src/ tests/
 pytest tests/ -m "not slow and not wsl" -q
 ```
 
-- [ ] `ruff check` verde
-- [ ] suite fast verde (o `slow`/`wsl` eseguita in locale se la modifica tocca quei percorsi)
-- [ ] nessuna dipendenza nuova senza motivo (e niente dipendenze GPL-incompatibili)
+- [ ] `ruff check` green
+- [ ] fast suite green (or `slow`/`wsl` run locally if the change touches those paths)
+- [ ] no new dependency without a reason (and no GPL-incompatible dependencies)
 
-## Note per il reviewer
+## Notes for the reviewer
 
-<!-- Cosa guardare con attenzione, eventuali trade-off, ciò che hai lasciato fuori. -->
+<!-- What to look at carefully, any trade-offs, what you left out. -->
 
-## File toccati
+## Touched files
 
-<!-- Elenco breve: file più rilevanti, non l'output di git status. -->
+<!-- Short list: the most relevant files, not the output of git status. -->

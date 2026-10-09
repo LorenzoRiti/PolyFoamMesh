@@ -1,7 +1,5 @@
 # Installation
 
-**English** | [Italiano](INSTALL.it.md)
-
 There are two ways to get PolyFoamMesh: a **prebuilt Windows installer** (the
 recommended route — no Python involved, nothing else to set up) or **from
 source** (if you are a developer or want to contribute).

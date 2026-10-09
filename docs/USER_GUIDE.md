@@ -1,7 +1,5 @@
 # PolyFoamMesh - User Guide
 
-**English** | [Italiano](USER_GUIDE.it.md)
-
 PolyFoamMesh prepares OpenFOAM meshes without writing dictionaries by hand:
 load a CAD file, pick a mesher, generate, check quality, export. This guide
 explains the whole workflow - what each control does, in which order, and why.
