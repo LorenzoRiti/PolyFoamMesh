@@ -259,11 +259,12 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Modificato
 
-- **Layer visibili automaticamente (checkbox "Show BL" rimossa)**: non
-  serve più spuntare nulla — appena una mesh viene visualizzata, le celle
-  del boundary layer sono classificate in background e colorate
-  **arancioni** sul core grigio (una fascia da 0.5-1 mm è invisibile nel
-  colore-per-patch: mostrarla non è un'opzione, è informazione).
+- **Layer visibili dalla mesh stessa (overlay rimosso)**: la checkbox
+  "Show BL", la colorazione arancione delle celle e la colorbar che
+  compariva dopo la mesh sono state **eliminate** (richiesta utente:
+  inguardabili). I boundary layer si vedono come nella release
+  precedente: in "Surface with Edges" lo stack appare come la banda di
+  edge densi alla parete — è la mesh stessa, nessun overlay.
 - **Robust boundary layer sempre attivo**: la casella "Robust boundary
   layer (recommended, experimental)" è stata rimossa — il bundle
   misurato (filtro facce sliver 0.9 + terminazione a budget) ora si
