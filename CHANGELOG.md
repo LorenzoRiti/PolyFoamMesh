@@ -69,6 +69,16 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Corretto
 
+- **BOUNDARY LAYER SALTATO SU OGNI RUN DELL'APP (critico)**: la guardia
+  anti-doppio-BL contava le celle dual con forma da prisma e ne trovava
+  ~2.000 **coincidenze** su un dual senza BL (misurato: 2012/24.286 =
+  8% su un cono reale) → il worker credeva che il BL esistesse già
+  ("GMSH-baked BL detected") e **saltava lo stadio BL su ogni geometria**.
+  Ora la guardia richiede una copertura reale: ≥ 50% delle facce wall
+  con owner a forma di prisma (misurato: 0.14 senza BL vs 0.89 con BL).
+  **Verificato end-to-end sul cono reale dell'utente** (percorso worker):
+  5 layer su 100% del muro, 69.615 prismi, checkMesh **Mesh OK**
+  (NO 53.5, skew 1.54, pyramids 0).
 - **Deselezione della faccia/patch nel viewer**: click sullo sfondo
   vuoto ora **deseleziona davvero** (il vecchio codice usava
   `pick_mouse_position`, che su un click a vuoto restituisce l'attore
@@ -249,6 +259,11 @@ il progetto segue [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Modificato
 
+- **Layer visibili automaticamente (checkbox "Show BL" rimossa)**: non
+  serve più spuntare nulla — appena una mesh viene visualizzata, le celle
+  del boundary layer sono classificate in background e colorate
+  **arancioni** sul core grigio (una fascia da 0.5-1 mm è invisibile nel
+  colore-per-patch: mostrarla non è un'opzione, è informazione).
 - **Robust boundary layer sempre attivo**: la casella "Robust boundary
   layer (recommended, experimental)" è stata rimossa — il bundle
   misurato (filtro facce sliver 0.9 + terminazione a budget) ora si

@@ -155,7 +155,9 @@ def test_wall_role_is_not_excluded_by_name_inference(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Viewer "Show BL" smoke (offscreen, no real plotter)
+# Viewer BL overlay smoke (offscreen, no real plotter).  The old "Show BL"
+# checkbox was removed: the overlay is automatic, so these tests exercise
+# the no-user-action path.
 # ---------------------------------------------------------------------------
 
 pytest.importorskip("PySide6")
@@ -171,20 +173,23 @@ def _bare_with_mask_attrs() -> "ViewerWidget":
     w._bl_cells = None
     w._bl_grid = None
     w._bl_active = False
-    w._bl_check = MagicMock()
+    w._bl_classify_attempted = False
     return w
 
 
-def test_bl_toggle_off_and_on_without_plotter_does_not_raise():
+def test_auto_overlay_without_plotter_does_not_raise():
     w = _bare_with_mask_attrs()
-    # OFF branch hits _redisplay_current, which no-ops with no plotter.
-    w._on_bl_toggled(False)
-    # ON branch with no case dir logs and unchecks — must not raise.
-    w._on_bl_toggled(True)
-    w._bl_check.setChecked.assert_called()
+    # No case dir -> no classification attempt, no raise.
+    w._maybe_apply_bl_overlay()
+    assert w._bl_classify_attempted is False
+    # Mask present -> _apply_bl_display hits the no-plotter branch and
+    # deactivates cleanly instead of raising.
+    w._bl_cells = np.array([True, False])
+    w._maybe_apply_bl_overlay()
+    assert w._bl_active is False
 
 
-def test_toggle_exists_on_a_real_widget(monkeypatch):
+def test_show_bl_checkbox_is_gone_from_a_real_widget(monkeypatch):
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
 
@@ -198,9 +203,7 @@ def test_toggle_exists_on_a_real_widget(monkeypatch):
 
     w = ViewerWidget()
     try:
-        assert hasattr(w, "_bl_check")
-        assert w._bl_check.text() == "Show BL"
-        assert w._bl_check.isVisible() is False  # CAD/no mesh -> hidden
+        assert not hasattr(w, "_bl_check")
     finally:
         w.deleteLater()
 
