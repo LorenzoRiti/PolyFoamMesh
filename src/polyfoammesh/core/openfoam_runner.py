@@ -39,10 +39,25 @@ _now = time.monotonic
 # "Serializing surface 46") while emitting no output at all. The volume worker
 # tracks the time of the last output line and, if nothing arrives for
 # GMSH_STALL_TIMEOUT_S, kills the process tree and retries ONCE in robust mode
-# (POLYFOAMMESH_GMSH_ROBUST=1: healing + MeshAdapt, no optimization). A healthy
-# run whose output keeps flowing is never touched, however long it takes.
+# (POLYFOAMMESH_GMSH_ROBUST=1: healing + Delaunay 2D, no optimization). A
+# healthy run whose output keeps flowing is never touched, however long it
+# takes.
+#
+# The budget is NOT flat 300 s for every run: a large mesh legitimately goes
+# silent for long stretches while GMSH's 3D phase works (measured on the real
+# 7M-tet Parte4 part: individual "Computing mesh sizes" gaps of ~54 s, which
+# scale with machine load/thread count). `_gmsh_stall_budget_s` scales the
+# base 300 s up to GMSH_STALL_MAX_TIMEOUT_S (900 s) with the estimated job
+# size, so the robust retry is not killed mid-work; the periodic heartbeat
+# also reports the child's CPU usage so a busy-but-silent process is visibly
+# different from a dead one.
 # Override the threshold with env POLYFOAMMESH_GMSH_STALL_S (seconds).
 GMSH_STALL_TIMEOUT_S = 300.0
+#: Upper bound of the size-scaled no-output budget (large jobs).
+GMSH_STALL_MAX_TIMEOUT_S = 900.0
+#: Estimated-cell bounds over which the budget ramps from base to the max.
+GMSH_STALL_SMALL_CELLS = 500_000
+GMSH_STALL_LARGE_CELLS = 5_000_000
 GMSH_STALL_ENV_VAR = "POLYFOAMMESH_GMSH_STALL_S"
 GMSH_ROBUST_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST"
 
@@ -70,6 +85,67 @@ def _gmsh_stall_timeout_s() -> float:
                 GMSH_STALL_ENV_VAR, raw, GMSH_STALL_TIMEOUT_S,
             )
     return GMSH_STALL_TIMEOUT_S
+
+
+def _gmsh_stall_env_overridden() -> bool:
+    """True when POLYFOAMMESH_GMSH_STALL_S pins an explicit valid threshold.
+
+    When the user pins the threshold we must NOT size-scale it — they asked
+    for exactly that many seconds.
+    """
+    raw = os.environ.get(GMSH_STALL_ENV_VAR)
+    if not raw:
+        return False
+    try:
+        return float(raw) > 0
+    except ValueError:
+        return False
+
+
+def _gmsh_stall_budget_s(base_s: float, est_cells: int | None = None) -> float:
+    """Size-scaled no-output budget: *base_s* (300 s) for small jobs, ramping
+    linearly in estimated cell count up to ``GMSH_STALL_MAX_TIMEOUT_S`` (900 s)
+    for large ones.
+
+    *est_cells* <= 0 / ``None`` returns *base_s* unchanged, so callers that
+    cannot estimate a size keep the historical hard budget. The ramp is linear
+    between ``GMSH_STALL_SMALL_CELLS`` and ``GMSH_STALL_LARGE_CELLS`` and
+    clamped to the maximum, so the returned value is always >= *base_s* and
+    <= max(base, GMSH_STALL_MAX_TIMEOUT_S).
+    """
+    if not est_cells or est_cells <= GMSH_STALL_SMALL_CELLS:
+        return float(base_s)
+    span = max(1, GMSH_STALL_LARGE_CELLS - GMSH_STALL_SMALL_CELLS)
+    frac = min(1.0, (float(est_cells) - GMSH_STALL_SMALL_CELLS) / span)
+    ceiling = max(float(base_s), GMSH_STALL_MAX_TIMEOUT_S)
+    return float(base_s) + (ceiling - float(base_s)) * frac
+
+
+def _gmsh_job_cell_estimate(step_path, max_cells_target: int = 0) -> int:
+    """Rough cell count of the volume mesh about to be built, to size the
+    stall budget only.
+
+    Prefers the explicit GUI target when set; otherwise falls back to the
+    adaptive path's own machine cell cap (``gmsh_wrapper._hardware_budget``) —
+    the number of cells the adaptive sizing is allowed to spend on this
+    machine, i.e. a machine+detail-scaled "how large can this job be".
+    Returns 0 when nothing can be estimated (budget stays at the base).
+    """
+    try:
+        target = int(max_cells_target or 0)
+    except (TypeError, ValueError):
+        target = 0
+    if target > 0:
+        return target
+    try:
+        from polyfoammesh.core.gmsh_wrapper import _hardware_budget
+
+        return int(_hardware_budget(None).get("max_cells", 0) or 0)
+    except Exception:
+        logger.debug(
+            "stall watchdog: no job-size estimate for %s", step_path, exc_info=True
+        )
+        return 0
 
 
 def _posix_popen_kwargs() -> dict:
@@ -2547,6 +2623,59 @@ def _release_job(proc) -> None:
         pass
 
 
+def _process_cpu_seconds(proc) -> float | None:
+    """Cumulative CPU time (user+system seconds) of *proc*, best-effort.
+
+    Observability for the stall watchdog: a silent GMSH child whose CPU time
+    keeps climbing is working (HXT's "Computing mesh sizes" phase emits
+    nothing for a minute at a time), while a flat CPU time means it is really
+    stuck. Prefers psutil; falls back to the stdlib-only platform APIs
+    (GetProcessTimes on Windows, /proc on POSIX) so it works in a frozen build
+    with no extra dependency. Returns ``None`` when no probe is available.
+    """
+    if proc is None:
+        return None
+    try:
+        import psutil  # type: ignore
+        times = psutil.Process(proc.pid).cpu_times()
+        return float(times.user + times.system)
+    except Exception:
+        logger.debug("stall watchdog: psutil CPU probe unavailable", exc_info=True)
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class _FILETIME(ctypes.Structure):
+                _fields_ = [("dwLowDateTime", ctypes.c_ulong),
+                            ("dwHighDateTime", ctypes.c_ulong)]
+
+            def _ft_to_s(ft):
+                return ((ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 1e7
+
+            handle = int(proc._handle)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            creation, exit_t, kernel, user = (
+                _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME(),
+            )
+            ok = kernel32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exit_t),
+                ctypes.byref(kernel), ctypes.byref(user),
+            )
+            if ok:
+                return _ft_to_s(kernel) + _ft_to_s(user)
+        except Exception:
+            logger.debug("stall watchdog: Windows CPU probe failed", exc_info=True)
+        return None
+    try:
+        with open(f"/proc/{proc.pid}/stat", "r", encoding="utf-8") as fh:
+            fields = fh.read().split()
+        ticks = os.sysconf("SC_CLK_TCK")
+        return (int(fields[13]) + int(fields[14])) / float(ticks)
+    except Exception:
+        logger.debug("stall watchdog: /proc CPU probe failed", exc_info=True)
+        return None
+
+
 def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
                        heartbeat_s: float = 10, proc_holder=None,
                        stall_s: float | None = None, stall_holder=None):
@@ -2686,6 +2815,8 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
 
     start = time.monotonic()
     timed_out = False
+    # CPU-time sampler state for the heartbeat: (wall_time, cumulative_cpu_s).
+    _cpu_prev = [start, _process_cpu_seconds(proc)]
     while True:
         ret = proc.poll()
         if ret is not None:
@@ -2715,8 +2846,20 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
                 proc.kill()
             break
         if now - last_activity[0] > heartbeat_s:
-            on_line(f"... still running ({int(now - start)}s elapsed, "
-                     f"no output for {int(now - last_activity[0])}s)")
+            # CPU% over this heartbeat window: a busy-but-silent child shows a
+            # high number here even though no log line arrived (the exact
+            # false-positive the raised budget exists to tolerate).
+            cpu_pct = None
+            cpu_now = _process_cpu_seconds(proc)
+            if cpu_now is not None and _cpu_prev[1] is not None:
+                wall_delta = max(1e-6, now - _cpu_prev[0])
+                cpu_pct = 100.0 * max(0.0, cpu_now - _cpu_prev[1]) / wall_delta
+            _cpu_prev[0], _cpu_prev[1] = now, cpu_now
+            cpu_txt = f", CPU {cpu_pct:.0f}%" if cpu_pct is not None else ", CPU n/a"
+            on_line(
+                f"... still running ({int(now - start)}s elapsed, "
+                f"no output for {int(now - last_output[0])}s{cpu_txt})"
+            )
             last_activity[0] = now
         time.sleep(0.5)
 
@@ -2915,12 +3058,27 @@ class GmshVolumeWorker(QObject):
         # Stall watchdog: GMSH can hang forever in its surface-meshing loop
         # while emitting nothing. One robust retry (the other lane reads
         # POLYFOAMMESH_GMSH_ROBUST=1) then an honest failure — never a loop.
+        #
+        # Budget policy: the normal (MeshAdapt) attempt keeps the flat base
+        # (300 s) so the known 2D hang fails over fast; the ROBUST retry is
+        # the one expected to finish, and a large job legitimately goes
+        # silent for minutes during HXT's 3D phase (measured ~54 s gaps on a
+        # 7M-tet part, scaling with machine load), so it gets the
+        # size-scaled budget up to 900 s. An explicit
+        # POLYFOAMMESH_GMSH_STALL_S pins both attempts — no scaling.
         stall_s = _gmsh_stall_timeout_s()
+        est_cells = _gmsh_job_cell_estimate(self._step_path, self._max_cells_target)
+        if _gmsh_stall_env_overridden():
+            robust_stall_s = stall_s
+        else:
+            robust_stall_s = _gmsh_stall_budget_s(stall_s, est_cells)
         robust = False
         while True:
             attempt_env = dict(env)
+            attempt_stall_s = stall_s
             if robust:
                 attempt_env[GMSH_ROBUST_ENV_VAR] = "1"
+                attempt_stall_s = robust_stall_s
             self._proc_holder.clear()
             stall_holder: dict = {}
             try:
@@ -2928,7 +3086,7 @@ class GmshVolumeWorker(QObject):
                     cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=attempt_env,
                     on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
                     proc_holder=self._proc_holder,
-                    stall_s=stall_s,
+                    stall_s=attempt_stall_s,
                     stall_holder=stall_holder,
                 )
             except Exception as exc:
@@ -2955,17 +3113,24 @@ class GmshVolumeWorker(QObject):
                     )
                     self.failed.emit(
                         "GMSH volume stalled twice: no output for "
-                        f"{int(no_output_s)}s in normal mode, and again in "
-                        "robust mode (healing + MeshAdapt, no optimization). "
-                        "The surface is likely unmeshable; see the log above."
+                        f"{int(no_output_s)}s in robust mode (healing + "
+                        "Delaunay 2D, no optimization) after the normal "
+                        "attempt also stalled. The surface is likely "
+                        "unmeshable; see the log above."
                     )
                     return
                 self.log_line.emit(
                     "[gmsh] stalled: no output for "
                     f"{int(no_output_s)}s (surface meshing loop?) - killed; "
-                    "retrying in robust mode (healing + MeshAdapt, no "
+                    "retrying in robust mode (healing + Delaunay 2D, no "
                     "optimization)"
                 )
+                if robust_stall_s > stall_s:
+                    self.log_line.emit(
+                        f"[gmsh] robust stall budget raised to "
+                        f"{int(robust_stall_s)}s (estimated {est_cells:,} cells; "
+                        f"base {int(stall_s)}s)"
+                    )
                 robust = True
                 continue
 

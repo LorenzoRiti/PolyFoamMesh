@@ -13,7 +13,8 @@ Covered here:
 (b) silence > N kills the tree and the worker retries once with the env var;
 (c) a second stall fails the stage (exactly two attempts, no loop);
 (d) a healthy stream that keeps printing is never killed, however long;
-(e) the threshold is configurable via POLYFOAMMESH_GMSH_STALL_S.
+(e) the threshold is configurable via POLYFOAMMESH_GMSH_STALL_S;
+(f) the budget is size-scaled for large jobs and the heartbeat reports CPU.
 """
 from __future__ import annotations
 
@@ -99,6 +100,10 @@ def test_healthy_long_stream_is_never_killed():
     assert res["rc"] == 0
     # Heartbeats coexist with the watchdog: they fire without killing.
     assert any("still running" in line for line in res["live"])
+    # The heartbeat reports the child's CPU usage so a busy-but-silent process
+    # is distinguishable from a dead one (probe may be psutil or the stdlib
+    # fallback; either way the heartbeat line carries a CPU field).
+    assert any("still running" in line and "CPU" in line for line in res["live"])
     assert len(res["stdout"]) == 8
 
 
@@ -151,6 +156,45 @@ def test_stall_threshold_invalid_values_fall_back(monkeypatch, bad):
     assert ofr._gmsh_stall_timeout_s() == ofr.GMSH_STALL_TIMEOUT_S
 
 
+def test_stall_budget_scales_with_job_size():
+    """(f) The no-output budget ramps from the 300 s base to 900 s with size."""
+    base = ofr.GMSH_STALL_TIMEOUT_S
+    assert ofr.GMSH_STALL_MAX_TIMEOUT_S == 900.0
+    # Unknown / small jobs keep the flat base.
+    assert ofr._gmsh_stall_budget_s(base, None) == base
+    assert ofr._gmsh_stall_budget_s(base, 0) == base
+    assert ofr._gmsh_stall_budget_s(base, ofr.GMSH_STALL_SMALL_CELLS) == base
+    # Large jobs reach the maximum and never exceed it.
+    assert ofr._gmsh_stall_budget_s(base, ofr.GMSH_STALL_LARGE_CELLS) == 900.0
+    assert ofr._gmsh_stall_budget_s(base, 20_000_000) == 900.0
+    # Mid-size jobs land strictly between base and max (measured ramp).
+    mid = ofr._gmsh_stall_budget_s(base, 1_000_000)
+    assert base < mid < 900.0
+    # A base above the ceiling is honoured as-is (never lowered).
+    assert ofr._gmsh_stall_budget_s(1200.0, 20_000_000) == 1200.0
+
+
+def test_stall_env_override_is_not_size_scaled(monkeypatch):
+    """An explicit POLYFOAMMESH_GMSH_STALL_S pins the threshold exactly."""
+    monkeypatch.setenv(ofr.GMSH_STALL_ENV_VAR, "42")
+    assert ofr._gmsh_stall_env_overridden() is True
+    assert ofr._gmsh_stall_timeout_s() == 42.0
+    monkeypatch.delenv(ofr.GMSH_STALL_ENV_VAR)
+    assert ofr._gmsh_stall_env_overridden() is False
+
+
+def test_process_cpu_seconds_probe_returns_number_for_live_process():
+    """The CPU probe used by the heartbeat works on this interpreter."""
+    import os as _os
+
+    class _Proc:
+        pid = _os.getpid()
+
+    cpu = ofr._process_cpu_seconds(_Proc())
+    assert cpu is not None and cpu >= 0.0
+    assert ofr._process_cpu_seconds(None) is None
+
+
 # --- GmshVolumeWorker retry-or-fail (fake streaming loop) ------------------- #
 
 def _fake_stream_factory(outcomes):
@@ -181,7 +225,7 @@ def _fake_stream_factory(outcomes):
     return fake_stream, calls
 
 
-def _run_volume_worker(monkeypatch, outcomes, stall_env=None):
+def _run_volume_worker(monkeypatch, outcomes, stall_env=None, max_cells_target=0):
     if stall_env is not None:
         monkeypatch.setenv(ofr.GMSH_STALL_ENV_VAR, str(stall_env))
     fake_stream, calls = _fake_stream_factory(outcomes)
@@ -189,6 +233,7 @@ def _run_volume_worker(monkeypatch, outcomes, stall_env=None):
 
     worker = ofr.GmshVolumeWorker(
         step_path="geom.step", msh_path=Path("out.msh"), detail="medium",
+        max_cells_target=max_cells_target,
     )
     finished: list = []
     failed: list[str] = []
@@ -211,6 +256,7 @@ def test_stall_triggers_one_robust_retry_with_env_var(monkeypatch):
     assert calls[1]["env"][ofr.GMSH_ROBUST_ENV_VAR] == "1"
     # The configured threshold is what the worker passes to the watchdog.
     assert calls[0]["stall_s"] == 7.0
+    # Env override is never size-scaled: robust keeps the exact pinned value.
     assert calls[1]["stall_s"] == 7.0
 
     assert finished, "robust retry succeeded but stage did not finish"
@@ -218,7 +264,22 @@ def test_stall_triggers_one_robust_retry_with_env_var(monkeypatch):
     joined = "\n".join(logs)
     assert "stalled: no output for" in joined
     assert "retrying in robust mode" in joined
-    assert "healing + MeshAdapt" in joined
+    assert "healing + Delaunay 2D" in joined
+
+
+def test_robust_retry_gets_size_scaled_budget(monkeypatch):
+    """(f) A large job raises only the robust retry's no-output budget."""
+    # No env override -> size scaling applies. A large explicit target pushes
+    # the robust budget to the 900 s ceiling while the normal attempt stays
+    # at the flat 300 s base.
+    calls, _finished, _failed, logs = _run_volume_worker(
+        monkeypatch, outcomes=["stall", "ok"], max_cells_target=6_000_000,
+    )
+
+    assert len(calls) == 2, calls
+    assert calls[0]["stall_s"] == ofr.GMSH_STALL_TIMEOUT_S
+    assert calls[1]["stall_s"] == ofr.GMSH_STALL_MAX_TIMEOUT_S
+    assert any("robust stall budget raised to 900s" in line for line in logs)
 
 
 def test_second_stall_fails_stage_instead_of_looping(monkeypatch):
