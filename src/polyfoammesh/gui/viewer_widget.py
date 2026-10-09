@@ -45,12 +45,6 @@ VIEW_MODES = ["Surface", "Surface with Edges", "Wireframe"]
 _MESH_COLOR = (0.86, 0.88, 0.91)
 _HIGHLIGHT_COLOR = (1.0, 0.84, 0.0)
 
-#: "Show BL": boundary-layer prism cells painted warm over the grey core.
-#: Named colours (not hex) keep gui/ free of hardcoded hex values
-#: (tests/test_design_system.py).
-_BL_CORE_COLOR = "gainsboro"
-_BL_HIGHLIGHT_COLOR = "darkorange"
-
 _MAX_CLIP_FACES = 50_000
 
 BACKGROUNDS = {
@@ -715,12 +709,6 @@ class ViewerWidget(QWidget):
         #: name -> inferred role ("wall"/"inlet"/"outlet") for a generated
         #: mesh, from case_setup.infer_patch_roles. Empty for CAD.
         self._patch_roles: dict[str, str] = {}
-        #: "Show BL" state: a boolean mask over polyMesh cells, the full
-        #: internal-volume grid it was computed for, and whether the warm
-        #: boundary-layer overlay is currently painted.
-        self._bl_cells: np.ndarray | None = None
-        self._bl_grid: object | None = None
-        self._bl_active: bool = False
         self._patch_rename_guard: bool = False
         self._highlighted_actor = None
         self._showing_cad: bool = True
@@ -790,12 +778,11 @@ class ViewerWidget(QWidget):
 
         toolbar.addSpacing(8)
 
-        # The boundary-layer highlight is AUTOMATIC: as soon as a case mesh
-        # is displayed, the BL cells are classified and painted orange over
-        # the grey core (a 0.5-1 mm layer is invisible when the mesh is
-        # coloured by patch, so showing it is not optional information).
-        # The old "Show BL" checkbox was removed (user request: it made no
-        # sense to have to tick it, the layers should simply be visible).
+        # Boundary layers are visible through the mesh itself: in
+        # Surface-with-Edges the layer stack shows as the dense edge band
+        # at the wall (previous-release behaviour). No overlay colouring
+        # and no scalar bar (user request: the orange overlay was
+        # unreadable).
 
         self._stats_label = QLabel("")
         self._stats_label.setStyleSheet(
@@ -1199,159 +1186,10 @@ class ViewerWidget(QWidget):
         self._measure_summary.move(max(0, x), max(0, y))
         self._measure_summary.raise_()
 
-    # ------------------------------------------------------------------
-    # Boundary-layer overlay (AUTOMATIC): paint boundary-layer prism cells
-    # warm over the grey core.  The classification runs in a background
-    # task (the viewer's existing TaskManager); the mask is applied to the
-    # full internal-volume grid, which is the only representation that
-    # carries every cell.
-    # ------------------------------------------------------------------
-    def _log_bl(self, message: str) -> None:
-        logger.info("BL overlay: %s", message)
-
-    def _reset_bl_control(self) -> None:
-        """Drop any BL state (CAD/clear/new mesh)."""
-        self._bl_cells = None
-        self._bl_grid = None
-        self._bl_active = False
-        self._bl_classify_attempted = False
-
-    def _run_bl_classify(self, case_dir: Path) -> None:
-        """Classify BL cells in a background task, then apply the overlay."""
-        from polyfoammesh.core.bl_cells import classify_bl_cells
-
-        tasks = getattr(self, "_vtk_tasks", None)
-        if tasks is None:
-            self._log_bl("background task manager unavailable.")
-            self._bl_active = False
-            return
-
-        def work(worker):
-            return classify_bl_cells(case_dir)
-
-        def on_done(_name, payload):
-            mask, count = payload
-            if mask is None or count == 0 or len(mask) == 0:
-                self._log_bl(
-                    "no boundary-layer prism cells detected in this mesh."
-                )
-                self._bl_active = False
-                return
-            self._bl_cells = np.asarray(mask, dtype=bool)
-            self._apply_bl_display()
-
-        def on_failed(_name, msg):
-            self._log_bl(f"classification failed: {msg}")
-            self._bl_active = False
-
-        tasks.submit(
-            "bl_cells", FunctionWorker(work),
-            on_finished=on_done, on_failed=on_failed,
-            heartbeat_timeout_s=600.0,
-        )
-
-    @staticmethod
-    def _apply_bl_mask_to_grid(grid, mask) -> bool:
-        """Write an int 0/1 ``bl_cells`` array onto *grid* if it fits."""
-        try:
-            arr = np.asarray(mask, dtype=bool)
-            if grid is None or int(grid.n_cells) != int(arr.size):
-                return False
-            grid.cell_data["bl_cells"] = arr.astype(np.int32)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("BL mask application failed: %s", exc)
-            return False
-
-    def _apply_bl_display(self) -> None:
-        """Render the current internal-volume grid coloured by BL/core."""
-        mask = getattr(self, "_bl_cells", None)
-        grid = getattr(self, "_bl_grid", None)
-        if self._plotter is None:
-            self._log_bl("no 3D viewer available.")
-            self._bl_active = False
-            return
-        if grid is None:
-            # Patch-based view: only the internal-volume VTU carries all
-            # cells, so switch to it and apply the overlay when it lands
-            # (see _maybe_apply_bl_overlay).
-            self._log_bl("switching to the internal volume view for the overlay.")
-            self._bl_active = True
-            if getattr(self, "_mesh_case_dir", ""):
-                self._display_mesh()
-            else:
-                self._bl_active = False
-            return
-        if not self._apply_bl_mask_to_grid(grid, mask):
-            self._log_bl("cell mask does not match the displayed grid.")
-            self._bl_active = False
-            return
-        self._bl_active = True
-        self._render_bl_grid(grid)
-
-    def _maybe_apply_bl_overlay(self) -> None:
-        """After a fresh internal-volume render: paint the BL cells.
-
-        Automatic - no user action: if the mask is already known it is
-        re-applied, otherwise the classification starts once per case mesh.
-        """
-        if getattr(self, "_bl_cells", None) is not None:
-            self._apply_bl_display()
-            return
-        if getattr(self, "_bl_classify_attempted", False):
-            return
-        case_dir = getattr(self, "_mesh_case_dir", "")
-        if case_dir and not self.is_showing_cad():
-            self._bl_classify_attempted = True
-            self._run_bl_classify(Path(case_dir))
-
-    def _handle_bl_unavailable(self) -> None:
-        """A patch-only view has no per-cell data: refuse the BL overlay."""
-        if getattr(self, "_bl_cells", None) is not None and getattr(
-            self, "_bl_grid", None
-        ) is None:
-            self._log_bl("internal volume grid unavailable; cannot show BL.")
-            self._bl_active = False
-
-    def _render_bl_grid(self, grid) -> None:
-        """Colour *grid* by its ``bl_cells`` array (orange BL / grey core)."""
-        try:
-            dataset = self._apply_section_clip(grid)
-            ec = self._edge_color()
-            mode = self._current_mode()
-            self._plotter.clear()
-            kwargs = dict(
-                scalars="bl_cells",
-                cmap=[_BL_CORE_COLOR, _BL_HIGHLIGHT_COLOR],
-                clim=(0, 1),
-                show_edges=True,
-                edge_color=ec,
-            )
-            if mode == "Wireframe":
-                kwargs.update(style="wireframe", line_width=0.8)
-            else:
-                kwargs.update(
-                    style="surface",
-                    smooth_shading=(mode == "surface"),
-                    line_width=0.6,
-                )
-            self._plotter.add_mesh(dataset, **kwargs)
-            try:
-                self._plotter.add_scalar_bar(title="BL", n_labels=2, fmt="%.0f")
-            except Exception as exc:  # noqa: BLE001 - scalar bar is cosmetic
-                logger.debug("BL scalar bar failed: %s", exc)
-            self._plotter.add_text(
-                "Boundary layer: orange cells",
-                color=self._text_color, font_size=10,
-            )
-            self._plotter.view_isometric()
-            self._plotter.render()
-            n_bl = int(np.asarray(self._bl_cells).sum())
-            self._log_bl(f"{n_bl} boundary-layer cells highlighted.")
-        except Exception as exc:  # noqa: BLE001
-            logger.error("BL display failed: %s", exc)
-            self._log_bl(f"display failed: {exc}")
-            self._bl_active = False
+    # Boundary layers are visible through the mesh itself (the dense
+    # edge band at the wall in Surface/Surface-with-Edges), exactly like
+    # the previous release - no overlay colouring, no scalar bar (user
+    # request: the orange overlay was unreadable).
 
     # ------------------------------------------------------------------
     # Patch list panel (BaramMesh-style): name / faces / auto type.
@@ -1732,14 +1570,6 @@ class ViewerWidget(QWidget):
         """Render whatever is currently shown (CAD or mesh) using the
         representation selected in the "Display" combo."""
         if self._plotter is None:
-            return
-        if (
-            getattr(self, "_bl_active", False)
-            and getattr(self, "_bl_cells", None) is not None
-            and getattr(self, "_bl_grid", None) is not None
-        ):
-            # Keep the boundary-layer overlay through a representation change.
-            self._apply_bl_display()
             return
         if getattr(self, "_showing_cad", True) and self._cad_meshes:
             self._display_cad()
@@ -2165,9 +1995,6 @@ class ViewerWidget(QWidget):
             self._mesh_display_in_progress = False
             self._cancel_display_timeout()
             grid = payload["grid"]
-            # The full-volume grid carries every polyMesh cell (the prepared
-            # grid may be the extracted boundary surface); "Show BL" needs it.
-            self._bl_grid = payload.get("full", grid)
             n_cells = payload["n"]
             show_dec = payload["show_dec"]
             ec = self._edge_color()
@@ -2209,7 +2036,6 @@ class ViewerWidget(QWidget):
                 self._plotter.view_isometric()
                 self._plotter.render()
                 self._reload_patch_panel_async()
-                self._maybe_apply_bl_overlay()
             except Exception as exc:
                 logger.error("Plotter display failed (internal VTU): %s", exc)
                 self._show_mesh_too_large(f"Errore display: {exc}")
@@ -2299,7 +2125,6 @@ class ViewerWidget(QWidget):
                     )
                 self._plotter.view_isometric()
                 self._plotter.render()
-                self._handle_bl_unavailable()
             except Exception as exc:
                 logger.error("Plotter display failed (mesh patches): %s", exc)
                 self._show_mesh_too_large(f"Errore display: {exc}")
@@ -2414,7 +2239,6 @@ class ViewerWidget(QWidget):
         self._cad_meshes = list(meshes)
         self._showing_cad = True
         self._mesh_patches = {}
-        self._reset_bl_control()
         entries = []
         for i, mesh in enumerate(self._cad_meshes):
             name = mesh.metadata.get("name", f"patch_{i}")
@@ -2510,7 +2334,6 @@ class ViewerWidget(QWidget):
             self._mesh_case_dir = str(case_dir)
             self._showing_cad = False
             self._mesh_patches = {}
-            self._reset_bl_control()
             self._clear_patch_panel()
             self._cancel_display_timeout()
             self._mesh_display_in_progress = False
@@ -2571,7 +2394,6 @@ class ViewerWidget(QWidget):
         self._mesh_case_dir = ""
         self._mesh_patches = {}
         self._showing_cad = True
-        self._reset_bl_control()
         self._pending_vtu_mode = "surface_edges"
         self._pvdata_to_name.clear()
         self._stats_label.setText("")

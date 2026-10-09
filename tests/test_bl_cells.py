@@ -154,42 +154,14 @@ def test_wall_role_is_not_excluded_by_name_inference(tmp_path):
     assert roles["wall"] == "wall"
 
 
-# ---------------------------------------------------------------------------
-# Viewer BL overlay smoke (offscreen, no real plotter).  The old "Show BL"
-# checkbox was removed: the overlay is automatic, so these tests exercise
-# the no-user-action path.
-# ---------------------------------------------------------------------------
-
+# The viewer BL overlay was REMOVED (user request: the orange colouring
+# and its scalar bar were unreadable - the layers are visible through the
+# mesh edges, as in the previous release).  These tests pin that removal
+# so the overlay cannot creep back in.
 pytest.importorskip("PySide6")
 
 
-def _bare_with_mask_attrs() -> "ViewerWidget":
-    from polyfoammesh.gui.viewer_widget import ViewerWidget
-
-    w = ViewerWidget.__new__(ViewerWidget)
-    w._plotter = None
-    w._showing_cad = True
-    w._mesh_case_dir = ""
-    w._bl_cells = None
-    w._bl_grid = None
-    w._bl_active = False
-    w._bl_classify_attempted = False
-    return w
-
-
-def test_auto_overlay_without_plotter_does_not_raise():
-    w = _bare_with_mask_attrs()
-    # No case dir -> no classification attempt, no raise.
-    w._maybe_apply_bl_overlay()
-    assert w._bl_classify_attempted is False
-    # Mask present -> _apply_bl_display hits the no-plotter branch and
-    # deactivates cleanly instead of raising.
-    w._bl_cells = np.array([True, False])
-    w._maybe_apply_bl_overlay()
-    assert w._bl_active is False
-
-
-def test_show_bl_checkbox_is_gone_from_a_real_widget(monkeypatch):
+def test_no_bl_overlay_left_on_a_real_widget(monkeypatch):
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
 
@@ -204,53 +176,12 @@ def test_show_bl_checkbox_is_gone_from_a_real_widget(monkeypatch):
     w = ViewerWidget()
     try:
         assert not hasattr(w, "_bl_check")
+        for name in (
+            "_maybe_apply_bl_overlay", "_apply_bl_display",
+            "_render_bl_grid", "_apply_bl_mask_to_grid", "_reset_bl_control",
+        ):
+            assert not hasattr(w, name), name
+        assert not hasattr(w, "_bl_cells")
+        assert not hasattr(w, "_bl_active")
     finally:
         w.deleteLater()
-
-
-def test_apply_mask_to_grid_adds_integer_array():
-    pv = pytest.importorskip("pyvista")
-    from polyfoammesh.gui.viewer_widget import ViewerWidget
-
-    pts = np.array(
-        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0], [2, 1, 0]],
-        dtype=float,
-    )
-    grid = pv.PolyData(pts, np.array([3, 0, 1, 2, 3, 3, 4, 5]))
-    assert grid.n_cells == 2
-
-    ok = ViewerWidget._apply_bl_mask_to_grid(grid, np.array([True, False]))
-    assert ok is True
-    assert "bl_cells" in grid.cell_data
-    assert list(grid.cell_data["bl_cells"]) == [1, 0]
-
-    # A mask whose length does not match the grid is refused, not applied.
-    assert ViewerWidget._apply_bl_mask_to_grid(grid, np.array([True])) is False
-
-
-def test_apply_bl_display_paints_the_grid_and_sets_active():
-    pv = pytest.importorskip("pyvista")
-    from polyfoammesh.gui.viewer_widget import ViewerWidget
-
-    pts = np.array(
-        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0], [2, 1, 0]],
-        dtype=float,
-    )
-    grid = pv.PolyData(pts, np.array([3, 0, 1, 2, 3, 3, 4, 5]))
-
-    w = _bare_with_mask_attrs()
-    w._bl_cells = np.array([True, False])
-    w._bl_grid = grid
-    w._plotter = MagicMock()
-    w._bg_color = (1.0, 1.0, 1.0)
-    w._text_color = "black"
-    w._section_enabled = False
-    w._view_selector = MagicMock()
-    w._view_selector.currentIndex.return_value = 1  # Surface with Edges
-
-    w._apply_bl_display()
-
-    assert w._bl_active is True
-    assert "bl_cells" in grid.cell_data
-    w._plotter.add_mesh.assert_called_once()
-    w._plotter.render.assert_called_once()
