@@ -80,6 +80,55 @@ def rename_boundary_patch(
     return bpath
 
 
+def rename_patch_in_fields(
+    case_dir: Path | str, old_name: str, new_name: str,
+) -> list[Path]:
+    """Rename the patch entry in every ``0/`` field's boundaryField block.
+
+    Renaming only ``constant/polyMesh/boundary`` is not enough: a field that
+    still lists the old patch name makes OpenFOAM (and BaramFlow) abort on
+    load with "cannot find patchField entry for <patch>", and the BaramFlow
+    export validation refuses the case (user report: missing-files popup
+    after renaming patches).  Each touched file is backed up to
+    ``<name>.bak`` once, like the boundary rewrite does.  Best effort:
+    unreadable files are skipped.  Returns the files changed.
+    """
+    case = Path(case_dir)
+    new_name = (new_name or "").strip()
+    if not new_name or new_name == old_name:
+        return []
+    zero = case / "0"
+    if not zero.is_dir():
+        return []
+
+    pattern = re.compile(
+        rf"(?m)^([ \t]*){re.escape(old_name)}([ \t]*)(\r?)$"
+    )
+    touched: list[Path] = []
+    for field in sorted(zero.iterdir()):
+        if not field.is_file():
+            continue
+        try:
+            text = field.read_bytes().decode("latin-1")
+        except OSError:
+            continue
+        new_text, n = pattern.subn(
+            lambda m: f"{m.group(1)}{new_name}{m.group(2)}{m.group(3)}",
+            text, count=1,
+        )
+        if n == 0:
+            continue
+        try:
+            bak = field.with_name(field.name + ".bak")
+            if not bak.exists():
+                shutil.copy2(field, bak)
+            field.write_bytes(new_text.encode("latin-1"))
+        except OSError:
+            continue
+        touched.append(field)
+    return touched
+
+
 
 def parse_boundary(boundary_path: Path | str) -> list[PatchInfo]:
     path = Path(boundary_path)
