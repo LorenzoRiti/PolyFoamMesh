@@ -386,6 +386,37 @@ def test_count_polymesh_prism_cells(tmp_path):
     assert count_polymesh_prism_cells(mixed) == 1
 
 
+def test_polymesh_has_boundary_layer_rejects_sparse_false_positives(tmp_path):
+    """Regression (2026-10-09): a few prism-SHAPED cells in a dual mesh are
+    NOT a boundary layer.  The old ``count > 0`` guard skipped the in-house
+    BL on every run because dual cells are prism-shaped by coincidence."""
+    pytest.importorskip("numpy")
+    from polyfoammesh.core.openfoam_runner import (
+        count_polymesh_prism_cells,
+        polymesh_has_boundary_layer,
+    )
+
+    pts2 = np.array([
+        [0, 0, 0], [1, 0, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [0, 1, 1], [0, 0, 2],
+    ], dtype=float)
+    A, B, C, Ap, Bp, Cp, D = range(7)
+    prism = [[A, B, C], [Ap, Bp, Cp],
+             [A, B, Bp, Ap], [B, C, Cp, Bp], [C, A, Ap, Cp]]
+    tet = [[Ap, Bp, Cp], [Ap, Bp, D], [Bp, Cp, D], [Cp, Ap, D]]
+    mixed = build_mixed_case(tmp_path / "mixedcase", pts2, [prism, tet])
+    # the shape counter sees the prism ...
+    assert count_polymesh_prism_cells(mixed) == 1
+    # ... but with only a fraction of the wall faces covered it is NOT a BL.
+    assert polymesh_has_boundary_layer(mixed) is False
+
+
+def test_polymesh_has_boundary_layer_false_on_missing_case(tmp_path):
+    from polyfoammesh.core.openfoam_runner import polymesh_has_boundary_layer
+
+    assert polymesh_has_boundary_layer(tmp_path / "nope") is False
+
+
 def _run_worker_with_bl(tmp_path, monkeypatch, *, result_prisms, detect_prisms):
     pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -429,7 +460,9 @@ def _run_worker_with_bl(tmp_path, monkeypatch, *, result_prisms, detect_prisms):
 
     import polyfoammesh.core.openfoam_runner as _ofr
 
-    monkeypatch.setattr(_ofr, "count_polymesh_prism_cells", lambda _c: detect_prisms)
+    monkeypatch.setattr(
+        _ofr, "polymesh_has_boundary_layer", lambda _c: bool(detect_prisms),
+    )
     with mock.patch(
         "polyfoammesh.core.tet_poly_dual.TetPolyDualConverter",
         _RecordingConverter,

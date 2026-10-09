@@ -1641,10 +1641,13 @@ def count_polymesh_prism_cells(case_dir: Path | str) -> int:
 
     A boundary-layer prism has exactly two triangular faces (the base/top
     walls) and three quad faces; :func:`bl_cells._prism_like_mask` detects
-    that shape topologically, with no dependence on patch names.  Used to
-    decide whether the input already carries a GMSH-baked boundary layer so
-    the in-house ``bl_poly`` stage can be skipped (a second BL would double
-    it).  Returns 0 on any read failure — never raises.
+    that shape topologically, with no dependence on patch names.  Returns 0
+    on any read failure — never raises.
+
+    WARNING: a few percent of dual-mesh cells are prism-shaped BY
+    COINCIDENCE (measured: 2012/24286 = 8% on a dual-only cone), so this
+    count alone must NOT be used to decide whether a boundary layer
+    exists - see :func:`polymesh_has_boundary_layer`.
     """
     try:
         import numpy as np
@@ -1673,6 +1676,66 @@ def count_polymesh_prism_cells(case_dir: Path | str) -> int:
     except Exception:
         logger.debug("count_polymesh_prism_cells failed for %s", case_dir, exc_info=True)
         return 0
+
+
+def polymesh_has_boundary_layer(case_dir: Path | str) -> bool:
+    """True only when the polyMesh already carries a REAL boundary layer.
+
+    Used to skip the in-house ``bl_poly`` stage when the mesh already has
+    prisms (GMSH-baked BL or prisms preserved by the mixed dual path): a
+    second BL would double the near-wall layers.
+
+    The bare shape count is not usable here: dual cells are prism-shaped
+    by coincidence often enough to trip a ``> 0`` test (2012 false
+    positives on a real dual-only cone -> the in-house BL was skipped on
+    EVERY run, user report 2026-10-09).  A real boundary layer covers
+    (almost) every wall face with a prism owner — measured coverage 0.89
+    with BL vs 0.14 without — so require BOTH:
+      * at least 100 prism-like wall-adjacent cells, and
+      * prism-like owners on >= 50% of the wall faces.
+    Returns False on any read failure — never raises.
+    """
+    try:
+        import numpy as np
+
+        from polyfoammesh.core.bl_cells import _prism_like_mask, _wall_patches
+        from polyfoammesh.core.foam_mesh_io import read_polymesh
+
+        poly_dir = Path(case_dir) / "constant" / "polyMesh"
+        _points, faces, owner, neighbour, patches = read_polymesh(poly_dir)
+        if len(faces) == 0 or len(owner) == 0:
+            return False
+        owner = np.asarray(owner, dtype=np.int64).ravel()
+        neighbour = np.asarray(neighbour, dtype=np.int64).ravel()
+        n_faces = min(len(owner), len(faces))
+        n_internal = min(int(neighbour.size), n_faces)
+        n_cells = int(owner.max()) + 1
+        if n_internal:
+            n_cells = max(n_cells, int(neighbour[:n_internal].max()) + 1)
+        face_sizes = np.fromiter(
+            (len(f) for f in faces[:n_faces]), dtype=np.int64, count=n_faces,
+        )
+        prism_like = _prism_like_mask(
+            face_sizes, owner, neighbour[:n_internal], n_cells,
+        )
+        wall = _wall_patches(Path(case_dir), patches)
+        wall_owner = np.zeros(0, dtype=np.int64)
+        for p in wall:
+            start = max(int(p.get("startFace", 0)), n_internal)
+            end = min(start + int(p.get("nFaces", 0)), n_faces)
+            if end > start:
+                wall_owner = np.concatenate([wall_owner, owner[start:end]])
+        if wall_owner.size == 0:
+            return False
+        covered = prism_like[wall_owner]
+        n_covered = int(covered.sum())
+        coverage = n_covered / float(wall_owner.size)
+        return n_covered >= 100 and coverage >= 0.5
+    except Exception:
+        logger.debug(
+            "polymesh_has_boundary_layer failed for %s", case_dir, exc_info=True,
+        )
+        return False
 
 
 class DualPolyWorker(QObject):
@@ -1806,7 +1869,7 @@ class DualPolyWorker(QObject):
         if self._bl_params:
             _has_gmsh_bl = (
                 int(getattr(result, "n_prism_cells_after", 0) or 0) > 0
-                or count_polymesh_prism_cells(self._case_dir) > 0
+                or polymesh_has_boundary_layer(self._case_dir)
             )
         if self._bl_params and _has_gmsh_bl:
             # Adding the in-house BL on top would double the near-wall layers.
