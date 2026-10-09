@@ -76,6 +76,31 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **GMSH stall on large curved geometries (Parte4-class)**: the volume run
+  could stall in the 2D phase (MeshAdapt looping on the last curved/plane
+  surface) and the robust retry could not recover: it did not pin Delaunay
+  per-surface and used HXT 3D, whose boundary recovery leaves a
+  non-manifold primal the dual converter rejects.  Robust mode now pins
+  **Delaunay 2D on every surface** and uses **Delaunay 3D** for STEP/OCC
+  input (STL keeps HXT); the watchdog budget scales 300 s -> **900 s** with
+  the estimated cell count and the heartbeat logs the GMSH process **CPU%**
+  so a busy-but-silent run is visible instead of being killed as a hang;
+  the final error message describes the real retry.  Measured on the
+  user's geometry (Parte4.stp, medium): completes in **151.6 s** (was:
+  stall + double kill); tube/valve1/Parte2 regression runs unchanged.
+- **BaramFlow/direct export now ships a CLEAN case**: processor*, VTK_view,
+  mesh.msh, the pre-BL tet backup, postProcessing, previous results
+  (numeric time dirs; 0/ is preserved), local.cfg and *.foam are left out;
+  the BaramFlow export also drops our system/decomposeParDict (BaramFlow
+  writes its own - a stale one made its runs unable to write results).
+- **Patch rename keeps the 0/ fields in sync**: renaming only
+  constant/polyMesh/boundary left the fields listing the old name, so
+  OpenFOAM/BaramFlow aborted on load and the BaramFlow export refused the
+  case ("missing files" popup).  Every 0/ field's boundaryField entry is
+  renamed too (one-time .bak per field).
+- **Oversized popups**: Qt message boxes grew as wide as their longest
+  line, leaving huge half-empty dialogs.  An application event filter
+  wraps the text and caps it to 480 px.
 - **BOUNDARY LAYER SKIPPED ON EVERY APP RUN (critical)**: the
   anti-double-BL guard counted dual cells with a prism shape and found
   ~2,000 **coincidences** on a dual without BL (measured: 2012/24,286 =
@@ -272,6 +297,15 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   unwatchable). Boundary layers are seen as in the previous
   release: in "Surface with Edges" the stack appears as the band of
   dense edges at the wall — it is the mesh itself, no overlay.
+- **Mesher order: Polymesh first, cfMesh second** and cfMesh no longer
+  pre-ticks "Convert to polyhedral mesh": the hex-dominant mesh is the
+  point there, the poly dual is opt-in (Polymesh keeps forcing the
+  conversion ON, hidden).
+- **English-only repository policy**: all public documentation
+  (CHANGELOG, README, INSTALL, USER_GUIDE, residual risks, CONTRIBUTING,
+  CODE_OF_CONDUCT, THIRD_PARTY_LICENSES, GitHub templates) and all
+  developer docs, plans and reasoning notes are now in English; the
+  Italian duplicates (INSTALL.it.md, USER_GUIDE.it.md) were removed.
 - **Robust boundary layer always active**: the "Robust boundary
   layer (recommended, experimental)" checkbox was removed — the measured
   bundle (sliver-face filter 0.9 + budget termination) now activates

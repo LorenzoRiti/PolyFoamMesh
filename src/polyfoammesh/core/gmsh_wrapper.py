@@ -2826,7 +2826,7 @@ def generate_volume_mesh(
     is_step_input = filepath_str.lower().endswith((".step", ".stp"))
     if robust:
         msg = ("[gmsh] robust mode ON (POLYFOAMMESH_GMSH_ROBUST=1): "
-               "OCC healing + no optimizer")
+               "OCC healing + Delaunay 2D + no optimizer")
         logger.info(msg)
         print(msg, flush=True)
         if is_step_input:
@@ -2985,14 +2985,32 @@ def generate_volume_mesh(
     # "already tried HXT, doesn't work" tests saw no speedup.
     algo3d = _resolve_algo3d()
     if algo3d is None:
-        gmsh.option.setNumber("Mesh.Algorithm3D", 10)  # HXT (current default)
-    else:
-        gmsh.option.setNumber("Mesh.Algorithm3D", algo3d)
-        if algo3d == 10:
-            try:
-                gmsh.option.setNumber("Mesh.MaxNumThreads3D", _gmsh_thread_count())
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not set GMSH MaxNumThreads3D: %s", exc)
+        # Robust retry on a STEP/OCC B-rep: use classic Delaunay 3D (1)
+        # instead of HXT (10). Measured on the real 89-surface Parte4.stp:
+        # HXT nets the 2D Delaunay surface but its discrete boundary recovery
+        # leaves an open/non-manifold primal boundary — the app's dual
+        # converter then rejects the whole tet mesh ("relative closure error
+        # 1.8e-3 … the dual complex is not watertight"). Delaunay 3D on the
+        # same B-rep produces a watertight dual (closure error 1.5e-16,
+        # 752,618 cells at coarse detail) and completes without stalling.
+        # STL input keeps HXT: Delaunay 3D hits "Invalid boundary mesh
+        # (overlapping facets)" on reparametrized discrete surfaces (see the
+        # history below). An explicit CFMESH_GMSH_ALGO3D still wins.
+        if robust and is_step_input:
+            algo3d = 1  # Delaunay 3D
+            _algo3d_msg = ("[gmsh] robust: volume algorithm -> Delaunay 3D (1) "
+                           "for STEP/OCC (HXT boundary recovery was not "
+                           "dual-able on this class)")
+            logger.info(_algo3d_msg)
+            print(_algo3d_msg, flush=True)
+        else:
+            algo3d = 10  # HXT (current default)
+    gmsh.option.setNumber("Mesh.Algorithm3D", algo3d)
+    if algo3d == 10:
+        try:
+            gmsh.option.setNumber("Mesh.MaxNumThreads3D", _gmsh_thread_count())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not set GMSH MaxNumThreads3D: %s", exc)
     # MeshAdapt (1) for 2D, not Frontal-Delaunay (6). Measured over
     # repeated runs on a real CAD part (a valve with periodic Cone/
     # Cylinder/BSpline surfaces whose OCC seam curve is legitimately
@@ -3026,6 +3044,29 @@ def generate_volume_mesh(
     else:
         algo2d = 1  # MeshAdapt
     gmsh.option.setNumber("Mesh.Algorithm", algo2d)
+    # Global Mesh.Algorithm is only the DEFAULT: GMSH can still run a
+    # different algorithm on a per-surface basis (a `meshAlgorithm`
+    # attribute on the entity, or its internal fallback), which is exactly
+    # how a mixed log ("surface 5 (Plane, Delaunay)" next to "surface 26
+    # (Cone, MeshAdapt)") can appear even after the global option is set.
+    # In robust mode pin Delaunay on EVERY 2D entity explicitly so no
+    # curved BSpline/Cone/Cylinder surface can silently fall back to
+    # MeshAdapt and re-enter the hang the robust retry exists to escape.
+    if robust:
+        _pinned = 0
+        for _dim, _tag in gmsh.model.getEntities(2):
+            try:
+                gmsh.model.mesh.setAlgorithm(2, int(_tag), algo2d)
+                _pinned += 1
+            except Exception:
+                logger.debug(
+                    "gmsh_wrapper: could not pin algorithm on surface %d",
+                    _tag, exc_info=True,
+                )
+        _pin_msg = (f"[gmsh] robust: Delaunay (5) pinned explicitly on "
+                    f"{_pinned} 2D surface(s); no per-surface fallback")
+        logger.info(_pin_msg)
+        print(_pin_msg, flush=True)
     # Optimizer is configurable and OFF in robust mode. Its iterative
     # "Improving ..." loop is a known place for a 2D surface mesh to never
     # converge; skipping it trades a little element quality for guaranteed
