@@ -198,12 +198,14 @@ def test_process_cpu_seconds_probe_returns_number_for_live_process():
 # --- GmshVolumeWorker retry-or-fail (fake streaming loop) ------------------- #
 
 def _fake_stream_factory(outcomes):
-    """Return (fake_stream, calls). Each outcome is 'stall' or 'ok'."""
+    """Return (fake_stream, calls). Each outcome is 'stall', 'signature',
+    'error' or 'ok'."""
     calls: list[dict] = []
     queue = list(outcomes)
 
     def fake_stream(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10,
-                    proc_holder=None, stall_s=None, stall_holder=None):
+                    proc_holder=None, stall_s=None, stall_holder=None,
+                    signature_detector=None):
         calls.append({"env": dict(env or {}), "stall_s": stall_s})
         outcome = queue.pop(0)
         if outcome == "stall":
@@ -216,6 +218,26 @@ def _fake_stream_factory(outcomes):
                 "(0s elapsed) - killing process tree"
             )
             return (None, [], [], False)
+        if outcome == "signature":
+            if stall_holder is not None:
+                stall_holder["stalled"] = True
+                stall_holder["signature"] = True
+                stall_holder["evidence"] = (
+                    "6524 elements remain invalid in surface 3 after 15 "
+                    "split round(s) in 457s of 2D meshing (gate=magnitude)"
+                )
+                stall_holder["elapsed_s"] = 30.0
+                stall_holder["no_output_s"] = 1.0
+            on_line(
+                "watchdog fired: non-convergence (6524 elements remain "
+                "invalid in surface 3 after 15 split round(s)) - killing "
+                "process tree"
+            )
+            return (None, [], [], False)
+        if outcome == "error":
+            payload = json.dumps({"success": False, "error": "GMSH fell over"})
+            on_line("Info: about to fail")
+            return (1, [payload], [], False)
         if outcome == "ok":
             payload = json.dumps({"success": True, "msh_path": "out.msh"})
             on_line("Info: mesh written")
@@ -282,19 +304,24 @@ def test_robust_retry_gets_size_scaled_budget(monkeypatch):
     assert any("robust stall budget raised to 900s" in line for line in logs)
 
 
-def test_second_stall_fails_stage_instead_of_looping(monkeypatch):
-    """(c) Robust retry stalls too -> exactly two attempts, then failure."""
+def test_repeated_stalls_do_not_loop_forever(monkeypatch):
+    """(c) normal + robust + manual all stall -> exactly three attempts, fail.
+
+    Phase D adds ONE manual-equivalent (adaptive-OFF) attempt after the robust
+    retry; the point here is that the chain stays finite — never a watchdog
+    loop and never a bare error while a mesh might still be achievable.
+    """
     calls, finished, failed, logs = _run_volume_worker(
-        monkeypatch, outcomes=["stall", "stall"], stall_env=5,
+        monkeypatch, outcomes=["stall", "stall", "stall"], stall_env=5,
+        max_cells_target=200_000,
     )
 
-    assert len(calls) == 2, f"watchdog looped: {len(calls)} attempts"
+    assert len(calls) == 3, f"watchdog looped: {len(calls)} attempts"
     assert calls[1]["env"][ofr.GMSH_ROBUST_ENV_VAR] == "1"
+    assert calls[2]["env"][ofr.GMSH_MANUAL_EQUIV_ENV_VAR] == "1"
     assert not finished
-    assert failed, "stage did not fail after a second stall"
-    msg = failed[0].lower()
-    assert "stalled twice" in msg
-    assert "robust" in msg
+    assert failed, "stage did not fail after the manual fallback stalled"
+    assert "manual-equivalent" in failed[0].lower()
     joined = "\n".join(logs)
     assert "giving up" in joined
 
@@ -309,3 +336,208 @@ def test_no_stall_runs_once_without_robust_env(monkeypatch):
     assert ofr.GMSH_ROBUST_ENV_VAR not in calls[0]["env"]
     assert finished and not failed
     assert calls[0]["stall_s"] == ofr.GMSH_STALL_TIMEOUT_S
+
+
+# --- Phase B: signature non-convergence detector (unit) --------------------- #
+
+def _detector(**kw):
+    return ofr.GmshSignatureStallDetector(**kw)
+
+
+def test_detector_magnitude_gate_fires_on_large_invalid_count():
+    d = _detector()
+    assert d.feed("Info    : [ 20%] Meshing surface 3 (Cone, MeshAdapt)") is False
+    assert d.feed("Warning : 2 elements remain invalid in surface 3") is False
+    assert d.feed("Warning : 364 elements remain invalid in surface 3") is True
+
+    assert d.fired is True
+    assert d.max_invalid == 364
+    assert d.max_invalid_surface == 3
+    assert "364 elements remain invalid in surface 3" in d.evidence
+    assert "gate=magnitude" in d.evidence
+    # Fires once and stays fired; later smaller counts do not re-arm it.
+    assert d.feed("Warning : 99 elements remain invalid in surface 4") is True
+
+
+def test_detector_healthy_small_counts_do_not_fire():
+    """The measured healthy venturi progression (max 14, 11 warnings)."""
+    d = _detector()
+    for c in (2, 2, 2, 6, 4, 2, 2, 4, 2, 14, 9, 2):
+        assert d.feed(f"Warning : {c} elements remain invalid in surface 3") is False
+    assert d.feed("Info    : [100%] Done meshing 2D (0.4 s)") is False
+    assert d.fired is False
+
+
+def test_detector_growth_gate_needs_splits_time_and_monotone_counts():
+    clock = {"t": 100.0}
+    d = _detector(clock=lambda: clock["t"])
+    d.feed("Info    : [ 20%] Meshing surface 3 (Cone, MeshAdapt)")
+    # 8 split rounds, monotone counts, but only ~8 s in the 2D phase: no fire.
+    for i in range(8):
+        d.feed("Info    : 8-| Splitting those edges and trying again")
+        d.feed(f"Warning : {10 + i} elements remain invalid in surface 3")
+        clock["t"] += 1.0
+    assert d.fired is False, d.evidence
+    # Past the 30 s floor with the counts still rising, the growth gate fires.
+    clock["t"] += 40.0
+    d.feed("Warning : 20 elements remain invalid in surface 3")
+    assert d.fired is True
+    assert "gate=growth" in d.evidence
+
+
+def test_detector_growth_gate_ignores_non_monotone_counts():
+    clock = {"t": 0.0}
+    d = _detector(clock=lambda: clock["t"])
+    d.feed("Info    : Meshing 2D")
+    seq = [50, 40, 30]  # decreasing -> a recovering surface, not a runaway
+    for i in range(9):
+        d.feed("Info    : 8-| Splitting those edges and trying again")
+        d.feed(f"Warning : {seq[i % 3]} elements remain invalid in surface 4")
+        clock["t"] += 10.0
+    assert d.fired is False
+
+
+def test_detector_ignores_unrelated_lines():
+    d = _detector()
+    assert d.feed("Info    : All edges recovered after 1 iteration") is False
+    assert d.feed("Warning : an element remains invalid somewhere") is False
+    assert d.feed("") is False
+    assert d.fired is False
+
+
+# Real child that streams the runaway signature then stays alive, so the
+# detector's kill wiring is exercised end-to-end (not just the parser).
+_SIGNATURE_CHILD = (
+    "import sys, time\n"
+    "sys.stdout.write('Info    : [ 20%] Meshing surface 3 (Cone, MeshAdapt)\\n')\n"
+    "sys.stdout.flush()\n"
+    "for c in (2, 364, 2610, 5244, 6524):\n"
+    "    sys.stdout.write('Warning : %d elements remain invalid in surface 3\\n' % c)\n"
+    "    sys.stdout.flush()\n"
+    "    time.sleep(0.05)\n"
+    "time.sleep(60)\n"
+)
+
+
+def test_signature_detector_kills_runaway_via_stream_subprocess(monkeypatch):
+    killed: list[int] = []
+    real_kill = ofr._kill_pid_tree
+
+    def _record_kill(pid):
+        killed.append(pid)
+        real_kill(pid)
+
+    monkeypatch.setattr(ofr, "_kill_pid_tree", _record_kill)
+
+    det = ofr.GmshSignatureStallDetector()
+    cmd = [sys.executable, "-c", _SIGNATURE_CHILD]
+    t0 = time.monotonic()
+    _rc, _out, _err, timed_out = ofr._stream_subprocess(
+        cmd, run_cwd=str(Path.cwd()), timeout_s=30,
+        on_line=lambda _l: None, heartbeat_s=5.0, stall_s=None,
+        stall_holder={}, signature_detector=det,
+    )
+    elapsed = time.monotonic() - t0
+
+    assert det.fired, "detector never fired on the streamed runaway"
+    assert killed, "process tree was never killed on signature fire"
+    assert not timed_out
+    assert elapsed < 20.0, f"kill was not prompt ({elapsed:.1f}s)"
+
+
+# --- Phase C/D: attempt-chain wiring ---------------------------------------- #
+
+def test_signature_stall_retries_robust_with_optimizer_flag(monkeypatch):
+    """A signature kill -> robust retry WITH the optimizer env flag set."""
+    calls, finished, failed, logs = _run_volume_worker(
+        monkeypatch, outcomes=["signature", "ok"], stall_env=7,
+        max_cells_target=200_000,
+    )
+
+    assert len(calls) == 2, calls
+    assert ofr.GMSH_ROBUST_ENV_VAR not in calls[0]["env"]
+    assert calls[1]["env"][ofr.GMSH_ROBUST_ENV_VAR] == "1"
+    assert calls[1]["env"][ofr.GMSH_ROBUST_OPT_ENV_VAR] == "1"
+    assert finished and not failed
+    joined = "\n".join(logs)
+    assert "non-convergence detected:" in joined
+    assert "retrying robust" in joined
+
+
+def test_no_output_stall_does_not_enable_signature_optimizer(monkeypatch):
+    """Only the signature retry may turn the robust optimizer on."""
+    calls, finished, failed, _logs = _run_volume_worker(
+        monkeypatch, outcomes=["stall", "ok"], stall_env=7,
+        max_cells_target=200_000,
+    )
+
+    assert len(calls) == 2, calls
+    assert calls[1]["env"][ofr.GMSH_ROBUST_ENV_VAR] == "1"
+    assert ofr.GMSH_ROBUST_OPT_ENV_VAR not in calls[1]["env"]
+    assert finished and not failed
+
+
+def test_robust_double_failure_runs_one_manual_equiv_fallback(monkeypatch):
+    """robust fails (signature) -> ONE manual-equivalent (adaptive-OFF) run."""
+    calls, finished, failed, logs = _run_volume_worker(
+        monkeypatch, outcomes=["signature", "signature", "ok"],
+        stall_env=7, max_cells_target=200_000,
+    )
+
+    assert len(calls) == 3, calls
+    assert calls[1]["env"][ofr.GMSH_ROBUST_ENV_VAR] == "1"
+    assert calls[2]["env"][ofr.GMSH_MANUAL_EQUIV_ENV_VAR] == "1"
+    assert ofr.GMSH_ROBUST_ENV_VAR not in calls[2]["env"]
+    assert finished and not failed
+    joined = "\n".join(logs)
+    assert "adaptive sizing did not converge on this geometry" in joined
+    assert "meshed with the manual equivalent sizing" in joined
+
+
+def test_robust_error_also_triggers_manual_equiv_fallback(monkeypatch):
+    """A robust attempt that errors (not stalls) still gets the ONE fallback."""
+    calls, finished, failed, _logs = _run_volume_worker(
+        monkeypatch, outcomes=["stall", "error", "ok"],
+        stall_env=7, max_cells_target=200_000,
+    )
+
+    assert len(calls) == 3, calls
+    assert calls[2]["env"][ofr.GMSH_MANUAL_EQUIV_ENV_VAR] == "1"
+    assert finished and not failed
+
+
+def test_manual_equiv_failure_fails_honestly_without_looping(monkeypatch):
+    calls, finished, failed, _logs = _run_volume_worker(
+        monkeypatch, outcomes=["signature", "signature", "signature"],
+        stall_env=7, max_cells_target=200_000,
+    )
+
+    assert len(calls) == 3, f"fallback looped: {len(calls)} attempts"
+    assert not finished
+    assert failed
+    assert "manual-equivalent" in failed[0].lower()
+
+
+def test_explicit_size_request_never_uses_manual_fallback(monkeypatch):
+    """adaptive OFF -> no derived fallback; robust double-fail fails as before."""
+    fake_stream, calls = _fake_stream_factory(["stall", "stall"])
+    monkeypatch.setattr(ofr, "_stream_subprocess", fake_stream)
+
+    worker = ofr.GmshVolumeWorker(
+        step_path="geom.step", msh_path=Path("out.msh"), detail="medium",
+        max_cell_size=0.01, min_cell_size=0.002, max_cells_target=0,
+    )
+    finished: list = []
+    failed: list[str] = []
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.run()
+
+    assert len(calls) == 2, calls
+    assert all(
+        ofr.GMSH_MANUAL_EQUIV_ENV_VAR not in c["env"] for c in calls
+    ), calls
+    assert failed and not finished
+    # The pre-Phase-D honest failure text is preserved when no fallback exists.
+    assert "stalled twice" in failed[0].lower()
+    assert "robust" in failed[0].lower()

@@ -1085,3 +1085,17 @@ SCARTATI con evidenza: probe adattivo (15s dei 148s), meshio (fuori
 percorso), writer (minore), threading GMSH (non misurabile).
 RIMANDATO: _solve_global_windings (guadagno sicuro solo ~1.2x, path
 condiviso). Fase 2 (multiprocessing) non necessaria per ora.
+
+## 2026-10-09/10 - ADAPTIVE RUNAWAY RISOLTO (fasi A-D)
+
+Fase A (notes/adaptive_runaway_reasoning.md): firma misurata - superfici
+Cone MeshAdapt, invalidi 2->6524, gap max 251s sotto il watchdog 300s.
+Robusto Delaunay: converge 6.4s Mesh OK; +optimizer: skew 1.22 vs 3.34.
+Guardia sanity: costo zero qui. Barra manuale: Failed 1 (skew 4.64).
+Fasi B/C/D: detector firma (>=100 invalidi O >=8 split + non-decrescente
+dopo 30s) -> kill ~37-42s -> retry robusto con optimizer SOLO su questo
+path (su Parte2/Parte4 l'optimizer raddoppia il tempo) -> fallback
+manuale equivalente garantito. Verificato dall'orchestratore end-to-end
+su venturi.step: detector 37s, mesh valida, NO OK, pyramids 0 (skew
+varia 1.15-4.22 run-to-run: inerente a GMSH; il quality pipeline copre).
+Falsi positivi: zero (sane max 6/4). Default invariati.

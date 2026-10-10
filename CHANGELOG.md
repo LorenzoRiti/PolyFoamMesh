@@ -76,6 +76,23 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **Adaptive sizing runaway (non-convergence) on some geometries**: with
+  adaptive sizing ON, GMSH's 2D mesher could loop forever on curved
+  surfaces (measured on the benchmark venturi: invalid elements growing
+  2->6524 over 15 split rounds, max silent gap 251 s just under the
+  300 s no-output watchdog, no `.msh` after 40+ minutes).  The watchdog
+  now recognises the **non-convergence signature** (>=100 invalid
+  elements, or >=8 split rounds with non-decreasing counts after 30 s of
+  2D meshing) and kills the attempt within ~40 s; the robust retry
+  (Delaunay 2D + **2D optimizer enabled on this path only** for quality)
+  then completes - measured full pipeline on the benchmark venturi:
+  valid mesh + real checkMesh within ~50 s total (was: hang, no mesh).
+  If even the robust retry fails, a final **manual-equivalent sizing**
+  attempt (sizes derived from the same target) guarantees a mesh, with
+  an honest log.  Healthy runs never trigger the detector (max 6
+  invalid / 4 splits measured).  Default paths (manual sizing, robust on
+  hangs) are unchanged; the optimizer stays off elsewhere because it
+  doubles-to-triples robust wall time on large STEP parts.
 - **GMSH stall on large curved geometries (Parte4-class)**: the volume run
   could stall in the 2D phase (MeshAdapt looping on the last curved/plane
   surface) and the robust retry could not recover: it did not pin Delaunay

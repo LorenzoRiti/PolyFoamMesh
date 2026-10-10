@@ -60,6 +60,17 @@ GMSH_STALL_SMALL_CELLS = 500_000
 GMSH_STALL_LARGE_CELLS = 5_000_000
 GMSH_STALL_ENV_VAR = "POLYFOAMMESH_GMSH_STALL_S"
 GMSH_ROBUST_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST"
+#: Phase C: set alongside POLYFOAMMESH_GMSH_ROBUST on a *signature*-triggered
+#: retry only (the venturi MeshAdapt runaway class), enabling the 2D optimizer
+#: inside robust mode. Measured A/B: the optimizer is a quality win with no
+#: convergence cost on that class, but doubles-to-triples wall time on large
+#: STEP parts, so a generic no-output robust retry leaves it off.
+GMSH_ROBUST_OPT_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST_OPT"
+#: Phase D guaranteed fallback: the worker sets this on its last-ditch attempt
+#: so the wrapper runs the explicit-size path with sizes derived to match the
+#: adaptive request's cell target (adaptive sizing OFF). See
+#: ``gmsh_wrapper.derive_manual_equivalent_sizes``.
+GMSH_MANUAL_EQUIV_ENV_VAR = "POLYFOAMMESH_GMSH_MANUAL_EQUIV"
 
 
 def _gmsh_stall_timeout_s() -> float:
@@ -2868,9 +2879,136 @@ def _process_cpu_seconds(proc) -> float | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Phase B: content-aware non-convergence detector.
+#
+# The no-output watchdog above is structurally blind to GMSH's MeshAdapt 2D
+# runaway: output KEEPS arriving (invalid-element warnings and "splitting those
+# edges and trying again" retries), and the largest silent gap measured over a
+# full runaway was 251 s — just under the 300 s base — so the silence watchdog
+# never fires while the surface mesh never converges and no .msh is written.
+# This detector reads the CONTENT instead: it is fed every streamed line
+# through the same on_line path and tracks the exact signature GMSH emits when
+# a surface's curve-recovery loop is not recovering.
+#
+# Detection rule (measured; see notes/adaptive_runaway_reasoning.md):
+#   1. Magnitude: any surface reports >= 100 simultaneously-invalid elements.
+#      Healthy runs in the corpus peak at 7; the runaway reaches 364..6524
+#      (>=14x margin). Fires the instant the count is parsed.
+#   2. Growth: >= 8 "Splitting those edges and trying again" rounds, the 2D
+#      phase has run >= 30 s, and the last >= 3 invalid counts are
+#      non-decreasing. Catches a slow-growth loop that never repeats a large
+#      count. Healthy runs finish 2D in <5 s with <=4 split rounds.
+# The strings are matched verbatim (case-insensitive) so ordinary log output
+# cannot trip it.
+GMSH_INVALID_MAGNITUDE_THRESHOLD = 100
+GMSH_SPLIT_ROUNDS_THRESHOLD = 8
+GMSH_SIGNATURE_2D_ELAPSED_S = 30.0
+GMSH_INVALID_GROWTH_WINDOW = 3
+
+
+class GmshSignatureStallDetector:
+    """Stateful, content-aware runaway detector for the GMSH volume stream.
+
+    One instance per meshing attempt. :meth:`feed` is called for every
+    streamed line (the same lines forwarded to ``on_line``) and returns
+    ``True`` exactly once, when the non-convergence rule fires; :attr:`fired`
+    is then safe to poll from the watchdog loop and :attr:`evidence` carries a
+    human-readable summary for the log/retry message. All state is guarded by
+    a lock because ``feed`` runs on the stream-reader thread while ``fired`` is
+    polled on the watchdog thread. A pure parser: it never touches a process.
+    """
+
+    _INVALID_RE = re.compile(
+        r"(\d+)\s+elements?\s+remain\s+invalid\s+in\s+surface\s+(\d+)",
+        re.IGNORECASE,
+    )
+    _SPLIT_RE = re.compile(
+        r"splitting those edges and trying again", re.IGNORECASE
+    )
+    _RECOVERED_RE = re.compile(r"all edges recovered", re.IGNORECASE)
+    _MESH2D_RE = re.compile(r"meshing\s+(?:2d|surface)", re.IGNORECASE)
+
+    def __init__(self, clock=_now):
+        self._clock = clock
+        self.max_invalid = 0
+        self.max_invalid_surface: int | None = None
+        self.split_rounds = 0
+        self._invalid_counts: list[int] = []
+        self._first_2d_ts: float | None = None
+        self._fired = False
+        self._evidence = ""
+        self._lock = threading.Lock()
+
+    @property
+    def fired(self) -> bool:
+        return self._fired
+
+    @property
+    def evidence(self) -> str:
+        return self._evidence
+
+    def _elapsed_2d(self) -> float:
+        if self._first_2d_ts is None:
+            return 0.0
+        return self._clock() - self._first_2d_ts
+
+    def _growth_gate(self) -> bool:
+        """True when the low-count-but-never-terminating loop is confirmed."""
+        if self.split_rounds < GMSH_SPLIT_ROUNDS_THRESHOLD:
+            return False
+        if self._first_2d_ts is None:
+            return False
+        if self._elapsed_2d() < GMSH_SIGNATURE_2D_ELAPSED_S:
+            return False
+        window = self._invalid_counts[-GMSH_INVALID_GROWTH_WINDOW:]
+        if len(window) < GMSH_INVALID_GROWTH_WINDOW:
+            return False
+        return all(b >= a for a, b in zip(window, window[1:]))
+
+    def feed(self, line: str) -> bool:
+        """Inspect one streamed line; return True once the rule fires."""
+        if self._fired or not line:
+            return self._fired
+        with self._lock:
+            if self._fired:
+                return True
+            if self._MESH2D_RE.search(line) and self._first_2d_ts is None:
+                self._first_2d_ts = self._clock()
+            m = self._INVALID_RE.search(line)
+            if m:
+                try:
+                    count = int(m.group(1))
+                    surface = int(m.group(2))
+                except (ValueError, IndexError):
+                    count = None
+                if count is not None:
+                    self._invalid_counts.append(count)
+                    if count > self.max_invalid:
+                        self.max_invalid = count
+                        self.max_invalid_surface = surface
+            if self._SPLIT_RE.search(line):
+                self.split_rounds += 1
+            if self.max_invalid >= GMSH_INVALID_MAGNITUDE_THRESHOLD:
+                self._fire("magnitude")
+            elif self._growth_gate():
+                self._fire("growth")
+        return self._fired
+
+    def _fire(self, gate: str) -> None:
+        self._fired = True
+        self._evidence = (
+            f"{self.max_invalid} elements remain invalid in surface "
+            f"{self.max_invalid_surface} after {self.split_rounds} split "
+            f"round(s) in {self._elapsed_2d():.0f}s of 2D meshing "
+            f"(gate={gate})"
+        )
+
+
 def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
                        heartbeat_s: float = 10, proc_holder=None,
-                       stall_s: float | None = None, stall_holder=None):
+                       stall_s: float | None = None, stall_holder=None,
+                       signature_detector: "GmshSignatureStallDetector | None" = None):
     """Run cmd via Popen, streaming stdout/stderr line-by-line as they
     arrive instead of buffering everything until the process exits.
 
@@ -2969,6 +3107,10 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
                 _append_capped(sink, line)
                 last_activity[0] = time.monotonic()
                 last_output[0] = last_activity[0]
+                if signature_detector is not None:
+                    # Content-aware non-convergence check, on the SAME streamed
+                    # line the watchdog already watches (no second consumer).
+                    signature_detector.feed(line)
                 if line.strip():
                     now = time.monotonic()
                     if now - _rate["last_emit"] >= 1.0 / _MAX_LINE_RATE_PER_S:
@@ -3017,6 +3159,26 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
         if now - start > timeout_s:
             timed_out = True
             proc.kill()
+            break
+        if signature_detector is not None and signature_detector.fired:
+            # Content-aware runaway: GMSH is not silent, it is provably not
+            # converging. Kill exactly like the no-output path and let the
+            # caller decide whether to retry in robust mode.
+            evidence = signature_detector.evidence
+            elapsed_s = now - start
+            if stall_holder is not None:
+                stall_holder["stalled"] = True
+                stall_holder["signature"] = True
+                stall_holder["evidence"] = evidence
+                stall_holder["elapsed_s"] = elapsed_s
+                stall_holder["no_output_s"] = now - last_output[0]
+            on_line(
+                f"watchdog fired: non-convergence ({evidence}) "
+                f"({int(elapsed_s)}s elapsed) - killing process tree"
+            )
+            _kill_pid_tree(proc.pid)
+            with suppress(Exception):
+                proc.kill()
             break
         if stall_s is not None and now - last_output[0] > stall_s:
             # No real output for longer than the threshold: GMSH is stuck in a
@@ -3159,6 +3321,25 @@ class GmshSurfaceWorker(QObject):
         self.failed.emit("GMSH surface: no JSON output produced")
 
 
+def _parse_gmsh_json(stdout_lines) -> dict | None:
+    """Last non-empty stdout line parsed as the wrapper CLI's JSON result.
+
+    The wrapper CLI always prints one JSON object as its final stdout line
+    (``{"success": ..., ...}``), after any GMSH ``Info:`` chatter. Returns
+    ``None`` when there is no parseable JSON (a crash before the CLI's own
+    handler, for instance).
+    """
+    import json
+
+    non_empty = [ln for ln in stdout_lines if ln.strip()]
+    if not non_empty:
+        return None
+    try:
+        return json.loads(non_empty[-1])
+    except json.JSONDecodeError:
+        return None
+
+
 class GmshVolumeWorker(QObject):
     """Runs GMSH volume mesh generation in a subprocess."""
 
@@ -3255,32 +3436,47 @@ class GmshVolumeWorker(QObject):
                 f"[gmsh] solution-adaptive size field: {self._size_field_file}"
             )
 
-        # Stall watchdog: GMSH can hang forever in its surface-meshing loop
-        # while emitting nothing. One robust retry (the other lane reads
-        # POLYFOAMMESH_GMSH_ROBUST=1) then an honest failure — never a loop.
+        # Attempt chain: normal (MeshAdapt) -> robust (OCC healing + Delaunay
+        # 2D) -> manual-equivalent (adaptive sizing OFF, explicit sizes derived
+        # to match the requested cell target). Phase B kills a non-converging
+        # MeshAdapt runaway on its content signature; Phase D guarantees ONE
+        # last attempt with adaptive sizing off rather than a bare error while a
+        # mesh is still achievable. Never loops.
         #
         # Budget policy: the normal (MeshAdapt) attempt keeps the flat base
-        # (300 s) so the known 2D hang fails over fast; the ROBUST retry is
-        # the one expected to finish, and a large job legitimately goes
-        # silent for minutes during HXT's 3D phase (measured ~54 s gaps on a
-        # 7M-tet part, scaling with machine load), so it gets the
-        # size-scaled budget up to 900 s. An explicit
-        # POLYFOAMMESH_GMSH_STALL_S pins both attempts — no scaling.
+        # (300 s) so the known 2D hang fails over fast; the robust and manual
+        # attempts are the ones expected to finish on a pathological surface,
+        # and a large job legitimately goes silent for minutes during HXT's 3D
+        # phase (measured ~54 s gaps on a 7M-tet part, scaling with machine
+        # load), so they get the size-scaled budget up to 900 s. An explicit
+        # POLYFOAMMESH_GMSH_STALL_S pins every attempt — no scaling.
         stall_s = _gmsh_stall_timeout_s()
         est_cells = _gmsh_job_cell_estimate(self._step_path, self._max_cells_target)
         if _gmsh_stall_env_overridden():
             robust_stall_s = stall_s
         else:
             robust_stall_s = _gmsh_stall_budget_s(stall_s, est_cells)
-        robust = False
+        # Phase D only applies to an adaptive request: with explicit sizes there
+        # is no "adaptive sizing" to turn off (the caller already made that
+        # choice and the GUI's own BL/coarser-detail retries cover a failure).
+        can_fallback = self._max_cell_size <= 0 and self._min_cell_size <= 0
+        mode = "normal"
+        signature_retry = False
         while True:
             attempt_env = dict(env)
             attempt_stall_s = stall_s
-            if robust:
+            if mode == "robust":
                 attempt_env[GMSH_ROBUST_ENV_VAR] = "1"
+                if signature_retry:
+                    # Phase C: quality optimizer ONLY on the signature retry.
+                    attempt_env[GMSH_ROBUST_OPT_ENV_VAR] = "1"
+                attempt_stall_s = robust_stall_s
+            elif mode == "manual":
+                attempt_env[GMSH_MANUAL_EQUIV_ENV_VAR] = "1"
                 attempt_stall_s = robust_stall_s
             self._proc_holder.clear()
             stall_holder: dict = {}
+            signature_detector = GmshSignatureStallDetector()
             try:
                 returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                     cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=attempt_env,
@@ -3288,6 +3484,7 @@ class GmshVolumeWorker(QObject):
                     proc_holder=self._proc_holder,
                     stall_s=attempt_stall_s,
                     stall_holder=stall_holder,
+                    signature_detector=signature_detector,
                 )
             except Exception as exc:
                 if not self._cancelled:
@@ -3299,79 +3496,150 @@ class GmshVolumeWorker(QObject):
                 return
 
             if timed_out:
+                # Hard ceiling: the GUI must not be held for another attempt.
                 self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
                 return
 
             if stall_holder.get("stalled"):
                 no_output_s = stall_holder.get("no_output_s", 0.0)
-                if robust:
-                    # The robust retry stalled too: stop and fail honestly.
-                    # Never loop again — the GUI must not hang.
-                    self.log_line.emit(
-                        "[gmsh] robust retry also stalled (no output for "
-                        f"{int(no_output_s)}s) - giving up."
-                    )
-                    self.failed.emit(
-                        "GMSH volume stalled twice: no output for "
-                        f"{int(no_output_s)}s in robust mode (healing + "
-                        "Delaunay 2D, no optimization) after the normal "
-                        "attempt also stalled. The surface is likely "
-                        "unmeshable; see the log above."
-                    )
-                    return
-                self.log_line.emit(
-                    "[gmsh] stalled: no output for "
-                    f"{int(no_output_s)}s (surface meshing loop?) - killed; "
-                    "retrying in robust mode (healing + Delaunay 2D, no "
-                    "optimization)"
-                )
-                if robust_stall_s > stall_s:
-                    self.log_line.emit(
-                        f"[gmsh] robust stall budget raised to "
-                        f"{int(robust_stall_s)}s (estimated {est_cells:,} cells; "
-                        f"base {int(stall_s)}s)"
-                    )
-                robust = True
-                gmsh_mode = "robust"
-                continue
+                signature = bool(stall_holder.get("signature"))
+                evidence = str(stall_holder.get("evidence", ""))
 
-            break  # attempt completed with real output
+                if mode == "normal":
+                    if signature:
+                        signature_retry = True
+                        self.log_line.emit(
+                            "[gmsh] non-convergence detected: "
+                            f"{evidence} - retrying robust"
+                        )
+                    else:
+                        self.log_line.emit(
+                            "[gmsh] stalled: no output for "
+                            f"{int(no_output_s)}s (surface meshing loop?) - "
+                            "killed; retrying in robust mode (healing + "
+                            "Delaunay 2D, no optimization)"
+                        )
+                    if robust_stall_s > stall_s:
+                        self.log_line.emit(
+                            f"[gmsh] robust stall budget raised to "
+                            f"{int(robust_stall_s)}s (estimated {est_cells:,} "
+                            f"cells; base {int(stall_s)}s)"
+                        )
+                    mode = "robust"
+                    gmsh_mode = "robust"
+                    continue
 
-        # Parse stdout FIRST, even on a non-zero exit: the CLI's own
-        # except-block always reports a caught error as JSON on stdout
-        # ({"success": false, "error": "..."}) before calling sys.exit(1)
-        # — that's the real, specific failure reason. Checking returncode
-        # first (the previous order) discarded that message in favor of
-        # raw stderr, which can contain unrelated noise (e.g. Python's
-        # own "module found in sys.modules" RuntimeWarning from the -m
-        # invocation) that has nothing to do with why meshing failed —
-        # confirmed from a real user run where the surfaced error was
-        # just that warning while the actual cause never reached the UI.
-        # GMSH itself may print "Info:" lines to stdout before the JSON,
-        # so take the last non-empty line rather than the whole stream.
-        result = None
-        non_empty = [ln for ln in stdout_lines if ln.strip()]
-        if non_empty:
-            try:
-                result = json.loads(non_empty[-1])
-            except json.JSONDecodeError:
-                result = None
-
-        if result is not None:
-            if not result.get("success"):
-                self.failed.emit(result.get("error", "Unknown GMSH error"))
+                # robust or manual attempt failed: try the manual-equivalent
+                # fallback once (robust only), else fail honestly.
+                if self._start_manual_fallback(
+                    mode, can_fallback, signature, evidence, no_output_s,
+                ):
+                    mode = "manual"
+                    gmsh_mode = "manual"
+                    continue
+                self._fail_after_stall(mode, signature, evidence, no_output_s)
                 return
-            _perf_record(gmsh_case_dir, "gmsh", time.perf_counter() - t_gmsh0)
-            _perf_note(gmsh_case_dir, "gmsh_mode", gmsh_mode)
-            _perf_log(gmsh_case_dir, self.log_line.emit)
-            self.finished.emit(result)
+
+            # Attempt completed with real output: parse its result.
+            # Parse stdout FIRST, even on a non-zero exit: the CLI's own
+            # except-block always reports a caught error as JSON on stdout
+            # ({"success": false, "error": "..."}) before calling sys.exit(1)
+            # — that's the real, specific failure reason. Checking returncode
+            # first (the previous order) discarded that message in favor of
+            # raw stderr, which can contain unrelated noise (e.g. Python's
+            # own "module found in sys.modules" RuntimeWarning from the -m
+            # invocation). GMSH itself may print "Info:" lines to stdout
+            # before the JSON, so take the last non-empty line.
+            result = _parse_gmsh_json(stdout_lines)
+
+            if result is not None and result.get("success"):
+                _perf_record(gmsh_case_dir, "gmsh", time.perf_counter() - t_gmsh0)
+                _perf_note(gmsh_case_dir, "gmsh_mode", gmsh_mode)
+                _perf_log(gmsh_case_dir, self.log_line.emit)
+                self.finished.emit(result)
+                return
+
+            if result is not None:
+                err = result.get("error", "Unknown GMSH error")
+            elif returncode != 0:
+                err = "\n".join(stderr_lines).strip() or (
+                    f"GMSH volume failed (exit {returncode})"
+                )
+            else:
+                err = "GMSH volume: no JSON output produced"
+
+            # A robust attempt that errored (not stalled) is still a failed
+            # robust retry: run the one manual-equivalent attempt if possible.
+            if self._start_manual_fallback(mode, can_fallback):
+                mode = "manual"
+                gmsh_mode = "manual"
+                continue
+            self.failed.emit(err)
             return
 
-        if returncode != 0:
-            self.failed.emit("\n".join(stderr_lines).strip() or f"GMSH volume failed (exit {returncode})")
-            return
+    def _start_manual_fallback(
+        self, mode: str, can_fallback: bool,
+        signature: bool = False, evidence: str = "", no_output_s: float = 0.0,
+    ) -> bool:
+        """Log and approve the one manual-equivalent (adaptive-OFF) attempt.
 
-        self.failed.emit("GMSH volume: no JSON output produced")
+        Returns False when there is no fallback left (not a robust attempt, or
+        an explicit-size request) — the caller then fails honestly.
+        """
+        if mode != "robust" or not can_fallback:
+            return False
+        if signature:
+            self.log_line.emit(
+                "[gmsh] non-convergence detected: "
+                f"{evidence} - robust attempt did not converge"
+            )
+        elif no_output_s:
+            self.log_line.emit(
+                "[gmsh] robust retry also stalled (no output for "
+                f"{int(no_output_s)}s)"
+            )
+        else:
+            self.log_line.emit("[gmsh] robust attempt failed")
+        self.log_line.emit(
+            "[gmsh] adaptive sizing did not converge on this geometry - "
+            "meshed with the manual equivalent sizing"
+        )
+        return True
+
+    def _fail_after_stall(
+        self, mode: str, signature: bool, evidence: str, no_output_s: float,
+    ) -> None:
+        """Emit the honest terminal failure after the last attempt stalled."""
+        if mode == "manual":
+            self.log_line.emit(
+                "[gmsh] manual-equivalent fallback also stalled - giving up."
+            )
+            self.failed.emit(
+                "GMSH volume failed after the adaptive, robust and "
+                "manual-equivalent attempts (no output for "
+                f"{int(no_output_s)}s in the manual attempt). The surface is "
+                "likely unmeshable; see the log above."
+            )
+            return
+        self.log_line.emit(
+            "[gmsh] robust retry also "
+            + ("did not converge" if signature else "stalled")
+            + " - giving up."
+        )
+        if signature:
+            self.failed.emit(
+                "GMSH volume did not converge even in robust mode "
+                f"({evidence}) after the normal attempt also stalled. The "
+                "surface is likely unmeshable; see the log above."
+            )
+        else:
+            self.failed.emit(
+                "GMSH volume stalled twice: no output for "
+                f"{int(no_output_s)}s in robust mode (healing + "
+                "Delaunay 2D, no optimization) after the normal "
+                "attempt also stalled. The surface is likely "
+                "unmeshable; see the log above."
+            )
 
 
 class WatertightWorker(QObject):
