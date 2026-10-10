@@ -2340,18 +2340,69 @@ def _gmsh_robust_mode() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+#: Set by GmshVolumeWorker on a signature-triggered robust retry only. Enables
+#: the 2D optimizer inside robust mode (normally hard-off) — see
+#: ``_resolve_optimize`` for the measured justification.
+GMSH_ROBUST_OPT_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST_OPT"
+#: Set by GmshVolumeWorker on its last-ditch adaptive-off attempt. Makes the
+#: wrapper derive explicit sizes from the cell target instead of adaptive
+#: sizing — see ``derive_manual_equivalent_sizes``.
+GMSH_MANUAL_EQUIV_ENV_VAR = "POLYFOAMMESH_GMSH_MANUAL_EQUIV"
+
+
+def _gmsh_manual_equiv_mode() -> bool:
+    """True when ``POLYFOAMMESH_GMSH_MANUAL_EQUIV`` asks for the explicit-size
+    (adaptive-OFF) fallback."""
+    val = os.environ.get(GMSH_MANUAL_EQUIV_ENV_VAR, "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+def derive_manual_equivalent_sizes(
+    volume_m3: float, target_cells: int,
+) -> tuple[float, float]:
+    """Explicit ``(max_cell, min_cell)`` in metres whose volume-estimated tet
+    count matches *target_cells* — the Phase D adaptive-off fallback sizing.
+
+    The wrapper's own cell-count estimate is ``est = vol / lc**3`` (see the
+    explicit-size budget guard in ``generate_volume_mesh``); inverting it gives
+
+        max_cell = (vol / target_cells) ** (1/3)
+
+    which reproduces the Phase A manual baseline exactly: on the mm-declared
+    ``venturi.step`` (bbox volume ~5.4e-12 m^3, target 200 000) it yields
+    max_cell = 3.0e-6 m, the value that converged there. The min cell is
+    ``0.2 * max_cell`` — the same ratio the explicit-size path applies when the
+    caller's min is not finer, giving feature/curvature refinement inside the
+    bulk without changing the target's order of magnitude. Kept a pure,
+    dependency-free function so the formula is unit-testable.
+    """
+    target = max(int(target_cells or 0), 1)
+    vol = max(float(volume_m3), 1e-30)
+    max_cell = (vol / target) ** (1.0 / 3.0)
+    return max_cell, max_cell * 0.2
+
+
 def _resolve_optimize(robust: bool) -> int:
     """Whether GMSH's mesh optimizers (``Mesh.Optimize`` / ``OptimizeNetgen``)
     run: 1 (on, historical default) or 0 (off).
 
-    In robust mode the optimizers are always OFF, because their iterative
+    In robust mode the optimizers are OFF by default, because their iterative
     ``Improving ...`` loop is a common place for a 2D surface mesh to spin
-    without ever converging. Otherwise an explicit ``CFMESH_GMSH_OPTIMIZE``
-    env override is honoured (0/1) so the behaviour can be A/B benchmarked
-    without touching the default path; unset keeps the historical ``1``.
+    without ever converging. A measured A/B (Phase C, robust path) confirmed
+    the cost of leaving them on: they never hung, but they doubled-to-tripled
+    wall time on the large STEP cases (Parte2 19.0 -> 52.3 s; Parte4
+    41.6 -> 108.7 s) with no convergence benefit. They are therefore enabled in
+    robust mode ONLY when ``POLYFOAMMESH_GMSH_ROBUST_OPT=1`` is set, which
+    GmshVolumeWorker does exactly on a *signature*-triggered retry: that
+    runaway class converges fast (venturi 5.1 s) and the optimizer measurably
+    improves quality there (max skewness 3.34 -> 1.22, max non-orthogonality
+    49.0 -> 46.6). Outside robust mode an explicit ``CFMESH_GMSH_OPTIMIZE``
+    env override is still honoured (0/1) for A/B work; unset keeps the
+    historical ``1``.
     """
     if robust:
-        return 0
+        val = os.environ.get(GMSH_ROBUST_OPT_ENV_VAR, "").strip().lower()
+        return 1 if val in ("1", "true", "yes", "on") else 0
     env = os.environ.get("CFMESH_GMSH_OPTIMIZE", "").strip()
     if env:
         try:
@@ -2833,8 +2884,11 @@ def generate_volume_mesh(
     robust = _gmsh_robust_mode()
     is_step_input = filepath_str.lower().endswith((".step", ".stp"))
     if robust:
+        _robust_opt = _resolve_optimize(True) == 1
         msg = ("[gmsh] robust mode ON (POLYFOAMMESH_GMSH_ROBUST=1): "
-               "OCC healing + Delaunay 2D + no optimizer")
+               "OCC healing + Delaunay 2D"
+               + (" + optimizer ON (signature retry)" if _robust_opt
+                  else " + no optimizer"))
         logger.info(msg)
         print(msg, flush=True)
         if is_step_input:
@@ -2888,6 +2942,27 @@ def generate_volume_mesh(
     max_extent = max(dx, dy, dz)
     cross_scale = sorted([dx, dy, dz])[1]  # median dimension — see _configure_adaptive_sizing
     vol = max(dx * dy * dz, 1e-12)
+
+    # Phase D guaranteed fallback (POLYFOAMMESH_GMSH_MANUAL_EQUIV=1): the
+    # adaptive attempt and the robust retry both failed to converge. Turn
+    # adaptive sizing OFF and substitute explicit sizes DERIVED to match the
+    # requested cell target (see derive_manual_equivalent_sizes); the normal
+    # explicit-size path below then runs unchanged. One attempt only — the
+    # worker never re-enters here (it fails honestly on a manual failure).
+    _manual_equiv = _gmsh_manual_equiv_mode()
+    if _manual_equiv and not user_lc:
+        if max_cells_override and max_cells_override > 0:
+            _equiv_target = int(max_cells_override)
+        else:
+            _equiv_target = int(_hardware_budget(None)["max_cells"])
+        user_lc, min_cell_size = derive_manual_equivalent_sizes(vol, _equiv_target)
+        _equiv_msg = (
+            f"[gmsh] manual-equivalent sizing: max-cell={user_lc:.6g} "
+            f"min-cell={min_cell_size:.6g} for target {_equiv_target:,} cells "
+            f"(bbox volume {vol:.6g} m^3)"
+        )
+        logger.info(_equiv_msg)
+        print(_equiv_msg, flush=True)
 
     # SAFETY: estimate cell count and auto-coarsen the explicit-size path
     # if it would run away. The adaptive path has its own hardware-budget
@@ -3087,6 +3162,13 @@ def generate_volume_mesh(
         _opt_msg = (
             "[gmsh] Mesh.Optimize/OptimizeNetgen DISABLED"
             + (" (robust mode)" if robust else " (CFMESH_GMSH_OPTIMIZE=0)")
+        )
+        logger.info(_opt_msg)
+        print(_opt_msg, flush=True)
+    elif robust:
+        _opt_msg = (
+            "[gmsh] Mesh.Optimize/OptimizeNetgen ENABLED (robust signature "
+            "retry: measured quality win, no convergence cost on this class)"
         )
         logger.info(_opt_msg)
         print(_opt_msg, flush=True)
@@ -3335,7 +3417,8 @@ def generate_volume_mesh(
     # above _BUDGET_CORRECTION_MAX_TARGET are skipped (too expensive to redo).
     _budget_target = (
         int(max_cells_override)
-        if max_cells_override and max_cells_override > 0 else 0
+        if (max_cells_override and max_cells_override > 0
+            and not _manual_equiv) else 0
     )
     actual_cells = _count_volume_cells(gmsh)
     if _budget_target and actual_cells > 0:
