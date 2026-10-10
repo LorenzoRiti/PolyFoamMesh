@@ -519,3 +519,60 @@ def test_planarity_cli_reports(capsys, tmp_path):
     assert "non-planarity report" in out
     assert "non-planar" in out
     assert "worst faces" in out
+
+
+def test_face_bucket_cache_is_bitwise_transparent():
+    # The face-size bucket cache (perf Phase 1c) must not change any geometry
+    # helper's result: a cache hit, a cache miss on an equal-but-distinct face
+    # list, and repeated calls must all agree bit-for-bit, including the
+    # explicit-idx path of `_face_planarity`.
+    from polyfoammesh.core.tet_poly_dual import (
+        _face_extent,
+        _face_planarity,
+        _face_size_buckets,
+    )
+
+    rng = np.random.default_rng(20261010)
+    points = rng.standard_normal((60, 3))
+    faces: list[list[int]] = []
+    for k in range(3, 8):
+        for _ in range(6):
+            faces.append(sorted(rng.choice(60, size=k, replace=False).tolist()))
+    n_int = len(faces) - 6
+
+    # bucket cache hit vs miss on an equal-but-distinct list
+    b1, s1 = _face_size_buckets(faces)
+    b2, s2 = _face_size_buckets(faces)
+    faces_b = [list(f) for f in faces]
+    b3, s3 = _face_size_buckets(faces_b)
+    assert np.array_equal(s1, s2) and np.array_equal(s1, s3)
+    for (k1, f1, v1), (k2, f2, v2), (k3, f3, v3) in zip(b1, b2, b3):
+        assert k1 == k2 == k3
+        assert np.array_equal(f1, f2) and np.array_equal(f1, f3)
+        assert np.array_equal(v1, v2) and np.array_equal(v1, v3)
+
+    sf1, cf1 = _face_geometry(points, faces)
+    sf2, cf2 = _face_geometry(points, faces)          # cache hit
+    sf3, cf3 = _face_geometry(points, faces_b)        # cache miss
+    assert np.array_equal(sf1, sf2) and np.array_equal(cf1, cf2)
+    assert np.array_equal(sf1, sf3) and np.array_equal(cf1, cf3)
+
+    sv = cf1[:n_int] * 0.37
+    e1 = _face_extent(points, faces, cf1, sv, n_int)
+    e2 = _face_extent(points, faces, cf1, sv, n_int)
+    e3 = _face_extent(points, faces_b, cf3, sv, n_int)
+    assert np.array_equal(e1, e2) and np.array_equal(e1, e3)
+
+    n1, c1, d1 = _face_planarity(points, faces)
+    n2, c2, d2 = _face_planarity(points, faces)
+    n3, c3, d3 = _face_planarity(points, faces_b)
+    for a, b in ((n1, n2), (c1, c2), (d1, d2), (n1, n3), (c1, c3), (d1, d3)):
+        assert np.array_equal(a, b, equal_nan=True)
+
+    # the explicit-idx path must equal the corresponding rows of the full path
+    sub = [0, 4, 7, 13, 20]
+    ns, cs, ds = _face_planarity(points, faces, sub)
+    assert np.array_equal(ns, n1[sub], equal_nan=True)
+    assert np.array_equal(cs, c1[sub], equal_nan=True)
+    assert np.array_equal(ds, d1[sub], equal_nan=True)
+

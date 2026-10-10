@@ -1473,6 +1473,15 @@ class TetPolyDualConverter:
         fc_all = P.face_centroid
         emid = P.edge_mid
         pts_in = P.points
+        # Pure-Python coordinate shadows.  `_newell_dot` is a per-face scalar
+        # loop, and indexing a Python list of float triplets is ~2.6x faster
+        # than indexing the numpy array twice per vertex (measured: 130k faces
+        # 887 -> 336 ms).  `xyz_l` is kept exactly in sync with rows
+        # [0, n_pt) of `xyz` by appending in every allocator; the arithmetic
+        # and its order are unchanged, so the orientation signs are bitwise
+        # identical.  `pts_l` is the primal points.
+        pts_l = pts_in.tolist()
+        xyz_l = xyz[:n_pt].tolist()
 
         def pt_face(f: int) -> int:
             nonlocal n_pt
@@ -1481,6 +1490,7 @@ class TetPolyDualConverter:
                 i = n_pt
                 n_pt += 1
                 xyz[i] = fc_all[f]
+                xyz_l.append(fc_all[f].tolist())
                 face_pt[f] = i
             return i
 
@@ -1491,6 +1501,7 @@ class TetPolyDualConverter:
                 i = n_pt
                 n_pt += 1
                 xyz[i] = emid[e]
+                xyz_l.append(emid[e].tolist())
                 edge_pt[e] = i
             return i
 
@@ -1501,6 +1512,7 @@ class TetPolyDualConverter:
                 i = n_pt
                 n_pt += 1
                 xyz[i] = pts_in[v]
+                xyz_l.append(pts_in[v].tolist())
                 vert_pt[v] = i
             return i
 
@@ -1517,6 +1529,23 @@ class TetPolyDualConverter:
         int_faces: list[list[int]] = []
         int_own: list[int] = []
         int_nb: list[int] = []
+
+        def emit_edge(poly, ca, cb, va, vb):
+            """`_emit_edge_face` using the pure-Python coordinate shadows."""
+            if len(poly) < 3:
+                raise RuntimeError(f"Degenerate dual face at edge ({va},{vb}).")
+            pa = pts_l[va]
+            pb = pts_l[vb]
+            if _newell_dot(
+                xyz_l, poly, [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]],
+            ) < 0.0:
+                poly.reverse()
+            if ca > cb:
+                ca, cb = cb, ca
+                poly.reverse()
+            int_faces.append(poly)
+            int_own.append(ca)
+            int_nb.append(cb)
 
         # ---- internal dual faces, one run per primal edge ---------------
         heartbeat = max(1, P.n_edges // 8)
@@ -1619,9 +1648,7 @@ class TetPolyDualConverter:
                         poly.append(ring[k])
                 else:
                     poly = list(ring)
-                _emit_edge_face(
-                    poly, ba, bb, xyz, pts_in, va, vb, int_faces, int_own, int_nb,
-                )
+                emit_edge(poly, ba, bb, va, vb)
                 continue
 
             if closed:
@@ -1661,10 +1688,7 @@ class TetPolyDualConverter:
                         poly.append(pt_face(link[k]))
                     poly.append(ring[k])
                 poly.append(pt_face(link[j + 1]))
-                _emit_edge_face(
-                    poly, pa[i], pb[i], xyz, pts_in, va, vb,
-                    int_faces, int_own, int_nb,
-                )
+                emit_edge(poly, pa[i], pb[i], va, vb)
                 i = j + 1
 
         # ---- extra internal faces where a split cuts the vertex star ----
@@ -2781,6 +2805,55 @@ def _newell_dot(points: np.ndarray, verts: list[int], d: np.ndarray) -> float:
     return 0.5 * (n0 * d[0] + n1 * d[1] + n2 * d[2])
 
 
+def _face_size_buckets(faces: list[list[int]]):
+    """Face-vertex arrays grouped by face size, cached by face-list identity.
+
+    Returns ``(buckets, sizes)`` where ``buckets`` is a list of
+    ``(k, fids, verts)``: ``k`` the vertex count, ``fids`` the ascending face
+    indices in that bucket and ``verts`` an ``(len(fids), k)`` int64 array of
+    the vertices of those faces.  ``sizes`` is the per-face vertex count.
+
+    The dual smoother calls ``_face_geometry``/``_face_extent``/
+    ``_face_planarity`` ~30 times on the SAME (topology-fixed) face list during
+    one conversion, and each used to rebuild these arrays from the Python face
+    lists (measured 49 ms per rebuild on the 144k-face venturi dual).  The
+    cache removes that repeated Python work; it is topology-only, independent
+    of point positions, so a cache hit is bitwise-identical to a rebuild.
+
+    The cached entry holds a reference to the face list, so its ``id`` cannot
+    be recycled while cached; the cache is bounded (FIFO) so at most a few face
+    lists stay alive.  A stale/short entry (in-place length change) is rebuilt.
+    """
+    key = id(faces)
+    ent = _FACE_BUCKET_CACHE.get(key)
+    if ent is not None and ent[0] is faces and ent[1] == len(faces):
+        return ent[2], ent[3]
+    n = len(faces)
+    sizes = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n)
+    buckets = []
+    for k in np.unique(sizes):
+        fids = np.flatnonzero(sizes == k)
+        verts = np.array([faces[i] for i in fids], dtype=np.int64)
+        buckets.append((int(k), fids, verts))
+    if key not in _FACE_BUCKET_CACHE:
+        _FACE_BUCKET_LRU.append(key)
+    _FACE_BUCKET_CACHE[key] = (faces, n, buckets, sizes)
+    while len(_FACE_BUCKET_LRU) > _FACE_BUCKET_CACHE_MAX:
+        old = _FACE_BUCKET_LRU.pop(0)
+        _FACE_BUCKET_CACHE.pop(old, None)
+    return buckets, sizes
+
+
+# Face-list -> (faces_ref, n, buckets, sizes) identity cache.  Keeping the
+# face list reference both keys identity safely (no id() reuse) and pins the
+# list for the duration of a conversion; capped so memory stays bounded (a
+# converted large mesh has exactly one hot face list, so a small cap captures
+# every hit while bounding the retained vertex arrays).
+_FACE_BUCKET_CACHE: dict[int, tuple] = {}
+_FACE_BUCKET_LRU: list[int] = []
+_FACE_BUCKET_CACHE_MAX = 2
+
+
 def _face_geometry(points: np.ndarray, faces: list[list[int]]):
     """Area vectors and centroids, using OpenFOAM's centre-point decomposition.
 
@@ -2794,12 +2867,11 @@ def _face_geometry(points: np.ndarray, faces: list[list[int]]):
     n = len(faces)
     sf = np.zeros((n, 3), dtype=np.float64)
     cf = np.zeros((n, 3), dtype=np.float64)
-    sizes = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n)
-    for k in np.unique(sizes):
-        idx = np.flatnonzero(sizes == k)
-        for s in range(0, len(idx), _BLOCK):
-            b = idx[s:s + _BLOCK]
-            v = np.array([faces[i] for i in b], dtype=np.int64)
+    buckets, _sizes = _face_size_buckets(faces)
+    for k, fids, verts in buckets:
+        for s in range(0, len(fids), _BLOCK):
+            b = fids[s:s + _BLOCK]
+            v = verts[s:s + _BLOCK]
             p = points[v]
             c0 = p.mean(axis=1)
             a = p - c0[:, None, :]
@@ -3176,12 +3248,16 @@ def _face_extent(points, faces, cf, sv, n_int):
     _BLOCK = 250_000
     hat = sv / np.maximum(np.linalg.norm(sv, axis=1), 1e-300)[:, None]
     out = np.zeros(n_int, dtype=np.float64)
-    sizes = np.fromiter((len(faces[i]) for i in range(n_int)), dtype=np.int64, count=n_int)
-    for k in np.unique(sizes):
-        idx = np.flatnonzero(sizes == k)
-        for s in range(0, len(idx), _BLOCK):
-            b = idx[s:s + _BLOCK]
-            v = np.array([faces[i] for i in b], dtype=np.int64)
+    buckets, _sizes = _face_size_buckets(faces)
+    for k, fids, verts in buckets:
+        sel = fids < n_int
+        if not sel.any():
+            continue
+        b_all = fids[sel]
+        v_all = verts[sel]
+        for s in range(0, len(b_all), _BLOCK):
+            b = b_all[s:s + _BLOCK]
+            v = v_all[s:s + _BLOCK]
             rel = points[v] - cf[b][:, None, :]
             out[b] = np.abs((rel * hat[b][:, None, :]).sum(axis=2)).max(axis=1)
     return out
@@ -3211,29 +3287,35 @@ def _face_planarity(points: np.ndarray, faces: list[list[int]], idx=None):
     n_sel = len(faces) if idx is None else len(idx)
     if n_sel == 0:
         return (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
-    if idx is None:
-        idx = np.arange(n_sel)
-    idx = np.asarray(idx, dtype=np.int64)
-    sizes = np.fromiter((len(faces[i]) for i in idx), dtype=np.int64, count=n_sel)
     normal = np.full((n_sel, 3), np.nan, dtype=np.float64)
     centroid = np.zeros((n_sel, 3), dtype=np.float64)
     dev = np.full(n_sel, np.inf, dtype=np.float64)
-    for k in np.unique(sizes):
-        sel = np.flatnonzero(sizes == k)
-        fids = idx[sel]
-        v = np.array([faces[i] for i in fids], dtype=np.int64)
+    if idx is None:
+        # Every face, in face-size order (identical to the bucketed path
+        # below); the vertex arrays come from the shared topology cache.
+        groups = [(fids, verts) for _k, fids, verts in _face_size_buckets(faces)[0]]
+    else:
+        idx = np.asarray(idx, dtype=np.int64)
+        sizes = np.fromiter((len(faces[i]) for i in idx), dtype=np.int64, count=n_sel)
+        groups = []
+        for k in np.unique(sizes):
+            sel = np.flatnonzero(sizes == k)
+            fids = idx[sel]
+            v = np.array([faces[i] for i in fids], dtype=np.int64)
+            groups.append((sel, v))
+    for pos, v in groups:
         p = points[v]                                # (m, k, 3)
         nv = np.cross(p, np.roll(p, -1, axis=1)).sum(axis=1)   # 2*Newell
         c = p.mean(axis=1)                           # (m, 3)
         mag = np.linalg.norm(nv, axis=1)
         good = mag > 0.0
-        normal[sel[good]] = nv[good]
-        centroid[sel] = c
-        d = np.zeros(len(sel), dtype=np.float64)
+        normal[pos[good]] = nv[good]
+        centroid[pos] = c
+        d = np.zeros(len(pos), dtype=np.float64)
         if np.any(good):
             dot = ((p[good] - c[good][:, None, :]) * nv[good][:, None, :]).sum(axis=2)
             d[good] = np.abs(dot).max(axis=1) / mag[good]
-        dev[sel] = np.where(good, d, np.inf)
+        dev[pos] = np.where(good, d, np.inf)
     return normal, centroid, dev
 
 
