@@ -532,6 +532,61 @@ def _face_geometry(points: np.ndarray, faces: list[list[int]],
     return sf, cf
 
 
+def _all_face_edges(faces):
+    """(a, b, degs, starts) for the consecutive vertex pairs of every face.
+
+    ``a``/``b`` are the flat edge endpoints in face-then-edge order (the exact
+    order the old per-face Python loops visited), ``degs`` the per-face vertex
+    count and ``starts`` its exclusive prefix sum into the flat arrays.
+    """
+    n_faces = len(faces)
+    degs = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n_faces)
+    total = int(degs.sum())
+    if total:
+        flat = np.fromiter(
+            itertools.chain.from_iterable(faces), dtype=np.int64, count=total,
+        )
+    else:
+        flat = np.zeros(0, dtype=np.int64)
+    starts = np.zeros(n_faces + 1, dtype=np.int64)
+    np.cumsum(degs, out=starts[1:])
+    base = np.repeat(starts[:-1], degs)
+    within = np.arange(total, dtype=np.int64) - base
+    cnt = np.repeat(degs, degs)
+    b = flat[base + (within + 1) % np.maximum(cnt, 1)]
+    return flat, b, degs, starts
+
+
+def _edge_lengths_exact(pts, a, b):
+    """Per-edge ``float(np.linalg.norm(pts[a] - pts[b]))``, bit-identical to
+    the scalar calls the historical loops made (batched ``np.linalg.norm``
+    differs by ~1 ULP, which is NOT acceptable: these feed the inversion-cap
+    thresholds)."""
+    if a.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    return np.fromiter(
+        (float(np.linalg.norm(pts[x] - pts[y]))
+         for x, y in zip(a.tolist(), b.tolist())),
+        dtype=np.float64, count=a.size,
+    )
+
+
+def _group_index_lists(keys, values) -> dict:
+    """``{key: [value, ...]}`` grouping ``values`` by ``keys`` while keeping
+    the original value order within each key (stable argsort), the exact
+    container shape the historical per-face append loops produced."""
+    keys = np.asarray(keys)
+    values = np.asarray(values, dtype=np.int64)
+    if keys.size == 0:
+        return {}
+    order = np.argsort(keys, kind="stable")
+    ks = keys[order]
+    vs = values[order]
+    uniq, first = np.unique(ks, return_index=True)
+    parts = np.split(vs, first[1:])
+    return {int(k): p.tolist() for k, p in zip(uniq, parts)}
+
+
 def _cell_centroids(points, faces, owner, neigh, n_int, n_cells):
     """EXACT OpenFOAM-2512 cell centres + volumes  -  byte-for-byte the
     algorithm in `primitiveMeshTools::makeCellCentresAndVols` (pyramid-volume
@@ -2394,16 +2449,28 @@ class PolyBoundaryLayerEngine:
         )
         ow = np.asarray(owner)
         nb = np.asarray(neighbour)
-        cell_links: list[list[tuple[int, int]]] = [
-            [] for _ in range(n_cells)
-        ]
-        for fi in range(n_int):
-            o = int(ow[fi])
-            n = int(nb[fi])
-            cell_links[o].append((fi, n))
-            cell_links[n].append((fi, o))
-        for fi in range(n_int, len(faces)):
-            cell_links[int(ow[fi])].append((fi, -1))
+        # Vectorised link CSR: for every cell, the incident faces in ASCENDING
+        # global face id (the order the old per-cell dict append produced:
+        # internal faces then boundary faces, both ascending).  ``occ_rel``
+        # holds fc[face] - cc[cell] so the per-step projection over a cell's
+        # links is one small mat-vec instead of a Python loop.
+        fi_int = np.arange(n_int, dtype=np.int64)
+        occ_cell = np.concatenate([ow[:n_int], nb[:n_int], ow[n_int:]])
+        occ_fi = np.concatenate([
+            fi_int, fi_int, np.arange(n_int, len(faces), dtype=np.int64),
+        ])
+        occ_nbr = np.concatenate([
+            nb[:n_int], ow[:n_int],
+            np.full(len(faces) - n_int, -1, dtype=np.int64),
+        ])
+        order = np.lexsort((occ_fi, occ_cell))
+        occ_cell = occ_cell[order]
+        occ_fi = occ_fi[order]
+        occ_nbr = occ_nbr[order]
+        off = np.zeros(n_cells + 1, dtype=np.int64)
+        np.cumsum(np.bincount(occ_cell, minlength=n_cells), out=off[1:])
+        occ_rel = fc[occ_fi] - cc[occ_cell]
+        NEG = -np.inf
         out: dict[int, list[tuple[float, int]]] = {}
         cells_of: dict[int, list[int]] = {}
         for w in wall_verts:
@@ -2425,19 +2492,16 @@ class PolyBoundaryLayerEngine:
                     if cell in visited:
                         break
                     visited.add(cell)
-                    best_f = -1
-                    best_proj = None
-                    best_nb = -2
-                    for fi, nb_c in cell_links[cell]:
-                        proj = float((fc[fi] - cc[cell]) @ din)
-                        if proj <= 1e-30:
-                            continue
-                        if best_proj is None or proj > best_proj:
-                            best_proj = proj
-                            best_f = fi
-                            best_nb = nb_c
-                    if best_f < 0:
+                    s, e = int(off[cell]), int(off[cell + 1])
+                    if s == e:
                         break
+                    projs = occ_rel[s:e] @ din
+                    valid = projs > 1e-30
+                    if not valid.any():
+                        break
+                    k = int(np.argmax(np.where(valid, projs, NEG)))
+                    best_f = int(occ_fi[s + k])
+                    best_nb = int(occ_nbr[s + k])
                     depth = float((fc[best_f] - origin) @ din)
                     if depth <= prev + 1e-12:
                         break
@@ -2459,25 +2523,14 @@ class PolyBoundaryLayerEngine:
         """Symmetric dual edge list for the reflow Jacobi / min-diffusion
         solve.  Every dual edge (consecutive face vertices) contributes one
         entry; ``elen`` is its length in metres."""
-        src: list[int] = []
-        dst: list[int] = []
-        elen: list[float] = []
-        for f in faces:
-            m = len(f)
-            for k in range(m):
-                a = int(f[k])
-                b = int(f[(k + 1) % m])
-                if a == b:
-                    continue
-                src.append(a)
-                dst.append(b)
-                elen.append(float(np.linalg.norm(pts[a] - pts[b])))
-        src_a = np.asarray(src, dtype=np.int64)
-        dst_a = np.asarray(dst, dtype=np.int64)
-        elen_a = np.asarray(elen, dtype=np.float64)
+        a, b, _degs, _starts = _all_face_edges(faces)
+        keep = a != b
+        a = a[keep]
+        b = b[keep]
+        elen_a = _edge_lengths_exact(pts, a, b)
         # symmetric edges so the Jacobi average has full degree
-        src2 = np.concatenate([src_a, dst_a])
-        dst2 = np.concatenate([dst_a, src_a])
+        src2 = np.concatenate([a, b])
+        dst2 = np.concatenate([b, a])
         elen2 = np.concatenate([elen_a, elen_a])
         return src2, dst2, elen2
 
@@ -2495,21 +2548,26 @@ class PolyBoundaryLayerEngine:
         out = {c: float("inf") for c in cells}
         if not cells:
             return out
-        for fi, f in enumerate(faces):
-            o = int(owner[fi])
-            nb = int(neighbour[fi]) if fi < n_int else -1
-            if o not in cells and nb not in cells:
-                continue
-            k = len(f)
-            e = min(
-                float(np.linalg.norm(pts[f[i]] - pts[f[(i + 1) % k]]))
-                for i in range(k)
+        # Per-face minimum edge (exact scalar norms), then one scatter-min per
+        # owner and per internal neighbour: the smallest incident face edge
+        # per cell.  Identical to the historical per-face loop (min is exact
+        # and order-independent); no Python loop over the faces.
+        a, b, degs, _starts = _all_face_edges(faces)
+        edge_len = _edge_lengths_exact(pts, a, b)
+        face_of_edge = np.repeat(
+            np.arange(len(faces), dtype=np.int64), degs,
+        )
+        face_min = np.full(len(faces), float("inf"))
+        np.minimum.at(face_min, face_of_edge, edge_len)
+        n_cells = int(max(owner.max(), neighbour.max())) + 1
+        cm = np.full(n_cells, float("inf"))
+        np.minimum.at(cm, np.asarray(owner, dtype=np.int64), face_min)
+        if n_int:
+            np.minimum.at(
+                cm, np.asarray(neighbour, dtype=np.int64)[:n_int],
+                face_min[:n_int],
             )
-            if o in cells and e < out[o]:
-                out[o] = e
-            if nb in cells and e < out[nb]:
-                out[nb] = e
-        return out
+        return {c: float(cm[c]) for c in cells}
 
     def _consume_cap_faces(self, points, faces, n_int, sel):
         """Inlet/outlet CAP faces among the selected wall faces (2026-10-08).
@@ -2874,10 +2932,23 @@ class PolyBoundaryLayerEngine:
             )
 
         # --- wall vertices -------------------------------------------------
-        wv: dict[int, None] = {}
-        for fi in bnd:
-            for v in faces[fi]:
-                wv[v] = None
+        # Flat selected-face vertex / edge arrays (face-then-vertex order, the
+        # exact order the historical dict loops used), reused below so the
+        # per-vertex maps, the normal scatter, the edge maps and the min-edge
+        # aggregation are all built with numpy grouping/scatter instead of
+        # nested Python appends.
+        bnd_arr = np.asarray(bnd, dtype=np.int64)
+        sel_arr = np.asarray(sel, dtype=np.int64)
+        bnd_degs = np.fromiter(
+            (len(faces[fi]) for fi in bnd), dtype=np.int64, count=len(bnd),
+        )
+        bnd_total = int(bnd_degs.sum())
+        bnd_flat = (np.fromiter(
+            itertools.chain.from_iterable(faces[fi] for fi in bnd),
+            dtype=np.int64, count=bnd_total,
+        ) if bnd_total else np.zeros(0, dtype=np.int64))
+        bnd_face_pos = np.repeat(np.arange(len(bnd), dtype=np.int64), bnd_degs)
+        wv: dict[int, None] = {int(v): None for v in np.unique(bnd_flat)}
         wall_verts = sorted(wv)
 
         # vertex -> incident faces index.  Lane A RAM fix: only WALL vertices
@@ -2885,15 +2956,22 @@ class PolyBoundaryLayerEngine:
         # vertices of wall faces, which are wall vertices by construction),
         # so faces are still scanned once but entries are kept only for wall
         # vertices  -  the old map held every vertex (~2GB on a 5M mesh).
-        vert_faces: dict[int, list[int]] = {}
-        for fi, f in enumerate(faces):
-            for v in f:
-                if v in wv:
-                    vert_faces.setdefault(v, []).append(fi)
-        wall_face_of: dict[int, list[int]] = {}
-        for fi in bnd:
-            for v in faces[fi]:
-                wall_face_of.setdefault(v, []).append(fi)
+        all_degs = np.fromiter(
+            (len(f) for f in faces), dtype=np.int64, count=len(faces),
+        )
+        all_total = int(all_degs.sum())
+        all_flat = (np.fromiter(
+            itertools.chain.from_iterable(faces), dtype=np.int64,
+            count=all_total,
+        ) if all_total else np.zeros(0, dtype=np.int64))
+        all_face_id = np.repeat(np.arange(len(faces), dtype=np.int64), all_degs)
+        wv_mask = np.isin(all_flat, np.asarray(wall_verts, dtype=np.int64))
+        vert_faces: dict[int, list[int]] = _group_index_lists(
+            all_flat[wv_mask], all_face_id[wv_mask],
+        )
+        wall_face_of: dict[int, list[int]] = _group_index_lists(
+            bnd_flat, bnd_arr[bnd_face_pos],
+        )
 
         # --- per-vertex normals (area-weighted face normals) ----------------
         self._log(
@@ -2947,15 +3025,22 @@ class PolyBoundaryLayerEngine:
                     normals[v] += bnd_fa[bi] * filt[bi]
             del bnd_fn, bnd_fc, bnd_fa, bnd_fe, filt, neighbours
         else:
+            # Same per-face ``_newell`` calls, but the vertex scatter is one
+            # ``np.add.at`` in the identical (face, then vertex) order, so the
+            # accumulated normals are bit-identical.
+            face_normals = np.empty((len(bnd), 3), dtype=np.float64)
             for pi, fi in enumerate(bnd):
                 _gil_yield(pi, 256)
                 if pi % prog_stride == 0:
                     self._log(
                         f"[bl] precompute: normals {int(100 * pi / max(1, len(bnd)))}%..."
                     )
-                n = _newell(pts, faces[fi])
-                for v in faces[fi]:
-                    normals[v] += n
+                face_normals[pi] = _newell(pts, faces[fi])
+            if bnd_total:
+                np.add.at(
+                    normals, bnd_flat,
+                    np.repeat(face_normals, bnd_degs, axis=0),
+                )
         mag = np.linalg.norm(normals, axis=1)
         # only WALL vertices matter: interior dual points (tet/face centroids,
         # interior edge mids) legitimately carry no wall-face normal.
@@ -2992,6 +3077,40 @@ class PolyBoundaryLayerEngine:
                 wall_verts, wall_face_of,
             )
         prog_stride = max(1, len(wall_verts) // 20)
+        # --- inversion-clamp per-vertex min edge (vectorised) ---------------
+        # min over all edges of a vertex's RETAINED (non-thin) incident wall
+        # faces.  min distributes over faces, so reduce each face's edges to
+        # its own minimum once, then scatter-min that to the face's vertices.
+        # Exact: min is order-independent and ``len_w`` uses the same scalar
+        # ``np.linalg.norm`` the historical loop called.
+        starts_w = np.zeros(len(bnd) + 1, dtype=np.int64)
+        np.cumsum(bnd_degs, out=starts_w[1:])
+        base_w = np.repeat(starts_w[:-1], bnd_degs)
+        within_w = np.arange(bnd_total, dtype=np.int64) - base_w
+        cnt_w = np.repeat(bnd_degs, bnd_degs)
+        b_w = bnd_flat[base_w + (within_w + 1) % np.maximum(cnt_w, 1)]
+        len_w = _edge_lengths_exact(pts, bnd_flat, b_w)
+        face_min_w = (np.minimum.reduceat(len_w, starts_w[:-1])
+                      if len(bnd) else np.zeros(0, dtype=np.float64))
+        face_min_entry = face_min_w[bnd_face_pos] if bnd_total else len_w
+        min_any = np.full(n_pts, float("inf"))
+        if bnd_total:
+            np.minimum.at(min_any, bnd_flat, face_min_entry)
+        if thin_bnd:
+            thin_pos = np.asarray(sorted(int(t) for t in thin_bnd),
+                                  dtype=np.int64)
+            keep_mask = ~np.isin(sel_arr[bnd_face_pos], thin_pos)
+            min_kept = np.full(n_pts, float("inf"))
+            if keep_mask.any():
+                np.minimum.at(min_kept, bnd_flat[keep_mask],
+                              face_min_entry[keep_mask])
+        else:
+            min_kept = min_any
+        for w in wall_verts:
+            v = float(min_kept[w])
+            min_edge[w] = v if np.isfinite(v) else float(min_any[w])
+        if edge_cap_percentile == 0.0:
+            edge_cap = dict(min_edge)
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
             if wi % prog_stride == 0:
@@ -3009,25 +3128,25 @@ class PolyBoundaryLayerEngine:
             kept = [fi for fi in incident if (fi - n_int) not in thin_bnd]
             if not kept:
                 kept = list(incident)
-            f_edges = []
-            for fi in kept:
-                f = faces[fi]
-                for k in range(len(f)):
-                    a, b = f[k], f[(k + 1) % len(f)]
-                    f_edges.append(float(np.linalg.norm(pts[a] - pts[b])))
-            min_edge[w] = min(f_edges) if f_edges else float("inf")
             # Robust inversion-clamp edge cap (opt-in `edge_cap_percentile`):
-            # 0.0 (default) keeps the historical SMALLEST incident edge, so the
-            # result is byte-identical; > 0 takes the p-th percentile of ALL
-            # edge lengths of the vertex's incident wall faces instead, so a
-            # single sliver boundary face no longer collapses the local stack.
-            if edge_cap_percentile == 0.0 or not f_edges:
-                edge_cap[w] = min_edge[w]
-            else:
-                edge_cap[w] = float(np.percentile(
-                    np.asarray(f_edges, dtype=np.float64),
-                    edge_cap_percentile,
-                ))
+            # 0.0 (default) keeps the historical SMALLEST incident edge (the
+            # vectorised ``edge_cap = dict(min_edge)`` above); > 0 takes the
+            # p-th percentile of ALL edge lengths of the vertex's incident
+            # wall faces instead, so a single sliver boundary face no longer
+            # collapses the local stack.
+            if edge_cap_percentile != 0.0:
+                f_edges = []
+                for fi in kept:
+                    f = faces[fi]
+                    for k in range(len(f)):
+                        a, b = f[k], f[(k + 1) % len(f)]
+                        f_edges.append(float(np.linalg.norm(pts[a] - pts[b])))
+                edge_cap[w] = (
+                    float(np.percentile(
+                        np.asarray(f_edges, dtype=np.float64),
+                        edge_cap_percentile,
+                    )) if f_edges else min_edge[w]
+                )
             if dual_fade is not None:
                 angle_fade[w] = dual_fade[w]
                 continue
@@ -3110,14 +3229,20 @@ class PolyBoundaryLayerEngine:
 
         # --- selected-face edges (needed by the nv/nf border flattening) ----
         # 2-manifold boundary: every edge has 1 (border) or 2 (interior)
-        # selected faces.
-        edge_sides: dict[tuple[int, int], list[int]] = {}
-        for bi, fi in enumerate(bnd):
-            f = faces[fi]
-            for k in range(len(f)):
-                a, b = f[k], f[(k + 1) % len(f)]
-                key = (a, b) if a < b else (b, a)
-                edge_sides.setdefault(key, []).append(bi)
+        # selected faces.  Grouped by a packed unordered edge key with a
+        # stable sort, so each key's face list is in the original append
+        # (selected-face) order.
+        if bnd_total:
+            mn_w = np.minimum(bnd_flat, b_w)
+            mx_w = np.maximum(bnd_flat, b_w)
+            edge_sides = {
+                (int(k >> 32), int(k & 0xFFFFFFFF)): v
+                for k, v in _group_index_lists(
+                    (mn_w << np.int64(32)) | mx_w, bnd_face_pos,
+                ).items()
+            }
+        else:
+            edge_sides = {}
         bad = [k for k, lst in edge_sides.items() if len(lst) not in (1, 2)]
         if bad:
             raise ValueError(
@@ -3127,21 +3252,20 @@ class PolyBoundaryLayerEngine:
 
         # ALL boundary edges -> incident boundary faces (terminator lookup).
         # Closed 2-manifold boundary: exactly 2 incident faces per edge.
-        bnd_edge_faces: dict[tuple[int, int], list[int]] = {}
         n_bnd_faces = len(faces) - n_int
-        prog_stride_bf = max(1, n_bnd_faces // 20)
-        for bi in range(n_bnd_faces):
-            _gil_yield(bi, 4096)
-            if bi % prog_stride_bf == 0:
-                self._log(
-                    f"[bl] precompute: boundary edge map "
-                    f"{int(100 * bi / max(1, n_bnd_faces))}%..."
-                )
-            f = faces[n_int + bi]
-            for k in range(len(f)):
-                a, b = f[k], f[(k + 1) % len(f)]
-                key = (a, b) if a < b else (b, a)
-                bnd_edge_faces.setdefault(key, []).append(bi)
+        a_bf, b_bf, degs_bf, _starts_bf = _all_face_edges(faces[n_int:])
+        bf_pos = np.repeat(np.arange(n_bnd_faces, dtype=np.int64), degs_bf)
+        if bf_pos.size:
+            mn_bf = np.minimum(a_bf, b_bf)
+            mx_bf = np.maximum(a_bf, b_bf)
+            bnd_edge_faces = {
+                (int(k >> 32), int(k & 0xFFFFFFFF)): v
+                for k, v in _group_index_lists(
+                    (mn_bf << np.int64(32)) | mx_bf, bf_pos,
+                ).items()
+            }
+        else:
+            bnd_edge_faces = {}
 
         # boundary face index -> patch index (terminator strips are assigned
         # to the patch of the adjacent unselected face)
