@@ -128,10 +128,15 @@ def run_gmsh_to_foam(
     timeout_s: int = 900,
 ) -> None:
     """Convert *.msh* in *case_dir* to OpenFOAM polyMesh via gmshToFoam."""
-    from polyfoammesh.core.openfoam_runner import _stream_subprocess
+    from polyfoammesh.core.openfoam_runner import (
+        _stream_subprocess,
+        _perf_log,
+        _perf_record,
+    )
 
     args = ["convert_to_foam", str(Path(case_dir).resolve()), msh_name]
     cmd, run_cwd = _gmsh_cmd(args, "--gmsh-convert-to-foam")
+    t_conv0 = time.perf_counter()
     rc, stdout, stderr, timed_out = _stream_subprocess(
         cmd, run_cwd, timeout_s, on_line, heartbeat_s=30,
     )
@@ -150,6 +155,10 @@ def run_gmsh_to_foam(
     if rc != 0 or payload is None or not payload.get("success"):
         tail = "\n".join((stdout + stderr)[-30:])
         raise RuntimeError(f"gmshToFoam failed (rc={rc}):\n{tail}")
+
+    # Phase-0 perf: record the conversion stage for the aggregate [perf] line.
+    _perf_record(case_dir, "convert", time.perf_counter() - t_conv0)
+    _perf_log(case_dir, on_line)
 
 
 def write_case_skeleton(case_dir: Path | str) -> None:

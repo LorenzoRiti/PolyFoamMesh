@@ -301,6 +301,157 @@ from polyfoammesh.octopoda_local import octo
 OF_BASHRC = OFConfig().env_script
 
 
+# ------------------------------------------------------------------
+# Phase-0 performance instrumentation (logging only).
+#
+# A small process-wide stage-time registry plus an optional cProfile hook,
+# both switched by the environment.  None of this changes mesh outputs:
+#   - ``_perf_record`` / ``_perf_note`` only store numbers/strings.
+#   - ``_run_with_profile`` executes the wrapped callable EXACTLY once; when
+#     POLYFOAMMESH_PROFILE is unset it is a bare passthrough, and when it is
+#     set a profiling failure is caught and never propagated into the run.
+# The pipeline is split across several workers in the same process
+# (GmshVolumeWorker -> gmshToFoam -> DualPolyWorker -> checkMesh ->
+# decomposePar); each records its own stage into the registry and DualPolyWorker
+# emits the aggregated ``[perf] stage times:`` line for the case.  Keyed by the
+# resolved case dir so a stale/other case can never be attributed here.
+# See notes/perf_baseline_phase0.md.
+# ------------------------------------------------------------------
+PROFILE_ENV_VAR = "POLYFOAMMESH_PROFILE"
+_PROFILE_TRUE = ("1", "true", "yes", "on")
+
+#: resolved case dir -> {stage key: float seconds} and {meta key: str}
+_PERF_TRACE: dict[str, dict[str, float]] = {}
+_PERF_META: dict[str, dict[str, object]] = {}
+
+#: Human-readable order/labels for the ``[perf] stage times:`` line.
+_PERF_ORDER: tuple[tuple[str, str], ...] = (
+    ("gmsh", "GMSH"),
+    ("convert", "convert"),
+    ("dual", "dual"),
+    ("dual_write", "dual write"),
+    ("bl_pre", "BL precompute"),
+    ("bl_build", "BL build"),
+    ("bl_reflow", "BL reflow"),
+    ("bl_total", "BL total"),
+    ("checkmesh", "checkMesh"),
+    ("decompose", "decomposePar"),
+    ("total", "total"),
+)
+
+
+def _profile_enabled() -> bool:
+    """True when POLYFOAMMESH_PROFILE is set to a truthy value."""
+    try:
+        return os.environ.get(PROFILE_ENV_VAR, "").strip().lower() in _PROFILE_TRUE
+    except Exception:  # noqa: BLE001 - never let env parsing break a run
+        return False
+
+
+def _perf_key(case_dir) -> str:
+    try:
+        return str(Path(case_dir).resolve())
+    except Exception:  # noqa: BLE001
+        return str(case_dir)
+
+
+def _perf_reset(case_dir) -> None:
+    """Drop any recorded stages for *case_dir* (start of a fresh run)."""
+    key = _perf_key(case_dir)
+    _PERF_TRACE.pop(key, None)
+    _PERF_META.pop(key, None)
+
+
+def _perf_record(case_dir, stage: str, seconds: float) -> None:
+    try:
+        _PERF_TRACE.setdefault(_perf_key(case_dir), {})[stage] = float(seconds)
+    except Exception:  # noqa: BLE001 - instrumentation must never raise
+        pass
+
+
+def _perf_note(case_dir, key: str, value) -> None:
+    try:
+        _PERF_META.setdefault(_perf_key(case_dir), {})[key] = value
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _perf_format(case_dir) -> str | None:
+    """One consistent ``[perf] stage times: ...`` line, or None if empty."""
+    trace = _PERF_TRACE.get(_perf_key(case_dir))
+    if not trace:
+        return None
+    meta = _PERF_META.get(_perf_key(case_dir), {})
+    parts: list[str] = []
+    for key, label in _PERF_ORDER:
+        val = trace.get(key)
+        if val is None:
+            continue
+        if key == "gmsh":
+            mode = meta.get("gmsh_mode")
+            suffix = f" ({mode})" if mode else ""
+            parts.append(f"GMSH {val:.1f}s{suffix}")
+        else:
+            parts.append(f"{label} {val:.1f}s")
+    if not parts:
+        return None
+    return "[perf] stage times: " + " | ".join(parts)
+
+
+def _perf_log(case_dir, log_fn: Callable[[str], None]) -> None:
+    """Emit the aggregated line built so far (best-effort, never raises)."""
+    try:
+        line = _perf_format(case_dir)
+        if line:
+            log_fn(line)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_with_profile(case_dir, label: str, fn, log_fn: Callable[[str], None]):
+    """Call ``fn()`` once; when POLYFOAMMESH_PROFILE is on, also cProfile it.
+
+    Writes ``profile_<label>.prof`` into the case dir and logs the top-20
+    functions by cumulative time as ``[perf] <label> hot: ...`` lines.  A
+    profiling/dump failure is logged and swallowed - the run continues.
+    """
+    if not _profile_enabled():
+        return fn()
+
+    pr = None
+    try:
+        import cProfile
+
+        pr = cProfile.Profile()
+        pr.enable()
+    except Exception as exc:  # noqa: BLE001
+        log_fn(f"[perf] {label} profiling unavailable (ignored): {exc}")
+        pr = None
+    try:
+        return fn()
+    finally:
+        if pr is not None:
+            try:
+                pr.disable()
+                path = Path(case_dir) / f"profile_{label}.prof"
+                pr.dump_stats(str(path))
+                import pstats
+
+                stats = pstats.Stats(pr)
+                raw = getattr(stats, "stats", {}) or {}
+                rows = sorted(
+                    raw.items(),
+                    key=lambda kv: kv[1][3],  # cumulative time
+                    reverse=True,
+                )[:20]
+                log_fn(f"[perf] {label} profile saved: {path}")
+                for (_fname, _line, name), (cc, nc, _tt, ct, _callers) in rows:
+                    log_fn(
+                        f"[perf] {label} hot: {name} cumtime={ct:.3f}s "
+                        f"tottime={_tt:.3f}s ncalls={nc}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - never crash the run
+                log_fn(f"[perf] {label} profile dump failed (ignored): {exc}")
 
 
 # ------------------------------------------------------------------
@@ -1544,6 +1695,7 @@ class CheckMeshWorker(QObject):
 
     @Slot()
     def run(self):
+        t_checkmesh0 = time.perf_counter()
         if self._pipeline_staged:
             from polyfoammesh.config import extract_poly_mesh_archive
             cmd = self._of_config.build_staged_pipeline_command(
@@ -1583,6 +1735,11 @@ class CheckMeshWorker(QObject):
             )
             if not report.passed:
                 self.log_line.emit(f"[checkMesh] {report.status}")
+            _perf_record(
+                self._case_dir, "checkmesh",
+                time.perf_counter() - t_checkmesh0,
+            )
+            _perf_log(self._case_dir, self.log_line.emit)
             self.finished.emit(report)
             return
 
@@ -1627,6 +1784,10 @@ class CheckMeshWorker(QObject):
         if not report.passed:
             self.log_line.emit(f"[checkMesh] {report.status}")
 
+        _perf_record(
+            self._case_dir, "checkmesh", time.perf_counter() - t_checkmesh0,
+        )
+        _perf_log(self._case_dir, self.log_line.emit)
         self.finished.emit(report)
 
 
@@ -1908,7 +2069,9 @@ class DualPolyWorker(QObject):
                 collapse_volume_tolerance=0.10,
             )
             t_dual0 = time.perf_counter()
-            result = converter.run()
+            result = _run_with_profile(
+                self._case_dir, "dual", converter.run, self.log_line.emit,
+            )
             dual_s = time.perf_counter() - t_dual0
         except Exception as exc:
             self.log_line.emit(f"[poly] ERROR: {exc}")
@@ -2044,7 +2207,10 @@ class DualPolyWorker(QObject):
                         f"{', '.join(sorted(patch_names))}"
                     )
 
-                bres = _run_bl(kw)
+                bres = _run_with_profile(
+                    self._case_dir, "bl", lambda: _run_bl(kw),
+                    self.log_line.emit,
+                )
                 # Fallback chain (2026-10-06): standard robust first (it now
                 # handles concave features on its own via the binary budget
                 # semantics and the mesh-aware cap), then the concave closure
@@ -2169,17 +2335,37 @@ class DualPolyWorker(QObject):
 
         # One stage-timing summary per poly run (perf_counter).
         bl_pre = bl_build = bl_total = 0.0
+        bl_reflow = 0.0
         if bres is not None:
             stats = getattr(bres, "stats", {}) or {}
             bl_pre = float(stats.get("stage_precompute_s", 0.0) or 0.0)
             bl_build = float(stats.get("stage_build_s", 0.0) or 0.0)
             bl_total = float(stats.get("stage_total_s", 0.0) or 0.0)
+            # Present only if bl_poly ever exposes it; harmless no-op today.
+            bl_reflow = float(stats.get("stage_reflow_s", 0.0) or 0.0)
         self.log_line.emit(
             f"[poly] stage times: dual {dual_s:.1f}s | "
             f"BL precompute {bl_pre:.1f}s | BL build {bl_build:.1f}s | "
             f"BL total {bl_total:.1f}s | "
             f"total {time.perf_counter() - t_worker0:.1f}s"
         )
+        # Phase-0 aggregate: record this run's stages into the process-wide
+        # trace and emit ONE consistent "[perf] stage times:" line covering
+        # every stage known for the case (GMSH/conversion if those workers ran
+        # earlier in this process, plus dual/BL/write here).
+        _perf_record(self._case_dir, "dual", dual_s)
+        dual_stage = getattr(result, "stage_times", {}) or {}
+        # The converter writes polyMesh itself; report its own write split.
+        if "write" in dual_stage:
+            _perf_record(self._case_dir, "dual_write", float(dual_stage["write"]))
+        if bres is not None:
+            _perf_record(self._case_dir, "bl_pre", bl_pre)
+            _perf_record(self._case_dir, "bl_build", bl_build)
+            _perf_record(self._case_dir, "bl_total", bl_total)
+            if bl_reflow:
+                _perf_record(self._case_dir, "bl_reflow", bl_reflow)
+        _perf_record(self._case_dir, "total", time.perf_counter() - t_worker0)
+        _perf_log(self._case_dir, self.log_line.emit)
         self.finished.emit(result)
 
 
@@ -2201,6 +2387,7 @@ class DecomposeParWorker(QObject):
 
     @Slot()
     def run(self):
+        t_decomp0 = time.perf_counter()
         try:
             cmd = self._of_config.build_decompose_par_cmd(
                 self._case_dir, self._n_cores, method=self._method,
@@ -2209,6 +2396,11 @@ class DecomposeParWorker(QObject):
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode == 0:
                 self.log_line.emit("[decomposePar] Decomposition OK")
+                _perf_record(
+                    self._case_dir, "decompose",
+                    time.perf_counter() - t_decomp0,
+                )
+                _perf_log(self._case_dir, self.log_line.emit)
                 self.finished.emit(self._case_dir)
             else:
                 self.log_line.emit(f"[decomposePar] Return code {result.returncode}")
@@ -3027,6 +3219,14 @@ class GmshVolumeWorker(QObject):
     def run(self):
         import json
         import os
+        # Phase-0 perf: wall-clock the whole GMSH stage (all attempts).  The
+        # mode (normal/robust) is recorded once the attempt loop settles; the
+        # registry is keyed by the case dir (mesh.msh lives directly in it).
+        t_gmsh0 = time.perf_counter()
+        gmsh_case_dir = Path(self._msh_path).resolve().parent
+        gmsh_mode = "normal"
+        # A fresh GMSH attempt starts a fresh perf trace for this case.
+        _perf_reset(gmsh_case_dir)
         # Pass refinement zones as JSON via env var (avoids shell-escaping issues)
         zones_json = json.dumps(self._refinement_zones) if self._refinement_zones else ""
         # Fase 3 P3.4: named flags instead of 10 positional slots.
@@ -3132,6 +3332,7 @@ class GmshVolumeWorker(QObject):
                         f"base {int(stall_s)}s)"
                     )
                 robust = True
+                gmsh_mode = "robust"
                 continue
 
             break  # attempt completed with real output
@@ -3160,6 +3361,9 @@ class GmshVolumeWorker(QObject):
             if not result.get("success"):
                 self.failed.emit(result.get("error", "Unknown GMSH error"))
                 return
+            _perf_record(gmsh_case_dir, "gmsh", time.perf_counter() - t_gmsh0)
+            _perf_note(gmsh_case_dir, "gmsh_mode", gmsh_mode)
+            _perf_log(gmsh_case_dir, self.log_line.emit)
             self.finished.emit(result)
             return
 
