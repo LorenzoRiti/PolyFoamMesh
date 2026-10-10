@@ -30,8 +30,10 @@ from polyfoammesh.core.tet_poly_dual import (
     DualPolyResult,
     TetPolyDualConverter,
     _cell_centres,
+    _cell_relative_closure,
     _detect_defects,
     _face_geometry,
+    _plan_primal_collapse,
     main as tet_poly_dual_main,
     planarity_report,
 )
@@ -575,4 +577,106 @@ def test_face_bucket_cache_is_bitwise_transparent():
     assert np.array_equal(ns, n1[sub], equal_nan=True)
     assert np.array_equal(cs, c1[sub], equal_nan=True)
     assert np.array_equal(ds, d1[sub], equal_nan=True)
+
+
+# ---------------------------------------------------------------------------
+# pre-dual primal cleanup (degenerate "throat-class" vertex collapse)
+# ---------------------------------------------------------------------------
+#
+# The synthetic star below is the EXACT local tet configuration that made the
+# production venturi dual fail to close (7 vertices / 4 tetrahedra around one
+# throat vertex; coordinates lifted from that case).  Its dual contains open
+# cells (relative closure ~1.6e-1), because the dual face of a boundary edge is
+# numerically coplanar with the surface and can be emitted with the wrong
+# orientation.  Healthy meshes never hit this: the cleanup is a strict no-op.
+
+_THROAT_STAR = np.array([
+    [-0.143789145980023, -0.0412640799830785, -0.0127],               # v0
+    [-0.143972865531679, -0.0424760806856126, -0.0127],               # v1
+    [-0.1370587528879496, -0.04038079203641351, -0.0127],             # v2
+    [-0.143972865531679, -0.04108808037911463, -0.01396531762837396], # v3
+    [-0.143972865531679, -0.04212822788211812, -0.007017062086660818],# v4
+    [-0.1370537237186971, -0.03883939463967049, -0.0127],             # v5
+    [-0.1439268211715203, -0.04217232533482387, -0.006379505229256489],# v6
+])
+_THROAT_TETS = [[0, 1, 2, 3], [0, 1, 4, 3], [0, 5, 2, 3], [0, 1, 6, 4]]
+
+
+def _raw_dual_open_cells(case_dir: Path):
+    """Build the dual WITHOUT the cleanup and return (n_open, max_rel, cells)."""
+    conv = TetPolyDualConverter(case_dir, log=lambda m: None)
+    res = DualPolyResult()
+    P = conv._read_primal(res)
+    M = conv._build_dual(P, {})
+    sf, _cf = _face_geometry(M.points, M.faces)
+    rel = _cell_relative_closure(sf, M.owner, M.neigh, M.n_int, M.n_cells)
+    return int((rel > 1e-8).sum()), float(rel.max()), M
+
+
+def test_degenerate_throat_star_dual_succeeds(tmp_path):
+    case = build_tet_case(tmp_path, _THROAT_STAR, _THROAT_TETS)
+
+    # the raw dual (no cleanup) is genuinely not watertight — this is the
+    # exact failure mode the production venturi hit.
+    n_open, max_rel, _M = _raw_dual_open_cells(case)
+    assert n_open >= 1
+    assert max_rel > 1e-2
+
+    # the automatic pre-dual cleanup repairs it: v0 is merged into its
+    # shortest-edge neighbour v1 (0.001226 vs 0.001291 for the next edge).
+    res = _run_dual(case)
+    assert res.success, res.errors
+    assert res.n_primal_merged == 1
+    # every written cell is closed (the converter would otherwise refuse)
+    pts2, faces, owner, neigh, _ = fio.read_polymesh(
+        case / "constant" / "polyMesh"
+    )
+    n_int = len(neigh)
+    sf, _cf = _face_geometry(pts2, faces)
+    n_cells = int(max(owner.max(), neigh.max())) + 1
+    rel = _cell_relative_closure(sf, owner, neigh, n_int, n_cells)
+    assert rel.max() < 1e-8
+
+
+def test_primal_cleanup_is_noop_on_healthy_mesh(tmp_path):
+    # a clean cube: no cell is open, nothing is merged, and the output is
+    # exactly the untouched dual (bit-identical to the default converter).
+    c = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+    ], dtype=float)
+    pts = np.vstack([c, np.array([0.5, 0.5, 0.5])])
+    faces2d = [
+        [0, 1, 2, 3], [0, 4, 5, 1], [1, 5, 6, 2],
+        [2, 6, 7, 3], [3, 7, 4, 0], [4, 7, 6, 5],
+    ]
+    tets = []
+    for f in faces2d:
+        for tri in ((f[0], f[1], f[2]), (f[0], f[2], f[3])):
+            tets.append([tri[0], tri[1], tri[2], 8])
+    a = build_tet_case(tmp_path / "a", pts, tets)
+    b = build_tet_case(tmp_path / "b", pts, tets)
+
+    n_open, max_rel, _M = _raw_dual_open_cells(a)
+    assert n_open == 0 and max_rel < 1e-8
+    res = _run_dual(a)
+    assert res.success, res.errors
+    assert res.n_primal_merged == 0
+    _run_dual(b)
+    for name in ("points", "faces", "owner", "neighbour", "boundary"):
+        assert (a / "constant" / "polyMesh" / name).read_bytes() == \
+               (b / "constant" / "polyMesh" / name).read_bytes(), name
+
+
+def test_plan_primal_collapse_picks_shortest_edge(tmp_path):
+    case = build_tet_case(tmp_path, _THROAT_STAR, _THROAT_TETS)
+    conv = TetPolyDualConverter(case, log=lambda m: None)
+    P = conv._read_primal(DualPolyResult())
+    remap, n_merged = _plan_primal_collapse(P, [0])
+    assert n_merged == 1
+    assert remap[0] == 1               # shortest incident edge of v0
+    assert remap[1] == 1               # the healthy survivor stays put
+    remap2, n2 = _plan_primal_collapse(P, [])
+    assert n2 == 0
+    assert np.array_equal(remap2, np.arange(len(P.points)))
 

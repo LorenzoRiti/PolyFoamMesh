@@ -76,6 +76,22 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **Dual fails on the production venturi (open cells at the throat)**: the
+  dual face of a boundary primal edge that is coplanar with the surface
+  had its orientation sign decided by round-off noise, so it could be
+  emitted backwards and leave the dual cell combinatorially open (16
+  cells, "relative closure error 1.6e-1 - the dual complex is not
+  watertight" - the user's venturi could not be meshed at all).  The
+  converter now detects open cells with the exact closure invariant it
+  already trusts, and self-heals ONCE: the offending vertices are merged
+  into their shortest-edge neighbour (venturi: 8 vertices merged, 24
+  collapsed tets dropped, every boundary face keeps its original patch),
+  then the dual is rebuilt.  Verified: the venturi dual completes in both
+  boundary modes with real checkMesh watertight (only the known throat
+  NO/skew class remains), and the full app path now runs dual + BL
+  (70,488 prisms, 6 layers, 100% coverage).  On clean meshes the cleanup
+  never fires: dual-only polyMesh SHA-256 identical on cone/valve/
+  benchmark-venturi (orchestrator re-verified the cone A/B).
 - **Adaptive sizing runaway (non-convergence) on some geometries**: with
   adaptive sizing ON, GMSH's 2D mesher could loop forever on curved
   surfaces (measured on the benchmark venturi: invalid elements growing
