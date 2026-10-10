@@ -1065,7 +1065,15 @@ def _sample_passage_thickness_field(
             # so a coarse tessellation measures it just as well while costing
             # a fraction of the time and touching GMSH's fragile curve-recovery
             # path far less. See _extract_boundary_trimesh for the details.
+            # Phase-0 perf hook: time the throwaway 2D meshing probe that the
+            # adaptive path pays for but the manual path does not. Logging only.
+            import time as _time
+            _t_probe = _time.perf_counter()
             mesh = _extract_boundary_trimesh(gmsh_mod, probe_size=h_max)
+            logger.info(
+                "[perf] adaptive boundary probe (_extract_boundary_trimesh): "
+                "%.1fs", _time.perf_counter() - _t_probe
+            )
         except Exception:
             logger.exception("Passage thickness field: boundary extraction failed")
             mesh = None
