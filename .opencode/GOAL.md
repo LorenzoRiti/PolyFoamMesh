@@ -1099,3 +1099,13 @@ manuale equivalente garantito. Verificato dall'orchestratore end-to-end
 su venturi.step: detector 37s, mesh valida, NO OK, pyramids 0 (skew
 varia 1.15-4.22 run-to-run: inerente a GMSH; il quality pipeline copre).
 Falsi positivi: zero (sane max 6/4). Default invariati.
+
+## 2026-10-10 - Adaptive: corpus re-validation RELEASE-SAFE
+
+Ri-eseguito il benchmark poly completo post-fix adaptive: 0 diff su
+tutte le 15 geometrie vs baseline 20261009T081110 (chiavi esclusi
+timestamp/wall/stage). Detector/fallback: nessuna occorrenza nei log
+(una sola firma sotto soglia: 38 invalidi, 0 split round). Nota
+strutturale: il benchmark usa sizing esplicito (non adaptive) e non
+passa dal GmshVolumeWorker, quindi il detector non e' nemmeno cablato
+li'. Programma adaptive A-D: COMPLETO e verificato.
