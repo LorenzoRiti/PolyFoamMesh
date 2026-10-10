@@ -129,6 +129,10 @@ class DualPolyResult:
     # merged (0 whenever the pass is off, unused or refused).
     n_dissolved_stars: int = 0
     dissolve_fallbacks: int = 0
+    # Pre-dual primal cleanup: how many degenerate "throat-class" vertices were
+    # merged into a neighbour by the automatic primal edge collapse (0 on any
+    # healthy mesh — the fix is a strict no-op there).
+    n_primal_merged: int = 0
 
     # Boundary-layer outcome, attached by the poly worker after the optional
     # BL pass. Declared here so consumers can rely on the fields existing.
@@ -501,6 +505,7 @@ class TetPolyDualConverter:
         P = self._read_primal(res)
         res.stage_times["read"] = round(time.monotonic() - t, 2)
         self._check_cancel()
+        orig_tets = res.n_tets_before
 
         if getattr(P, "mixed", False):
             self._run_mixed(res, P)
@@ -512,21 +517,68 @@ class TetPolyDualConverter:
         best_counts: dict[str, int] = {}
         best_ctr = None
 
+        primal_cleaned = False
         for rnd in range(self._split_rounds + 1):
-            self._check_cancel()
-            t = time.monotonic()
-            M = self._build_dual(P, splits)
-            build_s = time.monotonic() - t
-            self._log(
-                f"[poly 5/9] round {rnd}: {M.n_cells:,} dual cells, {M.n_int:,} "
-                f"internal + {len(M.faces) - M.n_int:,} boundary faces, "
-                f"{len(M.points):,} points ({build_s:.1f}s)"
-            )
-            self._check_cancel()
+            # Build the dual for this round.  A single retry is allowed after
+            # the pre-dual primal cleanup (below) has merged degenerate
+            # throat-class vertices; the cleaned primal is rebuilt exactly once.
+            while True:
+                self._check_cancel()
+                t = time.monotonic()
+                M = self._build_dual(P, splits)
+                build_s = time.monotonic() - t
+                self._log(
+                    f"[poly 5/9] round {rnd}: {M.n_cells:,} dual cells, {M.n_int:,} "
+                    f"internal + {len(M.faces) - M.n_int:,} boundary faces, "
+                    f"{len(M.points):,} points ({build_s:.1f}s)"
+                )
+                self._check_cancel()
 
-            t = time.monotonic()
-            sf, cf = _face_geometry(M.points, M.faces)
-            M.sf, M.cf = sf, cf  # reused by _validate (saves a recompute)
+                t = time.monotonic()
+                sf, cf = _face_geometry(M.points, M.faces)
+                M.sf, M.cf = sf, cf  # reused by _validate (saves a recompute)
+
+                # ---- pre-dual primal cleanup (automatic, once) -------------
+                # The barycentric dual is closed for every vertex whose star is
+                # a ball.  On a GMSH mesh a handful of "throat-class" vertices
+                # can carry a degenerate spike star (near-coincident vertices,
+                # sub-1e-10 tet volumes) whose dual cell is combinatorially open
+                # even though its link is a disk: the boundary-edge dual face is
+                # numerically coplanar with the surface, so its orientation sign
+                # (Newell . (b-a)) is round-off noise and it can be emitted
+                # backwards.  Detection is EXACT and primal-safe: a cell is open
+                # iff the sum of its face area vectors does not vanish (the same
+                # invariant _validate enforces).  Only when cells are open do we
+                # reconstruct the tetrahedra, identify the offending primal
+                # vertices, and collapse each into its shortest-edge neighbour
+                # (dropping the collapsed tets, remapping the faces and keeping
+                # every surviving boundary face on its original patch).  On a
+                # healthy mesh rel.max() ~ 1e-16, nothing is rebuilt and the
+                # written mesh is byte-identical.
+                if not primal_cleaned:
+                    primal_cleaned = True
+                    rel = _cell_relative_closure(
+                        sf, M.owner, M.neigh, M.n_int, M.n_cells,
+                    )
+                    if float(rel.max()) > 1e-8:
+                        open_verts = np.unique(
+                            M.cell_vertex[np.flatnonzero(rel > 1e-8)]
+                        )
+                        P2, n_merged = self._primal_cleanup(P, open_verts, res)
+                        if n_merged:
+                            P = P2
+                            splits = {}
+                            res.n_primal_merged = n_merged
+                            # report the ORIGINAL tet count (the cleanup drops
+                            # the collapsed tets, but the input size is input)
+                            res.n_tets_before = orig_tets
+                            self._log(
+                                f"[poly] primal cleanup: merged {n_merged} "
+                                "degenerate vertex(es) (throat-class)"
+                            )
+                            continue
+                break
+
             ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
             bad, counts = _detect_defects(
                 M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int, M.n_cells,
@@ -767,7 +819,13 @@ class TetPolyDualConverter:
             poly_dir / "neighbour"
         ).astype(np.int64)
         patches = foam_mesh_io.read_boundary(poly_dir / "boundary")
+        return self._parse_primal(
+            res, points, faces_raw, owner, neighbour, patches,
+        )
 
+    def _parse_primal(
+        self, res: DualPolyResult, points, faces_raw, owner, neighbour, patches,
+    ) -> SimpleNamespace:
         n_faces = len(faces_raw)
         if n_faces == 0:
             raise RuntimeError(
@@ -949,6 +1007,36 @@ class TetPolyDualConverter:
             bnd_e_faces=bnd_e_faces, feat_edge=feat_edge, feat_vertex=feat_vertex,
             n_feat_edges=n_feat_edges, n_feat_verts=n_feat_verts,
         )
+
+    # ------------------------------------------------------------------
+    # pre-dual primal cleanup (degenerate "throat-class" vertex collapse)
+    # ------------------------------------------------------------------
+
+    def _primal_cleanup(self, P, verts, res):
+        """Repair degenerate primal vertex stars by edge collapse.
+
+        `verts` are the primal vertices that produced an open dual cell (i.e.
+        whose star the dual cannot close).  Each is collapsed into the
+        neighbour at the far end of its shortest incident edge.  The
+        tetrahedra containing both endpoints collapse to triangles and are
+        dropped; every other tetrahedron is relabelled; the face list is
+        rebuilt from the surviving tetrahedra with the original boundary-face
+        patch assignment preserved (see :func:`_rebuild_primal_collapsed`).
+
+        Returns ``(P_cleaned, n_merged)``.  ``n_merged`` is 0 when nothing had
+        to be merged, in which case the input ``P`` is returned unchanged and
+        the converter's output is bit-identical to a build without this pass.
+        """
+        remap, n_merged = _plan_primal_collapse(P, verts)
+        if not n_merged:
+            return P, 0
+        points, faces, owner, neighbour, patches = _rebuild_primal_collapsed(
+            P, remap,
+        )
+        P2 = self._parse_primal(
+            res, points, faces, owner, neighbour, patches,
+        )
+        return P2, n_merged
 
     # ------------------------------------------------------------------
     # Mixed tet + prism input (GMSH-baked boundary layer)
@@ -2381,6 +2469,230 @@ class TetPolyDualConverter:
             self._case_dir / "constant" / "polyMesh",
             points, faces, owner, neigh, patches,
         )
+
+
+# ---------------------------------------------------------------------------
+# pre-dual primal cleanup helpers
+# ---------------------------------------------------------------------------
+
+def _cell_relative_closure(sf, owner, neigh, n_int, n_cells):
+    """Per-cell |sum of face area vectors| / (sum of face area magnitudes).
+
+    The same invariant `_validate` enforces for cell closedness, computed here
+    on the freshly built dual to detect the (rare) open cells an exactly
+    watertight dual must never contain.  A true closed polyhedron gives ~1e-16.
+    """
+    closure = np.zeros((n_cells, 3), dtype=np.float64)
+    np.add.at(closure, owner, sf)
+    np.add.at(closure, neigh, -sf[:n_int])
+    mag = np.linalg.norm(sf, axis=1)
+    scale = np.zeros(n_cells, dtype=np.float64)
+    np.add.at(scale, owner, mag)
+    np.add.at(scale, neigh, mag[:n_int])
+    return np.linalg.norm(closure, axis=1) / np.maximum(scale, 1e-300)
+
+
+def _reconstruct_tets(P) -> np.ndarray:
+    """The (n_tets, 4) vertex array of a pure tetrahedral primal `P`.
+
+    Each cell owns 3 vertices per incident face; the four distinct vertices of
+    a cell are recovered by de-duplicating the (cell, vertex) incidences.
+    """
+    has = P.neigh >= 0
+    cell_of = np.concatenate([P.owner, P.neigh[has]])
+    vert_of = np.concatenate([P.tri, P.tri[has]], axis=0).ravel()
+    c = np.repeat(cell_of, 3)
+    order = np.lexsort((vert_of, c))
+    c_s = c[order]
+    v_s = vert_of[order]
+    first = np.empty(len(c_s), dtype=bool)
+    first[0] = True
+    np.logical_or(
+        c_s[1:] != c_s[:-1], v_s[1:] != v_s[:-1], out=first[1:],
+    )
+    return v_s[first].reshape(int(P.n_tets), 4)
+
+
+def _plan_primal_collapse(P, verts):
+    """Choose the collapse targets for a set of degenerate vertices.
+
+    Each vertex is collapsed into the neighbour at the far end of its shortest
+    incident edge.  A destination that is itself being collapsed is followed
+    through the partial remap (path compression), so a mutually-nearest pair
+    collapses to a single survivor instead of looping; a vertex that only ever
+    appears as a destination is never moved (it is a healthy survivor).
+
+    Returns ``(remap, n_merged)``: an int64 array mapping every vertex to its
+    survivor (identity for all untouched vertices), and the number of vertices
+    actually merged (0 => caller must do nothing).
+    """
+    verts = [int(v) for v in np.unique(np.asarray(verts, dtype=np.int64))
+             if int(v) >= 0]
+    n_pi = int(P.n_pi)
+    if not verts:
+        return np.arange(n_pi, dtype=np.int64), 0
+
+    T = _reconstruct_tets(P)
+    pts = P.points
+    vset = set(verts)
+    # Only the tets touching a degenerate vertex carry a candidate edge.
+    mask = np.isin(T, verts).any(axis=1)
+    best_sq: dict[int, float] = {}
+    target: dict[int, int] = {}
+    for row in T[mask]:
+        r = [int(x) for x in row]
+        for i, x in enumerate(r):
+            if x not in vset:
+                continue
+            for y in r:
+                if y == x:
+                    continue
+                d = (pts[x, 0] - pts[y, 0]) ** 2
+                d += (pts[x, 1] - pts[y, 1]) ** 2
+                d += (pts[x, 2] - pts[y, 2]) ** 2
+                d = float(d)
+                if d < best_sq.get(x, float("inf")):
+                    best_sq[x] = d
+                    target[x] = y
+
+    remap = np.arange(n_pi, dtype=np.int64)
+
+    def _root(x: int) -> int:
+        steps = 0
+        while int(remap[x]) != x:
+            x = int(remap[x])
+            steps += 1
+            if steps > len(verts) + 2:  # defensive: never spin on a bad cycle
+                break
+        return x
+
+    for v in sorted(verts):
+        w = target.get(v)
+        if w is None or w == v:
+            continue
+        r = _root(w)
+        if r == v:
+            continue  # mutual collapse: v is the survivor, already handled
+        remap[v] = r
+    n_merged = int(np.count_nonzero(remap != np.arange(n_pi, dtype=np.int64)))
+    return remap, n_merged
+
+
+def _rebuild_primal_collapsed(P, remap):
+    """Rebuild (points, faces, owner, neighbour, patches) after an edge collapse.
+
+    The surviving tetrahedra are relabelled through `remap`; tets that collapse
+    to a triangle (two coincident vertices) are dropped.  The face list is
+    re-derived from the surviving tets: shared faces become internal
+    (owner < neighbour, wound owner -> neighbour), single-coverage faces become
+    boundary (wound outward).  Every boundary face that maps back to an original
+    patch face keeps that patch; a face that only becomes boundary because a
+    collapsed tet was removed is assigned the majority patch of its boundary
+    edges.  Patch order, names and types are preserved exactly.
+    """
+    T = _reconstruct_tets(P)
+    T2 = remap[T]
+    keep = np.fromiter(
+        (len(set(int(x) for x in row)) == 4 for row in T2), dtype=bool,
+        count=len(T2),
+    )
+    T2 = T2[keep]
+    n_new = len(T2)
+    pts = P.points
+    cent = pts[T2].mean(axis=1) if n_new else np.zeros((0, 3))
+
+    n_int_old = int(P.n_int_primal)
+    patch_of_bnd = P.patch_of_bnd
+    patch_remap: dict[tuple, int] = {}
+    edge_patch: dict[tuple, int] = {}
+    for f in range(n_int_old, int(P.n_faces)):
+        key = tuple(sorted(int(x) for x in P.tri[f]))
+        k2 = tuple(sorted(int(remap[x]) for x in key))
+        if len(set(k2)) != 3:
+            continue  # the original boundary face collapsed away
+        patch = int(patch_of_bnd[f - n_int_old])
+        patch_remap.setdefault(k2, patch)
+        for a, b in ((k2[0], k2[1]), (k2[1], k2[2]), (k2[0], k2[2])):
+            edge_patch.setdefault((a, b), patch)
+
+    fmap: dict[tuple, list] = {}
+    for c in range(n_new):
+        a, b, cc, d = (int(x) for x in T2[c])
+        for f in ((a, b, cc), (a, b, d), (a, cc, d), (b, cc, d)):
+            key = tuple(sorted(f))
+            if key in fmap:
+                fmap[key].append((c, f))
+            else:
+                fmap[key] = [(c, f)]
+
+    int_faces: list[list[int]] = []
+    int_own: list[int] = []
+    int_nb: list[int] = []
+    bnd_by_patch: list[list[list[int]]] = [[] for _ in P.patches]
+    bnd_own: list[list[int]] = [[] for _ in P.patches]
+    for key, occ in fmap.items():
+        if len(occ) == 2:
+            (c1, f1), (c2, f2) = occ
+            if c1 < c2:
+                o, nb, v = c1, c2, list(f1)
+            else:
+                o, nb, v = c2, c1, list(f2)
+            if float(_newell(pts, v) @ (cent[nb] - cent[o])) < 0.0:
+                v.reverse()
+            int_faces.append(v)
+            int_own.append(o)
+            int_nb.append(nb)
+        elif len(occ) == 1:
+            c, f = occ[0]
+            v = list(f)
+            fc = pts[list(f)].mean(axis=0)
+            if float(_newell(pts, v) @ (fc - cent[c])) < 0.0:
+                v.reverse()
+            patch = patch_remap.get(key)
+            if patch is None:
+                votes: dict[int, int] = {}
+                for a, b in ((key[0], key[1]), (key[1], key[2]),
+                             (key[0], key[2])):
+                    p = edge_patch.get((a, b))
+                    if p is not None:
+                        votes[p] = votes.get(p, 0) + 1
+                patch = max(votes, key=lambda k: votes[k]) if votes else 0
+            bnd_by_patch[patch].append(v)
+            bnd_own[patch].append(c)
+        else:  # pragma: no cover - a manifold tet mesh never does this
+            raise RuntimeError(
+                f"primal cleanup: face {key} shared by {len(occ)} cells"
+            )
+
+    if int_faces:
+        io = np.array(int_own, dtype=np.int64)
+        inb = np.array(int_nb, dtype=np.int64)
+        order = np.lexsort((inb, io))
+        int_faces = [int_faces[i] for i in order]
+        int_own = io[order].tolist()
+        int_nb = inb[order].tolist()
+
+    faces = list(int_faces)
+    owner_out = list(int_own)
+    neigh_out = list(int_nb)
+    n_int = len(faces)
+    new_patches: list[dict] = []
+    start = n_int
+    for pi, p in enumerate(P.patches):
+        k = len(bnd_by_patch[pi])
+        faces.extend(bnd_by_patch[pi])
+        owner_out.extend(bnd_own[pi])
+        new_patches.append({
+            "name": p["name"], "type": p.get("type", "patch"),
+            "nFaces": k, "startFace": start,
+        })
+        start += k
+    return (
+        pts, faces,
+        np.array(owner_out, dtype=np.int64),
+        np.array(neigh_out, dtype=np.int64),
+        new_patches,
+    )
 
 
 # ---------------------------------------------------------------------------
