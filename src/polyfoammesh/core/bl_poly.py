@@ -2833,24 +2833,54 @@ class PolyBoundaryLayerEngine:
                 # ``_CONSUME_DIRICHLET``).
                 U[w] = -normals[w] * (h * _CONSUME_DIRICHLET)
         free_idx = np.flatnonzero(free)
+        n_free = int(free_idx.size)
         # Jacobi sweeps: u <- neighbour average on the free set (pinned
         # vertices keep their Dirichlet value).  Fixed iteration count keeps
         # the result deterministic and independent of thread order.
+        #
+        # VECTORISED (perf phase 1d).  The sweep is still the same batched
+        # scatter-add (``np.bincount``) as before, but two costs are removed
+        # WITHOUT changing a single floating-point sum:
+        #   * the degree array ``deg`` does not depend on ``U``  -  hoisted
+        #     out of the loop (was two full ``bincount`` calls per sweep);
+        #   * only the FREE vertices' sums are ever read (``U`` is never
+        #     updated on a pinned vertex), so edge-sides whose scatter target
+        #     is pinned are dropped up front.  A boolean mask preserves the
+        #     per-bin accumulation order, so every retained bin sums exactly
+        #     the same values in exactly the same order as the old full-mesh
+        #     bincount  -  bit-identical, not merely within tolerance.
+        # ``U`` is kept transposed (3, n_pts) internally so each component's
+        # gather reads a contiguous row (measurably faster than the
+        # ``U[dst, comp]`` 2D-stride gather of the (n_pts, 3) layout).
+        Ut = U.T.copy()
+        loc = np.full(n_pts, -1, dtype=np.int64)
+        loc[free_idx] = np.arange(n_free, dtype=np.int64)
+        src_a = np.asarray(src)
+        dst_a = np.asarray(dst)
+        keep_src = free[src_a]
+        bin_a = loc[src_a[keep_src]]
+        gth_a = dst_a[keep_src]
+        keep_dst = free[dst_a]
+        bin_b = loc[dst_a[keep_dst]]
+        gth_b = src_a[keep_dst]
+        deg = (
+            np.bincount(src, minlength=n_pts)
+            + np.bincount(dst, minlength=n_pts)
+        ).astype(np.float64)
+        deg = np.maximum(deg, 1.0)
+        degf = deg[free_idx]
         for _ in range(500):
-            if free_idx.size == 0:
+            if n_free == 0:
                 break
-            sums = np.zeros((n_pts, 3), dtype=np.float64)
+            sumsT = np.empty((3, n_free), dtype=np.float64)
             for comp in range(3):
-                sums[:, comp] = (
-                    np.bincount(src, weights=U[dst, comp], minlength=n_pts)
-                    + np.bincount(dst, weights=U[src, comp], minlength=n_pts)
+                Uc = Ut[comp]
+                sumsT[comp] = (
+                    np.bincount(bin_a, weights=Uc[gth_a], minlength=n_free)
+                    + np.bincount(bin_b, weights=Uc[gth_b], minlength=n_free)
                 )
-            deg = (
-                np.bincount(src, minlength=n_pts)
-                + np.bincount(dst, minlength=n_pts)
-            ).astype(np.float64)
-            deg = np.maximum(deg, 1.0)
-            U[free_idx] = sums[free_idx] / deg[free_idx, None]
+            Ut[:, free_idx] = sumsT / degf
+        U = Ut.T.copy()
         # Inversion guard (the real one): the displacement magnitude may not
         # change by more than 0.9 * edge length across any dual edge, or the
         # cell between the two vertices inverts.  Solve the greatest such
