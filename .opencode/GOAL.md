@@ -1069,3 +1069,19 @@ complesse); (3) al verde del benchmark: header versione nel CHANGELOG +
 bump _version.py + build installer. Nota onesta per il rilascio: il
 venturi resta "Failed 3" per le feature strutturali della gola (identiche
 al baseline dual-only, il BL non le peggiora e migliora pyramids/aspect).
+
+## 2026-10-09 - PERF PHASE 1 completata (tutto bit-identico)
+
+Profilo Fase 0 (notes/perf_baseline_phase0.md) -> 3 fix, ognuno con gate
+hash polyMesh SHA-256 identico prima/dopo (riverificato dall'orchestratore
+via A/B a stash):
+- 2754b7d dual converter: cache topologia facce + ombre Python newell;
+  tubo 2.62->2.00s, venturi 8.22->4.7s, grande 31.0->21.7s (-24..-43%).
+- f692f7f BL precompute: numpy grouping/scatter (valori scalari per
+  esattezza ULP); tubo 13.6->6.7s, cono 19.9->10.6s, venturi 17.0->8.9s.
+- 0c623ce reflow consume: deg hoisted + target pinned esclusi + Ut
+  transposto; ~2x (venturi fallback 147->74s).
+SCARTATI con evidenza: probe adattivo (15s dei 148s), meshio (fuori
+percorso), writer (minore), threading GMSH (non misurabile).
+RIMANDATO: _solve_global_windings (guadagno sicuro solo ~1.2x, path
+condiviso). Fase 2 (multiprocessing) non necessaria per ora.
