@@ -76,6 +76,20 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **Linux verification (first real run, WSL Ubuntu)**: the full fast suite
+  now runs **green on Linux** (1516 passed, 0 failed) - and it found real
+  portability bugs that were fixed:
+  - the benchmark harness was Windows-only: `_to_wsl_path` indexed
+    `Path.drive[0]` (empty on POSIX -> `IndexError`) and the shell calls
+    hardcoded `wsl.exe`.  On Linux the harness now runs natively
+    (`bash -lc`, POSIX paths) and honours `POLYFOAMMESH_OF_BASHRC`.
+  - the subprocess heartbeat polled every 0.5 s against a 0.3 s heartbeat
+    interval: a phase race with the child's output cadence could suppress
+    every "still running" line under load (caught by the watchdog test on
+    the Linux scheduler).  The loop now polls sub-heartbeat, which also
+    tightens stall-detection granularity.
+  - two timing-fragile tests anchored (monotonic baseline instead of a
+    hardcoded 100 s; wider stall margin).
 - **cfMesh RAM safeguard was a silent no-op**: the hex pipeline meshes from
   `surface.fms`, and `trimesh.load()` cannot read `.fms`
   (`NotImplementedError: file_type 'fms' not supported`) - the safeguard

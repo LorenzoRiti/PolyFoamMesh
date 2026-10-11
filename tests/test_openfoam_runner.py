@@ -398,8 +398,13 @@ def test_process_line_stage_advances_progress():
 
 def test_process_line_explicit_pct_emits_eta():
     """An explicit % line emits an ETA (never invented without data)."""
+    import time as _time
+
     worker = MeshWorker(Path("."), OFConfig())
-    worker._start_time = 100.0  # fake elapsed baseline
+    # The worker measures elapsed with time.monotonic(); a hardcoded small
+    # baseline (100.0) goes NEGATIVE on a freshly booted machine (monotonic
+    # < 100 s), making this test flaky on CI/Linux. Anchor it to now instead.
+    worker._start_time = _time.monotonic() - 5.0
     etas = []
     worker.eta_update.connect(etas.append)
     worker._process_line("Progress: 50%", [])

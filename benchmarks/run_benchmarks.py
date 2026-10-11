@@ -92,8 +92,14 @@ _KEEP_CASE = False
 
 def _wsl_alive() -> bool:
     try:
+        if os.name == "nt":
+            argv = ["wsl.exe", "-e", "bash", "-lc", "echo alive"]
+        else:
+            # Native Linux (CI or a Linux workstation): OpenFOAM runs
+            # directly, there is no WSL hop.
+            argv = ["bash", "-lc", "echo alive"]
         r = subprocess.run(
-            ["wsl.exe", "-e", "bash", "-lc", "echo alive"],
+            argv,
             capture_output=True,
             text=True,
             timeout=10,
@@ -104,10 +110,16 @@ def _wsl_alive() -> bool:
 
 
 def _wsl_of_run(cmd: str, timeout: int = TIMEOUT_S) -> tuple[int, str]:
-    full_cmd = f". {OF_BASHRC} && {cmd}"
+    bashrc = os.environ.get("POLYFOAMMESH_OF_BASHRC", OF_BASHRC)
+    full_cmd = f". {bashrc} && {cmd}"
     try:
+        if os.name == "nt":
+            argv = ["wsl.exe", "-e", "bash", "-lc", full_cmd]
+        else:
+            # Native Linux: run the same command in the local shell.
+            argv = ["bash", "-lc", full_cmd]
         r = subprocess.run(
-            ["wsl.exe", "-e", "bash", "-lc", full_cmd],
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -120,8 +132,17 @@ def _wsl_of_run(cmd: str, timeout: int = TIMEOUT_S) -> tuple[int, str]:
 
 
 def _to_wsl_path(win_path: Path) -> str:
-    """Convert Windows absolute path to /mnt/ path for WSL."""
-    win = win_path.resolve()
+    """Path the shell should cd into.
+
+    Windows: convert ``C:\\...`` to the ``/mnt/c/...`` WSL path.
+    Native Linux (CI/benchmark machine): the resolved POSIX path is
+    already what bash wants — returning it unchanged (the old code did
+    ``drive[0]`` which raises IndexError on POSIX, making the whole
+    harness Windows-only).
+    """
+    win = Path(win_path).resolve()
+    if os.name != "nt":
+        return str(win)
     drive = win.drive[0].lower()
     rel = str(win).split(":", 1)[1].replace("\\", "/")
     return f"/mnt/{drive}{rel}"
@@ -1133,11 +1154,14 @@ def main(args: list[str] | None = None) -> int:
     opts = _build_parser().parse_args(args)
 
     if not _wsl_alive():
-        logger.warning("WSL not responsive. Attempting restart...")
-        subprocess.run(["wsl.exe", "--shutdown"], capture_output=True, timeout=30)
-        time.sleep(5)
+        if os.name == "nt":
+            logger.warning("WSL not responsive. Attempting restart...")
+            subprocess.run(
+                ["wsl.exe", "--shutdown"], capture_output=True, timeout=30,
+            )
+            time.sleep(5)
         if not _wsl_alive():
-            logger.error("WSL still not reachable.")
+            logger.error("OpenFOAM shell not reachable.")
             return 1
 
     stl_files = sorted(GEOMETRIES_DIR.glob("*.stl"))

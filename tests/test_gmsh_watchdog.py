@@ -93,7 +93,11 @@ def test_output_resets_stall_timer():
 
 def test_healthy_long_stream_is_never_killed():
     """(d) Total run is long and heartbeats fire, but output keeps flowing."""
-    res = _run_child(_TICK_CHILD, (8, 0.5), stall_s=1.2, heartbeat_s=0.3)
+    # stall_s is deliberately ~6x the 0.5 s tick: under heavy suite load a
+    # single tick can be delayed, and a tight margin made this test flaky
+    # on the CI/Linux scheduler (the child is HEALTHY and must never be
+    # killed, which is what the test is about).
+    res = _run_child(_TICK_CHILD, (8, 0.5), stall_s=3.0, heartbeat_s=0.3)
 
     assert res["elapsed"] > 2.0, res["elapsed"]
     assert not res["stall"].get("stalled"), res["stall"]
