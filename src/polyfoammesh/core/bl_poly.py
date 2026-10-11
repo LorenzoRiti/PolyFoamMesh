@@ -267,6 +267,33 @@ _CONSUME_CAP_MIN_PATCH_FACES = 4
 #: is what keeps that build bit-identical.
 _CONSUME_CAP_RIM_RING = 1
 
+#: No-interior-support wall vertices (2026-10-11).  A wall vertex with no
+#: interior support is a MICRO-SLIVER at a refinement zone: its incident
+#: cells collapse to a single degenerate cell (measured on the user's tube:
+#: vertex 192764 has 1 incident cell, 3 boundary faces, 0 internal faces and
+#: its nearest other point is 1.27e-5 m away), so there is no interior edge to
+#: extrude into and the inversion clamp has no scale.  One such point must not
+#: kill the whole boundary layer: these vertices are EXCLUDED from the BL
+#: exactly like the sliver-affected faces (every selected face touching one
+#: gets 0 layers / no prism; their owner cells are pinned in the reflow) and
+#: the exclusion is logged.
+#:
+#: The honest ValueError survives only when the problem is SYSTEMIC - a
+#: mis-selected wall patch or a broken mesh topology, not a local degeneracy.
+#: Two independent limits, EITHER of which trips the failure:
+#:   - fraction of wall vertices: 5%.  Measured production values are 0.99%
+#:     (user's tube 000143: 1,406 / 141,964 wall vertices) and 0.19% (venturi
+#:     stored dual: 26 / 13,819) - an order of magnitude of headroom, while a
+#:     whole patch with no interior support would sit far above it;
+#:   - absolute count: 5,000.  A coarse net for very large meshes where an
+#:     isolated refinement cluster could still be thousands of points; a mesh
+#:     whose entire wall has no interior support is implausible as local noise.
+#: Residual uncertainty: on a multi-million-vertex wall a legitimate cluster
+#: above 5,000 isolated points would abort (the fraction would still be tiny);
+#: raise ``_NO_SUPPORT_MAX_ABS`` if that ever shows up in production.
+_NO_SUPPORT_MAX_FRAC = 0.05
+_NO_SUPPORT_MAX_ABS = 5000
+
 
 def _selected_sliver_face_fraction(points, faces, n_int, sel, target_depth):
     """Fraction of SELECTED wall faces that are sliver-based (T4c).
@@ -1850,8 +1877,10 @@ class PolyBoundaryLayerEngine:
         """
         kv = []
         for w in pre["wall_verts"]:
+            # a no-interior-support vertex is absent from ``support_d``: it
+            # supports no layers (0.0 -> k = 0), matching its exclusion.
             mh = pre["angle_fade"][w] * min(
-                0.5 * pre["support_d"][w], 0.5 * pre["edge_cap"][w],
+                0.5 * pre["support_d"].get(w, 0.0), 0.5 * pre["edge_cap"][w],
             )
             k = 0
             while (k < n_max
@@ -3231,6 +3260,12 @@ class PolyBoundaryLayerEngine:
         # the wall-adjacent cells invert.  (The actual clamp multiplies this
         # by clamp_factor, which is what the fallback loop varies.)
         support_d: dict[int, float] = {}
+        # Wall vertices with no interior support (degenerate micro-slivers at a
+        # refinement zone) are collected here instead of aborting the build:
+        # they are excluded from the BL below (0 layers, pinned in the reflow),
+        # so one bad point cannot kill the whole boundary layer.  Only a
+        # SYSTEMIC lack of support (see _NO_SUPPORT_MAX_FRAC/_ABS) raises.
+        no_support: set[int] = set()
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
             if wi % prog_stride == 0:
@@ -3251,11 +3286,37 @@ class PolyBoundaryLayerEngine:
                             if v != w and v not in wv:
                                 probe.add(v)
             if not probe:
-                raise ValueError(f"wall vertex {w} has no interior support")
+                no_support.add(w)
+                continue
             d = min(float(np.linalg.norm(pts[w] - pts[v])) for v in probe)
             if not np.isfinite(d) or d <= 1e-12:
-                raise ValueError(f"wall vertex {w} has no interior support")
+                no_support.add(w)
+                continue
             support_d[w] = d
+        if no_support:
+            n_wall = len(wall_verts)
+            frac_ns = len(no_support) / max(1, n_wall)
+            if (frac_ns > _NO_SUPPORT_MAX_FRAC
+                    or len(no_support) > _NO_SUPPORT_MAX_ABS):
+                raise ValueError(
+                    f"{len(no_support)} of {n_wall} wall vertices "
+                    f"({100.0 * frac_ns:.1f}%) have no interior support - "
+                    "the wall selection or the mesh topology is broken, "
+                    "not a local degeneracy"
+                )
+            self._log(
+                f"[bl] consume: excluded {len(no_support)} wall vertex(es) "
+                "without interior support (degenerate/refined spots)"
+            )
+        # Selected faces incident to a no-support vertex cannot be extruded
+        # (the vertex has no interior anchor to move into), so they are
+        # excluded from the BL exactly like the sliver-affected faces: 0
+        # layers, no prisms, owner cells pinned in the reflow.  Empty on a
+        # clean mesh, so this is a no-op there.
+        no_support_faces = frozenset(
+            fi - n_int for fi in bnd
+            if any(int(v) in no_support for v in faces[fi])
+        ) if no_support else frozenset()
 
         # --- selected-face edges (needed by the nv/nf border flattening) ----
         # 2-manifold boundary: every edge has 1 (border) or 2 (interior)
@@ -3321,20 +3382,27 @@ class PolyBoundaryLayerEngine:
         # they see the same behaviour.  The excluded faces are removed from
         # the extrusion in ``_build`` (0 layers, no prisms).
         consume_excluded = frozenset(consume_excluded or ())
-        if consume:
-            if not consume_excluded and target_depth > 0.0:
-                consume_excluded, n_excl0, frac0 = (
-                    self._consume_excluded_faces(
-                        pts, faces, owner, neighbour, n_int, sel,
-                        target_depth, detect_caps=detect_caps,
-                    )
+        if consume and not consume_excluded and target_depth > 0.0:
+            consume_excluded, n_excl0, frac0 = (
+                self._consume_excluded_faces(
+                    pts, faces, owner, neighbour, n_int, sel,
+                    target_depth, detect_caps=detect_caps,
                 )
-                if n_excl0:
-                    self._log(
-                        f"[bl] consume: excluded {n_excl0} sliver-affected "
-                        f"wall faces ({100.0 * frac0:.2f}% of {len(sel)}) - "
-                        f"full stack on the remaining {len(sel) - n_excl0}"
-                    )
+            )
+            if n_excl0:
+                self._log(
+                    f"[bl] consume: excluded {n_excl0} sliver-affected "
+                    f"wall faces ({100.0 * frac0:.2f}% of {len(sel)}) - "
+                    f"full stack on the remaining {len(sel) - n_excl0}"
+                )
+        # Faces touching a no-interior-support vertex are excluded in EVERY
+        # path (consume on or off): the vertex has no interior anchor to move
+        # into, so extruding it would invert its single degenerate cell.  The
+        # union happens AFTER the sliver/cap exclusion so both are kept, and
+        # BEFORE the pinning below so their owner cells are pinned too.
+        if no_support_faces:
+            consume_excluded = consume_excluded | no_support_faces
+        if consume:
             support_layers, support_cells = self._consume_support_layers(
                 pts, faces, owner, neighbour, n_int, n_cells,
                 wall_verts, wall_face_of, normals,
@@ -3461,6 +3529,7 @@ class PolyBoundaryLayerEngine:
             "consume_elen": consume_elen,
             "consume_cap_dist": cap_dist,
             "consume_excluded": consume_excluded,
+            "no_support_verts": no_support,
         }
 
     def _build(self, points, faces, owner, neighbour, patches, n_int,
@@ -3599,7 +3668,13 @@ class PolyBoundaryLayerEngine:
         support_sliver = pre.get("support_sliver") or {}
         for wi, w in enumerate(wall_verts):
             _gil_yield(wi, 64)
-            d = support_d[w]
+            # A no-interior-support vertex was excluded from ``support_d`` in
+            # the precompute (its incident faces are in ``consume_excluded``).
+            # max_h = 0 keeps nv0[w] = 0, so the vertex is never extruded.
+            d = support_d.get(w)
+            if d is None:
+                max_h[w] = 0.0
+                continue
             # inversion guard (distance to interior) + feature fade (angular
             # divergence) + hard cap on the incident wall-face edge length
             # (`edge_cap`: the historical smallest edge, or the opt-in

@@ -70,13 +70,15 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   mesh follows the CAD geometry (exact curvature, sharp edges, narrow
   passages) within the cell budget. How tightly it follows curvature is
   derived automatically from the Detail slider - there is no second knob.
-- **Mesher choice**:
+- **Mesher choice** (buttons left to right):
   - **Polymesh (poly)**: the default path - GMSH tetrahedra -> polyhedral
     dual (STAR-CCM+ style topology) with boundary layers. No WSL needed.
-  - **Quick Mesh** (`Ctrl+M`): one click, parameters auto-suggested.
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
-    [INSTALL.md](INSTALL.md)).
+    [INSTALL.md](INSTALL.md)). Optional: enable `Convert to polyhedral
+    mesh` (Advanced tab) to convert the hex-dominant result to
+    polyhedral - it is off by default.
+  - **Quick Mesh** (`Ctrl+M`): one click, parameters auto-suggested.
 - **Mesh cache (automatic)**: a tet mesh from a previous run with
   identical sizing is reused, skipping the whole GMSH stage - the slowest
   one. No setting to manage; a hit is logged as
@@ -145,8 +147,19 @@ quality report** (`File > Export Mesh > PDF Quality Report...`).
 
 ### 5. Export
 
-- **OpenFOAM case**: ready for `simpleFoam` / `pimpleFoam` / etc.
-- **CGNS / VTU**: for ParaView or other solvers.
+`File > Export Mesh`:
+
+- **OpenFOAM Case Folder...**: copies the case to a folder you pick,
+  ready to run directly in OpenFOAM (`foamRun`, `simpleFoam`, ...). No
+  boundary-condition validation is required - the mesh, `system/` and the
+  `0/` fields (when present) are exported; heavy regenerable artifacts
+  (decomposePar output, viewer files, the GMSH `.msh`, the pre-BL backup)
+  are left out.
+- **BaramFlow Case Folder...**: validates the case is complete and
+  internally consistent (every mesh patch has a boundary condition in
+  every `0/` field) and copies it, so BaramFlow opens it without errors.
+- **PDF Quality Report...**: the mesh-quality report.
+- **VTU / CGNS / SU2 / GMSH / Abaqus**: solver-format mesh exports.
 - **Tools > Launch ParaView**: opens the result directly if ParaView is
   installed.
 
@@ -164,13 +177,15 @@ Toolbar controls (left to right):
   remove it.
 - **Select Patch**: click a boundary patch to highlight it (solid highlight)
   and log its name - useful to identify inlets/outlets/walls. Clicking the
-  empty background clears the selection.
+  empty background clears the selection; clicking the highlighted patch
+  again deselects it.
 - **Measure**: click two points (on CAD or mesh) to get the distance in
   metres; numbered markers and a line are drawn, a summary overlay lists
   every measurement, and unchecking the tool (or `Clear`) removes them.
-- **Show BL**: colours the boundary-layer prism cells orange over the grey
-  core (works with `surface_N` meshes via geometric wall inference), so a
-  sub-millimetre layer is actually visible.
+
+Boundary layers are visible **through the mesh itself**: in
+`Surface with Edges` the layer stack shows as the dense edge band at the
+wall - no overlay or colouring is needed.
 
 Mouse: left-drag rotates, middle-drag pans, wheel zooms. `Box 3D` refinement
 zones are edited directly with their gizmo in the viewer.

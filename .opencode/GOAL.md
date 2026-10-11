@@ -1109,3 +1109,24 @@ timestamp/wall/stage). Detector/fallback: nessuna occorrenza nei log
 strutturale: il benchmark usa sizing esplicito (non adaptive) e non
 passa dal GmshVolumeWorker, quindi il detector non e' nemmeno cablato
 li'. Programma adaptive A-D: COMPLETO e verificato.
+
+## 2026-10-11 - Finestra di rilascio spostata a dopodomani
+
+Decisione utente: build/installer RIMANDATI di 2 giorni. Policy confermata:
+checkMesh "Failed" anche di poco sono ACCETTATI per la 2.3.0 (resi
+espliciti in docs/residual_risks.md, sezione "Release 2.3.0 - known
+limitations"). Toolchain pronta: PyInstaller 6.21 + ISCC in
+AppData\Local\Programs\Inno Setup 6. In corso: fix BL tubo (micro-sliver
+da refinement). Poi: commit finale docs + chiusura.
+
+## 2026-10-11 - Tubo e venturi VERIFICATI end-to-end (percorso app)
+
+Tubo (refinement, dual over-raffinato 267k celle): fix lane (esclusione
+vertici senza supporto, 1406 = 0.99%) + catena worker completa ->
+456,018 prismi, mediana 6, coverage 97.7%, checkMesh Failed 1 (solo
+aspect di 1192 celle; pyramids 0). Il flag della lane ("venturi BL
+fallisce") era un falso allarme: aveva testato il motore senza la
+catena del worker. Verificato io sul venturi: 70,488 prismi, 6 layer,
+100% coverage, Failed 3 = classe nota della gola. Entrambi i casi utente
+chiusi. Policy "failed anche di poco OK" confermata e documentata in
+residual_risks.
