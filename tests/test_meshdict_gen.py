@@ -334,6 +334,58 @@ def test_write_meshdict_with_features():
         assert 'stopAfter "refineBoundaryLayers";' in content
     print("PASS: write_meshdict with features")
 
+
+def test_ram_safeguard_reads_bbox_from_stl_when_surface_is_fms(tmp_path=None, caplog=None):
+    """Regression: the hex pipeline meshes from surface.fms, which trimesh
+    cannot read (NotImplementedError: file_type 'fms' not supported) - the
+    RAM safeguard used to be a silent no-op on every hex run.  It must fall
+    back to the sibling surface.stl for the bounding box."""
+    import logging
+
+    import numpy as np
+    import trimesh
+
+    base = Path(tempfile.mkdtemp())
+    case = base / "case"
+    tri = case / "constant" / "triSurface"
+    tri.mkdir(parents=True)
+    # A 10x10x10 m box: huge domain, tiny cell -> the coarsening must fire.
+    box = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+    box.export(tri / "surface.stl")
+    # The .fms exists but is unreadable by trimesh (fake bytes).
+    (tri / "surface.fms").write_bytes(b"\x00\x01fms-fake")
+
+    records: list[str] = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    logger = logging.getLogger("polyfoammesh.core.meshdict_gen")
+    handler = _H()
+    logger.addHandler(handler)
+    try:
+        write_meshdict(
+            case, max_cell_size=0.001, min_cell_size=0.0005,
+            surface_file="constant/triSurface/surface.fms",
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    joined = " | ".join(records)
+    assert "RAM safeguard FAILED" not in joined, joined
+    # The safeguard must have coarsened: the STL bbox volume is 1000 m3 and
+    # 0.001 m cells would ask for ~1e12 cells.
+    text = (case / "system" / "meshDict").read_text()
+    assert "maxCellSize" in text
+    import re
+
+    m = re.search(r"maxCellSize\s+([0-9.eE+-]+);", text)
+    assert m is not None
+    assert float(m.group(1)) > 0.001, text[:400]
+    print("PASS: fms safeguard falls back to the sibling stl")
+
+
 if __name__ == "__main__":
     test_basic_has_robust_flags()
     test_basic_no_bl()
@@ -341,5 +393,6 @@ if __name__ == "__main__":
     test_with_patches()
     test_write_meshdict()
     test_write_with_bl()
+    test_ram_safeguard_reads_bbox_from_stl_when_surface_is_fms()
     print("\nALL TESTS PASSED")
 
