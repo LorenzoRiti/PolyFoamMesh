@@ -1147,3 +1147,19 @@ Tutto verificato dall'orchestratore:
   al .stl fratello; test aggiunto; nessun cambio per casi normali.
 - Nota: multi_inlet hex ora NO 69.4 (vicino alla soglia 70) - stl
   rifuso il 2026-10-06, non regressione.
+
+## 2026-10-11/12 - NOTTE: Linux verificato + guida + riordino (richiesta utente)
+
+- LINUX VERIFICATO DAVVERO (WSL Ubuntu 24.04, Python 3.12): suite fast
+  INTERAMENTE VERDE (1516 passed, 0 failed). Trovati e fixati 2 bug di
+  portabilita' reali: harness benchmark Windows-only (_to_wsl_path
+  IndexError su POSIX + wsl.exe hardcoded) e heartbeat del watchdog con
+  race di fase (poll 0.5s vs heartbeat 0.3s -> mai emesso sotto carico).
+  Commit 5a76997.
+- In corso (lane notturne): (A) docs/INSTALL_LINUX.md - guida Linux
+  completa in inglese, allineata a INSTALL/USER_GUIDE, con box onesto
+  verificato/non-verificato; (B) riordino progetto: indice docs/,
+  indice notes/, igiene root/.gitignore, README allineato, autore
+  "Lorenzo Riti" (solo nome) in pyproject.
+- Policy utente: tutto in inglese, testi che si leggono bene e hanno
+  senso logico, trasparenza; domattina tutto pronto e committato.

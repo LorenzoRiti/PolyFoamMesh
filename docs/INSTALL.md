@@ -14,10 +14,10 @@ needed for the basics.
 
 ### Steps
 
-1. Grab `PolyFoamMesh-<version>-Setup.exe` from the
-   [Releases](https://github.com/LorenzoRiti/PolyFoamMesh/releases) page of
-   the repository. If the Releases section is still empty, the installer for
-   the current version hasn't been built yet — in that case go straight to
+1. Grab `PolyFoamMesh-<version>-Setup.exe` from wherever the project's
+   release artifacts are published (the repository's Releases section, once
+   one exists). If there is no installer available yet, the installer for
+   the current version hasn't been built — in that case go straight to
    Option B below, the app works just as well from source.
 2. Double-click the installer. Windows SmartScreen may warn ("Windows
    protected your PC"): the executable is not signed with a paid certificate,
@@ -67,9 +67,10 @@ hand.
 
 ## Option B — From source (developers)
 
+From the repository root (the folder containing `pyproject.toml`):
+
 ```bash
-git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
-cd PolyFoamMesh
+cd /path/to/cfmesh-autogui
 pip install -e ".[test]"
 polyfoammesh
 ```
@@ -96,52 +97,29 @@ path (cfMesh, checkMesh) works without any further changes.
 
 ## Option D — Linux (from source)
 
-PolyFoamMesh runs natively on Linux. The pure-GMSH paths (CFD Poly,
-FEM Tetra, viewer) need no OpenFOAM; the Cartesian cfMesh and checkMesh
-paths need OpenFOAM on `PATH`.
+PolyFoamMesh runs **natively** on Linux (no WSL hop). The pure-GMSH paths
+(CFD Poly, viewer) need no OpenFOAM; the Cartesian cfMesh and
+`checkMesh` paths need OpenFOAM installed natively.
 
-### Install the app
+The short version (from the repository root):
 
 ```bash
-git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
-cd PolyFoamMesh
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[test]"
 ./launch.sh          # or: bash launch.sh
 ```
 
-`launch.sh` is the Linux equivalent of `launch.ps1`: it probes each candidate
-interpreter for PySide6 + pyvista and uses the first that works. If you
-prefer, `polyfoammesh` (the console script installed by pip) launches the app
-directly. You may need the usual Qt/X11 runtime libraries on a minimal
-install (Debian/Ubuntu: `sudo apt-get install libegl1 libgl1 libglu1-mesa
-libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 libfontconfig1`).
+On a minimal install you also need the Qt/X11 runtime libraries (Debian/Ubuntu:
+`sudo apt-get install libegl1 libgl1 libglu1-mesa libxkbcommon0
+libxkbcommon-x11-0 libdbus-1-3 libfontconfig1`), and for cfMesh/checkMesh an
+OpenFOAM `etc/bashrc` (default
+`/usr/lib/openfoam/openfoam2512/etc/bashrc`, override with
+`POLYFOAMMESH_OF_BASHRC`).
 
-### Install OpenFOAM (for cfMesh / checkMesh only)
-
-Either the distribution package or the OpenFOAM Foundation build:
-
-```bash
-# Option 1 — OpenFOAM Foundation apt repo (default layout)
-#   env script: /usr/lib/openfoam/openfoam2512/etc/bashrc
-# Option 2 — a source/manual build
-#   env script: /opt/openfoam2512/etc/bashrc
-```
-
-Then make sure `cartesianMesh`, `checkMesh` and `foamToVTK` are on the
-`PATH` of the shell that launches PolyFoamMesh — normally by sourcing the
-OpenFOAM `etc/bashrc` in `~/.bashrc`. If the env script lives somewhere
-non-standard, point the app at it explicitly:
-
-```bash
-export POLYFOAMMESH_OF_BASHRC=/opt/openfoam2512/etc/bashrc
-./launch.sh
-```
-
-On Linux there is no WSL hop: every OpenFOAM command is run as a plain
-`bash -lc`. The `cfMesh`, `checkMesh` and `foamToVTK` binaries must therefore
-be resolvable by `bash` itself.
+**Full instructions — system prerequisites per distro, the no-venv fallback,
+OpenFOAM setup, headless/CI runs, verification and troubleshooting — are in
+[INSTALL_LINUX.md](INSTALL_LINUX.md).**
 
 ### Where your data lives
 
