@@ -17,7 +17,15 @@ import cadquery as cq
 import numpy as np
 import trimesh
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geometries")
+OUTPUT_DIR = os.environ.get(
+    "POLYFOAMMESH_CORPUS_OUT",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "geometries"),
+)
+# The env override exists so tests (and any reproducibility check) can
+# regenerate the corpus into a TEMPORARY directory instead of overwriting
+# the tracked benchmarks/geometries files in place - regenerating into the
+# repo dirtied the corpus on every test run once the committed files no
+# longer matched the generator byte-for-byte (hand-rebuilt geometries).
 
 
 def _cq_to_trimesh(obj, tolerance=0.001):
