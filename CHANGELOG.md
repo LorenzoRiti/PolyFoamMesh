@@ -76,6 +76,18 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **BL aborted by a degenerate vertex in a refinement zone**: the BL
+  precompute raised "wall vertex has no interior support" on the
+  micro-sliver vertices that local refinement can create (measured: a
+  13 um sliver with a single incident cell), killing the WHOLE boundary
+  layer.  Those vertices are now excluded like the other sliver classes
+  (0 layers there, pinned, logged: "excluded N wall vertex(es) without
+  interior support (degenerate/refined spots)"); the honest failure is
+  kept only when the problem is systemic (>5% of wall vertices or >5000).
+  Verified on the user's refined tube through the full worker chain:
+  456,018 prisms, median 6, 97.7% coverage, real checkMesh Failed 1
+  (aspect ratio on 1,192 cells only - pyramids 0, non-ortho OK, skew OK).
+  Clean-mesh outputs are byte-identical (cone A/B hash-verified).
 - **Dual fails on the production venturi (open cells at the throat)**: the
   dual face of a boundary primal edge that is coplanar with the surface
   had its orientation sign decided by round-off noise, so it could be
@@ -330,6 +342,16 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   unwatchable). Boundary layers are seen as in the previous
   release: in "Surface with Edges" the stack appears as the band of
   dense edges at the wall — it is the mesh itself, no overlay.
+- **Poly pipeline performance (profile-driven, all bit-identical)**: the
+  dual converter is 24-43% faster (face-topology cache + pure-Python
+  coordinate shadows in the edge emitter), the BL precompute 45-50%
+  faster (numpy grouping/scatter aggregation; element values stay scalar
+  to keep the ULP-exact inversion thresholds), and the consume reflow
+  ~2x faster (hoisted degree array + pinned-target pruning).  A per-run
+  `[perf] stage times:` line now covers every stage and
+  `POLYFOAMMESH_PROFILE=1` dumps cProfile hot lists for the dual and BL.
+  Every change was gated on byte-identical polyMesh SHA-256 on the
+  regression cases (orchestrator-verified A/B).
 - **Mesher order: Polymesh first, cfMesh second** and cfMesh no longer
   pre-ticks "Convert to polyhedral mesh": the hex-dominant mesh is the
   point there, the poly dual is opt-in (Polymesh keeps forcing the

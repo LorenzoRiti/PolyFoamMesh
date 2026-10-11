@@ -668,3 +668,127 @@ def test_build_forced_excluded_faces_get_zero_prisms():
     assert any(nf[bi] == 2 for bi in range(len(sel)) if bi not in excluded)
     assert built["n_faces_dropped"] >= 2
 
+
+# ---------------------------------------------------------------------------
+# 2026-10-11: wall vertices with no interior support (degenerate micro-slivers)
+# ---------------------------------------------------------------------------
+
+def _nosupport_mesh():
+    """A valid 2-tet cluster (its wall vertices have interior support) plus a
+    DISCONNECTED degenerate tet (0 internal faces) whose four vertices have no
+    interior support.  Wall vertices: {0,1,2,3} supported, {5,6,7,8} not.
+
+    ``n_int=1`` (the shared cluster face); boundary-local ``sel`` = cluster
+    cell-0 faces (0,1,2) and the whole degenerate tet (6,7,8,9).  The cluster
+    interior vertex 4 is reachable from every supported wall vertex through
+    the unselected face [0,1,4], while the degenerate tet has no interior
+    vertex at all  -  exactly the tube's vertex-192764 topology.
+    """
+    pts = np.array([
+        [0.0, 0.0, 0.0],    # 0
+        [1.0, 0.0, 0.0],    # 1
+        [0.5, 1.0, 0.0],    # 2
+        [0.5, 0.4, 1.0],    # 3  cluster wall apex
+        [0.5, 0.4, -1.0],   # 4  cluster interior dual vertex
+        [10.0, 0.0, 0.0],   # 5  degenerate tet
+        [11.0, 0.0, 0.0],   # 6
+        [10.5, 1.0, 0.0],   # 7
+        [10.5, 0.4, 1.0],   # 8
+    ])
+    faces = [
+        [0, 1, 2],          # 0 internal (cells 0 / 1)
+        [0, 1, 3],          # 1 boundary, selected
+        [0, 2, 3],          # 2 boundary, selected
+        [1, 2, 3],          # 3 boundary, selected
+        [0, 1, 4],          # 4 boundary, unselected (carries interior 4)
+        [0, 2, 4],          # 5 boundary, unselected
+        [1, 2, 4],          # 6 boundary, unselected
+        [5, 6, 7],          # 7 boundary, selected (degenerate tet)
+        [5, 6, 8],          # 8 boundary, selected
+        [5, 7, 8],          # 9 boundary, selected
+        [6, 7, 8],          # 10 boundary, selected
+    ]
+    owner = np.array([0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2], dtype=np.int64)
+    neighbour = np.array([1], dtype=np.int64)
+    n_int = 1
+    n_bnd = len(faces) - n_int
+    patches = [{"name": "wall", "type": "wall",
+                "startFace": n_int, "nFaces": n_bnd}]
+    sel = [0, 1, 2, 6, 7, 8, 9]
+    return pts, faces, owner, neighbour, n_int, patches, sel
+
+
+def test_no_interior_support_vertices_are_excluded_not_fatal(monkeypatch):
+    """Wall vertices with no interior support are EXCLUDED (0 layers), not
+    fatal: ``_build_precompute`` returns them in ``no_support_verts``, leaves
+    them out of ``support_d`` and folds their incident faces into
+    ``consume_excluded``, and logs the exclusion."""
+    # 4 of 8 wall vertices have no support here (a deliberately mixed mesh);
+    # lift the systemic threshold so this test exercises the LOCAL path.
+    monkeypatch.setattr(bl_poly, "_NO_SUPPORT_MAX_FRAC", 0.9)
+    monkeypatch.setattr(bl_poly, "_NO_SUPPORT_MAX_ABS", 10 ** 9)
+    pts, faces, owner, neighbour, n_int, patches, sel = _nosupport_mesh()
+    logs: list[str] = []
+    eng = PolyBoundaryLayerEngine(Path("."), log=logs.append)
+    pre = eng._build_precompute(
+        pts, faces, owner, neighbour, patches, n_int, sel, frozenset(),
+        consume=False,
+    )
+    assert pre["no_support_verts"] == {5, 6, 7, 8}
+    # supported vertices keep a real support distance; excluded ones have none
+    assert set(pre["support_d"]) == {0, 1, 2, 3}
+    assert all(pre["support_d"][w] > 0.0 for w in pre["support_d"])
+    # the degenerate tet's four selected faces (boundary-local 6..9) are the
+    # faces excluded through the no-support union
+    assert frozenset({6, 7, 8, 9}).issubset(pre["consume_excluded"])
+    assert any(
+        "excluded 4 wall vertex(es) without interior support" in m
+        for m in logs
+    ), logs
+
+
+def test_no_interior_support_is_fatal_when_systemic(monkeypatch):
+    """The honest ValueError survives when the lack of support is SYSTEMIC,
+    not a local degeneracy.  On this mesh 4/8 = 50% > 5% trips the fraction
+    limit; a single closed tet (100%) trips it too."""
+    pts, faces, owner, neighbour, n_int, patches, sel = _nosupport_mesh()
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    with pytest.raises(ValueError, match="no interior support"):
+        eng._build_precompute(
+            pts, faces, owner, neighbour, patches, n_int, sel, frozenset(),
+            consume=False,
+        )
+
+    # the absolute limit alone can trip it: 1 vertex on a mesh whose fraction
+    # is below the limit but whose count exceeds the (tiny) absolute cap.
+    monkeypatch.setattr(bl_poly, "_NO_SUPPORT_MAX_FRAC", 0.99)
+    monkeypatch.setattr(bl_poly, "_NO_SUPPORT_MAX_ABS", 2)
+    with pytest.raises(ValueError, match="no interior support"):
+        eng._build_precompute(
+            pts, faces, owner, neighbour, patches, n_int, sel, frozenset(),
+            consume=False,
+        )
+
+
+def test_build_excludes_no_support_faces_with_zero_prisms(monkeypatch):
+    """``_build`` gives the no-support vertices 0 layers (no prisms) while the
+    healthy cluster keeps the full requested stack."""
+    monkeypatch.setattr(bl_poly, "_NO_SUPPORT_MAX_FRAC", 0.9)
+    monkeypatch.setattr(bl_poly, "_NO_SUPPORT_MAX_ABS", 10 ** 9)
+    pts, faces, owner, neighbour, n_int, patches, sel = _nosupport_mesh()
+    eng = PolyBoundaryLayerEngine(Path("."), log=lambda _m: None)
+    pre = eng._build_precompute(
+        pts, faces, owner, neighbour, patches, n_int, sel, frozenset(),
+        consume=False,
+    )
+    built = eng._build(
+        pts, faces, owner, neighbour, patches, n_int, sel,
+        n_layers=2, first_height=0.1, growth=1.2, clamp_factor=0.5,
+        pre=pre, zero_concave=True,
+    )
+    nf = built["prism_nf"]
+    # positions in ``bnd``: 0..2 = the supported cluster faces, 3..6 = the
+    # degenerate tet (boundary-local 6..9)
+    assert all(nf[bi] == 0 for bi in (3, 4, 5, 6))
+    assert any(nf[bi] == 2 for bi in (0, 1, 2))
+

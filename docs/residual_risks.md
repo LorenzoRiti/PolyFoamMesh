@@ -5,6 +5,36 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## Release 2.3.0 — known limitations (2026-10-11)
+
+These are the accepted, documented limits of the 2.3.0 release. Everything
+here is surfaced honestly in the app (log/report), never hidden.
+
+- **Venturi-class throat quality**: on geometries with a sharp concave
+  throat the dual mesh (and therefore checkMesh) still reports the known
+  throat class — a handful of non-orthogonality errors, a few hundred
+  inverted face pyramids and high local skew at the throat (real checkMesh
+  `Failed 3`). This is a **pre-existing dual-construction limit**, not a
+  regression: the boundary layer does not worsen it and the dual now
+  completes and is watertight (self-healing cleanup). The dual-boundary
+  rewrite is the first item of the next cycle.
+- **Very large meshes (millions of cells)**: the boundary layer is skipped
+  by the 8M-face memory guard (a deliberate crash-prevention decision), so
+  those cases ship dual-only. Raising it safely (chunked build) is a
+  next-cycle item.
+- **Linux**: core support (phases 1-2) is shipped and Windows behaviour is
+  verified byte-identical, but the Linux path has **never been verified on
+  a real Linux runner** (the repository is local-only, no push). CI jobs
+  are in place and will validate it at the first push.
+- **Adaptive sizing fallback**: when GMSH's adaptive 2D mesher cannot
+  converge on a geometry (detected within ~40 s by the signature watchdog),
+  the mesh is produced with the **manual-equivalent sizing** and the log
+  says so explicitly. This is by design: never a hang, never a bare error.
+- **Feature-detection subprocess**: on pathological CAD the isolated
+  feature-detection subprocess can die natively (gmsh-4.15.dll); the crash
+  is contained by design (the app survives and continues with the
+  unrefined default sizes, logging the failure).
+
 ## CI (2026-09-08)
 
 - The GitHub Actions CI job is green again. Root causes of the original
