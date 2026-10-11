@@ -76,6 +76,15 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **The test suite silently rewrote the benchmark corpus**: the corpus
+  generator test ran `benchmarks/generate_corpus.py` straight into
+  `benchmarks/geometries/`, overwriting the tracked geometry files on
+  every suite run (they no longer match the generator byte-for-byte
+  since a couple of geometries were rebuilt by hand) - leaving the
+  checkout dirty and risking benchmark-baseline drift.  The generator now
+  honours `POLYFOAMMESH_CORPUS_OUT` and the test regenerates into a
+  temporary directory; verified: the tracked corpus stays clean after the
+  full fast suite.
 - **Linux verification (first real run, WSL Ubuntu)**: the full fast suite
   now runs **green on Linux** (1516 passed, 0 failed) - and it found real
   portability bugs that were fixed:
