@@ -76,6 +76,15 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **cfMesh RAM safeguard was a silent no-op**: the hex pipeline meshes from
+  `surface.fms`, and `trimesh.load()` cannot read `.fms`
+  (`NotImplementedError: file_type 'fms' not supported`) - the safeguard
+  caught the exception, logged "RAM safeguard FAILED" and wrote the
+  requested sizes UNCHANGED on every hex run (found by the release smoke:
+  the error appeared on all 15 corpus geometries).  It now falls back to
+  the sibling `surface.stl` (which the `.fms` is generated from) for the
+  bounding box; normal-size cases are unaffected (the safeguard only acts
+  above the RAM-based cell budget).  Regression test added.
 - **BL aborted by a degenerate vertex in a refinement zone**: the BL
   precompute raised "wall vertex has no interior support" on the
   micro-sliver vertices that local refinement can create (measured: a

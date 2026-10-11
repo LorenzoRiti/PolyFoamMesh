@@ -458,12 +458,24 @@ def write_meshdict(
         stl_path = Path(surface_file)
         if not stl_path.is_absolute():
             stl_path = case_dir / stl_path
-        if stl_path.exists():
+        # The hex pipeline meshes from the .fms produced by
+        # surfaceFeatureEdges, but trimesh cannot read .fms
+        # (NotImplementedError: file_type 'fms' not supported) - which used
+        # to make this whole safeguard a silent no-op on every hex run
+        # (logged "RAM safeguard FAILED", sizes written unchanged).  The
+        # .stl the .fms was generated from is still in the case dir and the
+        # safeguard only needs its bounding box.
+        bbox_path = stl_path
+        if stl_path.suffix.lower() == ".fms":
+            stl_candidate = stl_path.with_suffix(".stl")
+            if stl_candidate.exists():
+                bbox_path = stl_candidate
+        if bbox_path.exists():
             import trimesh as _trimesh
 
             from polyfoammesh.core.geometry import coarsen_for_ram_budget
 
-            surf = _trimesh.load(str(stl_path), force="mesh", process=False)
+            surf = _trimesh.load(str(bbox_path), force="mesh", process=False)
             dx, dy, dz = (surf.bounds[1] - surf.bounds[0])
             domain_volume = float(max(dx * dy * dz, 1e-12))
             max_cell_size, ram_warnings = coarsen_for_ram_budget(

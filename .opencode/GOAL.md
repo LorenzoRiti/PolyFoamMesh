@@ -1130,3 +1130,20 @@ catena del worker. Verificato io sul venturi: 70,488 prismi, 6 layer,
 100% coverage, Failed 3 = classe nota della gola. Entrambi i casi utente
 chiusi. Policy "failed anche di poco OK" confermata e documentata in
 residual_risks.
+
+## 2026-10-11 - GIORNATA DI VALIDAZIONE PRODOTTO (pre-rilascio)
+
+Tutto verificato dall'orchestratore:
+- Corpus poly post-fix finali: RELEASE-SAFE (0 diff su 2 baseline,
+  nessun trigger dei nuovi path).
+- Avvio app offscreen: v2.3.0, menu Export completo (OpenFOAM+BaramFlow),
+  mesher Polymesh->cfMesh.
+- Export OpenFOAM diretto: cartella pulita + checkMesh REALE sulla
+  cartella esportata = case valida/watertight. BaramFlow: validazione OK.
+- PDF report: ok. Spec PyInstaller: input completi.
+- cfMesh (hex) smoke su 15 geometrie: SANO (10/15, stesso profilo,
+  zero crash). Scoperto e FIXATO bug latente: salvaguardia RAM hex
+  silenziosamente no-op (.fms non leggibile da trimesh) -> ora fallback
+  al .stl fratello; test aggiunto; nessun cambio per casi normali.
+- Nota: multi_inlet hex ora NO 69.4 (vicino alla soglia 70) - stl
+  rifuso il 2026-10-06, non regressione.
