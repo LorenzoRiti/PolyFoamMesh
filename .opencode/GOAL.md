@@ -1163,3 +1163,19 @@ Tutto verificato dall'orchestratore:
   "Lorenzo Riti" (solo nome) in pyproject.
 - Policy utente: tutto in inglese, testi che si leggono bene e hanno
   senso logico, trasparenza; domattina tutto pronto e committato.
+
+## 2026-10-12 MATTINA - Tutto pronto (notte completata)
+
+COMMITTATO E VERIFICATO:
+- 5a76997 Linux reale: suite fast VERDE su WSL Ubuntu (1516 passed) +
+  fix portabilita' harness (POSIX) + heartbeat granularity.
+- c5eb64b CRITICO: la suite non riscrive piu' il corpus (il test del
+  generatore scriveva in benchmarks/geometries in-place; scoperto
+  perche' 7 geometrie risultavano modificate dopo i run serali).
+  Ora POLYFOAMMESH_CORPUS_OUT + tmp; corpus PULITO dopo la suite.
+- c94049e docs: INSTALL_LINUX.md completa (con box verificato/non),
+  indici docs/ e notes/, README allineato v2.3, pyproject version 2.3.0
+  + autore "Lorenzo Riti" (solo nome), URL inventati neutralizzati
+  ovunque (repo mai pubblicato), .gitignore irrobustito.
+- Albero pulito, corpus pulito, Windows suite verde via pre-commit.
+DOMANI: build (PyInstaller + ISCC) + smoke finale utente.
