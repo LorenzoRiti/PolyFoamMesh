@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polyfoammesh"
-version = "2.2.0"
+version = "2.3.0"
 description = "Desktop standalone polyhedral mesh generator for OpenFOAM: GMSH tet to dual poly with boundary layers; cfMesh/cartesianMesh optional"
-authors = [{name = "Davide Valoroso"}]
+authors = [{name = "Lorenzo Riti"}]
 license = {text = "GPL-3.0-or-later"}
 readme = "README.md"
 requires-python = ">=3.11"

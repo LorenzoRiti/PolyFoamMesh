@@ -32,9 +32,11 @@ not hidden.
 
 ## User documentation
 
-- **[Installation](docs/INSTALL.md)** — Windows installer or from source
+- **[Installation (Windows)](docs/INSTALL.md)** — prebuilt installer or from source
+- **[Installation (Linux)](docs/INSTALL_LINUX.md)** — native Linux setup, no WSL
 - **[User guide](docs/USER_GUIDE.md)** — how the workflow works, tab by tab
 - **[Known limits](docs/residual_risks.md)** — what does not work yet and why
+- **[Documentation index](docs/README.md)** — map of the whole docs tree
 
 ## Architecture
 
@@ -61,7 +63,7 @@ not hidden.
 └─────────────────────────────────────────────────────┘
 ```
 
-## Main features v2.0
+## Main features (v2.3)
 
 | Feature | Description | Status |
 |---------|-------------|--------|
@@ -83,9 +85,10 @@ not hidden.
 
 ## Quick install
 
-Requirements: Windows 10/11, Python 3.11+ (only for the from-source install),
-optionally OpenFOAM v2512 in WSL2. Full guide (prebuilt installer or from
-source): **[docs/INSTALL.md](docs/INSTALL.md)**.
+Requirements: Windows 10/11 or Linux, Python 3.11+ (only for the from-source
+install), optionally OpenFOAM v2512 (in WSL2 on Windows). Full guides
+(prebuilt installer or from source): **[docs/INSTALL.md](docs/INSTALL.md)**
+(Windows) and **[docs/INSTALL_LINUX.md](docs/INSTALL_LINUX.md)** (Linux).
 
 ```bash
 pip install -e ".[test]"
@@ -145,17 +148,16 @@ polyfoammesh/
 │   ├── compile_i18n.bat        #   Windows batch compiler
 │   └── compile_i18n.py         #   Python compiler
 ├── installer/                  # NSIS / Inno Setup scripts
-├── tests/                      # pytest suite (96 files, ~1,000 tests)
+├── tests/                      # pytest suite (132 files, ~1,500 tests)
 ├── benchmarks/                 # Meshing benchmark scripts and results
-├── dist/                       # PyInstaller EXE output
-│   └── PolyFoamMesh.exe        #   Standalone executable
+├── dist/                       # PyInstaller build output (generated, git-ignored)
 └── docs/                       # Documentation + handoff notes
 ```
 
 ## Test
 
 ```bash
-# Full suite (~1,000 tests; slow tests are marked, runs everything)
+# Full suite (~1,500 tests; slow tests are marked, runs everything)
 pytest tests/ -v
 
 # Fast subset used by the pre-commit hook (pure logic, no GMSH/Qt/WSL)

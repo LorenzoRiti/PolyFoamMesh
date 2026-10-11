@@ -38,10 +38,11 @@ Quick Install
 Developer Install
 -----------------
 
+From the repository root (the folder containing ``pyproject.toml``):
+
 .. code-block:: powershell
 
-    git clone https://github.com/cfmesh-autogui/cfmesh-autogui.git
-    cd cfmesh-autogui
+    cd /path/to/cfmesh-autogui
     pip install -e ".[dev]"
     python -m polyfoammesh.app
 

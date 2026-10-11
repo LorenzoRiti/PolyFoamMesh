@@ -9,6 +9,18 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Added
 
+- **Linux installation guide** (`docs/INSTALL_LINUX.md`): a complete,
+  standalone guide - per-distro system libraries, Python setup (virtual
+  environment first, no-sudo fallback documented), OpenFOAM setup and
+  `POLYFOAMMESH_OF_BASHRC`, running the GUI and headless, verification
+  commands and troubleshooting, with an honest verified-vs-not box
+  (verified on WSL Ubuntu 24.04: the fast suite is green; desktop GPU
+  rendering and non-Ubuntu distros are not yet exercised; the AppImage is
+  deferred).  Linked from INSTALL.md (Option D), the README and the
+  documentation index.
+- **Documentation index** (`docs/README.md`) and **notes index**
+  (`notes/README.md`): the whole documentation tree and the internal
+  engineering reasoning notes, mapped in one place each.
 - **Direct OpenFOAM export** (menu Export Mesh → "OpenFOAM Case
   Folder..."): copies the case to a chosen folder, **without** the
   requirements of the BaramFlow export (which rejects cases with empty/

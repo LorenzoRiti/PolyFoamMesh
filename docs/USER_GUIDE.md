@@ -296,9 +296,9 @@ contrast is checked automatically in CI-style tests.
   build was refused (boundary not manifold), the app kept the dual-only
   mesh on purpose - a known limitation on some real geometries, with the
   fix scheduled; see [residual_risks.md](residual_risks.md).
-- **Linux**: install from source or from the release tarball - see the
-  "Linux" section of [INSTALL.md](INSTALL.md); OpenFOAM must be on PATH
-  (cfMesh/checkMesh/foamToVTK features).
+- **Linux**: install from source - see [INSTALL_LINUX.md](INSTALL_LINUX.md)
+  for prerequisites, OpenFOAM setup and troubleshooting (OpenFOAM is needed
+  only for the cfMesh/checkMesh/foamToVTK features).
 - **Cartesian/cfMesh paths unavailable**: WSL2 + OpenFOAM are required only
   for that mesher; the GMSH-based paths work standalone.
 - **Viewer looks empty after meshing**: press the display combo (try
