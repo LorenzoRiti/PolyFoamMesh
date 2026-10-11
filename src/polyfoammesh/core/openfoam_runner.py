@@ -3215,7 +3215,13 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
                 f"no output for {int(now - last_output[0])}s{cpu_txt})"
             )
             last_activity[0] = now
-        time.sleep(0.5)
+        # Poll faster than the heartbeat interval: a 0.5 s sleep against a
+        # 0.3 s heartbeat made the emission a phase race with the child's
+        # own output cadence (under load the check could land right after
+        # every tick and NEVER fire - the "healthy stream" watchdog test
+        # caught exactly that on the CI/Linux scheduler).  Sub-heartbeat
+        # polling also tightens the stall-detection granularity.
+        time.sleep(max(0.05, min(0.5, heartbeat_s / 2.0)))
 
     try:
         proc.wait(timeout=5)
