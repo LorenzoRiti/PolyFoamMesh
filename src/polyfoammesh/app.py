@@ -130,6 +130,30 @@ def _load_plugins(app):
 def main():
     from polyfoammesh import __version__
 
+    # Every child process (wsl.exe, bash, python.exe, gmsh, checkMesh, ...)
+    # must spawn WITHOUT a console window: the frozen GUI has no console,
+    # so console children used to pop empty terminal windows that stole
+    # focus during work.  One central patch covers every subprocess call
+    # site (see core/subprocess_quiet.py).  Must run before anything else
+    # can spawn, including the CLI dispatch modes below.
+    from polyfoammesh.core.subprocess_quiet import install as _install_quiet
+
+    _install_quiet()
+
+    # Windows: an explicit AppUserModelID makes the taskbar group the
+    # windows under PolyFoamMesh and use the app's own icon for pinned
+    # shortcuts, instead of the generic/default entry Windows would
+    # otherwise derive for the process.
+    if _os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "PolyFoamMesh.PolyFoamMesh"
+            )
+        except Exception:  # noqa: BLE001 - cosmetic; never block startup
+            pass
+
     # FeatureDetectWorker isolates GMSH's feature-detection pass in a
     # child process (a hard native crash there must never take the whole
     # app down — see feature_detector.py). In a normal dev run it invokes

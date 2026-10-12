@@ -89,6 +89,11 @@ exe = EXE(
     exclude_binaries=True,
     name='PolyFoamMesh',
     debug=False,
+    # App logo as the embedded exe icon (regenerate with
+    # tools/make_app_icon.py).  Without this PyInstaller embeds its own
+    # default icon and the taskbar/Explorer show that instead of the
+    # brand mark (user report).
+    icon='src/polyfoammesh/assets/app.ico',
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,

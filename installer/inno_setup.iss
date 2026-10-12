@@ -24,6 +24,8 @@
 #define MyAppAssocStl ".stl"
 ; relative to installer/inno_setup.iss -> repo root
 #define MyAppDir "..\dist\PolyFoamMesh"
+; App logo (same mark the exe embeds; regenerate with tools/make_app_icon.py)
+#define MyAppIcon "..\src\polyfoammesh\assets\app.ico"
 
 [Setup]
 AppId={{BD86A4BE-FD11-45CC-887E-4A6C4B1EE39D}
@@ -31,6 +33,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+SetupIconFile={#MyAppIcon}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

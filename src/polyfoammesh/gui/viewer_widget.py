@@ -1764,6 +1764,10 @@ class ViewerWidget(QWidget):
             f"foamToVTK -constant -noZero -no-fields -overwrite -name {vtk_subdir}"
         )
         self._vtk_process = QProcess(self)
+        # No console window for this child either (frozen GUI has none).
+        from polyfoammesh.core.subprocess_quiet import quiet_qprocess
+
+        quiet_qprocess(self._vtk_process)
         # Use separate channels so stderr is readable independently
         self._vtk_process.setProcessChannelMode(QProcess.SeparateChannels)
         self._vtk_timeout_fired = False
