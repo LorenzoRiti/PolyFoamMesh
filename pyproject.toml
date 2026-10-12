@@ -69,6 +69,9 @@ polyfoammesh-batch = "polyfoammesh.commercial.batch_mesh:main_cli"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+polyfoammesh = ["assets/*.ico"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]

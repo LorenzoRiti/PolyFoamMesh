@@ -88,6 +88,19 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Fixed
 
+- **Empty console windows popping up from the frozen exe**: the GUI has
+  no console, so every console-subsystem child it spawned (`wsl.exe`,
+  `python.exe`, `gmsh`, `checkMesh`, ...) made Windows allocate a new
+  console window that stole focus during work.  One central patch
+  (`core/subprocess_quiet.py`) now injects `CREATE_NO_WINDOW` into every
+  `subprocess` spawn (Windows-only, no-op on POSIX) and the viewer's
+  `QProcess` gets the matching Qt modifier.
+- **App icon on the taskbar/installer**: the executable now embeds the
+  app's own logo (`src/polyfoammesh/assets/app.ico`, generated from the
+  in-app branding mark with `tools/make_app_icon.py`) instead of the
+  PyInstaller default, the installer uses it as its setup icon, and an
+  explicit Windows AppUserModelID makes the taskbar group and pin the
+  app under PolyFoamMesh with the right icon.
 - **The test suite silently rewrote the benchmark corpus**: the corpus
   generator test ran `benchmarks/generate_corpus.py` straight into
   `benchmarks/geometries/`, overwriting the tracked geometry files on
