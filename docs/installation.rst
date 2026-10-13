@@ -25,31 +25,25 @@ Quick Install
 
    .. code-block:: powershell
 
-       pip install cfmesh-autogui
+       git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
+       cd PolyFoamMesh
+       pip install -e ".[test]"
 
-   Or use the standalone installer from the releases page.
+   Or use the standalone installer from the
+   `Releases <https://github.com/LorenzoRiti/PolyFoamMesh/releases>`_ page —
+   see `docs/INSTALL.md <https://github.com/LorenzoRiti/PolyFoamMesh/blob/main/docs/INSTALL.md>`_
+   for the full guide.
 
 3. Launch:
 
    .. code-block:: powershell
 
-       cfmesh-autogui
-
-Developer Install
------------------
-
-From the repository root (the folder containing ``pyproject.toml``):
-
-.. code-block:: powershell
-
-    cd /path/to/cfmesh-autogui
-    pip install -e ".[dev]"
-    python -m polyfoammesh.app
+       polyfoammesh
 
 Configuration
 -------------
 
-Mesh settings are stored in ``%APPDATA%/cfmesh-autogui/``:
+Mesh settings are stored in ``%APPDATA%/polyfoammesh/``:
 
 * ``settings.ini`` — UI preferences and last-used parameters
 * ``logs/app.log`` — Rotating application log (5 MB max, 3 backups)

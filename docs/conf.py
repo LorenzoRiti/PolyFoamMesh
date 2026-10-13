@@ -21,7 +21,7 @@ copyright = "2026, PolyFoamMesh Project"
 author = "Davide Valoroso"
 
 # The full version, including alpha/beta/rc tags
-release = "2.0.1"
+release = "2.2.0"
 
 # -- General configuration ---------------------------------------------------
 
@@ -33,6 +33,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx_autodoc_typehints",
     "sphinx_rtd_theme",
+    "sphinx_sitemap",
 ]
 
 templates_path = ["_templates"]
@@ -43,6 +44,13 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 html_title = f"{project} v{release}"
+html_baseurl = "https://lorenzoriti.github.io/PolyFoamMesh/"
+# Single-language site: drop the default "{lang}" segment, which would
+# otherwise emit /en/ paths that do not exist.
+sitemap_url_scheme = "{link}"
+# Copied verbatim to the site root so Google Search Console can verify
+# ownership at https://lorenzoriti.github.io/PolyFoamMesh/<file>.
+html_extra_path = ["googlef60389a8173f6e88.html"]
 
 # -- Autodoc configuration ---------------------------------------------------
 
