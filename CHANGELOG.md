@@ -5,7 +5,7 @@ All notable changes to PolyFoamMesh are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
-## [2.3.0] - 2026-10-09
+## [2.3.0] - 2026-10-13
 
 ### Added
 
