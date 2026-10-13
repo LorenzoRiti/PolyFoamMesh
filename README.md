@@ -230,6 +230,12 @@ line reviewed before merging. Full breakdown, including who wrote what:
 The human author is fully responsible for the correctness and physical
 validity of this code. AI was a supporting tool, not an autonomous author.
 
+## Contributors
+
+- [warriorman8](https://github.com/warriorman8) — reported the Arch Linux
+  installation problem ([#11](https://github.com/LorenzoRiti/PolyFoamMesh/issues/11)),
+  which put the Linux installation guide's untested-distro note on record.
+
 ## Trademarks
 
 PolyFoamMesh is an independent project and is not affiliated with,
