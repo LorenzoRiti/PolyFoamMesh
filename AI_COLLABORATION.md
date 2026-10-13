@@ -1,49 +1,48 @@
-# Collaborazione con l'IA
+# AI collaboration
 
-Questo progetto usa l'intelligenza artificiale come strumento di
-pair-programming, non come sostituto dell'autore. Lo dichiaro qui in
-modo esplicito perché credo sia più utile essere trasparenti sul workflow
-reale che lasciarlo intuire.
+This project uses artificial intelligence as a pair-programming tool, not
+as a replacement for the author. I state it explicitly here because I
+believe it is more useful to be transparent about the real workflow than
+to leave it implied.
 
-## Come funziona in pratica
+## How it works in practice
 
-Il workflow è a due ruoli netti:
+The workflow has two clear roles:
 
-- **L'umano progetta la fisica e l'algoritmo**: la scelta del dual
-  baricentrico per la conversione tet→poly, il motore dei boundary layer,
-  le tolleranze numeriche, le strategie di fallback quando un mesh non
-  chiude, l'interpretazione dei risultati di `checkMesh`. Sono decisioni
-  che richiedono capire cosa succede fisicamente a una mesh, non solo far
-  compilare il codice.
-- **L'IA scrive il boilerplate sotto la mia direzione**: interfaccia
-  grafica (PySide6), test unitari, template di configurazione, parser di
-  log, script di packaging/installer. Codice ripetitivo o meccanico dove
-  la scelta di design è già stata fatta da me, e serve "solo" scriverlo
-  bene.
+- **The human designs the physics and the algorithm**: the choice of the
+  barycentric dual for the tet→poly conversion, the boundary-layer engine,
+  the numerical tolerances, the fallback strategies when a mesh does not
+  close, and the interpretation of `checkMesh` results. These are decisions
+  that require understanding what physically happens to a mesh, not just
+  getting the code to compile.
+- **The AI writes the boilerplate under my direction**: the graphical
+  interface (PySide6), unit tests, configuration templates, log parsers,
+  packaging/installer scripts. Repetitive or mechanical code where the
+  design choice has already been made by me, and it "only" has to be
+  written well.
 
-Una stima onesta: circa il **60% delle righe di codice** è stato scritto
-con l'assistenza di un'IA generale; il **100% è stato revisionato** da me
-prima di essere accettato — letto, testato, e quando necessario corretto o
-riscritto.
+An honest estimate: about **60% of the lines of code** were written with
+the assistance of a general-purpose AI; **100% was reviewed** by me before
+being accepted — read, tested, and where necessary corrected or rewritten.
 
-## Chi ha fatto cosa
+## Who did what
 
-| Componente | Autore principale |
+| Component | Main author |
 |---|---|
-| GUI (PySide6), pannelli, wizard | IA, sotto direzione umana |
-| Suite di test (~1.100 test) | IA, sotto direzione umana |
-| Template di mesh/case, parsing log | IA, sotto direzione umana |
-| Script di installer/packaging | IA, sotto direzione umana |
-| Dual baricentrico (conversione tet→poly) | Umano |
-| Motore boundary layer | Umano |
-| Tolleranze numeriche e criteri di qualità mesh | Umano |
-| Gestione errori, fallback e rollback | Umano |
+| GUI (PySide6), panels, wizard | AI, under human direction |
+| Test suite (~1,500 tests) | AI, under human direction |
+| Mesh/case templates, log parsing | AI, under human direction |
+| Installer/packaging scripts | AI, under human direction |
+| Barycentric dual (tet→poly conversion) | Human |
+| Boundary-layer engine | Human |
+| Numerical tolerances and mesh-quality criteria | Human |
+| Error handling, fallback and rollback | Human |
 
-## Responsabilità
+## Responsibility
 
-L'autore umano è pienamente responsabile del funzionamento e della
-validità fisica del codice. L'IA è stata uno strumento di supporto, non
-un autore autonomo: ogni riga che genera codice è stata rivista, testata
-o corretta da una persona prima di entrare nel progetto. I numeri di test
-e qualità mesh citati nel [README](README.md) sono misurati, non
-inventati.
+The human author is fully responsible for the functioning and the
+physical validity of the code. The AI was a supporting tool, not an
+autonomous author: every line of generated code was reviewed, tested or
+corrected by a person before entering the project. The test and
+mesh-quality numbers cited in the [README](README.md) are measured, not
+invented.

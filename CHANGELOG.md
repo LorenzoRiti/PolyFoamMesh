@@ -393,6 +393,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ### Changed
 
+- **README rebuilt after a bad merge**: the badges, the four up-to-date
+  screenshots (the mesher selector, the boundary-layer panel and two
+  viewer renders of the 398K-cell polyhedral mesh) and the clean
+  architecture diagram are back; the mesher caption no longer mentions the
+  removed FEM Tetra path.
 - **Layers visible from the mesh itself (overlay removed)**: the checkbox
   "Show BL", the orange cell colouring and the colorbar that
   appeared after meshing were **removed** (user request:
@@ -414,10 +419,12 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   point there, the poly dual is opt-in (Polymesh keeps forcing the
   conversion ON, hidden).
 - **English-only repository policy**: all public documentation
-  (CHANGELOG, README, INSTALL, USER_GUIDE, residual risks, CONTRIBUTING,
-  CODE_OF_CONDUCT, THIRD_PARTY_LICENSES, GitHub templates) and all
-  developer docs, plans and reasoning notes are now in English; the
-  Italian duplicates (INSTALL.it.md, USER_GUIDE.it.md) were removed.
+  (CHANGELOG, README, AI_COLLABORATION, INSTALL, USER_GUIDE, residual
+  risks, CONTRIBUTING, CODE_OF_CONDUCT, THIRD_PARTY_LICENSES, GitHub
+  templates) and all developer docs, plans and reasoning notes are now in
+  English; the Italian duplicates (INSTALL.it.md, USER_GUIDE.it.md,
+  README.it.md) and the stale Italian release notes
+  (docs/assets/release-notes-v2.1.0.md) were removed.
 - **Robust boundary layer always active**: the "Robust boundary
   layer (recommended, experimental)" checkbox was removed — the measured
   bundle (sliver-face filter 0.9 + budget termination) now activates
@@ -434,28 +441,6 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   junctions: groove1/slot1, production valve) without degrading the cases already
   handled by the standard path. The memory guard (8M faces / 1.5M cells) protects
   the closure retry.
-
-### Removed
-
-- "Advanced closure for concave geometries (experimental)" checkbox from the
-  Boundary Layers panel, `get_bl_concave_closure()` and the
-  `concaveClosure` key from the GUI payload. The legacy flag remains only for the
-  post-BL merge repair (off by default, measured in regression on
-  groove1).
-- **Full Auto** button from the ribbon. The **Cancel** is no longer in the
-  ribbon: it was moved to the Mesh tab, **under "Reset All"**, where
-  the user looks during a run (it appears only while the mesh is in progress).
-- **Decimation** combo from the viewer (the Auto policy remains fixed
-  internally).
-- Empty **Quality** tab from the left panel (it showed only "No quality
-  data yet"; checkMesh remains in the log, in the quality panel and in the
-  PDF report).
-- **"Auto-Fix Quality"** button from the quality panel (and the related
-  `fix_requested` signal): the quality gate already retries automatically,
-  the button was redundant.
-
-### Changed
-
 - **No more buttons for things the app must do on its own** (user
   request): removed "Calibrate from simulation" (the calibration module
   stays internal), "Fit BL to mesh" (stack compression is
@@ -490,6 +475,25 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 - **Workflow**: the checkmarks follow the real process (geometry -> sizing
   -> generate -> quality) also for the GMSH/autopoly/native paths,
   not just cfMesh.
+
+### Removed
+
+- "Advanced closure for concave geometries (experimental)" checkbox from the
+  Boundary Layers panel, `get_bl_concave_closure()` and the
+  `concaveClosure` key from the GUI payload. The legacy flag remains only for the
+  post-BL merge repair (off by default, measured in regression on
+  groove1).
+- **Full Auto** button from the ribbon. The **Cancel** is no longer in the
+  ribbon: it was moved to the Mesh tab, **under "Reset All"**, where
+  the user looks during a run (it appears only while the mesh is in progress).
+- **Decimation** combo from the viewer (the Auto policy remains fixed
+  internally).
+- Empty **Quality** tab from the left panel (it showed only "No quality
+  data yet"; checkMesh remains in the log, in the quality panel and in the
+  PDF report).
+- **"Auto-Fix Quality"** button from the quality panel (and the related
+  `fix_requested` signal): the quality gate already retries automatically,
+  the button was redundant.
 
 ## [2.2.0] - 2026-09-08
 
