@@ -114,11 +114,11 @@ anyway. Prefer the virtual environment whenever you can use it.
 
 ## 3. Install the app
 
-From the repository root (the folder containing `pyproject.toml`), with your
-environment active:
+From the repository root, with your environment active:
 
 ```bash
-cd /path/to/PolyFoamMesh   # the repository root
+git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
+cd PolyFoamMesh
 pip install -e ".[test]"
 ```
 

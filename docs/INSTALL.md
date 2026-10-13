@@ -14,10 +14,10 @@ needed for the basics.
 
 ### Steps
 
-1. Grab `PolyFoamMesh-<version>-Setup.exe` from wherever the project's
-   release artifacts are published (the repository's Releases section, once
-   one exists). If there is no installer available yet, the installer for
-   the current version hasn't been built — in that case go straight to
+1. Grab `PolyFoamMesh-<version>-Setup.exe` from the
+   [Releases](https://github.com/LorenzoRiti/PolyFoamMesh/releases) page of
+   the repository. If the Releases section is still empty, the installer for
+   the current version hasn't been built yet — in that case go straight to
    Option B below, the app works just as well from source.
 2. Double-click the installer. Windows SmartScreen may warn ("Windows
    protected your PC"): the executable is not signed with a paid certificate,
@@ -67,10 +67,9 @@ hand.
 
 ## Option B — From source (developers)
 
-From the repository root (the folder containing `pyproject.toml`):
-
 ```bash
-cd /path/to/cfmesh-autogui
+git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
+cd PolyFoamMesh
 pip install -e ".[test]"
 polyfoammesh
 ```
