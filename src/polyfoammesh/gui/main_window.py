@@ -1018,7 +1018,7 @@ class MainWindow(QMainWindow):
             if split:
                 names = ", ".join(sorted({m.metadata["name"] for m in split}))
                 self._log.append_log(
-                    f"{Tag.GEOM} Auto-rilevate {len(split)} patch da STL: {names}"
+                    f"{Tag.GEOM} Auto-detected {len(split)} patches from STL: {names}"
                 )
 
         def on_failed(_name: str, msg: str):

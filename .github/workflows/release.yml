@@ -64,6 +64,13 @@ jobs:
           -p no:cacheprovider
 
       # ---- Build -------------------------------------------------------
+      # PyInstaller is a build tool, not a test dependency: install it
+      # explicitly (the first release run failed with "No module named
+      # PyInstaller" because only the [test] extra was installed).
+      - name: Install PyInstaller
+        shell: pwsh
+        run: python -m pip install pyinstaller
+
       # PolyFoamMesh.spec is a one-dir build: COLLECT name "PolyFoamMesh"
       # (line 112) -> dist/PolyFoamMesh/PolyFoamMesh.exe. Relative paths in
       # the spec (templates/, plugins/, rthook_casadi_dlls.py) resolve from
@@ -184,6 +191,9 @@ jobs:
       # gmsh shared object via glob on sys.prefix/lib* (the Linux wheel drops
       # libgmsh.so outside the package, like the Windows DLL) and drops the
       # Windows-only job-object / UPX tuning.
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
       - name: Build frozen bundle (PyInstaller)
         run: python -m PyInstaller --clean --noconfirm PolyFoamMesh-linux.spec
 

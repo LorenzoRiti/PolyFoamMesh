@@ -2190,7 +2190,7 @@ class ViewerWidget(QWidget):
             return
         if self._foam_to_vtk_attempted:
             self._foam_to_vtk_attempted = False
-            self._show_mesh_too_large("foamToVTK non disponibile (usa ParaView)")
+            self._show_mesh_too_large("foamToVTK unavailable (use ParaView)")
             return
 
         if self._mesh_case_dir and self._mesh_retry_count < self._mesh_retry_max:
@@ -2221,7 +2221,7 @@ class ViewerWidget(QWidget):
                 return
         self._mesh_retry_count = 0
         self._foam_to_vtk_attempted = False
-        self._show_mesh_too_large("VTU non disponibile (usa ParaView)")
+        self._show_mesh_too_large("VTU unavailable (use ParaView)")
 
     def _show_mesh_too_large(self, reason: str = "") -> None:
         """Display 'mesh too large' message via label instead of plotter text.
