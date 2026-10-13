@@ -2847,6 +2847,7 @@ def _process_cpu_seconds(proc) -> float | None:
     if os.name == "nt":
         try:
             import ctypes
+            from ctypes import wintypes as _wintypes
 
             class _FILETIME(ctypes.Structure):
                 _fields_ = [("dwLowDateTime", ctypes.c_ulong),
@@ -2855,17 +2856,41 @@ def _process_cpu_seconds(proc) -> float | None:
             def _ft_to_s(ft):
                 return ((ft.dwHighDateTime << 32) | ft.dwLowDateTime) / 1e7
 
-            handle = int(proc._handle)
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            creation, exit_t, kernel, user = (
-                _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME(),
-            )
-            ok = kernel32.GetProcessTimes(
-                handle, ctypes.byref(creation), ctypes.byref(exit_t),
-                ctypes.byref(kernel), ctypes.byref(user),
-            )
-            if ok:
-                return _ft_to_s(kernel) + _ft_to_s(user)
+            # A subprocess.Popen exposes _handle, but the watchdog's probe
+            # only guarantees a pid (the CI runner without psutil passes a
+            # lightweight object) - OpenProcess by PID covers both.
+            # Regression: this path used to raise AttributeError on
+            # anything without _handle and silently return None, failing
+            # the probe test on the CI runner and blocking a release.
+            try:
+                handle = int(proc._handle)
+                owns_handle = False
+            except AttributeError:
+                _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                kernel32.OpenProcess.restype = _wintypes.HANDLE
+                kernel32.OpenProcess.argtypes = [
+                    _wintypes.DWORD, _wintypes.BOOL, _wintypes.DWORD,
+                ]
+                handle = kernel32.OpenProcess(
+                    _PROCESS_QUERY_LIMITED_INFORMATION, False, int(proc.pid)
+                )
+                owns_handle = True
+            if not handle:
+                return None
+            try:
+                creation, exit_t, kernel, user = (
+                    _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME(),
+                )
+                ok = kernel32.GetProcessTimes(
+                    handle, ctypes.byref(creation), ctypes.byref(exit_t),
+                    ctypes.byref(kernel), ctypes.byref(user),
+                )
+                if ok:
+                    return _ft_to_s(kernel) + _ft_to_s(user)
+            finally:
+                if owns_handle:
+                    kernel32.CloseHandle(handle)
         except Exception:
             logger.debug("stall watchdog: Windows CPU probe failed", exc_info=True)
         return None

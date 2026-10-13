@@ -199,6 +199,27 @@ def test_process_cpu_seconds_probe_returns_number_for_live_process():
     assert ofr._process_cpu_seconds(None) is None
 
 
+def test_process_cpu_seconds_fallback_without_psutil(monkeypatch):
+    """The stdlib fallback must work from a BARE pid, no psutil.
+
+    Regression (blocked a release): the Windows fallback read
+    ``proc._handle`` (only subprocess.Popen has it) and silently returned
+    None for anything else - the CI runner has no psutil, so exactly this
+    path ran there and the probe test failed.  Blocking psutil here makes
+    a dev machine reproduce the CI condition.
+    """
+    import os as _os
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "psutil", None)  # import -> ImportError
+
+    class _Proc:
+        pid = _os.getpid()
+
+    cpu = ofr._process_cpu_seconds(_Proc())
+    assert cpu is not None and cpu >= 0.0
+
+
 # --- GmshVolumeWorker retry-or-fail (fake streaming loop) ------------------- #
 
 def _fake_stream_factory(outcomes):
