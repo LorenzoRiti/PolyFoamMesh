@@ -190,6 +190,7 @@ class TetPolyDualConverter:
         smooth_axis_balance: bool = False,
         smooth_worst_aspect: float = 0.0,
         smooth_severity_guard: bool = False,
+        smooth_free_boundary: bool = False,
         merge_concave_cells: bool = False,
         merge_rounds: int = 2,
     ):
@@ -435,6 +436,11 @@ class TetPolyDualConverter:
         # Opt-in C5 max-severity smoothing guard (P1). Default off:
         # byte-identical to the legacy count-based keep-best.
         self._smooth_severity_guard = bool(smooth_severity_guard)
+        # Opt-in free-boundary smoothing (2026-10-18, fTetWild path):
+        # relax boundary vertices too — the pinned-boundary contract only
+        # protects the EXACT mode's bit-perfect surface; the collapse dual
+        # is a surface-offset approximation anyway. Default off.
+        self._smooth_free_boundary = bool(smooth_free_boundary)
         # Opt-in dual-only concave-cell merge (P1). Default off: the output
         # is byte-identical to a converter built without it.
         self._merge_concave_cells = bool(merge_concave_cells)
@@ -703,6 +709,7 @@ class TetPolyDualConverter:
                 use_axis_balance=self._smooth_axis_balance,
                 worst_aspect_thr=self._smooth_worst_aspect,
                 guard_severity=self._smooth_severity_guard,
+                free_boundary=self._smooth_free_boundary,
             )
             if pts is not M.points:
                 M.points = pts

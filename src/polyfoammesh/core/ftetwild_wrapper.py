@@ -296,11 +296,24 @@ def tetrahedralize(
             logger.warning("surface decimation failed - using the original", exc_info=True)
 
     t0 = time.perf_counter()
+    # Progress visibility (user report: "si ferma e non so perché"): with
+    # quiet=True the whole tetrahedralization prints NOTHING (pyvista
+    # confirmed: no progress callbacks, the GIL is held by the call), so
+    # the stage looked frozen. loglevel=3 streams a handful of phase
+    # lines (loading / collapsing / performed / timings) without the
+    # per-pass debug spam. FTETWILD_QUIET=1 restores silence.
+    _quiet_env = os.environ.get("FTETWILD_QUIET", "")
+    quiet = _quiet_env.strip().lower() in ("1", "true", "yes")
+    try:
+        loglevel = int(os.environ.get("FTETWILD_LOGLEVEL", "3"))
+    except ValueError:
+        loglevel = 3
     grid = tetrahedralize_pv(
         surf,
         edge_length_fac=DEFAULT_LR if lr is None else lr,
         edge_length_abs=la if la and la > 0 else None,
-        quiet=True,
+        quiet=quiet,
+        loglevel=loglevel,
         num_opt_iter=int(opt_iter),
     )
     elapsed = time.perf_counter() - t0

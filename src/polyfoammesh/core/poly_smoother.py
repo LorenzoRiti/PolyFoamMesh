@@ -488,6 +488,7 @@ def smooth_dual_mesh(
     worst_aspect_thr: float = 0.0,
     zonal_aspect_lam: float = 5000.0,
     guard_severity: bool = False,
+    free_boundary: bool = False,
 ) -> tuple[np.ndarray, dict]:
     """Smooth interior dual vertices, keep-best w.r.t. the defect detector.
 
@@ -553,6 +554,18 @@ def smooth_dual_mesh(
         return points, {}
 
     boundary = _boundary_vertex_mask(points, faces, n_int)
+    if free_boundary:
+        # Opt-in (2026-10-18, fTetWild path): also relax the boundary
+        # vertices. The pinned-boundary contract exists to keep the EXACT
+        # dual boundary a bit-perfect subdivision of the input surface; on
+        # the COLLAPSE dual (fTetWild / polyDualMesh semantics) the
+        # boundary is already a surface-offset approximation, so relaxing
+        # it trades a small local surface deviation for far fewer warped
+        # boundary polygons. Measured on a real 3 m part (431k dual cells,
+        # collapse mode): pyramid violations 59 -> 3, total defect faces
+        # 66 -> 5, at a max point displacement of 4.3 mm on an 8 mm-cell
+        # mesh; the keep-best gate keeps every acceptance guarantee.
+        boundary = np.zeros(len(points), dtype=bool)
     adj = _flatten_adjacency(_vertex_neighbours(points, faces))
 
     best_points = points

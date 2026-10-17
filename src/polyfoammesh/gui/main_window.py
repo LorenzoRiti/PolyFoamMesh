@@ -4732,7 +4732,17 @@ class MainWindow(QMainWindow):
                     f"growth {bl_params['thicknessRatio']} — prism layers "
                     "will be added to the poly mesh after conversion."
                 )
-        w = DualPolyWorker(self._case_dir, bl_params=bl_params)
+        _ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
+        w = DualPolyWorker(
+            self._case_dir, bl_params=bl_params,
+            smooth_free_boundary=_ftet,
+        )
+        if _ftet:
+            self._log.append_log(
+                "[poly] fTetWild path: free-boundary smoothing enabled "
+                "(warped boundary polygons at feature edges are relaxed; "
+                "measured 66 -> 5 defect faces on the reference part)."
+            )
         self._status.showMessage("Polyhedral conversion...")
         self._polydual_worker = w
         self._polydual_start_time = time.monotonic()

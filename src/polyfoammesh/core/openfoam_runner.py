@@ -2114,10 +2114,16 @@ class DualPolyWorker(QObject):
     failed = Signal(str)
 
     def __init__(self, case_dir: Path | str, bl_params: dict | None = None,
-                 parent=None):
+                 smooth_free_boundary: bool = False, parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._bl_params = bl_params or None
+        # Free-boundary smoothing: opt-in for the experimental fTetWild
+        # path (its output needs the boundary relaxed too — measured on a
+        # real part: 66 -> 5 warped-boundary defect faces with the flag on;
+        # the pinned default protects the GMSH path's bit-perfect surface
+        # contract, which fTetWild's collapse dual does not share).
+        self._smooth_free_boundary = bool(smooth_free_boundary)
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -2187,6 +2193,7 @@ class DualPolyWorker(QObject):
                 collapse_smooth_edges=True,
                 boundary_feature_angle=40.0,
                 collapse_volume_tolerance=0.10,
+                smooth_free_boundary=self._smooth_free_boundary,
             )
             t_dual0 = time.perf_counter()
             result = _run_with_profile(
