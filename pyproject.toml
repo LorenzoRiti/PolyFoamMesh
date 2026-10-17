@@ -61,6 +61,12 @@ api = [
     "uvicorn>=0.27.0",
     "requests>=2.31.0",
 ]
+# Experimental alternative tet mesher (issue #12): the "Polymesh
+# sperimentale (fTetWild)" mesher button needs pytetwild; without it that
+# one path fails with an explicit install hint, everything else unaffected.
+ftetwild = [
+    "pytetwild>=0.4.2",
+]
 
 [project.scripts]
 polyfoammesh = "polyfoammesh.app:main"

@@ -129,6 +129,40 @@ def test_cube_bl_full_boundary_invariants():
     assert all(p["startFace"] == len(after[3]) for p in after[4])
 
 
+def test_boundary_layer_report_reads_back_real_metrics():
+    """The post-build factual report must read back what the engine ACTUALLY
+    built (coverage + real first-layer thickness), not a pre-build estimate
+    — user decision 2026-10-17 (the old hint predicted numbers that the
+    mesh contradicted)."""
+    from polyfoammesh.core.openfoam_runner import boundary_layer_report
+
+    case = _build_dual_case(WORK_ROOT / "cube_report")
+    r = PolyBoundaryLayerEngine(case).run(
+        n_layers=3, first_height=0.02, growth_rate=1.2, apply_to_all=True,
+    )
+    assert r.success, r.errors
+    rep = boundary_layer_report(case)
+    assert rep, "report must not be empty on a case with a built BL"
+    assert rep["n_wall_faces"] > 0
+    # the healthy cube keeps (nearly) every wall face layered
+    assert rep["coverage"] > 0.9
+    assert rep["n_layered"] == int(r.n_prism_cells / 3)  # 3 layers each
+    # measured first layer: same order as the requested 0.02 m (the cube's
+    # hex-like stacked cells make the 2x-centroid-distance measure an
+    # approximation here; on real dual meshes it tracks the clamped
+    # heights - see the Parte4/cylinder readbacks)
+    assert rep["h1_median"] is not None
+    assert 0.0 < rep["h1_median"] < 0.05
+    assert 0.0 < rep["h1_p10"] <= rep["h1_median"] * 1.01
+
+    # and on a mesh with NO BL the report still works (coverage 0)
+    case2 = _build_dual_case(WORK_ROOT / "cube_report_nobl")
+    rep2 = boundary_layer_report(case2)
+    assert rep2.get("n_wall_faces", 0) > 0
+    assert rep2["coverage"] == 0.0
+    assert rep2["h1_median"] is None
+
+
 def test_cube_bl_deterministic():
     case = _build_dual_case(WORK_ROOT / "cube_det")
     eng = PolyBoundaryLayerEngine(case)

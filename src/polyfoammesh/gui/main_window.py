@@ -3139,7 +3139,27 @@ class MainWindow(QMainWindow):
         tet layout the dual is built on, so a BL change must invalidate the
         cache.  The other BL settings (applyToAll, sliver filters, budget)
         do not touch GMSH and stay excluded.
+
+        For ``mesher == "ftetwild_poly"`` everything GMSH-only is
+        NEUTRALISED instead: fTetWild never bakes BL into the tets (the
+        in-house engine adds them after the dual), and it does not read the
+        adaptive flag, min cell, max-cells target, surface-resolution
+        preset, refinement zones or feature angle. Only the geometry, the
+        Detail slider and the manual Max Cell Size actually change its
+        .msh — so tweaking BL settings (the common loop after reading the
+        BL report) reuses the cached tet mesh instead of paying the whole
+        tet stage again.
         """
+        if mesher == "ftetwild_poly":
+            adaptive = False
+            min_cell = 0
+            max_cells_target = 0
+            surface_resolution = "n/a"
+            refinement_zones = None
+            n_layers = 0
+            bl_thickness = None
+            bl_expansion = 1.2
+            bl_wall_size_floor = 0.0
         try:
             st = Path(step_path).stat()
             geometry_path = str(Path(step_path).resolve())
@@ -3225,7 +3245,7 @@ class MainWindow(QMainWindow):
         self._status.showMessage(f"Mesh cache cleared ({removed} entries)", 4000)
 
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
-        from polyfoammesh.core.openfoam_runner import GmshVolumeWorker
+        from polyfoammesh.core.openfoam_runner import FtetWildVolumeWorker, GmshVolumeWorker
         logger.info(
             "GMSH stage entered: run_id=%d step=%s mesher=%s",
             my_id, step_path, getattr(self, "_current_mesher_type", ""),
@@ -3405,12 +3425,42 @@ class MainWindow(QMainWindow):
             os.environ.pop("GMSH_NUM_THREADS", None)
 
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
-        w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
-                             refinement_zones=refinement_zones,
-                             max_cell_size=max_cell, min_cell_size=min_cell,
-                             max_cells_target=max_cells_target,
-                             surface_resolution=surface_resolution,
-                             bl_wall_size_floor=bl_wall_size_floor)
+        if getattr(self, "_current_mesher_type", "") == "ftetwild_poly":
+            # Experimental fTetWild tet stage (issue #12): same worker slot,
+            # task name and downstream flow (convert -> checkMesh -> dual),
+            # different tet mesher. Only GMSH-specific inputs don't apply —
+            # say so explicitly rather than silently dropping them (the
+            # no-silent-substitution rule).
+            if refinement_zones:
+                self._log_substitution(
+                    "Refinement zones: non supportate dal mesher "
+                    "sperimentale fTetWild — ignorate in questa run."
+                )
+            if adaptive and max_cells_target:
+                self._log_substitution(
+                    f"Max cells target ({max_cells_target:,}): non "
+                    "applicabile a fTetWild (sizing globale) — ignorato."
+                )
+            if n_layers > 0:
+                self._log.append_log(
+                    f"[fTetWild] Boundary layer: non inclusa nei tets "
+                    f"({n_layers} layers) — verrà aggiunta dal poly BL "
+                    "engine dopo la conversione, come sul percorso Polymesh."
+                )
+            self._log.append_log(
+                "[fTetWild] Experimental mesher (issue #12): tet stage via "
+                "fTetWild (pytetwild), poly pipeline unchanged after it."
+            )
+            w = FtetWildVolumeWorker(
+                step_path, msh_path, detail, max_cell_size=max_cell,
+            )
+        else:
+            w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
+                                 refinement_zones=refinement_zones,
+                                 max_cell_size=max_cell, min_cell_size=min_cell,
+                                 max_cells_target=max_cells_target,
+                                 surface_resolution=surface_resolution,
+                                 bl_wall_size_floor=bl_wall_size_floor)
         self._gmsh_worker = w
         self._gmsh_vol_ctx = {
             "step_path": step_path, "msh_path": msh_path, "detail": detail,
@@ -3450,7 +3500,26 @@ class MainWindow(QMainWindow):
             return
         msh_path_result = Path(result["path"])
         names = result["names"]
-        self._log.append_log(f"[gmsh] Volume mesh: {msh_path_result} — patches: {names}")
+        is_ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
+        label = "[fTetWild]" if is_ftet else "[gmsh]"
+        self._log.append_log(f"{label} Volume mesh: {msh_path_result} — patches: {names}")
+        if is_ftet and result.get("n_tets"):
+            _te = result.get("target_edge_m")
+            _te_s = f"{_te:.4g} m" if _te else "?"
+            self._log.append_log(
+                f"{label} {result['n_tets']:,} tets in "
+                f"{result.get('tet_time_s', 0):.1f}s "
+                f"(surface {result.get('surface_time_s', 0):.1f}s, "
+                f"total {result.get('total_time_s', 0):.1f}s, "
+                f"target edge {_te_s}, opt_iter={result.get('opt_iter')})"
+            )
+            tagging = result.get("tagging") or {}
+            if tagging.get("assign_dist_p99") is not None:
+                self._log.append_log(
+                    f"{label} Patch tagging: {tagging.get('n_output_boundary_faces', 0):,} "
+                    f"boundary faces, p99 assignment distance "
+                    f"{tagging['assign_dist_p99']:.2e} m"
+                )
         if result.get("poly_dual_risk"):
             self._log.append_log(
                 f"{Tag.WARN} Geometry has {result.get('n_surfaces', '?')} surfaces / "
@@ -3471,24 +3540,48 @@ class MainWindow(QMainWindow):
 
     def _on_gmsh_volume_failed(self, msg: str):
         """Bound method — see _on_gmsh_volume_result."""
-        from polyfoammesh.core.openfoam_runner import GmshVolumeWorker
+        from polyfoammesh.core.openfoam_runner import FtetWildVolumeWorker, GmshVolumeWorker
         ctx = self._gmsh_vol_ctx
         my_id = ctx["my_id"]
         if my_id != self._run_id:
             return
-        if not ctx["bl_retried"] and ctx["bl_params"] and ctx["n_layers"] > 0:
+        is_ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
+        _label = "fTetWild" if is_ftet else "GMSH"
+
+        def _retry_worker(detail, n_layers, bl_thickness, bl_expansion):
+            """Same tet mesher as this run — a retry must never silently
+            swap meshers (the no-silent-substitution rule)."""
+            if is_ftet:
+                return FtetWildVolumeWorker(
+                    ctx["step_path"], ctx["msh_path"], detail,
+                    max_cell_size=ctx["max_cell"],
+                )
+            return GmshVolumeWorker(
+                ctx["step_path"], ctx["msh_path"], detail,
+                n_layers, bl_thickness, bl_expansion,
+                refinement_zones=ctx["refinement_zones"],
+                max_cell_size=ctx["max_cell"], min_cell_size=ctx["min_cell"],
+                max_cells_target=ctx["max_cells_target"],
+                surface_resolution=ctx.get("surface_resolution", "medium"),
+                bl_wall_size_floor=ctx.get("bl_wall_size_floor", 0.0)
+                if n_layers else 0.0,
+            )
+
+        if (
+            not is_ftet
+            and not ctx["bl_retried"]
+            and ctx["bl_params"]
+            and ctx["n_layers"] > 0
+        ):
+            # fTetWild never bakes BL into the tets (the poly BL engine adds
+            # them after the dual), so "retry without layers" is a GMSH-only
+            # recovery — for fTetWild this falls through to the detail retry.
             ctx["bl_retried"] = True
             self._log.append_log(f"{Tag.WARN} GMSH volume failed with BL — retrying without layers.")
             self._log_substitution("Retrying without boundary layers.")
             # Fase 3 P3.3: reuse the exact parameters of the first attempt
             # (snapshot in ctx) instead of re-reading the spinboxes.
-            w2 = GmshVolumeWorker(ctx["step_path"], ctx["msh_path"], ctx["detail"], 0, None, 1.2,
-                                  refinement_zones=ctx["refinement_zones"],
-                                  max_cell_size=ctx["max_cell"],
-                                  min_cell_size=ctx["min_cell"],
-                                  max_cells_target=ctx["max_cells_target"],
-                                  surface_resolution=ctx.get("surface_resolution", "medium"),
-                                  bl_wall_size_floor=0.0)
+            w2 = _retry_worker(ctx["detail"], 0, None, 1.2)
             self._gmsh_worker = w2
             self._submit_task(
                 "gmsh_volume", w2,
@@ -3525,20 +3618,15 @@ class MainWindow(QMainWindow):
             except (KeyError, TypeError):
                 pass
             self._log.append_log(
-                f"{Tag.WARN} GMSH volume failed — retrying at a coarser "
+                f"{Tag.WARN} {_label} volume failed — retrying at a coarser "
                 f"detail level ({next_detail})."
             )
             self._log_substitution(
                 "Retrying with reduced refinement (coarser detail)."
             )
-            w2 = GmshVolumeWorker(
-                ctx["step_path"], ctx["msh_path"], next_detail,
-                ctx["n_layers"], ctx["bl_thickness"], ctx["bl_expansion"],
-                refinement_zones=ctx["refinement_zones"],
-                max_cell_size=ctx["max_cell"], min_cell_size=ctx["min_cell"],
-                max_cells_target=ctx["max_cells_target"],
-                surface_resolution=ctx.get("surface_resolution", "medium"),
-                bl_wall_size_floor=ctx.get("bl_wall_size_floor", 0.0),
+            w2 = _retry_worker(
+                next_detail, ctx["n_layers"],
+                ctx["bl_thickness"], ctx["bl_expansion"],
             )
             self._gmsh_worker = w2
             self._submit_task(
@@ -3548,11 +3636,13 @@ class MainWindow(QMainWindow):
                 heartbeat_timeout_s=600.0,
             )
             return
-        self._log.append_log(f"[ERROR] GMSH volume: {msg}")
+        self._log.append_log(f"[ERROR] {_label} volume: {msg}")
         self._params.set_all_enabled(True)
         self._set_run_state(False)
         self._ribbon_btns["cancel"].setVisible(False)
-        QMessageBox.critical(self, "GMSH Failed", f"Volume mesh failed:\n{msg}")
+        QMessageBox.critical(
+            self, f"{_label} Failed", f"Volume mesh failed:\n{msg}"
+        )
 
     def _continue_gmsh_direct(self, my_id: int, msh_path: Path, names: list[str]):
         """Convert MSH → OpenFOAM via gmshToFoam.
@@ -4333,7 +4423,7 @@ class MainWindow(QMainWindow):
             poly_conv = self._params.get_poly_conversion()
             poly_done = getattr(self, "_poly_was_converted", False)
             is_gmsh_tet = getattr(self, "_current_mesher_type", "") in {
-                "gmsh_direct", "gmsh_direct_poly",
+                "gmsh_direct", "gmsh_direct_poly", "ftetwild_poly",
             }
             logger.info(
                 "Poly decision: get_poly_conversion()=%s _poly_was_converted=%s "
@@ -4428,7 +4518,9 @@ class MainWindow(QMainWindow):
             self._start_autopoly_worker(geom_path, self._run_id)
             return
 
-        if getattr(self, "_current_mesher_type", None) in ("gmsh_direct", "gmsh_direct_poly"):
+        if getattr(self, "_current_mesher_type", None) in (
+            "gmsh_direct", "gmsh_direct_poly", "ftetwild_poly",
+        ):
             # Same reasoning as the autopoly branch above, missing here
             # until now: falling through to _direct_remesh() always runs
             # cfMesh cartesianMesh, reading the Manual Max/Min Cell Size
@@ -4450,8 +4542,12 @@ class MainWindow(QMainWindow):
                 return
             slider = self._params._detail_slider
             slider.setValue(max(0, slider.value() - 1))
+            _which = (
+                "fTetWild" if getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
+                else "GMSH"
+            )
             self._log.append_log(
-                f"{Tag.FIX} Quality auto-fix #{n}: retrying GMSH at coarser detail "
+                f"{Tag.FIX} Quality auto-fix #{n}: retrying {_which} at coarser detail "
                 f"({self._params.get_detail_level()})"
             )
             self._log_substitution(

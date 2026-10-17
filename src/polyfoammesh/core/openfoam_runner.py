@@ -1986,6 +1986,115 @@ def polymesh_has_boundary_layer(case_dir: Path | str) -> bool:
         return False
 
 
+def boundary_layer_report(case_dir: Path | str) -> dict:
+    """Factual post-build BL metrics read back from the written polyMesh.
+
+    Companion to :func:`polymesh_has_boundary_layer` (a boolean gate): this
+    returns WHAT was actually built — wall-face coverage and the real
+    first-layer thickness — so the log can state measured facts. It exists
+    because the pre-build estimate was unreliable (user decision
+    2026-10-17): the GUI hint predicted "wall cells ~1.55 mm, engine
+    compresses the stack to ~19%" while the mesh came out with ~0.1 mm
+    first layers on ~75% of the wall faces.
+
+    First-layer height per layered wall face = 2 x distance(wall face
+    centre, owner cell centre): the owner of a wall face is the first
+    prism of the stack and its centre sits at half the layer height.
+    Non-layered faces are excluded by the prism-like mask (same criterion
+    as polymesh_has_boundary_layer).
+
+    Returns {} on any read failure or when there is nothing to report;
+    never raises.
+    """
+    try:
+        import numpy as np
+
+        from polyfoammesh.core.bl_cells import _prism_like_mask, _wall_patches
+        from polyfoammesh.core.bl_poly import _cell_centroids, _face_geometry
+        from polyfoammesh.core.foam_mesh_io import read_polymesh
+
+        poly_dir = Path(case_dir) / "constant" / "polyMesh"
+        points, faces, owner, neighbour, patches = read_polymesh(poly_dir)
+        if len(faces) == 0 or len(owner) == 0:
+            return {}
+        points = np.asarray(points, dtype=np.float64)
+        owner = np.asarray(owner, dtype=np.int64).ravel()
+        neighbour = np.asarray(neighbour, dtype=np.int64).ravel()
+        n_faces = min(len(owner), len(faces))
+        n_internal = min(int(neighbour.size), n_faces)
+        n_cells = int(owner.max()) + 1
+        if n_internal:
+            n_cells = max(n_cells, int(neighbour[:n_internal].max()) + 1)
+        face_sizes = np.fromiter(
+            (len(f) for f in faces[:n_faces]), dtype=np.int64, count=n_faces,
+        )
+        prism_like = _prism_like_mask(
+            face_sizes, owner, neighbour[:n_internal], n_cells,
+        )
+        # Quad-dual corner case: on meshes whose dual boundary is quads
+        # (a structured cube; collapsed boundary mode on boxy parts) the BL
+        # cells are hexahedra — 6 quad faces, no non-quad base/top — and
+        # the prism mask is blind to them (verified: an engine-built
+        # 3-layer BL on the cube fixture reads 0% with the prism mask
+        # alone). Count those as layered too; this report is informational,
+        # so a rare false positive is acceptable (unlike the boolean gate,
+        # which stays conservative).
+        face_count = np.bincount(
+            owner[:n_faces], minlength=n_cells
+        ) + (
+            np.bincount(neighbour[:n_internal], minlength=n_cells)
+            if n_internal
+            else np.zeros(n_cells, dtype=np.int64)
+        )
+        nonquad = face_sizes != 4
+        nq_count = np.bincount(
+            owner[:n_faces][nonquad], minlength=n_cells
+        ) + (
+            np.bincount(
+                neighbour[:n_internal][nonquad[:n_internal]], minlength=n_cells
+            )
+            if n_internal
+            else np.zeros(n_cells, dtype=np.int64)
+        )
+        hex_like = (face_count == 6) & (nq_count == 0)
+        layered_mask = prism_like | hex_like
+        wall_accum: list[int] = []
+        for p in _wall_patches(Path(case_dir), patches):
+            start = max(int(p.get("startFace", 0)), n_internal)
+            end = min(start + int(p.get("nFaces", 0)), n_faces)
+            wall_accum.extend(range(start, end))
+        if not wall_accum:
+            return {}
+        wall_rows = np.asarray(wall_accum, dtype=np.int64)
+        layered = layered_mask[owner[wall_rows]]
+        n_wall = int(wall_rows.size)
+        n_layered = int(layered.sum())
+
+        _sf, cf = _face_geometry(points, faces)
+        centres, _vols = _cell_centroids(
+            points, faces, owner, neighbour, n_internal, n_cells,
+        )
+        h1 = np.empty(0, dtype=np.float64)
+        if n_layered:
+            dist = np.linalg.norm(
+                centres[owner[wall_rows[layered]]] - cf[wall_rows[layered]],
+                axis=1,
+            )
+            h1 = 2.0 * dist
+        return {
+            "n_wall_faces": n_wall,
+            "n_layered": n_layered,
+            "coverage": float(n_layered / n_wall) if n_wall else 0.0,
+            "h1_median": float(np.median(h1)) if h1.size else None,
+            "h1_p10": float(np.percentile(h1, 10)) if h1.size else None,
+        }
+    except Exception:
+        logger.debug(
+            "boundary_layer_report failed for %s", case_dir, exc_info=True,
+        )
+        return {}
+
+
 class DualPolyWorker(QObject):
     """Runs TetPolyDualConverter (tet -> polyhedral by barycentric dual) in a
     background QThread.
@@ -2279,6 +2388,29 @@ class DualPolyWorker(QObject):
                 )
                 result.bl_prism_cells = bres.n_prism_cells
                 result.bl_thickness = bres.total_thickness
+                # Factual readback — facts, not estimates (user decision
+                # 2026-10-17): coverage + the REAL first-layer thickness vs
+                # what was requested. The pre-build hint was removed for
+                # the same reason; this is where the user looks now.
+                try:
+                    _rep = boundary_layer_report(self._case_dir)
+                except Exception:
+                    _rep = {}
+                if _rep.get("n_wall_faces"):
+                    _h1_req = float(getattr(bres, "first_height", 0.0) or 0.0)
+                    _h1_act = _rep.get("h1_median")
+                    _extra = ""
+                    if _h1_req > 0 and _h1_act:
+                        _extra = (
+                            f"; effective first layer {_h1_act * 1e3:.4g} mm vs "
+                            f"requested {_h1_req * 1e3:.4g} mm "
+                            f"({_h1_act / _h1_req:.2f}x -> y+ scales with it)"
+                        )
+                    self.log_line.emit(
+                        f"[poly] BL report: {_rep['coverage']:.0%} of wall "
+                        f"faces layered ({_rep['n_layered']:,}/"
+                        f"{_rep['n_wall_faces']:,}){_extra}"
+                    )
                 if bl.get("concaveClosure") and _cc_too_big:
                     self.log_line.emit(
                         "[poly] WARN: post-BL merge repair skipped — same "
@@ -3671,6 +3803,109 @@ class GmshVolumeWorker(QObject):
                 "attempt also stalled. The surface is likely "
                 "unmeshable; see the log above."
             )
+
+
+class FtetWildVolumeWorker(QObject):
+    """Runs the experimental fTetWild tet stage (issue #12) in a subprocess.
+
+    One short-lived process does surface mesh + fTetWild + patched .msh
+    (core/ftetwild_wrapper.py). Same isolation rationale as
+    GmshSurfaceWorker/GmshVolumeWorker: GMSH's bundled OCC for the
+    surface step and pytetwild's native code both stay out of the
+    long-lived GUI process. Unlike GmshVolumeWorker there is no
+    attempt/retry chain — fTetWild's robustness means one attempt, and a
+    failure is reported honestly rather than retried with GMSH-specific
+    fallbacks (healing modes, adaptive-off) that mean nothing here.
+    """
+
+    finished = Signal(object)  # dict with path + names + fTetWild stats
+    log_line = Signal(str)
+    failed = Signal(str)
+
+    # Same ceiling rationale as GmshVolumeWorker.VOLUME_TIMEOUT_S: a big
+    # mesh legitimately runs for a long time (the GUI must not be held by
+    # a false timeout; _stream_subprocess emits synthetic "still running"
+    # lines meanwhile, so the TaskManager heartbeat never false-fires).
+    VOLUME_TIMEOUT_S = 3600
+
+    def __init__(self, step_path: str, msh_path: Path, detail: str,
+                 max_cell_size: float = 0.0, lr: float | None = None,
+                 opt_iter: int | None = None, parent=None):
+        super().__init__(parent)
+        self._step_path = step_path
+        self._msh_path = msh_path
+        self._detail = detail
+        self._max_cell_size = max_cell_size
+        self._lr = lr
+        self._opt_iter = opt_iter
+        self._proc_holder: dict = {}
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        """Kill the live subprocess, if any is running right now. See
+        GmshSurfaceWorker.cancel for why this exists."""
+        self._cancelled = True
+        proc = self._proc_holder.get("proc")
+        if proc is not None and proc.poll() is None:
+            _kill_pid_tree(proc.pid)
+
+    @Slot()
+    def run(self):
+        args = [
+            "volume",
+            f"--step={self._step_path}",
+            f"--msh={self._msh_path}",
+            f"--detail={self._detail}",
+            f"--max-cell={self._max_cell_size}",
+        ]
+        if self._lr:
+            args.append(f"--lr={self._lr}")
+        if self._opt_iter:
+            args.append(f"--opt-iter={self._opt_iter}")
+        cmd, run_cwd = _gmsh_wrapper_script_cmd(
+            args, "--ftetwild-volume", script_name="ftetwild_wrapper.py"
+        )
+        self.log_line.emit(
+            "[fTetWild] Running experimental tet stage in subprocess "
+            "(surface + fTetWild + patched .msh)..."
+        )
+        try:
+            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                cmd, run_cwd, self.VOLUME_TIMEOUT_S,
+                on_line=lambda ln: self.log_line.emit(f"[fTetWild] {ln}"),
+                proc_holder=self._proc_holder,
+            )
+        except Exception as exc:
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self.log_line.emit("[fTetWild] Volume generation cancelled.")
+            return
+
+        if timed_out:
+            self.failed.emit(
+                f"fTetWild volume exceeded {self.VOLUME_TIMEOUT_S}s"
+            )
+            return
+
+        # Parse stdout first even on a non-zero exit: the CLI reports caught
+        # errors as JSON on stdout (same contract as gmsh_wrapper).
+        result = _parse_gmsh_json(stdout_lines)
+        if result is not None and result.get("success"):
+            self.finished.emit(result)
+            return
+        if result is not None:
+            err = result.get("error", "Unknown fTetWild error")
+        elif returncode != 0:
+            err = "\n".join(stderr_lines).strip() or (
+                f"fTetWild volume failed (exit {returncode})"
+            )
+        else:
+            err = "fTetWild volume: no JSON output produced"
+        self.failed.emit(err)
 
 
 class WatertightWorker(QObject):

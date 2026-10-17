@@ -73,6 +73,25 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
 - **Mesher choice** (buttons left to right):
   - **Polymesh (poly)**: the default path - GMSH tetrahedra -> polyhedral
     dual (STAR-CCM+ style topology) with boundary layers. No WSL needed.
+  - **Polymesh sperimentale (fTetWild)**: same poly pipeline, but the tet
+    stage runs [fTetWild](https://github.com/wildmeshing/fTetWild)
+    instead of GMSH (experimental, issue #12). Requires the optional
+    package `pip install pytetwild`. The target edge is derived from the
+    Detail slider as "cells across the cross-section" (the same
+    resolution model GMSH uses here; `FTETWILD_LR` switches it to a
+    bbox-relative edge instead, `FTETWILD_OPT_ITER` caps the optimization
+    passes) and is capped at 2x the surface's own triangle size —
+    targets coarser than the input put fTetWild's optimizer into an
+    unbounded refinement loop (fTetWild#93; the log says when the cap
+    engages). Refinement zones / max-cells target / solution size fields
+    do not apply; boundary layers are added after the poly conversion as
+    usual. Log lines are prefixed `[fTetWild]`, and the run starts with a
+    `bbox_diag / cross_section / target_edge / input_median_edge`
+    diagnostic line. A manual Max Cell Size or `FTETWILD_LR` can still
+    push the target into the known-long-run regime — the log warns
+    explicitly when it does, and Cancel always stops a run.
+    Measured: much faster than GMSH on simple parts, slower on some
+    complex ones (fTetWild itself has no wall-clock bound).
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)). Optional: enable `Convert to polyhedral

@@ -440,11 +440,16 @@ class ParamsPanel(QWidget):
         self._bl_info.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         bl_form.addRow(self._bl_info)
 
-        # BL <-> mesh sizing consistency hint (upgrade A). Compares the
-        # requested BL stack with the mesh's estimated wall cell size and warns
-        # when the stack exceeds the ~0.34 * wall-cell inversion budget (beyond
-        # that the first layer gets compressed). Live: refreshes on any BL
-        # parameter or cell-size change.
+        # BL stack readout (facts only, user decision 2026-10-17). This used
+        # to compare the requested stack against an ESTIMATED wall-cell size
+        # and predict an "engine compresses the stack to ~X%" number. The
+        # estimate (a Min Cell Size proxy) and the engine's own per-vertex
+        # clamp are different quantities and were measured to disagree (hint
+        # said ~1.55 mm wall cells / ~19% compression; the mesh came out with
+        # ~0.1 mm first layers on ~75% of the wall faces). The user's rule:
+        # if we cannot make an accurate estimate, don't show one — state the
+        # requested stack here, and report what was ACTUALLY built (coverage,
+        # real first-layer thickness) in the log after the build.
         self._bl_stack_hint = QLabel("")
         self._bl_stack_hint.setWordWrap(True)
         self._bl_stack_hint.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
@@ -454,9 +459,8 @@ class ParamsPanel(QWidget):
         self._bl_form_widget.setLayout(bl_form)
         self._bl_form_widget.setVisible(False)
         bl_layout.addWidget(self._bl_form_widget)
-        # Live BL consistency hint: any input that changes the stack (h1, ratio,
-        # nLayers) or the wall-cell estimate (derived Min Cell Size, surface
-        # resolution) refreshes it.
+        # Live BL stack readout: any input that changes the stack (h1, ratio,
+        # nLayers) refreshes it.
         self._bl_n_layers.valueChanged.connect(self._refresh_bl_hint)
         self._bl_thick.valueChanged.connect(self._refresh_bl_hint)
         self._bl_exp.valueChanged.connect(self._refresh_bl_hint)
@@ -504,6 +508,19 @@ class ParamsPanel(QWidget):
             f"(STAR-CCM+ style). Ideal for CFD. {_w['no_of_sentence']}\n"
             "Works best with real STEP/CAD input.",
             checked=True,
+        )
+        _add_mesher_btn(
+            "Polymesh sperimentale  (fTetWild)",
+            "ftetwild_poly",
+            "EXPERIMENTAL (issue #12): same poly pipeline, but the tet\n"
+            "stage runs fTetWild (pytetwild) instead of GMSH — robust on\n"
+            "dirty geometry, measured much faster on some cases.\n"
+            "Requires the optional package: pip install pytetwild\n"
+            "Target edge from the Detail slider (cells across the\n"
+            "cross-section); boundary layers are added after the poly\n"
+            "conversion. NOTE: fTetWild has no wall-clock bound — on some\n"
+            "parts its optimizer runs much longer than GMSH (the log shows\n"
+            "target vs surface density and warns; Cancel always works).",
         )
         _add_mesher_btn(
             f"Cartesian cfMesh  ({_w['of_req']})",
@@ -885,18 +902,6 @@ class ParamsPanel(QWidget):
         ):
             self._on_bl_auto_compute()
 
-    def _estimated_wall_cell_size(self) -> float:
-        """Best available proxy for the automatic mesh's wall cell size.
-
-        The derived Min Cell Size is the finest size the current Mesh Fineness
-        / geometry estimate will place (curvature/small-feature floor), which
-        is exactly what the boundary-layer stack has to fit inside.
-        """
-        try:
-            return max(float(self._min_cell.value()), 1e-12)
-        except (AttributeError, ValueError):
-            return 1e-12
-
     def _bl_first_layer(self) -> float:
         """First layer height in metres.
 
@@ -927,6 +932,14 @@ class ParamsPanel(QWidget):
         self._on_bl_auto_compute()
 
     def _refresh_bl_hint(self) -> None:
+        """Show the REQUESTED BL stack — facts only.
+
+        No wall-cell estimate, no compression prediction (user decision
+        2026-10-17: an inaccurate estimate is worse than none). What was
+        actually built (coverage, effective first-layer thickness) is
+        reported in the log after the build — see
+        openfoam_runner.boundary_layer_report.
+        """
         if not hasattr(self, "_bl_stack_hint"):
             return
         try:
@@ -935,27 +948,19 @@ class ParamsPanel(QWidget):
             return
         h1 = self._bl_first_layer()
         stack = compute_bl_stack(h1, self._bl_exp.value(), self._bl_n_layers.value())
-        y = self._estimated_wall_cell_size()
-        # Inversion budget: the stack may take at most ~0.34 of the local wall
-        # cell edge before the first layer is squeezed.
-        max_stack = 0.34 * y
-        stack_mm, y_mm, budget_mm = stack * 1000.0, y * 1000.0, max_stack * 1000.0
+        stack_mm, h1_mm = stack * 1000.0, h1 * 1000.0
+        n_layers = int(self._bl_n_layers.value())
         if not self._bl_checkbox.isChecked():
             self._bl_stack_hint.setText(
-                f"BL stack {stack_mm:.4g} mm; estimated mesh wall cells "
-                f"~{y_mm:.4g} mm (enable BL to check fit)."
-            )
-        elif stack <= max_stack:
-            self._bl_stack_hint.setText(
-                f"BL stack {stack_mm:.4g} mm; mesh wall cells ~{y_mm:.4g} mm "
-                f"-> fits (inversion budget ~{budget_mm:.4g} mm)."
+                f"BL off. Requested stack: {stack_mm:.4g} mm "
+                f"({n_layers} layers, h1 {h1_mm:.4g} mm)."
             )
         else:
-            compressed = max_stack / stack * 100.0
             self._bl_stack_hint.setText(
-                f"BL stack {stack_mm:.4g} mm; mesh wall cells ~{y_mm:.4g} mm "
-                f"-> the engine compresses the stack to ~{compressed:.0f}% "
-                f"(inversion budget ~{budget_mm:.4g} mm)."
+                f"Requested stack: {stack_mm:.4g} mm "
+                f"({n_layers} layers, h1 {h1_mm:.4g} mm). Real coverage and "
+                "the effective first-layer thickness are reported in the "
+                "log after the build."
             )
 
     def _on_adaptive_sizing_toggled(self, checked: bool):
@@ -1886,7 +1891,9 @@ class ParamsPanel(QWidget):
         # UNCHECKED by default (user request: with cfMesh the conversion
         # must not be ticked out of the box - the hex-dominant mesh is the
         # point there; the user enables the poly dual explicitly if wanted).
-        if key == "gmsh_direct_poly":
+        # The experimental fTetWild Polymesh behaves like Polymesh: its
+        # whole point is feeding the poly dual from a different tet mesher.
+        if key in ("gmsh_direct_poly", "ftetwild_poly"):
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(True)
         elif key == "gmsh_direct":

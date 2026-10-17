@@ -203,6 +203,15 @@ def main():
         gmsh_wrapper._cli_main(_sys.argv)
         _sys.exit(0)
 
+    # Same frozen-exe dispatch for the experimental fTetWild tet stage
+    # (FtetWildVolumeWorker) — its own CLI module, single "volume"
+    # subcommand, same direct-call rationale as the block above.
+    if len(_sys.argv) > 1 and _sys.argv[1] == "--ftetwild-volume":
+        from polyfoammesh.core import ftetwild_wrapper
+        _sys.argv = [_sys.argv[0], "volume"] + _sys.argv[2:]
+        ftetwild_wrapper._cli_main(_sys.argv)
+        _sys.exit(0)
+
     if len(_sys.argv) > 1 and _sys.argv[1] in ("--help", "-h"):
         print(f"PolyFoamMesh v{__version__} — OpenFOAM mesh preprocessor")
         print()
@@ -216,6 +225,7 @@ def main():
         print("  --gmsh-surface     Run GMSH surface STL generation (subprocess mode)")
         print("  --gmsh-volume      Run GMSH volume mesh generation (subprocess mode)")
         print("  --gmsh-convert-to-foam  Convert GMSH .msh to OpenFOAM polyMesh (subprocess mode)")
+        print("  --ftetwild-volume  Run the experimental fTetWild tet stage (subprocess mode)")
         print()
         print("Without arguments, the GUI application starts.")
         _sys.exit(0)

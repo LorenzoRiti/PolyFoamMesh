@@ -42,10 +42,22 @@ def _buttons(panel) -> dict:
 def test_default_mesher_is_polymesh_and_fem_is_gone(panel):
     # Polymesh is the default (user request); cfMesh is the alternative.
     assert panel.get_mesher_type() == "gmsh_direct_poly"
-    assert set(_buttons(panel)) == {"cfmesh", "gmsh_direct_poly"}
+    assert set(_buttons(panel)) == {"cfmesh", "gmsh_direct_poly", "ftetwild_poly"}
     assert "gmsh_direct" not in _buttons(panel)
-    # Polymesh comes FIRST, cfMesh second (user request 2026-10-09).
-    assert [k for _b, k in panel._mesher_keys] == ["gmsh_direct_poly", "cfmesh"]
+    # Polymesh first, its experimental fTetWild sibling second (issue #12),
+    # cfMesh last (user request 2026-10-09: Polymesh first, cfMesh second —
+    # the fTetWild entry was inserted between them 2026-10-16 without
+    # touching either endpoint).
+    assert [k for _b, k in panel._mesher_keys] == [
+        "gmsh_direct_poly", "ftetwild_poly", "cfmesh",
+    ]
+
+
+def test_experimental_ftetwild_forces_conversion_on_and_hides_checkbox(panel):
+    _buttons(panel)["ftetwild_poly"].click()
+    assert panel.get_mesher_type() == "ftetwild_poly"
+    assert panel._poly_check.isChecked()
+    assert panel._poly_check.isHidden()
 
 
 def test_cfd_poly_forces_conversion_on_and_hides_checkbox(panel):

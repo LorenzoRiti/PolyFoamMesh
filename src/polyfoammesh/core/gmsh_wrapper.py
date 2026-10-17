@@ -2030,7 +2030,12 @@ def generate_surface_stl(
             gmsh.model.setPhysicalName(2, tag, f"surface_{tag}")
             names.append(f"surface_{tag}")
 
-    # Write STL (ASCII, multi-solid/named)
+    # Write STL. NOTE: despite this long-standing comment's claim, GMSH's
+    # STL export does NOT split per physical group — it always writes ONE
+    # solid named "Created by Gmsh" (verified live during the issue #12
+    # fTetWild spike: an 11-group STEP produced a single-solid STL). Call
+    # export_tagged_surface_npz() right after this to carry the per-patch
+    # physical tags alongside the STL.
     stl_path = Path(output_stl)
     stl_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -2049,6 +2054,64 @@ def generate_surface_stl(
         "GMSH surface: %s  detail=%s patches=%s",
         stl_path, detail, names,
     )
+    return names
+
+
+def export_tagged_surface_npz(out_npz: Path | str) -> list[str]:
+    """Export the CURRENT gmsh model's 2D mesh with per-patch tags.
+
+    GMSH's own STL export (``gmsh.write`` to *.stl) collapses every
+    physical group into a single "Created by Gmsh" solid — the physical
+    tagging that names OpenFOAM patches is lost with it (confirmed live:
+    the fTetWild feasibility spike got one unnamed boundary patch out of
+    an 11-group STEP). This collects the surface elements per entity with
+    their physical name instead, as ``(n, 3, 3)`` triangles plus an
+    object array of names, for callers that must re-derive the patch of
+    an element belonging to a *different* mesh built from this surface
+    (core/ftetwild_wrapper.py).
+
+    Call after ``generate_surface_stl`` (the model must be loaded and
+    meshed). Returns the patch names in first-appearance entity order —
+    the same order the meshed entities are traversed in.
+    """
+    import numpy as np
+
+    out_npz = Path(out_npz)
+    g = _ensure_gmsh()
+
+    entity2phys: dict[int, str] = {}
+    for dim, tag in g.model.getPhysicalGroups(2):
+        name = g.model.getPhysicalName(dim, tag) or f"surface_{tag}"
+        for et in g.model.getEntitiesForPhysicalGroup(2, tag):
+            entity2phys[et] = name
+
+    g_nt, g_xyz, _ = g.model.mesh.getNodes()
+    g_pts = np.asarray(g_xyz, dtype=np.float64).reshape(-1, 3)
+    gmap = {int(t): i for i, t in enumerate(g_nt)}
+
+    all_tris: list[np.ndarray] = []
+    all_names: list[str] = []
+    for _d, etag in g.model.getEntities(2):
+        e_types, _e_tags, e_nodes = g.model.mesh.getElements(2, etag)
+        pn = entity2phys.get(etag, f"surface_{etag}")
+        for etype, nodes in zip(e_types, e_nodes):
+            if etype != 2:  # STL/surface consumers only see linear triangles
+                continue
+            arr = np.asarray(nodes, dtype=np.int64).reshape(-1, 3)
+            loc = np.array([[gmap[int(v)] for v in row] for row in arr])
+            all_tris.append(g_pts[loc])
+            all_names.extend([pn] * len(arr))
+    if not all_tris:
+        raise RuntimeError(
+            "export_tagged_surface_npz: no linear surface triangles in the "
+            "current gmsh model — call generate_surface_stl first"
+        )
+    out_npz.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_npz, tris=np.concatenate(all_tris), names=np.array(all_names, dtype=object)
+    )
+    names = list(dict.fromkeys(all_names))  # first-appearance order, deduped
+    logger.info("export_tagged_surface_npz: %s  patches=%s", out_npz, names)
     return names
 
 

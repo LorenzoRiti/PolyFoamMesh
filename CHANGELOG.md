@@ -5,6 +5,78 @@ All notable changes to PolyFoamMesh are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) and
 the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
+## [Unreleased]
+
+### Added
+
+- **Experimental fTetWild mesher** (issue #12): a new
+  `Polymesh sperimentale (fTetWild)` mesher button runs the poly pipeline's
+  tet stage with fTetWild (optional extra: `pip install pytetwild` /
+  `polyfoammesh[ftetwild]`) instead of GMSH. Everything downstream is
+  unchanged: the same gmshToFoam conversion, barycentric dual, boundary
+  layers (added post-dual by `bl_poly`) and checkMesh gates. Patch names
+  are recovered by proximity-tagging the output boundary against GMSH's
+  per-physical-group surface export (`export_tagged_surface_npz`); STL
+  inputs skip GMSH entirely and keep their solid names.
+  Sizing: the target edge comes from the Detail slider as
+  cells-across-the-cross-section (same resolution model as the GMSH path;
+  `FTETWILD_LR` switches to a bbox-relative edge, `FTETWILD_OPT_ITER`
+  caps optimization passes). The input surface is decimated toward the
+  target before the call — fTetWild's own simplify only removes detail
+  within its eps envelope, it never decimates toward the target (measured:
+  a 386k-triangle surface against a 12.75 mm target stalled the stage for
+  15+ min until pre-decimated; research trail in the code, fTetWild#93).
+  The direction is one-way: the INPUT is adapted to the target, never the
+  other way around — an intermediate clamp that pulled the target down to
+  2x the surface density produced ~40M cells on a real 3 m part.
+  Refinement zones, solution size fields, the max-cells target and the
+  adaptive flag do not apply (announced in the log when dropped) and are
+  neutralised in the tet-cache fingerprint together with ALL
+  boundary-layer settings — fTetWild never bakes BL into the tets, so a
+  BL tweak reuses the cached tet mesh instead of paying the whole tet
+  stage again. The stage logs a
+  `bbox_diag / cross_section / target_edge / input_median_edge`
+  diagnostic up front and states explicitly that the tetrahedralization
+  phase runs without output by design (the GUI heartbeat is the liveness
+  signal, Cancel always works).
+  Caveat measured on real parts: fTetWild has no wall-clock bound and on
+  some geometries its optimizer runs far longer than GMSH (unbounded
+  edge-splitting once the AMIPS energy stalls) — Cancel stops it.
+  Verified end-to-end on benchmark geometry (11 named patches, checkMesh
+  Mesh OK); much faster than GMSH on simple/small surfaces. Measured on
+  a user's 3 m pipe part (Parte4, 89 patches, medium, same machine,
+  back-to-back): GMSH 649 s / 6.94M tets vs fTetWild 150 s / 587k tets —
+  4.3x faster, 11.8x fewer cells, much better quality (min dihedral
+  12.6° vs 0.07°, p1 35.3° vs 20.0°). Measured on a user's 2 m
+  cylindrical part (60k-triangle surface): GMSH 166-242 s vs fTetWild
+  490-1042 s across all sane target sizes — there fTetWild loses on time
+  but wins on quality (p1 dihedral 34-36° vs 20°, no negative cells). On
+  the small venturi benchmark: 0.58 s vs GMSH 9.6 s (16x faster). On the
+  small cylinder benchmark: 9 s vs GMSH 16 s with 33% fewer cells and
+  better quality (min dihedral 20.6° vs 13.9°), whole poly pipeline 39 s
+  with both checkMesh passes green. In short: a speed/quality option for
+  parts where the surface stage already resolves the geometry finely —
+  not a universal GMSH replacement on every part.
+
+### Changed
+
+- **BL stack hint is now facts-only** (user decision 2026-10-17): the
+  pre-build "engine compresses the stack to ~X%" prediction was removed —
+  it was built on a wall-cell estimate that disagreed with the engine's
+  own per-vertex clamp (hint said ~1.55 mm wall cells / ~19%; the mesh
+  came out with ~0.1 mm first layers on ~75% of wall faces). The hint now
+  states the requested stack only; after the build the log reports
+  MEASURED facts: `[poly] BL report: N% of wall faces layered (a/b);
+  effective first layer X mm vs requested Y mm`.
+
+### Fixed
+
+- **Viewer status could stay stuck on "Generating foamToVTK..."**: a
+  display that completed through the foamToVTK retry path (first attempt
+  fails with rc=62097, the retry succeeds) rendered the mesh but never
+  restored the stats label, so a finished mesh looked frozen. Every
+  display success path now restores the P/F/C readout.
+
 ## [2.3.0] - 2026-10-13
 
 ### Added
