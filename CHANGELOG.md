@@ -50,10 +50,25 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   dual rejects the raw pinch outright and its own degenerate-vertex
   cleanup made things worse); (3) outlier tet micro-clusters are dropped
   (a 1-cell "region 2" in the tet mesh became a floating island in the
-  dual; the dual input is now single-region). Known residual on the same
-  part: ~59 boundary faces (0.015% of cells) at feature edges remain
-  warped after conditioning — the dual's own smoothing pins boundary
-  points, so a boundary-point smoothing pass is the next planned step.
+  dual; the dual input is now single-region); (4) free-boundary
+  smoothing, auto-enabled on the fTetWild path (opt-in converter flag
+  `smooth_free_boundary`): the dual's smoother normally pins boundary
+  vertices to keep the EXACT dual a bit-perfect surface subdivision —
+  the collapse dual is a surface-offset approximation anyway, so
+  relaxing it there is safe and measured on the reference part:
+  warped-boundary defect faces 66 -> 5 (checkMesh pyramid faces
+  59 -> 5, skew faces 59 -> 20, max skew 9.7 -> 7.3) at <= 4.3 mm max
+  point movement on 8 mm cells; keep-best and volume/closure guards
+  unchanged. The stage also streams fTetWild's own phase lines now
+  (loglevel 3; FTETWILD_QUIET=1 restores silence) — the silent
+  tetrahedralization was repeatedly mistaken for a hang.
+  Known residual on the same part: ~5 boundary faces (0.001% of cells)
+  remain flagged by checkMesh at feature edges; checkMesh's
+  boundary-face skewness formula is not the one the in-process smoother
+  optimizes (the replica's skew differs from checkMesh's on warped
+  boundary polygons). Historical baseline for comparison: GMSH on this
+  part failed the final checkMesh in ~5 of 10 logged runs, one with 219
+  pyramid faces.
   Caveat measured on real parts: fTetWild has no wall-clock bound and on
   some geometries its optimizer runs far longer than GMSH (unbounded
   edge-splitting once the AMIPS energy stalls) — Cancel stops it.
