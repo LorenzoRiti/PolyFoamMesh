@@ -235,6 +235,10 @@ validity of this code. AI was a supporting tool, not an autonomous author.
 - [warriorman8](https://github.com/warriorman8) — reported the Arch Linux
   installation problem ([#11](https://github.com/LorenzoRiti/PolyFoamMesh/issues/11)),
   which put the Linux installation guide's untested-distro note on record.
+- [otaolafranc](https://github.com/otaolafranc) — proposed evaluating
+  alternative tet meshers, starting with fTetWild, for the GMSH speed
+  bottleneck ([#12](https://github.com/LorenzoRiti/PolyFoamMesh/issues/12)),
+  which led to the fTetWild feasibility spike.
 
 ## Trademarks
 
