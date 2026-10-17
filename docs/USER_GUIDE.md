@@ -80,18 +80,24 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     Detail slider as "cells across the cross-section" (the same
     resolution model GMSH uses here; `FTETWILD_LR` switches it to a
     bbox-relative edge instead, `FTETWILD_OPT_ITER` caps the optimization
-    passes) and is capped at 2x the surface's own triangle size —
-    targets coarser than the input put fTetWild's optimizer into an
-    unbounded refinement loop (fTetWild#93; the log says when the cap
-    engages). Refinement zones / max-cells target / solution size fields
-    do not apply; boundary layers are added after the poly conversion as
-    usual. Log lines are prefixed `[fTetWild]`, and the run starts with a
+    passes). Over-dense surfaces are decimated and Taubin-smoothed toward
+    that target before fTetWild runs (it never decimates toward the
+    target itself), and its output is conditioned for the poly pipeline:
+    boundary pinches are split, outlier micro-clusters dropped, and the
+    dual's smoothing is allowed to relax boundary vertices on this path.
+    Refinement zones / max-cells target / solution size fields do not
+    apply; boundary layers are added after the poly conversion as usual.
+    Log lines are prefixed `[fTetWild]`, and the run starts with a
     `bbox_diag / cross_section / target_edge / input_median_edge`
-    diagnostic line. A manual Max Cell Size or `FTETWILD_LR` can still
-    push the target into the known-long-run regime — the log warns
-    explicitly when it does, and Cancel always stops a run.
-    Measured: much faster than GMSH on simple parts, slower on some
-    complex ones (fTetWild itself has no wall-clock bound).
+    diagnostic line; fTetWild's own phase lines stream during the
+    tetrahedralization (`FTETWILD_QUIET=1` silences them). Cancel always
+    stops a run, and `FTETWILD_LR` can still be pushed into the
+    long-run regime — the log warns explicitly when that happens.
+    Measured: much faster than GMSH on this class of parts (on a real
+    3 m pipe: 150 s vs GMSH's 649 s at matching resolution, with much
+    better tet quality); on hard parts a handful of warped boundary
+    faces can still trip the final checkMesh — historically GMSH failed
+    the same gate on the same part in half of its logged runs.
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)). Optional: enable `Convert to polyhedral
