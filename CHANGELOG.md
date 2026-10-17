@@ -39,6 +39,21 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   diagnostic up front and states explicitly that the tetrahedralization
   phase runs without output by design (the GUI heartbeat is the liveness
   signal, Cancel always works).
+  Output conditioning (fTetWild's known incompatibilities with the
+  barycentric dual, measured on a real 3 m part with a tangent contact):
+  (1) the decimated input surface is Taubin-smoothed (features preserved)
+  before the call — quadric facets were the source of 167 checkMesh-style
+  warped-boundary-face violations, smoothed down to 66 same-scale
+  (~2.5x); (2) a complete desingularization splits boundary bowties /
+  non-manifold pinches per corner with a micro-offset (fTetWild's
+  `--manifold-surface` equivalent — pytetwild exposes no such flag; the
+  dual rejects the raw pinch outright and its own degenerate-vertex
+  cleanup made things worse); (3) outlier tet micro-clusters are dropped
+  (a 1-cell "region 2" in the tet mesh became a floating island in the
+  dual; the dual input is now single-region). Known residual on the same
+  part: ~59 boundary faces (0.015% of cells) at feature edges remain
+  warped after conditioning — the dual's own smoothing pins boundary
+  points, so a boundary-point smoothing pass is the next planned step.
   Caveat measured on real parts: fTetWild has no wall-clock bound and on
   some geometries its optimizer runs far longer than GMSH (unbounded
   edge-splitting once the AMIPS energy stalls) — Cancel stops it.

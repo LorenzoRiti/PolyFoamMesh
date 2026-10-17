@@ -176,6 +176,127 @@ def test_decimation_reduction_fires_only_for_overdense_input():
     assert ftw._decimation_reduction(0.01, 0.0) is None
 
 
+def _nm_boundary_edge_count(V: np.ndarray, T: np.ndarray) -> int:
+    allf = np.concatenate([T[:, list(f)] for f in ftw._TET_FACES], axis=0)
+    key = np.sort(allf, axis=1)
+    _, inv, counts = np.unique(
+        key, axis=0, return_inverse=True, return_counts=True
+    )
+    b = allf[counts[np.asarray(inv).reshape(-1)] == 1]
+    edges = np.sort(
+        np.concatenate([b[:, [0, 1]], b[:, [1, 2]], b[:, [2, 0]]]), axis=1
+    )
+    _, ec = np.unique(edges, axis=0, return_counts=True)
+    return int((ec > 2).sum())
+
+
+def test_split_nonmanifold_vertices_fixes_edge_bowtie():
+    """Two tets sharing only an edge: that boundary edge carries 4 faces
+    (non-manifold — the real failure reported by the barycentric dual).
+    The complete desingularization splits BOTH bowtie endpoints; volumes
+    and the number of tets are preserved."""
+    V = np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.5, 1.0, 0.0],
+        [0.5, 0.0, 1.0],
+        [0.5, -1.0, 0.0],
+        [0.5, 0.0, -1.0],
+    ])
+    T = np.array([[0, 1, 2, 3], [0, 1, 4, 5]])
+
+    def vol(V_, T_):
+        p = V_[T_]
+        v6 = np.einsum(
+            "ij,ij->i",
+            np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]),
+            p[:, 3] - p[:, 0],
+        )
+        return float(np.abs(v6).sum() / 6)
+
+    assert _nm_boundary_edge_count(V, T) == 1
+    assert ftw.boundary_defects(V, T) == (1, 2)
+    V2, T2, n = ftw.split_nonmanifold_vertices(V, T)
+    assert n == 2  # both endpoints of the shared edge are bowties
+    assert ftw.boundary_defects(V2, T2) == (0, 0)
+    assert _nm_boundary_edge_count(V2, T2) == 0
+    assert len(T2) == 2
+    assert len(V2) == len(V) + 2
+    # micro-offset duplicates: same place to the eye, non-zero for the
+    # dual's geometric construction (one duplicate per split endpoint)
+    d0 = float(np.linalg.norm(V2[len(V)] - V[0]))
+    d1 = float(np.linalg.norm(V2[len(V) + 1] - V[1]))
+    assert 0.0 < d0 < 0.02  # ~1e-2 x local edge, ~1% of the unit tet edge
+    assert 0.0 < d1 < 0.02
+    # the micro-offset shifts ~1% of THIS two-tet volume; on a real mesh
+    # the same relative offset affects a couple of tets out of millions
+    assert vol(V2, T2) == pytest.approx(vol(V, T), rel=0.05)
+
+
+def test_split_nonmanifold_vertices_fixes_pure_vertex_bowtie():
+    """Two tets sharing only a VERTEX: every boundary edge already has 2
+    faces, so an edge-only check sees nothing — but the star of the shared
+    vertex is two balls glued at a point and the dual cell opens. The
+    desingularization must split it."""
+    V = np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [1.0, -1.0, -1.0],
+        [-1.0, 1.0, -1.0],
+        [-1.0, -1.0, 1.0],
+        [-1.0, -1.0, -1.0],
+        [-1.0, 1.0, 1.0],
+    ])
+    T = np.array([[0, 1, 2, 3], [0, 4, 5, 6]])
+    assert _nm_boundary_edge_count(V, T) == 0  # no non-manifold EDGE
+    assert ftw.boundary_defects(V, T) == (0, 1)  # ...but a bowtie vertex
+    V2, T2, n = ftw.split_nonmanifold_vertices(V, T)
+    assert n == 1
+    assert ftw.boundary_defects(V2, T2) == (0, 0)
+    assert len(T2) == 2
+    assert len(V2) == len(V) + 1
+
+
+def test_split_nonmanifold_vertices_noop_on_clean_mesh():
+    V, T = _closed_tet_mesh()
+    assert ftw.boundary_defects(V, T) == (0, 0)
+    V2, T2, n = ftw.split_nonmanifold_vertices(V, T)
+    assert n == 0
+    assert len(V2) == len(V)
+    assert np.array_equal(T2, T)
+
+
+def test_drop_small_components_removes_floating_cells():
+    V, T = _closed_tet_mesh()
+    extra = np.array([
+        [-5.0, -5.0, -5.0], [-4.0, -5.0, -5.0],
+        [-5.0, -4.0, -5.0], [-5.0, -5.0, -4.0],
+    ])
+    base = len(V)
+    V2 = np.vstack([V, extra])
+    T2 = np.vstack([T, np.array([[base, base + 1, base + 2, base + 3]])])
+    V3, T3, n = ftw.drop_small_components(V2, T2)
+    assert n == 1
+    assert len(T3) == len(T)
+    assert len(V3) == len(V)
+
+
+def test_drop_small_components_keeps_multi_body_inputs():
+    # two comparably-sized bodies (a multi-solid part): NOTHING is dropped.
+    # max_drop is passed explicitly so both toy bodies (~150 tets each)
+    # stay above the threshold; the DEFAULT threshold (1024) targets the
+    # measured artifacts (single cells / handfuls) and any real CFD body
+    # is orders of magnitude larger.
+    V1, T1 = _closed_tet_mesh()
+    V2_, T2_ = _closed_tet_mesh()
+    V2_ = V2_ + np.array([10.0, 0.0, 0.0])
+    Vc = np.vstack([V1, V2_])
+    Tc = np.vstack([T1, T2_ + len(V1)])
+    V3, T3, n = ftw.drop_small_components(Vc, Tc, max_drop=100)
+    assert n == 0
+    assert len(T3) == len(Tc)
+
+
 def test_detail_cells_across_covers_slider_levels():
     assert set(ftw.DETAIL_CELLS_ACROSS) == {
         "very_coarse", "coarse", "medium", "fine", "very_fine",

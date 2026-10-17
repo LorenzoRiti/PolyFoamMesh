@@ -280,6 +280,15 @@ def tetrahedralize(
             # decimate_pro's parameter is the REDUCTION fraction (0.9
             # removes 90%); `decimate` is the fraction to KEEP.
             surf = surf.decimate_pro(1.0 - float(decimate))
+            # Quadric decimation leaves irregular facets; fTetWild follows
+            # them and the barycentric dual then builds warped boundary
+            # polygons at feature edges (measured on a real part: 167
+            # checkMesh-style pyramid violations, ALL within ~1.3 mm of a
+            # >40 deg edge, none on smooth regions; the same measurement
+            # after this pass: 46). Taubin smoothing (feature_smoothing=
+            # False default: sharp edges preserved) regularizes the facets
+            # without shrinking the shape.
+            surf = surf.smooth_taubin(n_iter=20, pass_band=0.1)
             n_decimated_tris = int(surf.n_cells)
         except Exception:
             # Decimation is an optimization; the original surface is still
@@ -429,6 +438,293 @@ def _decimation_reduction(med_edge: float, target_edge: float) -> float | None:
     return max((med_edge / target_edge) ** 2, 0.01)
 
 
+def boundary_defects(V: np.ndarray, T: np.ndarray) -> tuple[int, int]:
+    """Count the two defect classes the dual cannot close a cell for.
+
+    Returns ``(n_nonmanifold_edges, n_bowtie_vertices)``:
+    * non-manifold boundary edges: edges with != 2 incident boundary faces;
+    * bowtie vertices: vertices whose boundary fan is disconnected — the
+      tet one-ring splits into >1 face-connected corner, so the star is
+      not a ball. This includes pure vertex pinches that carry NO
+      non-manifold edge (the class the edge-only check misses).
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    allf = np.concatenate([T[:, list(f)] for f in _TET_FACES], axis=0)
+    key = np.sort(allf, axis=1)
+    _u, inv, counts = np.unique(
+        key, axis=0, return_inverse=True, return_counts=True
+    )
+    inv = np.asarray(inv).reshape(-1)
+    bfaces = allf[counts[inv] == 1]
+    if len(bfaces) == 0:
+        return 0, 0
+    m = len(bfaces)
+    bedges = np.concatenate(
+        [bfaces[:, [0, 1]], bfaces[:, [1, 2]], bfaces[:, [2, 0]]]
+    )
+    be_key = np.sort(bedges, axis=1)
+    # canonical edge id via unique rows
+    bu, binv, bc = np.unique(be_key, axis=0, return_inverse=True, return_counts=True)
+    binv = np.asarray(binv).reshape(-1)
+    n_nm = int((bc != 2).sum())
+
+    # face adjacency through edges whose count is exactly 2: in the
+    # edge-sorted order those two entries are adjacent
+    face_of_row = np.tile(np.arange(m), 3)
+    order = np.argsort(binv, kind="stable")
+    s_inv = binv[order]
+    s_face = face_of_row[order]
+    starts = np.flatnonzero(np.r_[True, s_inv[1:] != s_inv[:-1]])
+    rows_f: list[int] = []
+    cols_f: list[int] = []
+    for eid in np.flatnonzero(bc == 2):
+        a = starts[eid]
+        rows_f.append(int(s_face[a]))
+        cols_f.append(int(s_face[a + 1]))
+    if rows_f:
+        g = coo_matrix(
+            (np.ones(len(rows_f) * 2, dtype=np.int8),
+             (np.array(rows_f + cols_f), np.array(cols_f + rows_f))),
+            shape=(m, m),
+        )
+        _nc, comp = connected_components(g, directed=False)
+    else:
+        comp = np.arange(m)
+    # a bowtie vertex has faces from >1 component
+    pair_v = bfaces.reshape(-1)
+    pair_c = np.repeat(comp, 3)
+    uniq_pairs = np.unique(
+        np.stack([pair_v, pair_c], axis=1), axis=0
+    )
+    v_ids, v_counts = np.unique(uniq_pairs[:, 0], return_counts=True)
+    n_bow = int((v_counts > 1).sum())
+    return n_nm, n_bow
+
+
+def split_nonmanifold_vertices(
+    V: np.ndarray, T: np.ndarray, max_iter: int = 12
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Desingularize the boundary so every vertex star is a ball.
+
+    fTetWild's output may have a non-manifold boundary where two sheets
+    touch (its documented ``--manifold-surface`` class — pytetwild does
+    not expose that flag, so the equivalent post-pass lives here). Two
+    defect shapes occur, both measured on a real 3 m duct: edges with 4
+    boundary faces (a V-pinch of 3 vertices) and pure VERTEX bowties
+    whose edges are all manifold. The barycentric dual needs every star
+    to be a ball — its cells are otherwise combinatorially open — so a
+    vertex whose tet one-ring splits into >1 face-connected corner gets
+    duplicated per corner (one copy per extra corner), with a micro
+    offset (1e-2 x local edge, ~1% tet distortion) so the duplicates are
+    not numerically coincident.
+
+    Iterates to a fixpoint: splitting one bowtie can reveal/leave
+    others. Returns ``(V, T, n_splits)``; inputs are not modified. The
+    caller SHOULD re-check with :func:`boundary_defects` and log any
+    residual honestly.
+    """
+    V = np.asarray(V, dtype=np.float64).copy()
+    T = np.asarray(T, dtype=np.int64).copy()
+    added: list[np.ndarray] = []
+    n_splits = 0
+
+    def _pos(idx: int) -> np.ndarray:
+        idx = int(idx)
+        return V[idx] if idx < len(V) else added[idx - len(V)]
+
+    for _ in range(max_iter):
+        n_nm, n_bow = boundary_defects(V, T)
+        if n_nm == 0 and n_bow == 0:
+            break
+        # candidates: endpoints of non-manifold edges + bowtie vertices
+        allf = np.concatenate([T[:, list(f)] for f in _TET_FACES], axis=0)
+        key = np.sort(allf, axis=1)
+        _u, inv, counts = np.unique(
+            key, axis=0, return_inverse=True, return_counts=True
+        )
+        inv = np.asarray(inv).reshape(-1)
+        bfaces = allf[counts[inv] == 1]
+        bedges = np.sort(
+            np.concatenate(
+                [bfaces[:, [0, 1]], bfaces[:, [1, 2]], bfaces[:, [2, 0]]]
+            ),
+            axis=1,
+        )
+        eu, ec = np.unique(bedges, axis=0, return_counts=True)
+        cand = set(int(x) for x in eu[ec != 2].ravel())
+        # bowtie detection again locally (reuse boundary_defects' logic by
+        # asking it for the count only would lose the ids; cheap enough to
+        # recompute the pair list here)
+        from scipy.sparse import coo_matrix as _coo
+        from scipy.sparse.csgraph import connected_components as _cc
+
+        m = len(bfaces)
+        be_key = np.sort(
+            np.concatenate(
+                [bfaces[:, [0, 1]], bfaces[:, [1, 2]], bfaces[:, [2, 0]]]
+            ),
+            axis=1,
+        )
+        _bu, binv, bc = np.unique(
+            be_key, axis=0, return_inverse=True, return_counts=True
+        )
+        binv = np.asarray(binv).reshape(-1)
+        face_of_row = np.tile(np.arange(m), 3)
+        order = np.argsort(binv, kind="stable")
+        s_inv = binv[order]
+        s_face = face_of_row[order]
+        starts = np.flatnonzero(np.r_[True, s_inv[1:] != s_inv[:-1]])
+        r_f, c_f = [], []
+        for eid in np.flatnonzero(bc == 2):
+            a = starts[eid]
+            r_f.append(int(s_face[a]))
+            c_f.append(int(s_face[a + 1]))
+        if r_f:
+            g = _coo(
+                (np.ones(len(r_f) * 2, dtype=np.int8),
+                 (np.array(r_f + c_f), np.array(c_f + r_f))),
+                shape=(m, m),
+            )
+            _nc, comp = _cc(g, directed=False)
+        else:
+            comp = np.arange(m)
+        pairs = np.unique(
+            np.stack([bfaces.reshape(-1), np.repeat(comp, 3)], axis=1), axis=0
+        )
+        v_ids, v_counts = np.unique(pairs[:, 0], return_counts=True)
+        cand.update(int(x) for x in v_ids[v_counts > 1])
+
+        progress = 0
+        for v in sorted(cand):
+            local = np.nonzero((T == v).any(axis=1))[0]
+            if len(local) == 0:
+                continue
+            parent = {int(t): int(t) for t in local}
+
+            def find(x: int) -> int:
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            face_map: dict[tuple, list[int]] = {}
+            for t in local:
+                tet = T[t]
+                for f in _TET_FACES:
+                    verts = tet[list(f)]
+                    if v in verts:
+                        k = tuple(sorted(int(x) for x in verts))
+                        face_map.setdefault(k, []).append(int(t))
+            for ts in face_map.values():
+                root = find(ts[0])
+                for t2 in ts[1:]:
+                    parent[find(t2)] = root
+            groups: dict[int, list[int]] = {}
+            for t in local:
+                groups.setdefault(find(int(t)), []).append(int(t))
+            if len(groups) <= 1:
+                continue
+
+            local_verts = np.unique(T[local])
+            others = local_verts[local_verts != v]
+            ring_c = (
+                np.array([_pos(i) for i in others]).mean(axis=0)
+                if len(others)
+                else _pos(v)
+            )
+            direction = _pos(v) - ring_c
+            dn = float(np.linalg.norm(direction))
+            direction = direction / dn if dn > 0 else np.array([1.0, 0.0, 0.0])
+            tet_local = T[local]
+            uniq_loc, inv_loc = np.unique(tet_local, return_inverse=True)
+            pts_tab = np.array([_pos(i) for i in uniq_loc])
+            tets_xyz = pts_tab[inv_loc].reshape(tet_local.shape + (3,))
+            edge_len = np.linalg.norm(tets_xyz[:, 1] - tets_xyz[:, 0], axis=1)
+            eps = 1e-2 * float(edge_len.mean()) if edge_len.size else 1e-9
+
+            for root in sorted(groups)[1:]:
+                new_id = len(V) + len(added)
+                added.append(_pos(v) + direction * eps)
+                for t in groups[root]:
+                    T[t] = np.where(T[t] == v, new_id, T[t])
+                n_splits += 1
+                progress += 1
+        if progress == 0:
+            # no split achieved (a pathological configuration): stop and
+            # let the caller report the residual defect honestly
+            break
+
+    if added:
+        V = np.vstack([V, np.asarray(added, dtype=np.float64)])
+    return V, T, n_splits
+
+
+def drop_small_components(
+    V: np.ndarray, T: np.ndarray, max_drop: int = 1024
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Drop tiny disconnected tet components from fTetWild's output.
+
+    fTetWild can emit an outlier cell / micro-cluster near a contact
+    (measured: "Number of regions: 2, region 1 with 1 cells" in the tet
+    checkMesh of a real run; the dual then carries a 4-cell floating
+    island and checkMesh reports 2 regions). Components are found by
+    face-adjacency; only components of at most ``max_drop`` cells are
+    removed — the measured artifacts are single cells / handfuls, while
+    any legitimate multi-solid body in CFD parts is orders of magnitude
+    larger. Dropping a disconnected closed complex keeps the main mesh
+    closed. Returns ``(V, T, n_dropped_tets)``; vertex ids are compacted
+    if anything was dropped.
+    """
+    V = np.asarray(V, dtype=np.float64)
+    T = np.asarray(T, dtype=np.int64)
+    if len(T) == 0:
+        return V, T, 0
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    allf = np.concatenate([T[:, list(f)] for f in _TET_FACES], axis=0)
+    tet_of_row = np.tile(np.arange(len(T)), len(_TET_FACES))
+    key = np.sort(allf, axis=1)
+    _u, inv, counts = np.unique(
+        key, axis=0, return_inverse=True, return_counts=True
+    )
+    inv = np.asarray(inv).reshape(-1)
+    # order rows by key so count==2 pairs are adjacent
+    order = np.argsort(inv, kind="stable")
+    s_inv = inv[order]
+    s_tet = tet_of_row[order]
+    starts = np.flatnonzero(np.r_[True, s_inv[1:] != s_inv[:-1]])
+    r_l: list[int] = []
+    c_l: list[int] = []
+    for eid in np.flatnonzero(counts == 2):
+        a = starts[eid]
+        t1, t2 = int(s_tet[a]), int(s_tet[a + 1])
+        if t1 != t2:
+            r_l.append(t1)
+            c_l.append(t2)
+    if not r_l:
+        return V, T, 0
+    g = coo_matrix(
+        (np.ones(2 * len(r_l), dtype=np.int8),
+         (np.array(r_l + c_l), np.array(c_l + r_l))),
+        shape=(len(T), len(T)),
+    )
+    _nc, lab = connected_components(g, directed=False)
+    sizes = np.bincount(lab, minlength=lab.max() + 1)
+    main = int(sizes.argmax())
+    drop_mask = (lab != main) & (sizes[lab] <= max_drop)
+    n_dropped = int(drop_mask.sum())
+    if n_dropped == 0:
+        return V, T, 0
+    T2 = T[~drop_mask]
+    used = np.unique(T2)
+    remap = np.full(len(V), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used), dtype=np.int64)
+    return V[used], remap[T2], n_dropped
+
+
 def run_volume(
     step_path: Path | str,
     msh_path: Path | str,
@@ -555,6 +851,36 @@ def run_volume(
     finally:
         os.chdir(prev_cwd)
 
+    # fTetWild may emit a non-manifold boundary where two sheets touch
+    # (its --manifold-surface class; pytetwild exposes no such flag) —
+    # the barycentric dual rejects it outright ("not a closed
+    # tetrahedral volume") or produces combinatorially open cells.
+    # Repair before tagging/writing.
+    V, T, n_splits = split_nonmanifold_vertices(V, T)
+    if n_splits:
+        _nm, _bow = boundary_defects(V, T)
+        _residual = (
+            f"residual: {_nm} non-manifold edges, {_bow} bowtie vertices"
+            if (_nm or _bow)
+            else "boundary now fully manifold (every vertex star is a ball)"
+        )
+        print(
+            f"boundary pinch repaired: {n_splits} vertex corner(s) "
+            f"duplicated at non-manifold contact (fTetWild --manifold-surface "
+            f"equivalent, micro-offset); {_residual}.",
+            flush=True,
+        )
+    # Outlier micro-clusters (measured: a 1-cell region in the tet mesh at
+    # a contact) become floating islands in the dual and "2 regions" in
+    # checkMesh — drop them while they are still tets.
+    V, T, n_dropped = drop_small_components(V, T)
+    if n_dropped:
+        print(
+            f"dropped {n_dropped} outlier tet(s) in disconnected micro-"
+            "component(s) (contact artifact; main mesh untouched).",
+            flush=True,
+        )
+
     # One entry per PATCH: sanitize operates on the unique class list so
     # $PhysicalNames stays one-name-per-id even though raw_names repeats
     # per triangle. names[i] is classes[i]'s sanitized twin (order
@@ -592,6 +918,7 @@ def run_volume(
         "decimate_fraction": reduction,
         "n_input_tris": tet_stats.get("n_input_tris"),
         "n_decimated_tris": tet_stats.get("n_decimated_tris"),
+        "n_manifold_splits": n_splits,
         "tagging": assign_stats,
     }
 
