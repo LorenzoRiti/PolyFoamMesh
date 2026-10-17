@@ -1998,6 +1998,7 @@ class ViewerWidget(QWidget):
         def on_done(_name, payload):
             self._mesh_display_in_progress = False
             self._cancel_display_timeout()
+            self._restore_stats_label()
             grid = payload["grid"]
             n_cells = payload["n"]
             show_dec = payload["show_dec"]
@@ -2073,6 +2074,7 @@ class ViewerWidget(QWidget):
             if not patches:
                 self._handle_no_patches()
                 return
+            self._restore_stats_label()
             total_faces = sum(pd.n_cells for pd in patches.values())
             logger.info(
                 "Loaded %d mesh patches (%d total faces) for %s",
@@ -2275,6 +2277,33 @@ class ViewerWidget(QWidget):
         removed, so this always yields the Auto behaviour and the real
         mesh file is never touched."""
         return float(self.DECIMATE_THRESHOLD), float(self.DECIMATE_TARGET)
+
+    def _restore_stats_label(self) -> None:
+        """Restore the P/F/C stats text after a successful mesh display.
+
+        The display pipeline overwrites ``_stats_label`` with the
+        "Generating foamToVTK..." banner (``_start_vtk_qprocess``) and the
+        banner is only ever replaced by another ``show_mesh()`` call —
+        a display that completes through the foamToVTK retry path left it
+        stuck on screen forever while the mesh was already rendered
+        (user report 2026-10-17: "sembra bloccarsi qui"). Every success
+        path in the display pipeline calls this.
+        """
+        case_dir = self._mesh_case_dir
+        if not case_dir:
+            return
+        try:
+            stats = read_openfoam_mesh_stats(Path(case_dir))
+        except Exception:
+            stats = None
+        if stats and (
+            stats.get("points", 0) + stats.get("faces", 0) + stats.get("cells", 0)
+        ) > 0:
+            self._stats_label.setText(
+                f"P:{stats['points']:,}  F:{stats['faces']:,}  C:{stats['cells']:,}"
+            )
+        else:
+            self._stats_label.setText("")
 
     def _load_stats_async(self, case_dir: Path):
         """Load mesh stats in the background (deferred via timer)."""
