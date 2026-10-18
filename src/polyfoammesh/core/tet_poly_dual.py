@@ -2592,6 +2592,35 @@ class TetPolyDualConverter:
                 break
         return total_fixed
 
+    def _clear_boundary_pyramids(self, M) -> int:
+        sf, cf = _face_geometry(M.points, M.faces)
+        ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+        bnd = np.arange(M.n_int, len(M.faces))
+        pv = (sf[bnd] * (cf[bnd] - ctr[M.owner[bnd]])).sum(axis=1)
+        bad = bnd[pv <= 0.0]
+        cleared = 0
+        pts = M.points
+        for fi in bad:
+            f = M.faces[int(fi)]
+            nhat = sf[int(fi)] / np.linalg.norm(sf[int(fi)])
+            need = (-pv[int(fi) - M.n_int]) / np.linalg.norm(sf[int(fi)])
+            cand = pts.copy()
+            for vv in set(f):
+                cand[vv] += nhat * need * 2.0
+            sf_c, cf_c = _face_geometry(cand, M.faces)
+            ctr_c, vol_c = _cell_centres(
+                sf_c, cf_c, M.owner, M.neigh, M.n_int, M.n_cells,
+            )
+            if vol_c.min() > 0.0:
+                for vv in set(f):
+                    pts[vv] += nhat * need * 2.0
+                cleared += 1
+        if cleared:
+            M.points = pts
+            sf2, cf2 = _face_geometry(M.points, M.faces)
+            M.sf, M.cf = sf2, cf2
+        return cleared
+
     def _shift_boundary_skew(self, M, max_rounds: int = 8) -> int:
         """Shift warped / marginally-behind boundary polygons to clear
         checkMesh boundary-face skewness AND pyramid defects.
@@ -4439,4 +4468,33 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    def _clear_boundary_pyramids(self, M) -> int:
+        sf, cf = _face_geometry(M.points, M.faces)
+        ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+        bnd = np.arange(M.n_int, len(M.faces))
+        pv = (sf[bnd] * (cf[bnd] - ctr[M.owner[bnd]])).sum(axis=1)
+        bad = bnd[pv <= 0.0]
+        cleared = 0
+        pts = M.points
+        for fi in bad:
+            f = M.faces[int(fi)]
+            nhat = sf[int(fi)] / np.linalg.norm(sf[int(fi)])
+            need = (-pv[int(fi) - M.n_int]) / np.linalg.norm(sf[int(fi)])
+            cand = pts.copy()
+            for vv in set(f):
+                cand[vv] += nhat * need * 2.0
+            sf_c, cf_c = _face_geometry(cand, M.faces)
+            ctr_c, vol_c = _cell_centres(
+                sf_c, cf_c, M.owner, M.neigh, M.n_int, M.n_cells,
+            )
+            if vol_c.min() > 0.0:
+                for vv in set(f):
+                    pts[vv] += nhat * need * 2.0
+                cleared += 1
+        if cleared:
+            M.points = pts
+            sf2, cf2 = _face_geometry(M.points, M.faces)
+            M.sf, M.cf = sf2, cf2
+        return cleared
+
 
