@@ -2278,6 +2278,18 @@ class DualPolyWorker(QObject):
                     ),
                     terminate_by_budget=bool(bl.get("terminateByBudget", False)),
                 )
+                if self._smooth_free_boundary:
+                    # fTetWild path: the multi-cell consume reflow corrupts
+                    # the build on these duals (measured: its walk
+                    # double-emits side faces on wall columns with sub-mm
+                    # polygons, leaving 10 boundary edges shared by 4 faces
+                    # at every height scale).  With consume off the drop
+                    # pass validates and the BL builds (measured on the
+                    # reference part: 71k prisms, median 5 layers,
+                    # checkMesh region OK).  The GMSH path keeps the
+                    # default (consume on - it is the promoted default
+                    # there).
+                    kw["consume"] = False
                 _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
                 _cc_n_faces = int(
                     max(int(getattr(result, "n_internal_faces", 0) or 0), 0)

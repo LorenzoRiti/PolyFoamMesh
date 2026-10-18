@@ -1286,6 +1286,7 @@ class PolyBoundaryLayerEngine:
         min_base_edge_h1_factor: float = 0.0,
         edge_cap_percentile: float = 0.0,
         terminate_by_budget: bool = False,
+        consume: bool | None = None,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -1588,7 +1589,14 @@ class PolyBoundaryLayerEngine:
         # Opt-in "core reflow" multi-layer consumption (default OFF,
         # byte-identical when off).  Only the standard fallback path consumes
         # it; the local-termination paths are left untouched.
-        consume = _consume_enabled()
+        # `consume` (optional argument) overrides the environment default:
+        # False forces the standard budget on meshes where the multi-cell
+        # reflow corrupts the build (measured on a real fTetWild dual: the
+        # reflow's multi-cell walk double-emitted side faces on two wall
+        # columns, leaving 10 boundary edges shared by 4 faces at every
+        # scale; with consume off the drop pass validated and the BL built
+        # - 71k prisms, median 5 layers, checkMesh region OK).
+        consume = _consume_enabled() if consume is None else bool(consume)
         # T4d PER-FACE EXCLUSION (replaces the T4c global auto-disable).  The
         # consume path helps healthy duals (tube) but TWISTED prisms on the
         # faces touching a sliver dual cell (venturi).  Instead of disabling
