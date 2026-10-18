@@ -2357,7 +2357,30 @@ class DualPolyWorker(QObject):
                 # closure attempt: memory scales with faces (a real ~5M-cell
                 # run exhausted 32GB RAM and crashed the system).
                 if bres is None or not bres.success:
-                    if _cc_too_big:
+                    if self._smooth_free_boundary:
+                        # fTetWild path: measured on the reference part, the
+                        # standard BL fails at EVERY height scale with the
+                        # same inverted thin-feature stacks (60-130 um
+                        # compressed layers at sub-mm wall polygons; real
+                        # checkMesh on the refused build: 36 negative
+                        # volumes, 377 pyramid faces), the concave-closure
+                        # retry diverges (multiply-connected boundary edges
+                        # grow 5 -> 10 -> 15 as exclusions widen, ~8 min
+                        # per round) and the h1-halving retries repeat the
+                        # same failure (h1 scaling cannot fix an inverted
+                        # direction).  Skip all retries: fail fast with an
+                        # explanation instead of burning 20+ minutes.
+                        self.log_line.emit(
+                            "[poly] WARN: boundary layers cannot be built on "
+                            "this fTetWild dual - the wall has thin-feature "
+                            "spots where the dual cells cannot take any layer "
+                            "stack (measured: real checkMesh rejects every "
+                            "height scale with inverted micro-prisms). "
+                            "Continuing with the polyhedral mesh WITHOUT "
+                            "boundary layers; use a finer surface mesh or "
+                            "build the BL with the GMSH polymesh path."
+                        )
+                    elif _cc_too_big:
                         self.log_line.emit(
                             "[poly] WARN: concave closure fallback skipped — "
                             "mesh above the faces-based safety limit "
@@ -2380,7 +2403,10 @@ class DualPolyWorker(QObject):
                 # Measured on the user's Part2 case: h1 7.28e-4 failed at
                 # every scale, h1/2 succeeded (13,088 prisms, checkMesh
                 # PASS). The reduction is logged because it changes y+.
-                if bres is None or not bres.success:
+                # Skipped on the fTetWild path (see above: the failure is a
+                # direction inversion at thin features, which no h1 scaling
+                # can fix - measured identical failures at h1/2 and h1/4).
+                if (bres is None or not bres.success) and not self._smooth_free_boundary:
                     base_h = float(kw.get("first_height", 0.0) or 0.0)
                     for frac in (0.5, 0.25):
                         if base_h <= 0.0:
