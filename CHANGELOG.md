@@ -89,20 +89,33 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   and the pyramid normal) reduce the residual further; they converge
   slowly on the reference dual (90 -> 89 defects in 6 rounds) and stay
   honest about it — opt-in, default off;
-  (d) the boundary layer is now DIAGNOSED on this part: the standard
-  build is rejected by real checkMesh at every height scale (36
-  negative-volume micro-prisms at thin features, 377 pyramid faces on
-  the refused build), the concave-closure retry diverges
-  (multiply-connected boundary edges grow 5 -> 10 -> 15 as exclusions
-  widen) and h1-halving repeats the identical failure — so the fTetWild
-  path now skips the doomed retries and reports a clear no-BL fallback
-  in minutes instead of burning 20+ (the GMSH path keeps its full
-  fallback chain). Cross-checked against the GMSH path: the same engine
-  fails the same way on the GMSH-derived dual of this part (measured on
-  a saved user run: 0 prisms, non-positive volumes at every scale) — the
-  limitation is the part's thin features, not the fTetWild dual, which
-  is in fact ~8x cleaner there (30 residual defects vs 263 on the GMSH
-  dual of the same part).
+  (d) the boundary layer on this part is now SOLVED for the medium
+  class, root cause included. Two earlier misdiagnoses are corrected
+  here: the first BL tests used hand-built parameters instead of the
+  GUI's real ones (the GUI always sends minBaseEdgeFraction 0.9 +
+  terminateByBudget, and its default is wall-patches-only), and the
+  "GMSH works / fTetWild doesn't" contrast did not survive a
+  controlled test (on this part the GMSH-derived duals are in fact
+  WORSE: 263/338 residual defects at coarse/fine vs 30/90 for
+  fTetWild). With the real parameters the remaining blocker was dumped
+  edge by edge: the multi-cell consume reflow (promoted default)
+  double-emits prism side faces on wall columns with sub-mm polygons -
+  two prism stacks per column, each contributing 2 side faces to the
+  same base edge, leaving 10 boundary edges shared by 4 faces at every
+  height scale. With a new optional `consume` argument (forced False on
+  the fTetWild path only; the GMSH path keeps the promoted default) the
+  standard drop pass validates and the BL BUILDS: measured on the
+  reference part (medium, GUI parameters) 71,025 prism cells, median 5
+  layers, 95.4% of wall faces layered, checkMesh region OK, and the
+  residual 11 pyramid + 18 skew faces are exactly the dual's own
+  pre-BL defects - the BL adds none. The fine resolution (8 mm) still
+  fails validation (drop-path builds add pyramid faces around the
+  warped feature polygons; the split/shift repairs reduce but do not
+  yet clear them) - honest open item. Related: the BL growth widget
+  now drives the y+ physics compute (it was ignored - the engine
+  always solved the layer count for a hardcoded 1.2): a higher growth
+  reaches the same total thickness with fewer, thicker layers, i.e.
+  more comfortable stacks for thin-cell walls.
   Caveat measured on real parts: fTetWild has no wall-clock bound and on
   some geometries its optimizer runs far longer than GMSH (unbounded
   edge-splitting once the AMIPS energy stalls) — Cancel stops it.
