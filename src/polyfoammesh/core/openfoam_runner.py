@@ -2200,6 +2200,10 @@ class DualPolyWorker(QObject):
                 # smoother and the reported residual see the warped feature
                 # polygons real checkMesh flags. Legacy detector otherwise.
                 count_boundary_skew=self._smooth_free_boundary,
+                # ... and the defect-driven nudge of boundary-adjacent
+                # centre vertices that clears those boundary pyramid/skew
+                # defects (interior points only; the surface is untouched).
+                split_boundary_defects=self._smooth_free_boundary,
             )
             t_dual0 = time.perf_counter()
             result = _run_with_profile(

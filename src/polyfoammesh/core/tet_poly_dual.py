@@ -192,6 +192,7 @@ class TetPolyDualConverter:
         smooth_severity_guard: bool = False,
         smooth_free_boundary: bool = False,
         count_boundary_skew: bool = False,
+        split_boundary_defects: bool = False,
         merge_concave_cells: bool = False,
         merge_rounds: int = 2,
     ):
@@ -462,6 +463,10 @@ class TetPolyDualConverter:
             self._detector = _detector
         else:
             self._detector = _detect_defects
+        # Opt-in defect-driven nudge of boundary-adjacent cell centres
+        # (2026-10-18, fTetWild path; see _split_boundary_defects). Default
+        # off = byte-identical.
+        self._split_boundary = bool(split_boundary_defects)
         # Opt-in dual-only concave-cell merge (P1). Default off: the output
         # is byte-identical to a converter built without it.
         self._merge_concave_cells = bool(merge_concave_cells)
@@ -743,6 +748,37 @@ class TetPolyDualConverter:
                     f"[poly 7/9] smoothing applied: defects now "
                     f"{counts['pyramid']}/{counts['non_ortho']}/{counts['skew']} "
                     f"[{time.monotonic() - t:.1f}s]"
+                )
+
+        # Boundary-defect split (opt-in, fTetWild path): split boundary
+        # polygons that fail checkMesh's pyramid criterion along the
+        # diagonal that clears it (see _split_boundary_defects; purely
+        # topological, the surface geometry is untouched). Keep-best
+        # against the detector, so the mesh can never come out worse.
+        if self._split_boundary and best_defects and best_defects > 0:
+            self._check_cancel()
+            t = time.monotonic()
+            n_fixed = self._split_boundary_defects(M)
+            n_fixed += self._shift_boundary_skew(M)
+            if n_fixed:
+                sf, cf = _face_geometry(M.points, M.faces)
+                M.sf, M.cf = sf, cf
+                ctr, vol = _cell_centres(
+                    sf, cf, M.owner, M.neigh, M.n_int, M.n_cells,
+                )
+                _, counts = self._detector(
+                    M.points, M.faces, sf, cf, ctr, M.owner, M.neigh,
+                    M.n_int, M.n_cells,
+                )
+                total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+                best_defects = total
+                best_counts = dict(counts)
+                res.residual_defects = int(total)
+                res.defect_breakdown = dict(counts)
+                self._log(
+                    f"[poly 7/9] boundary split cleared {n_fixed} defect(s): "
+                    f"now {counts['pyramid']}/{counts['non_ortho']}/"
+                    f"{counts['skew']} [{time.monotonic() - t:.1f}s]"
                 )
 
         # Optional non-planar-face fix (default "none": output unchanged —
@@ -2374,6 +2410,379 @@ class TetPolyDualConverter:
             moved = int(np.count_nonzero(np.linalg.norm(pts - M.points, axis=1) > 1e-300))
             M.points = pts
             self._log(f"[poly 7/9] planarize applied ({moved:,} vertices moved)")
+
+    def _split_boundary_defects(self, M, max_rounds: int = 6) -> int:
+        """Split boundary polygons that violate checkMesh's boundary-face
+        pyramid criterion, along the diagonal that clears the violation.
+
+        Opt-in (fTetWild path, 2026-10-18).  On the collapsed dual the
+        boundary polygons are built from primal centroids/midpoints only
+        (the primal vertex is NOT a face vertex unless it is a feature
+        point, and the movable "cell centre" of the nudge experiment had
+        exactly ZERO leverage on the owner cell - measured), so a warped
+        polygon whose plane passes marginally behind its owner cell centre
+        cannot be fixed by moving vertices without touching the surface.
+        Splitting the polygon into two sub-polygons along a diagonal is a
+        purely topological fix: the surface geometry is bit-identical
+        (same vertex set, same enclosed surface), the sub-face planes
+        change, and a V-warped polygon usually clears on both halves.
+
+        Per face the diagonal is chosen to maximise the worst normalised
+        pyramid margin ``min(sf_a . (cf_a - C) / |sf_a|,
+        sf_b . (cf_b - C) / |sf_b|)`` over the two sub-faces; faces where
+        no diagonal clears both halves are left untouched.  The patch
+        table is rebuilt with the sub-faces inheriting the parent's patch.
+        Keep-best per round against the full detector (total defects must
+        strictly drop, all volumes positive).  Returns defects cleared.
+        """
+        total_fixed = 0
+        for rnd in range(max_rounds):
+            sf, cf = _face_geometry(M.points, M.faces)
+            ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+            _, counts = self._detector(
+                M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int,
+                M.n_cells,
+            )
+            cur_total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+            if cur_total == 0 or M.n_int >= len(M.faces):
+                break
+            bnd = np.arange(M.n_int, len(M.faces))
+            pv = (sf[bnd] * (cf[bnd] - ctr[M.owner[bnd]])).sum(axis=1)
+            bad = bnd[pv <= 0.0]
+            splits: dict[int, list[int]] = {}
+            pts = M.points
+            for fi in bad:
+                f = M.faces[int(fi)]
+                k = len(f)
+                if k < 4:
+                    continue
+                C = ctr[int(M.owner[fi])]
+                parent_score = float(pv[int(fi) - M.n_int]) / max(
+                    float(np.linalg.norm(sf[int(fi)])), 1e-300,
+                )
+                best: tuple[float, int, int] | None = None
+                for i in range(k):
+                    for j in range(i + 1, k):
+                        if j == i + 1 or (i == 0 and j == k - 1):
+                            continue
+                        loop_a = f[i:j + 1]
+                        loop_b = f[j:] + f[:i + 1]
+                        if len(loop_a) < 3 or len(loop_b) < 3:
+                            continue
+                        margins = []
+                        ok = True
+                        for loop in (loop_a, loop_b):
+                            p = pts[loop]
+                            c0 = p.mean(axis=0)
+                            a = p - c0
+                            b_ = np.roll(p, -1, axis=0) - c0
+                            tri = 0.5 * np.cross(a, b_)
+                            w = np.linalg.norm(tri, axis=1)
+                            wsum = float(w.sum())
+                            sf_s = tri.sum(axis=0)
+                            sm = float(np.linalg.norm(sf_s))
+                            if wsum <= 0.0 or sm <= 0.0:
+                                ok = False
+                                break
+                            tri_c = (c0 + p + np.roll(p, -1, axis=0)) / 3.0
+                            cf_s = (tri_c * w[:, None]).sum(axis=0) / wsum
+                            margins.append(
+                                float(sf_s @ (cf_s - C)) / sm
+                            )
+                        if not ok:
+                            continue
+                        score = min(margins)
+                        # iterative repair: accept any diagonal that
+                        # strictly improves the worst normalised margin of
+                        # this face (absolute clearance not required - the
+                        # rounds converge to it), best first.
+                        if score <= parent_score:
+                            continue
+                        if best is None or score > best[0]:
+                            best = (score, i, j)  # type: ignore[arg-type]
+                if best is not None:
+                    _score, i, j = best
+                    splits[int(fi)] = [f[i:j + 1], f[j:] + f[:i + 1]]
+            if not splits:
+                break
+            # rebuild the boundary block with the sub-faces in place
+            faces_out = list(M.faces[:M.n_int])
+            owner_out = list(M.owner[:M.n_int])
+            neigh_out = list(M.neigh)
+            new_patches: list[dict] = []
+            start = M.n_int
+            for p in M.patches:
+                s0 = int(p["startFace"])
+                k0 = int(p["nFaces"])
+                k_total = 0
+                for fi in range(s0, s0 + k0):
+                    subs = splits.get(fi)
+                    if subs is None:
+                        faces_out.append(M.faces[fi])
+                        owner_out.append(int(M.owner[fi]))
+                        k_total += 1
+                    else:
+                        for sub in subs:
+                            faces_out.append(sub)
+                            owner_out.append(int(M.owner[fi]))
+                            k_total += 1
+                new_patches.append({
+                    "name": p["name"], "type": p.get("type", "patch"),
+                    "nFaces": k_total, "startFace": start,
+                })
+                start += k_total
+            n_new_int = M.n_int
+            sf2, cf2 = _face_geometry(M.points, faces_out)
+            own_arr = np.asarray(owner_out, dtype=np.int64)
+            ctr2, vol2 = _cell_centres(
+                sf2, cf2, own_arr, M.neigh, n_new_int, M.n_cells,
+            )
+            if not np.all(vol2 > 0.0):
+                break
+            _, counts2 = self._detector(
+                M.points, faces_out, sf2, cf2, ctr2, own_arr, M.neigh,
+                n_new_int, M.n_cells,
+            )
+            total2 = counts2["pyramid"] + counts2["non_ortho"] + counts2["skew"]
+            if total2 < cur_total:
+                M.faces = faces_out
+                M.owner = own_arr
+                M.n_int = n_new_int
+                M.patches = new_patches
+                M.sf, M.cf = sf2, cf2
+                total_fixed += cur_total - total2
+                self._log(
+                    f"[poly 7/9] boundary split round {rnd + 1}: "
+                    f"{len(splits):,} polygon(s) split, defects "
+                    f"{cur_total} -> {total2}"
+                )
+            else:
+                break
+        return total_fixed
+
+    def _shift_boundary_skew(self, M, max_rounds: int = 8) -> int:
+        """Shift warped / marginally-behind boundary polygons to clear
+        checkMesh boundary-face skewness AND pyramid defects.
+
+        Opt-in (fTetWild path, 2026-10-18), runs after the boundary split.
+        Per violating boundary face, in severity order:
+
+        - skew: the exact OpenFOAM skew vector ``sv`` is the tangential
+          offset of the polygon centroid from the cell-centre normal line;
+          moving ALL the polygon's vertices by ``sv`` shifts the centroid
+          by ``sv`` and zeroes it (per-vertex averaging was measured to
+          CANCEL the proposals - a boundary centroid is shared by three
+          polygons whose normals differ, so the average move barely
+          shifts any of them and made every round worse);
+        - pyramid: the margin is ``sf . (cf - C)`` - only the polygon
+          centroid enters - so shifting the polygon outward along its
+          unit normal by 1.5x the deficit (measured 0.1..0.2 mm) clears
+          it exactly.
+
+        Each candidate is checked LOCALLY first (the face must clear; no
+        face sharing a vertex may newly violate pyramid or skew - this is
+        the cheap filter that makes a per-face sweep affordable), then
+        the whole sweep is kept only if the global detector count drops
+        (or ties with a lower continuous excess).  Steps backtrack 1.0 ->
+        0.25; a face whose smallest edge would shrink below half is
+        skipped.  Same surface-offset trade as the free-boundary
+        smoothing.  Returns defects cleared.
+        """
+        _RVS = 1e-150
+
+        def _face_geom(pts_arr, loop):
+            p = pts_arr[loop]
+            c0 = p.mean(axis=0)
+            a = p - c0
+            b_ = np.roll(p, -1, axis=0) - c0
+            tri = 0.5 * np.cross(a, b_)
+            w = np.linalg.norm(tri, axis=1)
+            wsum = float(w.sum())
+            sf_s = tri.sum(axis=0)
+            if wsum <= 0.0:
+                return sf_s, c0
+            tri_c = (c0 + p + np.roll(p, -1, axis=0)) / 3.0
+            cf_s = (tri_c * w[:, None]).sum(axis=0) / wsum
+            return sf_s, cf_s
+
+        def _skew_pv(pts_arr, loop, C):
+            sf_s, cf_s = _face_geom(pts_arr, loop)
+            sm = float(np.linalg.norm(sf_s))
+            pv_s = float(sf_s @ (cf_s - C))
+            if sm <= 0.0:
+                return pv_s, 0.0, np.zeros(3), np.zeros(3)
+            cpf = cf_s - C
+            nhat = sf_s / sm
+            dd = nhat * float(nhat @ cpf)
+            sv = cpf - (float(sf_s @ cpf) / (float(sf_s @ dd) + _RVS)) * dd
+            svm = float(np.linalg.norm(sv))
+            ext = float(np.max(np.abs((pts_arr[loop] - cf_s) @ (sv / svm)))) if svm > 0 else 0.0
+            fd = max(0.4 * float(np.linalg.norm(dd)) + _RVS, ext)
+            return pv_s, svm / fd, sv, nhat
+
+        total_fixed = 0
+        for rnd in range(max_rounds):
+            sf, cf = _face_geometry(M.points, M.faces)
+            ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
+            _, counts = self._detector(
+                M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int,
+                M.n_cells,
+            )
+            cur_total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+            if cur_total == 0 or M.n_int >= len(M.faces):
+                break
+            bnd = np.arange(M.n_int, len(M.faces))
+            own_b = M.owner[bnd]
+            smag = np.linalg.norm(sf[bnd], axis=1)
+            pv = (sf[bnd] * (cf[bnd] - ctr[own_b])).sum(axis=1)
+            cpf = cf[bnd] - ctr[own_b]
+            nhat = sf[bnd] / (smag + _RVS)[:, None]
+            d = nhat * (nhat * cpf).sum(axis=1)[:, None]
+            sv = cpf - (
+                (sf[bnd] * cpf).sum(axis=1) / ((sf[bnd] * d).sum(axis=1) + _RVS)
+            )[:, None] * d
+            fd = np.maximum(
+                0.4 * np.linalg.norm(d, axis=1) + _RVS,
+                _face_extent(M.points, M.faces, cf, sv, len(M.faces),
+                             lo=M.n_int, eps=_RVS),
+            )
+            skew = np.linalg.norm(sv, axis=1) / fd
+            bad = np.flatnonzero((skew > 4.0) | (pv <= 0.0))
+            if not len(bad):
+                break
+            ex_sk0 = float(np.maximum(skew - 4.0, 0.0).sum())
+            ex_py0 = float((np.maximum(-pv, 0.0) / (smag + _RVS)).sum())
+            # severity-ordered sweep with local per-face acceptance
+            order = bad[np.argsort(-(np.maximum(skew[bad] - 4.0, 0.0) + (pv[bad] <= 0.0) * 1.0))]
+            # boundary faces sharing a vertex with each face (adjacency)
+            v2f: dict[int, list[int]] = {}
+            for fi in bnd:
+                for v in M.faces[int(fi)]:
+                    v2f.setdefault(v, []).append(int(fi))
+            pts_work = M.points.copy()
+            n_local = 0
+            for k in order:
+                fi = int(bnd[k])
+                loop = M.faces[fi]
+                C = ctr[int(own_b[k])]
+                m = len(loop)
+                edge_min = min(
+                    float(np.linalg.norm(
+                        pts_work[loop[t]] - pts_work[loop[(t + 1) % m]]
+                    ))
+                    for t in range(m)
+                )
+                disp = 0.7 * sv[k].copy()
+                if pv[k] <= 0.0:
+                    need = (-pv[k]) / (smag[k] + _RVS)
+                    disp = disp + nhat[k] * (1.5 * need + 1e-12)
+                cap = 0.4 * edge_min
+                dm = float(np.linalg.norm(disp))
+                if cap > 0.0 and dm > cap:
+                    disp = disp * (cap / dm)
+                # sharing faces: pre-move local state
+                share: list[int] = []
+                seen: set[int] = set()
+                for v in loop:
+                    for fj in v2f.get(v, ()):
+                        if fj != fi and fj not in seen:
+                            seen.add(fj)
+                            share.append(fj)
+                share_state = {}
+                for fj in share:
+                    Cj = ctr[int(M.owner[fj])]
+                    pv_j, sk_j, _, _ = _skew_pv(pts_work, M.faces[fj], Cj)
+                    share_state[fj] = (pv_j, sk_j)
+                applied = False
+                for step in (1.0, 0.5, 0.25):
+                    cand = pts_work.copy()
+                    for v in loop:
+                        cand[v] += disp * step
+                    ln = np.array([
+                        float(np.linalg.norm(
+                            cand[loop[t]] - cand[loop[(t + 1) % m]]
+                        ))
+                        for t in range(m)
+                    ])
+                    if np.any(ln < 0.5 * edge_min * np.ones(m)):
+                        continue
+                    pv_k, sk_k, _, _ = _skew_pv(cand, loop, C)
+                    # strict improvement, not one-shot clearance: the
+                    # per-round excess tie-break accumulates the progress
+                    # (a capped step cannot zero a skew of 12 in one move).
+                    if pv_k <= 0.0 and pv[k] <= 0.0 and pv_k <= pv[k]:
+                        continue
+                    if pv[k] > 0.0 and pv_k <= 0.0:
+                        continue
+                    if sk_k >= max(skew[k], 4.0) and sk_k >= skew[k]:
+                        continue
+                    ok = True
+                    for fj in share:
+                        pv_j0, sk_j0 = share_state[fj]
+                        Cj = ctr[int(M.owner[fj])]
+                        pv_j, sk_j, _, _ = _skew_pv(cand, M.faces[fj], Cj)
+                        if pv_j0 > 0.0 and pv_j <= 0.0:
+                            ok = False
+                            break
+                        if sk_j0 <= 4.0 and sk_j > 4.0:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                    pts_work = cand
+                    n_local += 1
+                    applied = True
+                    break
+            if not n_local:
+                break
+            sf2, cf2 = _face_geometry(pts_work, M.faces)
+            ctr2, vol2 = _cell_centres(
+                sf2, cf2, M.owner, M.neigh, M.n_int, M.n_cells,
+            )
+            if not np.all(vol2 > 0.0):
+                break
+            _, counts2 = self._detector(
+                pts_work, M.faces, sf2, cf2, ctr2, M.owner, M.neigh,
+                M.n_int, M.n_cells,
+            )
+            total2 = counts2["pyramid"] + counts2["non_ortho"] + counts2["skew"]
+            sf_b2 = sf2[M.n_int:]
+            cf_b2 = cf2[M.n_int:]
+            smag2 = np.linalg.norm(sf_b2, axis=1)
+            pv2 = (sf_b2 * (cf_b2 - ctr2[own_b])).sum(axis=1)
+            cpf2 = cf_b2 - ctr2[own_b]
+            nhat2 = sf_b2 / (smag2 + _RVS)[:, None]
+            d2 = nhat2 * (nhat2 * cpf2).sum(axis=1)[:, None]
+            sv2 = cpf2 - (
+                (sf_b2 * cpf2).sum(axis=1)
+                / ((sf_b2 * d2).sum(axis=1) + _RVS)
+            )[:, None] * d2
+            fd2 = np.maximum(
+                0.4 * np.linalg.norm(d2, axis=1) + _RVS,
+                _face_extent(pts_work, M.faces, cf2, sv2, len(M.faces),
+                             lo=M.n_int, eps=_RVS),
+            )
+            skew2 = np.linalg.norm(sv2, axis=1) / fd2
+            ex_sk2 = float(np.maximum(skew2 - 4.0, 0.0).sum())
+            ex_py2 = float((np.maximum(-pv2, 0.0) / (smag2 + _RVS)).sum())
+            if total2 < cur_total or (
+                total2 == cur_total
+                and (ex_sk2 + 1e3 * ex_py2) < (ex_sk0 + 1e3 * ex_py0)
+                * (1.0 - 1e-12)
+            ):
+                M.points = pts_work
+                M.sf, M.cf = sf2, cf2
+                total_fixed += cur_total - total2
+                self._log(
+                    f"[poly 7/9] boundary shift round {rnd + 1}: "
+                    f"{n_local:,} face(s) shifted, defects "
+                    f"{cur_total} -> {total2} (excess "
+                    f"{ex_sk0 + 1e3 * ex_py0:.3g} -> "
+                    f"{ex_sk2 + 1e3 * ex_py2:.3g})"
+                )
+            else:
+                break
+        return total_fixed
 
     # ------------------------------------------------------------------
     # topology + geometry invariants, checked before anything is written
