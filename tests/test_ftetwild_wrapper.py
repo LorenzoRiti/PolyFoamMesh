@@ -176,6 +176,51 @@ def test_decimation_reduction_fires_only_for_overdense_input():
     assert ftw._decimation_reduction(0.01, 0.0) is None
 
 
+def test_refinement_subdivision_fires_only_for_underdense_input():
+    """Mirror contract of the decimation planner (2026-10-18): when the
+    target edge is finer than the input surface, fTetWild subdivides
+    internally element by element - the measured hours-long regime on
+    finer re-meshes.  The planner pre-subdivides instead (linear rounds
+    halve the median edge each), bounded at 3 rounds."""
+    # input at/above the target density -> no subdivision
+    assert ftw._refinement_subdivision(0.005, 0.005) is None
+    assert ftw._refinement_subdivision(0.005, 0.006) is None
+    # borderline: fires only when the input is >1.3x coarser than the target
+    assert ftw._refinement_subdivision(0.005, 0.0039) is None  # 1.28x coarser
+    # 2x coarser -> one round (each round halves the median edge)
+    assert ftw._refinement_subdivision(0.008, 0.0032) == 1
+    # 4x coarser -> two rounds
+    assert ftw._refinement_subdivision(0.008, 0.002) == 2
+    # extreme ratios clamp at 3 rounds (64x triangles is the budget)
+    assert ftw._refinement_subdivision(0.1, 0.0001) == 3
+    # degenerate inputs -> no decision, no crash
+    assert ftw._refinement_subdivision(0.0, 0.01) is None
+    assert ftw._refinement_subdivision(0.01, 0.0) is None
+
+
+def test_midpoint_subdivide_shares_edge_midpoints():
+    """The manifold-free subdivision: 1 triangle -> 4, and two triangles
+    sharing an edge must SHARE that edge's midpoint (no cracks) - VTK's
+    filters refuse the real (non-manifold) fTetWild input surface, this
+    split does not.  Geometry unchanged: midpoints on the input edges."""
+    pts = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1.0, 0]], dtype=np.float64)
+    tris = np.array([[0, 1, 2]], dtype=np.int64)
+    p1, t1 = ftw._midpoint_subdivide(pts, tris)
+    assert len(t1) == 4
+    assert len(p1) == 6  # 3 vertices + 3 edge midpoints
+    # midpoints lie on the edges: (0.5,0,0), (0.5,0.5,0), (0,0.5,0)
+    mids = p1[3:]
+    assert np.allclose(np.sort(mids[:, 0]), [0.0, 0.5, 0.5])
+    assert np.allclose(np.sort(mids[:, 1]), [0.0, 0.5, 0.5])
+    # two triangles sharing edge (0,1): 4 vertices, 5 unique edges, 8 tris
+    pts2 = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1.0, 0], [1.0, 1.0, 0]],
+                    dtype=np.float64)
+    tris2 = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.int64)
+    p2, t2 = ftw._midpoint_subdivide(pts2, tris2)
+    assert len(t2) == 8
+    assert len(p2) == 4 + 5, "the shared edge midpoint must be ONE point"
+
+
 def _nm_boundary_edge_count(V: np.ndarray, T: np.ndarray) -> int:
     allf = np.concatenate([T[:, list(f)] for f in ftw._TET_FACES], axis=0)
     key = np.sort(allf, axis=1)

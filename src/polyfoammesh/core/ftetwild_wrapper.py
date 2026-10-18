@@ -248,6 +248,7 @@ def tetrahedralize(
     la: float | None = None,
     opt_iter: int = DEFAULT_OPT_ITER,
     decimate: float | None = None,
+    subdivide: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Run fTetWild on a surface STL. Returns ``(V, T, stats)``.
 
@@ -255,9 +256,12 @@ def tetrahedralize(
     one (the GUI's manual Max Cell Size); ``la`` wins when both are set.
     ``decimate`` (fraction of faces to keep) pre-simplifies the surface
     with quadric decimation — see :func:`_decimation_reduction` for why
-    fTetWild needs this outside its own pipeline. Import of pytetwild is
-    deferred so every other function in this module stays usable without
-    the optional dependency.
+    fTetWild needs this outside its own pipeline. ``subdivide`` applies
+    that many linear subdivision rounds first (the under-dense mirror —
+    see :func:`_refinement_subdivision`); it runs BEFORE the decimation,
+    so a caller can subdivide to overshoot and decimate back to the
+    target. Import of pytetwild is deferred so every other function in
+    this module stays usable without the optional dependency.
     """
     try:
         import pyvista as pv
@@ -275,6 +279,22 @@ def tetrahedralize(
 
     n_input_tris = int(surf.n_cells)
     n_decimated_tris = n_input_tris
+    n_subdiv_tris = n_input_tris
+    if subdivide is not None and int(subdivide) > 0:
+        try:
+            pts_np = np.asarray(surf.points, dtype=np.float64)
+            tris_np = surf.faces.reshape(-1, 4)[:, 1:]
+            for _ in range(int(subdivide)):
+                pts_np, tris_np = _midpoint_subdivide(pts_np, tris_np)
+            faces_pv = np.hstack([
+                np.full((len(tris_np), 1), 3, dtype=np.int64), tris_np,
+            ]).ravel()
+            surf = pv.PolyData(pts_np, faces_pv)
+            n_subdiv_tris = int(surf.n_cells)
+        except Exception:
+            # Refinement is an optimization; the original surface is still
+            # valid input for fTetWild (only slower).
+            logger.warning("surface subdivision failed - using the original", exc_info=True)
     if decimate is not None and 0.0 < decimate < 1.0:
         try:
             # decimate_pro's parameter is the REDUCTION fraction (0.9
@@ -335,6 +355,8 @@ def tetrahedralize(
         "opt_iter": int(opt_iter),
         "n_input_tris": n_input_tris,
         "n_decimated_tris": n_decimated_tris,
+        "n_subdivided_tris": n_subdiv_tris,
+        "subdivide_rounds": int(subdivide or 0),
     }
     return V, T, stats
 
@@ -449,6 +471,68 @@ def _decimation_reduction(med_edge: float, target_edge: float) -> float | None:
     if med_edge * 1.3 > target_edge:
         return None
     return max((med_edge / target_edge) ** 2, 0.01)
+
+
+def _refinement_subdivision(med_edge: float, target_edge: float) -> int | None:
+    """Number of linear subdivision rounds for an under-dense surface.
+
+    The MIRROR of :func:`_decimation_reduction`: when the target edge is
+    FINER than the input surface (target < input / 1.3), fTetWild has to
+    subdivide the surface internally, element by element, inside its own
+    pipeline — the same class of runaway as the over-dense case, and the
+    one user-reported as "hours on a finer re-mesh".  A linear subdivision
+    round (each triangle -> 4 midpoints, geometry unchanged) halves the
+    median edge, so a couple of rounds bring the input to the target's
+    density BEFORE the call.  Bounded at 3 rounds (64x triangles): beyond
+    that the request is a different mesh class, not a density alignment.
+
+    Returns the number of rounds, or None when the input is not
+    significantly coarser than the target.
+    """
+    if med_edge <= 0 or target_edge <= 0:
+        return None
+    if med_edge <= target_edge * 1.3:
+        return None
+    rounds = int(np.ceil(np.log2(med_edge / (target_edge * 1.3))))
+    return min(max(rounds, 1), 3)
+
+
+def _midpoint_subdivide(
+    points: np.ndarray, tris: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """One round of midpoint (linear) subdivision, manifold-free.
+
+    Each triangle becomes 4 sub-triangles through the SHARED midpoints of
+    its three edges (keyed by the sorted vertex pair), so the surface
+    stays watertight even where the input is non-manifold.  VTK's
+    subdivision filters refuse non-manifold input outright — measured on
+    the real fTetWild input surface, which is non-manifold (tangent
+    contact): "Dataset is non-manifold and cannot be subdivided" — while
+    this split has no such requirement.  Geometry is unchanged: the new
+    points lie exactly on the input edges.
+    """
+    e = np.concatenate([
+        np.sort(tris[:, [0, 1]], axis=1),
+        np.sort(tris[:, [1, 2]], axis=1),
+        np.sort(tris[:, [2, 0]], axis=1),
+    ], axis=0)
+    uniq, inv = np.unique(e, axis=0, return_inverse=True)
+    inv = np.asarray(inv).reshape(-1)
+    n_pts = len(points)
+    mids = (points[uniq[:, 0]] + points[uniq[:, 1]]) * 0.5
+    new_points = np.vstack([points, mids])
+    n_tri = len(tris)
+    a0 = n_pts + inv[:n_tri]
+    a1 = n_pts + inv[n_tri:2 * n_tri]
+    a2 = n_pts + inv[2 * n_tri:]
+    v0, v1, v2 = tris[:, 0], tris[:, 1], tris[:, 2]
+    new_tris = np.concatenate([
+        np.stack([v0, a0, a2], axis=1),
+        np.stack([a0, v1, a1], axis=1),
+        np.stack([a2, a1, v2], axis=1),
+        np.stack([a0, a1, a2], axis=1),
+    ], axis=0)
+    return new_points, new_tris
 
 
 def boundary_defects(V: np.ndarray, T: np.ndarray) -> tuple[int, int]:
@@ -832,7 +916,27 @@ def run_volume(
     # target edge (research: fTetWild#93 / pytetwild#47; measured 386k-
     # triangle input vs a 12.75 mm target blew the stage up). This is the
     # density-alignment direction that works: input -> target.
-    reduction = _decimation_reduction(med_edge, target_edge)
+    # Under-dense input -> subdivide BEFORE fTetWild: when the target is
+    # finer than the surface, fTetWild subdivides it internally, element
+    # by element, inside its own pipeline - the same runaway class as the
+    # over-dense case and the user-reported "hours on a finer re-mesh".
+    # Linear subdivision (geometry unchanged) brings the input to the
+    # target's density up front; any overshoot is decimated back below.
+    n_sub = _refinement_subdivision(med_edge, target_edge)
+    if n_sub:
+        print(
+            f"input surface is {med_edge / target_edge:.1f}x coarser than "
+            f"the target edge - subdividing it {n_sub} round(s) (linear, "
+            "geometry unchanged) before fTetWild, which would otherwise "
+            "subdivide internally element by element (the measured "
+            "hours-long regime on finer re-meshes).",
+            flush=True,
+        )
+        reduction = _decimation_reduction(
+            med_edge / (2.0 ** n_sub), target_edge,
+        )
+    else:
+        reduction = _decimation_reduction(med_edge, target_edge)
     if reduction is not None:
         print(
             f"input surface is {target_edge / med_edge:.1f}x finer than the "
@@ -860,6 +964,7 @@ def run_volume(
             stl_source, lr=lr, la=la_used,
             opt_iter=opt_iter,
             decimate=reduction,
+            subdivide=n_sub,
         )
     finally:
         os.chdir(prev_cwd)
@@ -929,8 +1034,10 @@ def run_volume(
         "input_median_edge_m": med_edge,
         "bbox_diag_m": bbox_diag,
         "decimate_fraction": reduction,
+        "subdivide_rounds": tet_stats.get("subdivide_rounds"),
         "n_input_tris": tet_stats.get("n_input_tris"),
         "n_decimated_tris": tet_stats.get("n_decimated_tris"),
+        "n_subdivided_tris": tet_stats.get("n_subdivided_tris"),
         "n_manifold_splits": n_splits,
         "tagging": assign_stats,
     }
