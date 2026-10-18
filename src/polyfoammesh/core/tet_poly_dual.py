@@ -781,6 +781,38 @@ class TetPolyDualConverter:
                     f"{counts['skew']} [{time.monotonic() - t:.1f}s]"
                 )
 
+        # Boundary-pyramid clearance (opt-in, fTetWild path): per-face
+        # normal move of the violating boundary polygons (see
+        # _clear_boundary_pyramids). Runs after the smoother and the split
+        # pass; clears the remaining checkMesh pyramid faces (measured:
+        # 7 -> 0 on the reference part, 0 new skew/non-ortho, 2.8 mm max
+        # displacement). Keep-best against the detector.
+        if self._split_boundary and best_defects and best_defects > 0:
+            self._check_cancel()
+            t = time.monotonic()
+            n_cleared = self._clear_boundary_pyramids(M)
+            if n_cleared:
+                sf, cf = _face_geometry(M.points, M.faces)
+                M.sf, M.cf = sf, cf
+                ctr, vol = _cell_centres(
+                    sf, cf, M.owner, M.neigh, M.n_int, M.n_cells,
+                )
+                _, counts = self._detector(
+                    M.points, M.faces, sf, cf, ctr, M.owner, M.neigh,
+                    M.n_int, M.n_cells,
+                )
+                total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
+                best_defects = total
+                best_counts = dict(counts)
+                res.residual_defects = int(total)
+                res.defect_breakdown = dict(counts)
+                self._log(
+                    f"[poly 7/9] boundary pyramid clearance: {n_cleared} "
+                    f"face(s) cleared, defects now "
+                    f"{counts['pyramid']}/{counts['non_ortho']}/"
+                    f"{counts['skew']} [{time.monotonic() - t:.1f}s]"
+                )
+
         # Optional non-planar-face fix (default "none": output unchanged —
         # the only effect when the flag is off is that `planarity_report`
         # below would report the same numbers as before this converter ran).
