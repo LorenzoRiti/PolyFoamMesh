@@ -2372,13 +2372,15 @@ class DualPolyWorker(QObject):
                         # explanation instead of burning 20+ minutes.
                         self.log_line.emit(
                             "[poly] WARN: boundary layers cannot be built on "
-                            "this fTetWild dual - the wall has thin-feature "
-                            "spots where the dual cells cannot take any layer "
-                            "stack (measured: real checkMesh rejects every "
-                            "height scale with inverted micro-prisms). "
-                            "Continuing with the polyhedral mesh WITHOUT "
-                            "boundary layers; use a finer surface mesh or "
-                            "build the BL with the GMSH polymesh path."
+                            "this dual - the wall has thin-feature spots where "
+                            "the dual cells cannot take any layer stack "
+                            "(measured: real checkMesh rejects every height "
+                            "scale with inverted micro-prisms; the same "
+                            "engine fails the same way on the GMSH-derived "
+                            "dual of this part, so this is not specific to "
+                            "fTetWild). Continuing with the polyhedral mesh "
+                            "WITHOUT boundary layers; a finer surface mesh "
+                            "gives the engine thinner stacks to work with."
                         )
                     elif _cc_too_big:
                         self.log_line.emit(

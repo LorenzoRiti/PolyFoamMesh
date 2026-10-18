@@ -97,7 +97,12 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   widen) and h1-halving repeats the identical failure — so the fTetWild
   path now skips the doomed retries and reports a clear no-BL fallback
   in minutes instead of burning 20+ (the GMSH path keeps its full
-  fallback chain).
+  fallback chain). Cross-checked against the GMSH path: the same engine
+  fails the same way on the GMSH-derived dual of this part (measured on
+  a saved user run: 0 prisms, non-positive volumes at every scale) — the
+  limitation is the part's thin features, not the fTetWild dual, which
+  is in fact ~8x cleaner there (30 residual defects vs 263 on the GMSH
+  dual of the same part).
   Caveat measured on real parts: fTetWild has no wall-clock bound and on
   some geometries its optimizer runs far longer than GMSH (unbounded
   edge-splitting once the AMIPS energy stalls) — Cancel stops it.
