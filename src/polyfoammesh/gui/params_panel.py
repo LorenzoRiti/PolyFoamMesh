@@ -1055,7 +1055,16 @@ class ParamsPanel(QWidget):
                 kinematic_viscosity=nu,
                 turbulence_model=model,
             )
-            params = BLEngine().calculate_from_flow(flow, flow_type=flow_type)
+            # The growth widget drives the physics compute (user request
+            # 2026-10-18): a higher growth reaches the same total thickness
+            # with FEWER, thicker layers - "comfortable" stacks that fit
+            # the dual's boundary cells better and validate where a 1.2
+            # stack of the same total was compressed into pancakes.  The
+            # engine solves the layer COUNT from this rate.
+            params = BLEngine().calculate_from_flow(
+                flow, flow_type=flow_type,
+                growth_rate=float(self._bl_exp.value()),
+            )
         except Exception as e:
             logger.exception("Boundary-layer physics calculation failed")
             QMessageBox.warning(self, "Calculation failed", str(e))
