@@ -2194,6 +2194,12 @@ class DualPolyWorker(QObject):
                 boundary_feature_angle=40.0,
                 collapse_volume_tolerance=0.10,
                 smooth_free_boundary=self._smooth_free_boundary,
+                # fTetWild path only (same flag as the free-boundary
+                # smoothing): count checkMesh's BOUNDARY-face skewness
+                # exactly (OpenFOAM boundaryFaceSkewness replica) so the
+                # smoother and the reported residual see the warped feature
+                # polygons real checkMesh flags. Legacy detector otherwise.
+                count_boundary_skew=self._smooth_free_boundary,
             )
             t_dual0 = time.perf_counter()
             result = _run_with_profile(

@@ -489,6 +489,7 @@ def smooth_dual_mesh(
     zonal_aspect_lam: float = 5000.0,
     guard_severity: bool = False,
     free_boundary: bool = False,
+    free_boundary_min_edge_frac: float = 0.5,
 ) -> tuple[np.ndarray, dict]:
     """Smooth interior dual vertices, keep-best w.r.t. the defect detector.
 
@@ -548,6 +549,19 @@ def smooth_dual_mesh(
     backtracks/keeps the current best. Default off so the legacy
     count-based path is byte-identical. See
     notes/complex_geometry_reasoning.md (C5).
+
+    ``free_boundary_min_edge_frac`` (only meaningful with
+    ``free_boundary=True``): hard guard on the boundary edge lengths. A
+    candidate that shortens any edge of a boundary face below this
+    fraction of its ORIGINAL length is rejected. Measured (2026-10-18,
+    real 3 m part): free-boundary smoothing without this guard collapsed
+    some boundary edges from 0.6 mm to 0.011 mm (20x) while chasing the
+    warped feature polygons - those micro edges then made the boundary
+    layer's prisms degenerate (sub-micron cells, validation "non-positive
+    volume" at every height scale, BL refused). 0.5 keeps the smoothing
+    effective (defect count unchanged on the measured case) while
+    bounding every edge to at least half its input length. 0.0 disables
+    the guard (byte-identical to the pre-guard behaviour).
     """
     zonal_on = float(worst_aspect_thr) > 0.0
     if iterations <= 0:
@@ -566,6 +580,24 @@ def smooth_dual_mesh(
         # 66 -> 5, at a max point displacement of 4.3 mm on an 8 mm-cell
         # mesh; the keep-best gate keeps every acceptance guarantee.
         boundary = np.zeros(len(points), dtype=bool)
+    # Boundary-edge length guard (2026-10-18): see the docstring - without
+    # it the free-boundary smoothing collapses feature-adjacent edges to
+    # micro sizes and the downstream BL cannot extrude them.
+    _eb_a = _eb_b = _eb_l0 = None
+    if free_boundary and free_boundary_min_edge_frac > 0.0:
+        ea: list[int] = []
+        eb: list[int] = []
+        for f in faces[n_int:]:
+            m = len(f)
+            for k in range(m):
+                ea.append(f[k])
+                eb.append(f[(k + 1) % m])
+        if ea:
+            _eb_a = np.asarray(ea, dtype=np.int64)
+            _eb_b = np.asarray(eb, dtype=np.int64)
+            _eb_l0 = np.linalg.norm(
+                points[_eb_a] - points[_eb_b], axis=1,
+            )
     adj = _flatten_adjacency(_vertex_neighbours(points, faces))
 
     best_points = points
@@ -691,6 +723,10 @@ def smooth_dual_mesh(
                 cand_planarity = float(dev_c.max()) if len(dev_c) else 0.0
                 if cand_planarity > best_planarity + planarity_slack:
                     continue
+                if _eb_l0 is not None:
+                    ln = np.linalg.norm(cand[_eb_a] - cand[_eb_b], axis=1)
+                    if np.any(ln < free_boundary_min_edge_frac * _eb_l0):
+                        continue
                 _, cand_counts = detect_defects(
                     cand, faces, sf_c, cf_c, ctr_c, owner, neigh, n_int, n_cells,
                 )

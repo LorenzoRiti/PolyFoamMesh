@@ -272,3 +272,65 @@ def test_severity_guard_never_raises_max_severity(tmp_path):
     inj_counts, _ = _defects(injected, faces, owner, neigh, n_int, n_cells)
     g_counts, _ = _defects(guarded, faces, owner, neigh, n_int, n_cells)
     assert sum(g_counts.values()) <= sum(inj_counts.values())
+
+
+def test_free_boundary_edge_guard_bounds_shrinkage(tmp_path):
+    """fTetWild free-boundary contract (2026-10-18): with
+    ``free_boundary=True`` and the default ``free_boundary_min_edge_frac``,
+    no boundary edge may shrink below half its input length - the guard
+    exists because the unguarded free smoothing collapsed feature edges
+    from 0.6 mm to 0.011 mm on a real part and the downstream boundary
+    layer then could not extrude them (sub-micron prisms).  Also holds the
+    standard safety contract: defects non-increasing, positive volumes,
+    boundary topology untouched."""
+    points, faces, owner, neigh, _patches, n_int, n_cells = _run_dual(tmp_path)
+    boundary = _boundary_vertex_mask(points, faces, n_int)
+    assert boundary.any()
+    rng = np.random.default_rng(5)
+    injected = points.copy()
+    injected[boundary] += rng.normal(0, 0.10, (int(boundary.sum()), 3))
+
+    ea: list[int] = []
+    eb: list[int] = []
+    for f in faces[n_int:]:
+        m = len(f)
+        for k in range(m):
+            ea.append(f[k])
+            eb.append(f[(k + 1) % m])
+    ea = np.asarray(ea)
+    eb = np.asarray(eb)
+    l0 = np.linalg.norm(injected[ea] - injected[eb], axis=1)
+
+    inj_counts, inj_vol = _defects(injected, faces, owner, neigh, n_int, n_cells)
+    inj_total = inj_counts["pyramid"] + inj_counts["non_ortho"] + inj_counts["skew"]
+    assert (inj_vol > 0.0).all()
+
+    smoothed, _best = smooth_dual_mesh(
+        injected, faces, owner, neigh, n_int, n_cells,
+        _detect_defects, _face_geometry, _cell_centres,
+        iterations=6, relaxation=0.5, free_boundary=True,
+    )
+    ln = np.linalg.norm(smoothed[ea] - smoothed[eb], axis=1)
+    assert (ln >= 0.5 * l0 * (1.0 - 1e-12)).all(), (
+        f"boundary edge shrank below the guard: min ratio "
+        f"{float((ln / np.maximum(l0, 1e-300)).min()):.4f}"
+    )
+    sm_counts, sm_vol = _defects(smoothed, faces, owner, neigh, n_int, n_cells)
+    sm_total = sm_counts["pyramid"] + sm_counts["non_ortho"] + sm_counts["skew"]
+    assert sm_total <= inj_total
+    assert (sm_vol > 0.0).all()
+    assert len(smoothed) == len(injected)
+
+    # frac=0.0 disables the guard (documented byte-identical contract with
+    # the pre-guard behaviour): the call must still succeed and satisfy the
+    # core safety contract.
+    off, _best2 = smooth_dual_mesh(
+        injected, faces, owner, neigh, n_int, n_cells,
+        _detect_defects, _face_geometry, _cell_centres,
+        iterations=6, relaxation=0.5, free_boundary=True,
+        free_boundary_min_edge_frac=0.0,
+    )
+    off_counts, off_vol = _defects(off, faces, owner, neigh, n_int, n_cells)
+    off_total = off_counts["pyramid"] + off_counts["non_ortho"] + off_counts["skew"]
+    assert off_total <= inj_total
+    assert (off_vol > 0.0).all()

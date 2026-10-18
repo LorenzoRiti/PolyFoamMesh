@@ -327,6 +327,63 @@ def test_detect_defects_matches_recorded_checkmesh(expected):
     pyr = re.search(r"Error in face pyramids:\s*(\d+)", txt)
     assert pyr and int(pyr.group(1)) == counts["pyramid"]
 
+
+def test_boundary_skew_replica_flags_warped_boundary_faces(tmp_path):
+    """Opt-in exact checkMesh boundary-face skewness (2026-10-18).
+
+    The legacy detector only measured INTERNAL faces, so warped boundary
+    polygons at feature edges were invisible (measured on a real dual:
+    replica said 0 skew while checkMesh counted 59 boundary faces).  The
+    ``boundary_skew=True`` branch is a verbatim port of OpenFOAM 2512
+    ``primitiveMeshTools::boundaryFaceSkewness`` - validated externally
+    against real checkMesh on four independent duals (counts 59/20/69/6
+    and maxima 9.73624/7.27144/12.43022/6.35977, all bit-equal).  This
+    test freezes the contract on a synthetic cube dual:
+
+    - on the clean dual the branch adds exactly nothing (counts equal the
+      legacy detector, no new bad cells);
+    - on a hand-built boundary face whose cell centre is displaced
+      tangentially (skewness 10.25 by hand with OpenFOAM's arithmetic,
+      above the 4.0 threshold) the branch flags exactly that face while
+      the legacy detector reports zero.
+    """
+    from test_poly_smoother import _run_dual
+
+    points, faces, owner, neigh, _patches, n_int, n_cells = _run_dual(tmp_path)
+
+    sf, cf = _face_geometry(points, faces)
+    ctr, _vol = _cell_centres(sf, cf, owner, neigh, n_int, n_cells)
+    bad0, c0 = _detect_defects(
+        points, faces, sf, cf, ctr, owner, neigh, n_int, n_cells,
+        boundary_skew=True,
+    )
+    badL, cL = _detect_defects(
+        points, faces, sf, cf, ctr, owner, neigh, n_int, n_cells,
+    )
+    assert c0["skew_boundary"] == 0
+    assert c0["skew"] == cL["skew"] == 0
+    assert int(bad0.sum()) == int(badL.sum())
+
+    # Hand-built one-cell case.  Unit quad in the z=0 plane, cell centre
+    # displaced far in-plane (+x): Cpf = (-4.5, 0.5, -0.5); d = (0,0,-0.5);
+    # sv = Cpf - d = (-4.5, 0.5, 0), |sv| = 4.5277; fd = max(0.4*0.5,
+    # max_v |svHat & (p_v - cf)|) = 0.4417 -> skew = 10.25 > 4.0.
+    pts1 = np.array([[0.0, 0, 0], [1.0, 0, 0], [1.0, 1.0, 0], [0.0, 1.0, 0]])
+    fcs1 = [[0, 1, 2, 3]]
+    own1 = np.array([0], dtype=np.int64)
+    nb1 = np.array([], dtype=np.int64)
+    sf1 = np.array([[0.0, 0.0, 1.0]])
+    cf1 = np.array([[0.5, 0.5, 0.0]])
+    ctr1 = np.array([[5.0, 0.0, 0.5]])
+    bad1, c1 = _detect_defects(
+        pts1, fcs1, sf1, cf1, ctr1, own1, nb1, 0, 1, boundary_skew=True,
+    )
+    assert c1["skew_boundary"] == 1, c1
+    assert c1["skew"] == 1
+    assert bool(bad1[0])
+    _, c1L = _detect_defects(pts1, fcs1, sf1, cf1, ctr1, own1, nb1, 0, 1)
+    assert c1L["skew"] == 0, "legacy detector must stay blind to boundary skew"
+
 # ---------------------------------------------------------------------------
 # non-planarity measurement and optional fix (planarity_report /
 # fix_nonplanar_faces).  The perturbed cube is the "known non-planar mesh":

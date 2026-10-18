@@ -191,6 +191,7 @@ class TetPolyDualConverter:
         smooth_worst_aspect: float = 0.0,
         smooth_severity_guard: bool = False,
         smooth_free_boundary: bool = False,
+        count_boundary_skew: bool = False,
         merge_concave_cells: bool = False,
         merge_rounds: int = 2,
     ):
@@ -441,6 +442,26 @@ class TetPolyDualConverter:
         # protects the EXACT mode's bit-perfect surface; the collapse dual
         # is a surface-offset approximation anyway. Default off.
         self._smooth_free_boundary = bool(smooth_free_boundary)
+        # Opt-in exact checkMesh boundary-face skewness (2026-10-18,
+        # fTetWild path): the historical detector only measured INTERNAL
+        # faces, so warped boundary polygons at feature edges were invisible
+        # to the smoother and the reported residual. With this on, every
+        # internal defect call routes through a detector that also runs
+        # OpenFOAM's boundaryFaceSkewness (validated bit-exact against real
+        # checkMesh: counts 59/20/69/6 and maxima 9.73624/7.27144/12.43022/
+        # 6.35977 on four independent duals). Default off = historical
+        # detector, byte-identical.
+        self._count_boundary_skew = bool(count_boundary_skew)
+        if self._count_boundary_skew:
+            def _detector(points, faces, sf, cf, ctr, owner, neigh, n_int,
+                          n_cells):
+                return _detect_defects(
+                    points, faces, sf, cf, ctr, owner, neigh, n_int, n_cells,
+                    boundary_skew=True,
+                )
+            self._detector = _detector
+        else:
+            self._detector = _detect_defects
         # Opt-in dual-only concave-cell merge (P1). Default off: the output
         # is byte-identical to a converter built without it.
         self._merge_concave_cells = bool(merge_concave_cells)
@@ -586,7 +607,7 @@ class TetPolyDualConverter:
                 break
 
             ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
-            bad, counts = _detect_defects(
+            bad, counts = self._detector(
                 M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int, M.n_cells,
             )
             total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
@@ -645,7 +666,7 @@ class TetPolyDualConverter:
                 ctr2, vol2 = _cell_centres(
                     sf2, cf2, M2.owner, M2.neigh, M2.n_int, M2.n_cells,
                 )
-                bad2, counts2 = _detect_defects(
+                bad2, counts2 = self._detector(
                     M2.points, M2.faces, sf2, cf2, ctr2,
                     M2.owner, M2.neigh, M2.n_int, M2.n_cells,
                 )
@@ -701,7 +722,7 @@ class TetPolyDualConverter:
 
             pts, counts = smooth_dual_mesh(
                 M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
-                _detect_defects, _face_geometry, _cell_centres,
+                self._detector, _face_geometry, _cell_centres,
                 iterations=self._smooth_iters,
                 relaxation=self._smooth_relax,
                 log=self._log,
@@ -738,7 +759,7 @@ class TetPolyDualConverter:
             sf, cf = _face_geometry(M.points, M.faces)
             M.sf, M.cf = sf, cf
             ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
-            _, counts = _detect_defects(
+            _, counts = self._detector(
                 M.points, M.faces, sf, cf, ctr, M.owner, M.neigh, M.n_int, M.n_cells,
             )
             total = counts["pyramid"] + counts["non_ortho"] + counts["skew"]
@@ -3240,9 +3261,24 @@ def _cell_centres(sf, cf, owner, neigh, n_int, n_cells):
 def _detect_defects(
     points, faces, sf, cf, ctr, owner, neigh, n_int, n_cells,
     non_ortho_limit_deg: float = 70.0, skew_limit: float = 4.0,
+    boundary_skew: bool = False,
 ):
     """Flag cells failing checkMesh's face-pyramid, non-orthogonality or
-    skewness criteria. Returns (bad_cell_mask, counts)."""
+    skewness criteria. Returns (bad_cell_mask, counts).
+
+    ``boundary_skew`` (opt-in, default False = historical behaviour): also
+    run checkMesh's BOUNDARY-face skewness test
+    (``primitiveMeshTools::boundaryFaceSkewness``, OpenFOAM 2512
+    source-verified): the internal formula below only looks at internal
+    faces, so warped boundary polygons at feature edges were invisible to
+    the smoother and to the reported residual (measured: the replica said
+    0 skew while real checkMesh counted 20-69 boundary faces on the same
+    dual). The boundary branch uses the same primitives checkMesh does -
+    face centres/areas from the centre-point decomposition and the
+    primitiveMesh cell centres - and its hits are folded into
+    ``counts["skew"]`` (plus ``counts["skew_boundary"]`` for visibility)
+    and into the bad-cell mask.
+    """
     bad = np.zeros(n_cells, dtype=bool)
 
     pv_own = (sf * (cf - ctr[owner])).sum(axis=1)
@@ -3278,7 +3314,39 @@ def _detect_defects(
     bad[owner[:n_int][m_sk]] = True
     bad[neigh[m_sk]] = True
 
-    return bad, {"pyramid": n_pyr, "non_ortho": n_no, "skew": n_sk}
+    n_bsk = 0
+    if boundary_skew and n_int < len(faces):
+        # OpenFOAM 2512 primitiveMeshTools::boundaryFaceSkewness, verbatim
+        # arithmetic (source-read, not reconstructed), with ROOTVSMALL =
+        # 1e-150 as in the double-precision build:
+        #   Cpf = fCtr - ownCc;  n = fArea/|fArea|;  d = n*(n & Cpf)
+        #   sv = Cpf - ((fArea & Cpf)/((fArea & d) + ROOTVSMALL))*d
+        #   svHat = sv/(mag(sv) + ROOTVSMALL)
+        #   fd = 0.4*|d| + ROOTVSMALL, then max with each vertex projection
+        #   skew = |sv| / fd
+        _RVS = 1e-150
+        b_cpf = cf[n_int:] - ctr[owner[n_int:]]
+        b_fa = sf[n_int:]
+        b_n = b_fa / (np.linalg.norm(b_fa, axis=1) + _RVS)[:, None]
+        b_d = b_n * (b_n * b_cpf).sum(axis=1)[:, None]
+        b_sv = b_cpf - (
+            (b_fa * b_cpf).sum(axis=1)
+            / ((b_fa * b_d).sum(axis=1) + _RVS)
+        )[:, None] * b_d
+        b_svm = np.linalg.norm(b_sv, axis=1)
+        b_fd = np.maximum(
+            0.4 * np.linalg.norm(b_d, axis=1) + _RVS,
+            _face_extent(points, faces, cf, b_sv, len(faces), lo=n_int,
+                         eps=_RVS),
+        )
+        m_bsk = b_svm / b_fd > skew_limit
+        n_bsk = int(m_bsk.sum())
+        bad[owner[n_int:][m_bsk]] = True
+
+    counts = {"pyramid": n_pyr, "non_ortho": n_no, "skew": n_sk + n_bsk}
+    if boundary_skew:
+        counts["skew_boundary"] = n_bsk
+    return bad, counts
 
 
 def _boundary_star_areas(P) -> np.ndarray:
@@ -3556,8 +3624,15 @@ def _splice_boundary_loops(a, b, xyz):
     return clean
 
 
-def _face_extent(points, faces, cf, sv, n_int):
+def _face_extent(points, faces, cf, sv, hi, lo=0, eps=1e-300):
     """max over a face's points of |unit(sv) . (pt - faceCentre)|.
+
+    Covers faces ``lo <= fi < hi`` and returns an array indexed by
+    ``fi - lo`` (``lo=0`` keeps the historical internal-face call
+    byte-identical).  ``lo=n_int`` serves the boundary-face skewness
+    replica (OpenFOAM's ``boundaryFaceSkewness`` normalisation, which
+    uses ``sv/(mag(sv) + ROOTVSMALL)`` with ROOTVSMALL = 1e-150 - the
+    caller passes ``eps=1e-150`` there).
 
     Chunked in 250k-face blocks (Lane A RAM fix, same reason as
     ``_face_geometry`` above): the dense ``(n, k, 3)`` relative-position
@@ -3565,11 +3640,11 @@ def _face_extent(points, faces, cf, sv, n_int):
     output.
     """
     _BLOCK = 250_000
-    hat = sv / np.maximum(np.linalg.norm(sv, axis=1), 1e-300)[:, None]
-    out = np.zeros(n_int, dtype=np.float64)
+    hat = sv / (np.linalg.norm(sv, axis=1) + eps)[:, None]
+    out = np.zeros(hi - lo, dtype=np.float64)
     buckets, _sizes = _face_size_buckets(faces)
     for k, fids, verts in buckets:
-        sel = fids < n_int
+        sel = (fids >= lo) & (fids < hi)
         if not sel.any():
             continue
         b_all = fids[sel]
@@ -3578,7 +3653,7 @@ def _face_extent(points, faces, cf, sv, n_int):
             b = b_all[s:s + _BLOCK]
             v = v_all[s:s + _BLOCK]
             rel = points[v] - cf[b][:, None, :]
-            out[b] = np.abs((rel * hat[b][:, None, :]).sum(axis=2)).max(axis=1)
+            out[b - lo] = np.abs((rel * hat[b - lo][:, None, :]).sum(axis=2)).max(axis=1)
     return out
 
 
