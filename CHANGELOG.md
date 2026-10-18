@@ -55,20 +55,49 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   `smooth_free_boundary`): the dual's smoother normally pins boundary
   vertices to keep the EXACT dual a bit-perfect surface subdivision —
   the collapse dual is a surface-offset approximation anyway, so
-  relaxing it there is safe and measured on the reference part:
-  warped-boundary defect faces 66 -> 5 (checkMesh pyramid faces
-  59 -> 5, skew faces 59 -> 20, max skew 9.7 -> 7.3) at <= 4.3 mm max
-  point movement on 8 mm cells; keep-best and volume/closure guards
+  relaxing it there is safe. Measured on the reference part, with the
+  edge-length guard that the first unguarded version needed (without it
+  the smoothing chased the warped feature polygons down to 0.011 mm
+  boundary edges — a 20x collapse that made every downstream BL prism
+  sub-micron and unbuildable): warped-boundary defect faces 121 -> 90
+  (pyramid 62 -> 21, boundary-skew 59 -> 69, i.e. a real 26% reduction
+  of the total with every edge >= 0.36 mm) at <= 4.3 mm max point
+  movement on 8 mm cells; keep-best and volume/closure guards
   unchanged. The stage also streams fTetWild's own phase lines now
   (loglevel 3; FTETWILD_QUIET=1 restores silence) — the silent
   tetrahedralization was repeatedly mistaken for a hang.
-  Known residual on the same part: ~5 boundary faces (0.001% of cells)
-  remain flagged by checkMesh at feature edges; checkMesh's
-  boundary-face skewness formula is not the one the in-process smoother
-  optimizes (the replica's skew differs from checkMesh's on warped
-  boundary polygons). Historical baseline for comparison: GMSH on this
+  Residual on the same part, stated exactly as checkMesh sees it: 21
+  pyramid + 69 skew boundary faces (0.003% of the 2.9M faces) at
+  feature edges. Historical baseline for comparison: GMSH on this
   part failed the final checkMesh in ~5 of 10 logged runs, one with 219
   pyramid faces.
+  Follow-up work (same day) closed most of the observability gap and
+  diagnosed the boundary-layer behaviour precisely:
+  (a) the in-process detector now reproduces checkMesh's BOUNDARY-face
+  skewness EXACTLY (verbatim port of OpenFOAM 2512
+  `primitiveMeshTools::boundaryFaceSkewness`; validated bit-equal on
+  four independent duals — counts 59/20/69/6 and maxima
+  9.73624/7.27144/12.43022/6.35977), so the smoother and the reported
+  residual see what checkMesh sees (opt-in `count_boundary_skew`, on for
+  the fTetWild path; the legacy detector is byte-identical);
+  (b) the free-boundary smoothing got a hard edge-length guard
+  (`free_boundary_min_edge_frac=0.5`): without it, chasing the warped
+  feature polygons collapsed boundary edges from 0.6 mm to 0.011 mm —
+  micro edges that made every BL prism sub-micron and unbuildable;
+  (c) two keep-best boundary repairs (split of V-warped polygons along
+  the best diagonal; per-face shift along the exact OpenFOAM skew vector
+  and the pyramid normal) reduce the residual further; they converge
+  slowly on the reference dual (90 -> 89 defects in 6 rounds) and stay
+  honest about it — opt-in, default off;
+  (d) the boundary layer is now DIAGNOSED on this part: the standard
+  build is rejected by real checkMesh at every height scale (36
+  negative-volume micro-prisms at thin features, 377 pyramid faces on
+  the refused build), the concave-closure retry diverges
+  (multiply-connected boundary edges grow 5 -> 10 -> 15 as exclusions
+  widen) and h1-halving repeats the identical failure — so the fTetWild
+  path now skips the doomed retries and reports a clear no-BL fallback
+  in minutes instead of burning 20+ (the GMSH path keeps its full
+  fallback chain).
   Caveat measured on real parts: fTetWild has no wall-clock bound and on
   some geometries its optimizer runs far longer than GMSH (unbounded
   edge-splitting once the AMIPS energy stalls) — Cancel stops it.
