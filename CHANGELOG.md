@@ -39,6 +39,22 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   diagnostic up front and states explicitly that the tetrahedralization
   phase runs without output by design (the GUI heartbeat is the liveness
   signal, Cancel always works).
+  Surface fidelity (2026-10-19): the wrapper now exposes pytetwild's
+  fidelity knobs and defaults `simplify` OFF.  Measured on the reference
+  part (3 m, 8 mm target): with fTetWild's internal edge-collapsing
+  simplification ON the output surface deviates from the input by up to
+  5 mm (77% of points > 0.3 mm) and the AMIPS energy explodes (max
+  140783 vs 12); with it OFF the deviation is 0.06 mm mean / 1.65 mm max
+  (6% > 0.3 mm) and the mesh has HALF the cells (2.33M vs 4.47M) at
+  comparable time.  That deviation is what warps the dual boundary
+  polygons and makes the poly conversion fight.  `epsilon` (relative
+  surface envelope), `stop_energy` and `disable_filtering` are exposed
+  too (defaults unchanged; env knobs FTETWILD_EPS / FTETWILD_STOP_ENERGY
+  / FTETWILD_NO_FILTERING / FTETWILD_SIMPLIFY, CLI flags, GUI fields on
+  the Advanced tab).  Also: the MSH-conversion worker timeout was 300 s
+  while the CLI allows 900 s - a multi-million-tet mesh could exceed it
+  and the GUI reported a spurious failure; raised to 900 s with a start
+  log line.
   Output conditioning (fTetWild's known incompatibilities with the
   barycentric dual, measured on a real 3 m part with a tangent contact):
   (1) the decimated input surface is Taubin-smoothed (features preserved)
