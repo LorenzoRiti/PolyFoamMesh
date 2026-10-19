@@ -721,13 +721,15 @@ def clear_boundary_pyramids_case(case_dir, log=None, max_rounds: int = 3) -> int
     Opt-in post-pass on the fTetWild path (2026-10-19).  The BL build
     legitimately adds pyramid faces at the terminator bands on thin-feature
     duals; this moves the violating BOUNDARY polygons along their outward
-    normal (2x the measured deficit) so the written mesh passes the check
-    instead of rejecting the whole BL.  Batched: all displacements come from
-    ONE geometry pass per round, are applied together and volume-guarded
-    once (faces of inverted cells reverted individually); a round is kept
-    only if the pyramid count strictly drops.  The move is perpendicular to
-    the surface, so boundary edge lengths are unchanged.  Returns the number
-    of faces cleared; writes only when something was cleared.
+    normal (2x the measured deficit, capped at half the face's mean edge)
+    so the written mesh passes the check instead of rejecting the whole BL.
+
+    Sequential per-face with a volume guard (the batched/vertex-averaged
+    variant was measured to clear only 2 of 27 faces: the boundary vertices
+    are shared with thin prisms, so summed moves invert cells).  A round is
+    kept only if the pyramid count strictly drops; the move is perpendicular
+    to the surface, so boundary edge lengths are unchanged.  Returns the
+    number of faces cleared; writes only when something was cleared.
     """
     from polyfoammesh.core import foam_mesh_io as fio
 
@@ -755,7 +757,8 @@ def clear_boundary_pyramids_case(case_dir, log=None, max_rounds: int = 3) -> int
         C, _vol = _cell_centroids(
             points, faces, owner, neighbour, n_int, n_cells,
         )
-        per_face = []
+        pts_try = points.copy()
+        moved = 0
         for fi in bad:
             sm = float(np.linalg.norm(sf[fi]))
             if sm <= 0.0:
@@ -764,38 +767,35 @@ def clear_boundary_pyramids_case(case_dir, log=None, max_rounds: int = 3) -> int
             need = max(
                 0.0, -float(sf[fi] @ (cf[fi] - C[owner[fi]])),
             ) / sm
-            per_face.append((fi, nhat * (2.0 * need + 1e-12)))
-        if not per_face:
-            break
-        disp = {}
-        for fi, d in per_face:
-            for v in faces[fi]:
-                disp[int(v)] = disp.get(int(v), np.zeros(3)) + d
-        pts2 = points.copy()
-        for v, d in disp.items():
-            pts2[v] += d
-        vols = _exact_cell_volumes(
-            pts2, faces, owner, neighbour, n_cells, n_int,
-        )
-        if np.any(vols <= 0.0):
-            bad_cells = set(np.flatnonzero(vols <= 0.0).tolist())
-            revert = set()
-            for fi, _d in per_face:
-                if int(owner[fi]) in bad_cells:
-                    revert.update(int(v) for v in faces[fi])
-            for v in revert:
-                pts2[v] = points[v]
-            vols = _exact_cell_volumes(
-                pts2, faces, owner, neighbour, n_cells, n_int,
-            )
-            if np.any(vols <= 0.0):
+            loop = faces[fi]
+            m = max(len(loop), 1)
+            mean_edge = sum(
+                float(np.linalg.norm(
+                    points[loop[k]] - points[loop[(k + 1) % m]]
+                ))
+                for k in range(m)
+            ) / m
+            step = min(2.0 * need + 1e-12, 0.5 * mean_edge)
+            for scale in (1.0, 0.5, 0.25):
+                cand = pts_try.copy()
+                for v in loop:
+                    cand[int(v)] += nhat * (step * scale)
+                vols = _exact_cell_volumes(
+                    cand, faces, owner, neighbour, n_cells, n_int,
+                )
+                if np.any(vols <= 0.0):
+                    continue
+                pts_try = cand
+                moved += 1
                 break
+        if not moved:
+            break
         n_after, _ = _pyramid_violations(
-            pts2, faces, owner, neighbour, n_int, n_cells,
+            pts_try, faces, owner, neighbour, n_int, n_cells,
             return_idx=True,
         )
         if n_after < n_bad:
-            points = pts2
+            points = pts_try
             total += n_bad - n_after
             if log is not None:
                 log(
