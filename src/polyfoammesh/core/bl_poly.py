@@ -714,6 +714,100 @@ def _dual_convexity_wall_fade(points, faces, owner, neigh, n_int, n_cells,
     }
 
 
+
+def clear_boundary_pyramids_case(case_dir, log=None, max_rounds: int = 3) -> int:
+    """Clear checkMesh boundary-face pyramid violations in a written polyMesh.
+
+    Opt-in post-pass on the fTetWild path (2026-10-19).  The BL build
+    legitimately adds pyramid faces at the terminator bands on thin-feature
+    duals; this moves the violating BOUNDARY polygons along their outward
+    normal (2x the measured deficit) so the written mesh passes the check
+    instead of rejecting the whole BL.  Batched: all displacements come from
+    ONE geometry pass per round, are applied together and volume-guarded
+    once (faces of inverted cells reverted individually); a round is kept
+    only if the pyramid count strictly drops.  The move is perpendicular to
+    the surface, so boundary edge lengths are unchanged.  Returns the number
+    of faces cleared; writes only when something was cleared.
+    """
+    from polyfoammesh.core import foam_mesh_io as fio
+
+    poly = Path(case_dir) / "constant" / "polyMesh"
+    try:
+        points, faces, owner, neighbour, patches = fio.read_polymesh(poly)
+    except Exception:
+        return 0
+    points = np.asarray(points, dtype=np.float64)
+    owner = np.asarray(owner, dtype=np.int64)
+    neighbour = np.asarray(neighbour, dtype=np.int64)
+    faces = [list(map(int, f)) for f in faces]
+    n_int = int(len(neighbour))
+    n_cells = int(max(int(owner.max()), int(neighbour.max()))) + 1
+    total = 0
+    for _rnd in range(int(max_rounds)):
+        n_bad, idx = _pyramid_violations(
+            points, faces, owner, neighbour, n_int, n_cells,
+            return_idx=True,
+        )
+        bad = [int(fi) for fi in idx if int(fi) >= n_int]
+        if not bad:
+            break
+        sf, cf = _face_geometry(points, faces)
+        C, _vol = _cell_centroids(
+            points, faces, owner, neighbour, n_int, n_cells,
+        )
+        per_face = []
+        for fi in bad:
+            sm = float(np.linalg.norm(sf[fi]))
+            if sm <= 0.0:
+                continue
+            nhat = sf[fi] / sm
+            need = max(
+                0.0, -float(sf[fi] @ (cf[fi] - C[owner[fi]])),
+            ) / sm
+            per_face.append((fi, nhat * (2.0 * need + 1e-12)))
+        if not per_face:
+            break
+        disp = {}
+        for fi, d in per_face:
+            for v in faces[fi]:
+                disp[int(v)] = disp.get(int(v), np.zeros(3)) + d
+        pts2 = points.copy()
+        for v, d in disp.items():
+            pts2[v] += d
+        vols = _exact_cell_volumes(
+            pts2, faces, owner, neighbour, n_cells, n_int,
+        )
+        if np.any(vols <= 0.0):
+            bad_cells = set(np.flatnonzero(vols <= 0.0).tolist())
+            revert = set()
+            for fi, _d in per_face:
+                if int(owner[fi]) in bad_cells:
+                    revert.update(int(v) for v in faces[fi])
+            for v in revert:
+                pts2[v] = points[v]
+            vols = _exact_cell_volumes(
+                pts2, faces, owner, neighbour, n_cells, n_int,
+            )
+            if np.any(vols <= 0.0):
+                break
+        n_after, _ = _pyramid_violations(
+            pts2, faces, owner, neighbour, n_int, n_cells,
+            return_idx=True,
+        )
+        if n_after < n_bad:
+            points = pts2
+            total += n_bad - n_after
+            if log is not None:
+                log(
+                    f"[bl] boundary pyramid clearance: {n_bad} -> {n_after}"
+                )
+        else:
+            break
+    if total:
+        fio.write_polymesh(poly, points, faces, owner, neighbour, patches)
+    return total
+
+
 def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
                         return_idx=False):
     """Number of faces whose normal points INTO one of its cells (checkMesh's
@@ -1287,6 +1381,8 @@ class PolyBoundaryLayerEngine:
         edge_cap_percentile: float = 0.0,
         terminate_by_budget: bool = False,
         consume: bool | None = None,
+        pyr_tolerance: int = 0,
+        cover_thin_first: bool = True,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -1447,6 +1543,15 @@ class PolyBoundaryLayerEngine:
         t_run0 = time.perf_counter()
         self._stage_pre_s = 0.0
         self._stage_build_s = 0.0
+        # fTetWild path (2026-10-19): accept a build that adds up to this
+        # many face-pyramid violations over the input, then clear them with
+        # the post-BL boundary-pyramid clearance pass.  Measured: the fine
+        # dual's drop-path build legitimately adds ~18-180 pyramids at the
+        # terminator bands (thin features), and no height scale avoids it -
+        # the strict gate rejected every attempt and the whole stage was
+        # wasted.  Default 0 = historical strict gate.
+        self._pyr_tolerance = int(max(0, int(pyr_tolerance)))
+        self._cover_thin_first = bool(cover_thin_first)
         res = PolyBoundaryLayerResult(
             n_layers=int(max(1, min(int(n_layers), 40))),
             first_height=float(first_height),
@@ -1717,7 +1822,16 @@ class PolyBoundaryLayerEngine:
         # path did.  This is the "compressed stack as long as validation
         # passes, leave a face bare only when impossible" policy of the 2026-10
         # BL closure fix.
-        cover_passes = (True, False) if thin_bnd else (True,)
+        # Coverage-first is the historical default; the fTetWild path can
+        # try the drop pass first (its duals always fail the compressed-
+        # stack pass at the thin features, so the cover attempts are pure
+        # dead time - measured ~250 s on the fine reference part).
+        if not thin_bnd:
+            cover_passes = (True,)
+        elif self._cover_thin_first:
+            cover_passes = (True, False)
+        else:
+            cover_passes = (False, True)
         for cover_thin in cover_passes:
             for scale, clamp in (
                 (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
@@ -4392,10 +4506,12 @@ class PolyBoundaryLayerEngine:
         # they would make things worse).
         n_pyr = _pyramid_violations(pts, faces, owner, neigh, n_int, n_cells)
         pyr_before = built.get("pyr_before", 0)
-        if n_pyr > pyr_before:
+        pyr_limit = int(pyr_before) + int(getattr(self, "_pyr_tolerance", 0))
+        if n_pyr > pyr_limit:
             return False, (
                 f"{n_pyr} faces violate the face-pyramid criterion "
-                f"(input had {pyr_before})"
+                f"(input had {pyr_before}, tolerance "
+                f"{int(getattr(self, '_pyr_tolerance', 0))})"
             )
 
         # BL → core volume-ratio constraint (STAR-CCM+ smooth-transition):

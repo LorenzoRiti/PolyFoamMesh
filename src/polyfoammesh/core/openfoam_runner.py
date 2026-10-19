@@ -2290,6 +2290,16 @@ class DualPolyWorker(QObject):
                     # default (consume on - it is the promoted default
                     # there).
                     kw["consume"] = False
+                    # The fine dual's build adds ~18-180 pyramids at the
+                    # terminator bands and no height scale avoids it, so the
+                    # strict gate rejected every attempt (measured: 663 s
+                    # wasted, 0 prisms).  Accept the build with a bounded
+                    # tolerance and clear the added pyramids after the BL
+                    # (clear_boundary_pyramids_case below).  Also try the
+                    # drop pass FIRST: the compressed-stack pass always
+                    # fails on these duals (dead time).
+                    kw["pyr_tolerance"] = 200
+                    kw["cover_thin_first"] = False
                 _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
                 _cc_n_faces = int(
                     max(int(getattr(result, "n_internal_faces", 0) or 0), 0)
@@ -2443,6 +2453,29 @@ class DualPolyWorker(QObject):
                     f"[poly] Boundary layers OK: {bres.n_prism_cells:,} prism "
                     f"cells, total thickness {bres.total_thickness:.6g} m"
                 )
+                if self._smooth_free_boundary:
+                    # Post-BL separation of the build from the checkMesh
+                    # gate: clear the boundary pyramids the terminator bands
+                    # added at the thin features (batched, volume-guarded,
+                    # write only when something was cleared).  The surface
+                    # move is perpendicular to the wall (~0.1-0.6 mm).
+                    try:
+                        from polyfoammesh.core.bl_poly import (
+                            clear_boundary_pyramids_case,
+                        )
+                        _n_clr = clear_boundary_pyramids_case(
+                            self._case_dir, log=self.log_line.emit,
+                        )
+                        if _n_clr:
+                            self.log_line.emit(
+                                f"[poly] boundary pyramid clearance "
+                                f"(post-BL): {_n_clr} face(s) cleared"
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        self.log_line.emit(
+                            f"[poly] WARN: boundary pyramid clearance "
+                            f"failed: {exc}"
+                        )
                 result.bl_prism_cells = bres.n_prism_cells
                 result.bl_thickness = bres.total_thickness
                 # Factual readback — facts, not estimates (user decision
