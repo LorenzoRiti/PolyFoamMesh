@@ -3453,6 +3453,8 @@ class MainWindow(QMainWindow):
             )
             w = FtetWildVolumeWorker(
                 step_path, msh_path, detail, max_cell_size=max_cell,
+                epsilon=self._params.get_ftetwild_epsilon(),
+                simplify=self._params.get_ftetwild_simplify(),
             )
         else:
             w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,

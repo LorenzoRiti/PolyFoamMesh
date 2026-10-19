@@ -696,6 +696,35 @@ class ParamsPanel(QWidget):
         self._min_cell.valueChanged.connect(self._refresh_bl_hint)
         adv_layout.addWidget(mesh_group)
 
+        # fTetWild surface fidelity (experimental mesher, issue #12): the
+        # wrapper's knobs exposed so the user can trade fidelity for speed.
+        ftet_group = QGroupBox("fTetWild surface fidelity (experimental)")
+        ftet_form = QFormLayout(ftet_group)
+        self._ftet_eps = QDoubleSpinBox()
+        self._ftet_eps.setRange(1e-6, 1e-2)
+        self._ftet_eps.setValue(1e-3)
+        self._ftet_eps.setDecimals(8)
+        self._ftet_eps.setSingleStep(1e-4)
+        self._ftet_eps.setToolTip(
+            "Relative surface envelope: how far the fTetWild output surface "
+            "may deviate from the input. 1e-3 (default) lets it deviate up to "
+            "~3 mm on a 3 m part - that deviation warps the dual boundary "
+            "polygons and makes the poly conversion fight. 1e-4 = 0.3 mm "
+            "(GMSH-like fidelity, slower)."
+        )
+        ftet_form.addRow("Surface envelope (eps):", self._ftet_eps)
+        self._ftet_simplify = QCheckBox(
+            "Simplify surface (slower, less faithful)"
+        )
+        self._ftet_simplify.setChecked(False)
+        self._ftet_simplify.setToolTip(
+            "ON: fTetWild runs its internal edge-collapsing simplification - "
+            "the measured expensive phase (660 s on the reference part) and a "
+            "deviation source. OFF: skip it - faster and more faithful."
+        )
+        ftet_form.addRow(self._ftet_simplify)
+        adv_layout.addWidget(ftet_group)
+
         # Auto-Suggest predates the Mesh Fineness slider and is superseded
         # by it; kept as a hidden attribute so any remaining reference
         # keeps working. The Adaptive toggle itself now lives on the Mesh
@@ -1553,6 +1582,17 @@ class ParamsPanel(QWidget):
         bucket = int(round(value / 5.0))
         bucket = max(0, min(4, bucket))
         return self._DETAIL_MAP.get(bucket, "medium")
+
+    def get_ftetwild_epsilon(self) -> float:
+        """fTetWild relative surface envelope (0 = pytetwild default)."""
+        return float(self._ftet_eps.value()) if hasattr(self, "_ftet_eps") else 0.0
+
+    def get_ftetwild_simplify(self) -> bool:
+        """fTetWild internal simplification (True = default behaviour)."""
+        return (
+            bool(self._ftet_simplify.isChecked())
+            if hasattr(self, "_ftet_simplify") else True
+        )
 
     def get_target_cells(self) -> int:
         """Target cell count driven by the Mesh Fineness slider."""

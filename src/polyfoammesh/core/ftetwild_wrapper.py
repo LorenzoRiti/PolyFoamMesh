@@ -277,7 +277,13 @@ def tetrahedralize(
     AMIPS energy early-stop; higher = stops sooner (faster, looser).
     ``disable_filtering`` (default False): keep small input features
     instead of letting fTetWild's filter remove them (another deviation
-    source).
+    source).  ``simplify`` (default False): fTetWild's internal edge-
+    collapsing simplification.  Measured on the reference part: with it
+    ON the output surface deviates up to 5 mm (77% of points > 0.3 mm)
+    and the AMIPS energy explodes (max 140783 vs 12); with it OFF the
+    deviation is 0.06 mm mean / 1.65 mm max (6% > 0.3 mm) and the mesh
+    has HALF the cells (2.33M vs 4.47M) at comparable time.  OFF is the
+    default; ``FTETWILD_SIMPLIFY=1`` re-enables it.
     """
     try:
         import pyvista as pv
@@ -858,7 +864,7 @@ def run_volume(
     epsilon: float | None = None,
     stop_energy: float | None = None,
     disable_filtering: bool = False,
-    simplify: bool = True,
+    simplify: bool = False,
 ) -> dict:
     """Full experimental tet stage: surface -> fTetWild -> patched .msh.
 
@@ -903,10 +909,10 @@ def run_volume(
         disable_filtering = os.environ.get(
             "FTETWILD_NO_FILTERING", "",
         ).strip().lower() in ("1", "true", "yes", "on")
-    if simplify:
-        simplify = os.environ.get(
-            "FTETWILD_NO_SIMPLIFY", "",
-        ).strip().lower() not in ("1", "true", "yes", "on")
+    if os.environ.get("FTETWILD_SIMPLIFY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        simplify = True
 
     t0 = time.perf_counter()
     if step_path.suffix.lower() == ".stl":
@@ -1133,7 +1139,7 @@ def _cli_main(argv) -> None:
                 epsilon=float(flags["epsilon"]) if flags.get("epsilon") else None,
                 stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
                 disable_filtering=bool(flags.get("no-filtering")),
-                simplify=not bool(flags.get("no-simplify")),
+                simplify=bool(flags.get("simplify")),
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports, never raises
             print(json.dumps({"success": False, "error": str(exc)}))
