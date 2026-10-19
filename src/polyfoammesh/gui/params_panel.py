@@ -700,19 +700,20 @@ class ParamsPanel(QWidget):
         # wrapper's knobs exposed so the user can trade fidelity for speed.
         ftet_group = QGroupBox("fTetWild surface fidelity (experimental)")
         ftet_form = QFormLayout(ftet_group)
-        self._ftet_eps = QDoubleSpinBox()
-        self._ftet_eps.setRange(1e-6, 1e-2)
-        self._ftet_eps.setValue(1e-3)
-        self._ftet_eps.setDecimals(8)
-        self._ftet_eps.setSingleStep(1e-4)
-        self._ftet_eps.setToolTip(
-            "Relative surface envelope: how far the fTetWild output surface "
-            "may deviate from the input. 1e-3 (default) lets it deviate up to "
-            "~3 mm on a 3 m part - that deviation warps the dual boundary "
-            "polygons and makes the poly conversion fight. 1e-4 = 0.3 mm "
-            "(GMSH-like fidelity, slower)."
+        self._ftet_eps_mm = QDoubleSpinBox()
+        self._ftet_eps_mm.setRange(0.01, 100.0)
+        self._ftet_eps_mm.setValue(0.3)
+        self._ftet_eps_mm.setDecimals(4)
+        self._ftet_eps_mm.setSingleStep(0.1)
+        self._ftet_eps_mm.setSuffix(" mm")
+        self._ftet_eps_mm.setToolTip(
+            "Maximum distance between the fTetWild output surface and the "
+            "input surface, in ABSOLUTE millimetres (the engine's relative "
+            "epsilon is derived from the part size). 0.3 mm is faithful on "
+            "every part scale; 0.03 mm is maximum fidelity but much slower. "
+            "Below ~0.01 mm the tetrahedralization stalls (measured)."
         )
-        ftet_form.addRow("Surface envelope (eps):", self._ftet_eps)
+        ftet_form.addRow("Surface envelope:", self._ftet_eps_mm)
         self._ftet_simplify = QCheckBox(
             "Simplify surface (slower, less faithful)"
         )
@@ -1583,9 +1584,12 @@ class ParamsPanel(QWidget):
         bucket = max(0, min(4, bucket))
         return self._DETAIL_MAP.get(bucket, "medium")
 
-    def get_ftetwild_epsilon(self) -> float:
-        """fTetWild relative surface envelope (0 = pytetwild default)."""
-        return float(self._ftet_eps.value()) if hasattr(self, "_ftet_eps") else 0.0
+    def get_ftetwild_eps_mm(self) -> float:
+        """fTetWild absolute surface envelope in millimetres (0 = default)."""
+        return (
+            float(self._ftet_eps_mm.value())
+            if hasattr(self, "_ftet_eps_mm") else 0.0
+        )
 
     def get_ftetwild_simplify(self) -> bool:
         """fTetWild internal simplification (True = default behaviour)."""

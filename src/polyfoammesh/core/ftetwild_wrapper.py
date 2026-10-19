@@ -241,6 +241,28 @@ def write_msh22(
         fh.write("$EndElements\n")
 
 
+def _relative_epsilon(bounds, epsilon_abs: float) -> float | None:
+    """Convert an ABSOLUTE surface envelope (metres) to pytetwild's
+    bbox-relative epsilon.
+
+    pytetwild documents ``epsilon`` as "the maximum distance of the output
+    surface from the input surface, relative to the bounding box size".
+    The relative form is a trap on small parts (1e-4 on a 4 mm micromixer
+    is 0.4 um and stalls), so the GUI exposes absolute millimetres and
+    this helper derives the relative value per part.  Returns None for
+    degenerate inputs (zero-size bbox or a non-positive envelope).
+    """
+    if epsilon_abs is None or epsilon_abs <= 0:
+        return None
+    b = np.asarray(bounds, dtype=np.float64)
+    if b.size < 6:
+        return None
+    diag = float(np.linalg.norm([b[1] - b[0], b[3] - b[2], b[5] - b[4]]))
+    if diag <= 0:
+        return None
+    return float(epsilon_abs) / diag
+
+
 def tetrahedralize(
     stl_path: Path | str,
     *,
@@ -250,9 +272,10 @@ def tetrahedralize(
     decimate: float | None = None,
     subdivide: int | None = None,
     epsilon: float | None = None,
+    epsilon_abs: float | None = None,
     stop_energy: float | None = None,
     disable_filtering: bool = False,
-    simplify: bool = True,
+    simplify: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Run fTetWild on a surface STL. Returns ``(V, T, stats)``.
 
@@ -273,7 +296,11 @@ def tetrahedralize(
     to 5 mm deviation, 77% of points > 0.3 mm — and that deviation is
     what warps the dual boundary polygons and makes the poly conversion
     fail.  A tighter value (1e-4 = 0.3 mm on 3 m) keeps the surface
-    GMSH-like.  ``stop_energy`` (default None = pytetwild's 10.0): the
+    GMSH-like.  ``epsilon_abs`` (metres) is the scale-safe form: it
+    overrides ``epsilon`` and is converted to the bbox-relative value
+    internally, so the same physical envelope is faithful on every part
+    (the relative form stalls on small parts: 1e-4 on a 4 mm micromixer
+    is 0.4 um).  ``stop_energy`` (default None = pytetwild's 10.0): the
     AMIPS energy early-stop; higher = stops sooner (faster, looser).
     ``disable_filtering`` (default False): keep small input features
     instead of letting fTetWild's filter remove them (another deviation
@@ -298,6 +325,22 @@ def tetrahedralize(
     if not isinstance(surf, pv.PolyData):
         surf = surf.extract_surface()
     surf = surf.triangulate()
+
+    # Absolute surface envelope (metres) -> pytetwild's bbox-relative
+    # epsilon.  The relative form is a trap on small parts: 1e-4 on a 3 m
+    # part is 0.3 mm (faithful), but the same 1e-4 on a 4 mm micromixer
+    # is 0.4 um and stalls the tetrahedralization.  Callers that want
+    # "faithful geometry on every part" pass the envelope in metres.
+    if epsilon_abs is not None and epsilon_abs > 0:
+        rel = _relative_epsilon(surf.bounds, epsilon_abs)
+        if rel is not None:
+            epsilon = rel
+            print(
+                f"surface envelope: {epsilon_abs * 1000.0:.4g} mm absolute "
+                f"-> {epsilon:.3e} relative (bbox diag "
+                f"{np.linalg.norm(np.subtract(surf.bounds[1::2], surf.bounds[0::2])):.4g} m)",
+                flush=True,
+            )
 
     n_input_tris = int(surf.n_cells)
     n_decimated_tris = n_input_tris
@@ -862,6 +905,7 @@ def run_volume(
     lr: float | None = None,
     opt_iter: int | None = None,
     epsilon: float | None = None,
+    epsilon_abs: float | None = None,
     stop_energy: float | None = None,
     disable_filtering: bool = False,
     simplify: bool = False,
@@ -899,6 +943,17 @@ def run_volume(
             epsilon = float(env_eps) if env_eps else None
         except ValueError:
             epsilon = None
+    if epsilon_abs is None:
+        env_eps_mm = os.environ.get("FTETWILD_EPS_MM", "")
+        try:
+            epsilon_abs = (
+                float(env_eps_mm) / 1000.0 if env_eps_mm else None
+            )
+        except ValueError:
+            epsilon_abs = None
+    if epsilon_abs is not None:
+        # Absolute envelope wins over the relative one (scale-safe form).
+        epsilon = None
     if stop_energy is None:
         env_se = os.environ.get("FTETWILD_STOP_ENERGY", "")
         try:
@@ -963,7 +1018,7 @@ def run_volume(
         f"experimental tet stage: bbox_diag={bbox_diag:.4g} "
         f"cross_section={cross_scale:.4g} "
         f"target_edge={target_edge:.4g} input_median_edge={med_edge:.4g} "
-        f"eps={epsilon if epsilon else 'default(1e-3)'} "
+        f"eps={f'{epsilon_abs * 1000.0:.4g}mm' if epsilon_abs else (epsilon if epsilon else 'default(1e-3)')} "
         f"simplify={simplify} "
         f"({len(src_tris):,} input triangles, {len(set(raw_names))} "
         "patches) - long runs possible on complex parts; Cancel stays available",
@@ -1024,6 +1079,7 @@ def run_volume(
             decimate=reduction,
             subdivide=n_sub,
             epsilon=epsilon,
+            epsilon_abs=epsilon_abs,
             stop_energy=stop_energy,
             disable_filtering=disable_filtering,
             simplify=simplify,
@@ -1093,6 +1149,7 @@ def run_volume(
         "la": la_used,
         "opt_iter": opt_iter,
         "epsilon": epsilon,
+        "epsilon_abs": epsilon_abs,
         "stop_energy": stop_energy,
         "disable_filtering": bool(disable_filtering),
         "simplify": bool(simplify),
@@ -1137,6 +1194,10 @@ def _cli_main(argv) -> None:
                 lr=float(flags["lr"]) if flags.get("lr") else None,
                 opt_iter=int(flags["opt-iter"]) if flags.get("opt-iter") else None,
                 epsilon=float(flags["epsilon"]) if flags.get("epsilon") else None,
+                epsilon_abs=(
+                    float(flags["eps-mm"]) / 1000.0
+                    if flags.get("eps-mm") else None
+                ),
                 stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
                 disable_filtering=bool(flags.get("no-filtering")),
                 simplify=bool(flags.get("simplify")),

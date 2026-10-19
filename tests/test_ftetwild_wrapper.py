@@ -198,6 +198,29 @@ def test_refinement_subdivision_fires_only_for_underdense_input():
     assert ftw._refinement_subdivision(0.01, 0.0) is None
 
 
+def test_relative_epsilon_is_scale_aware():
+    """The GUI exposes the surface envelope in ABSOLUTE millimetres; the
+    wrapper derives pytetwild's bbox-relative epsilon per part.  The same
+    physical 0.3 mm is 1e-4 on a 3 m part (faithful) but ~7e-2 on a 4 mm
+    micromixer - and that scale difference is exactly what prevents the
+    small-part stall the raw relative field caused (1e-6 on 3 m = 3 um)."""
+    # 3 m x 0.2 m x 0.2 m part: diag = sqrt(9.08) m -> 0.3 mm ~ 1e-4 relative
+    diag_big = float(np.sqrt(3.0**2 + 0.2**2 + 0.2**2))
+    rel_big = ftw._relative_epsilon((0.0, 3.0, 0.0, 0.2, 0.0, 0.2), 0.0003)
+    assert rel_big == pytest.approx(0.0003 / diag_big, rel=1e-6)
+    assert 9.0e-5 < rel_big < 1.1e-4
+    # 4 mm micromixer: the SAME absolute envelope is far less tight in
+    # relative terms -> no runaway
+    diag_small = float(np.sqrt(0.002**2 + 0.004**2))
+    rel_small = ftw._relative_epsilon((0.0, 0.002, 0.0, 0.004, 0.0, 0.0), 0.0003)
+    assert rel_small == pytest.approx(0.0003 / diag_small, rel=1e-6)
+    assert rel_small > 0.05
+    # degenerate inputs -> None, no crash
+    assert ftw._relative_epsilon((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0003) is None
+    assert ftw._relative_epsilon((0.0, 1.0, 0.0, 1.0, 0.0, 1.0), 0.0) is None
+    assert ftw._relative_epsilon((0.0, 1.0, 0.0, 1.0, 0.0, 1.0), None) is None
+
+
 def test_midpoint_subdivide_shares_edge_midpoints():
     """The manifold-free subdivision: 1 triangle -> 4, and two triangles
     sharing an edge must SHARE that edge's midpoint (no cracks) - VTK's
