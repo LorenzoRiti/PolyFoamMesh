@@ -2074,19 +2074,47 @@ def boundary_layer_report(case_dir: Path | str) -> dict:
         centres, _vols = _cell_centroids(
             points, faces, owner, neighbour, n_internal, n_cells,
         )
-        h1 = np.empty(0, dtype=np.float64)
-        if n_layered:
-            dist = np.linalg.norm(
-                centres[owner[wall_rows[layered]]] - cf[wall_rows[layered]],
-                axis=1,
-            )
-            h1 = 2.0 * dist
+        dist = np.linalg.norm(
+            centres[owner[wall_rows]] - cf[wall_rows], axis=1,
+        )
+        h1_all = np.where(layered, 2.0 * dist, np.nan)
+        h1 = h1_all[layered]
+        # Per-patch breakdown (user requirement 2026-10-19: the requested
+        # y+ must be reached on EVERY wall surface, so the log has to say
+        # which patch falls short - the global median hides it).
+        row_pos = {int(fi): i for i, fi in enumerate(wall_rows)}
+        per_patch: dict = {}
+        for p in _wall_patches(Path(case_dir), patches):
+            name = str(p.get("name", "?"))
+            start = max(int(p.get("startFace", 0)), n_internal)
+            end = min(start + int(p.get("nFaces", 0)), n_faces)
+            if end <= start:
+                continue
+            idx = [row_pos[fi] for fi in range(start, end) if fi in row_pos]
+            if not idx:
+                continue
+            vals = h1_all[np.asarray(idx, dtype=np.int64)]
+            vals = vals[np.isfinite(vals)]
+            per_patch[name] = {
+                "n_wall_faces": int(len(idx)),
+                "n_layered": int(vals.size),
+                "coverage": (
+                    float(vals.size / len(idx)) if idx else 0.0
+                ),
+                "h1_median": (
+                    float(np.median(vals)) if vals.size else None
+                ),
+                "h1_p10": (
+                    float(np.percentile(vals, 10)) if vals.size else None
+                ),
+            }
         return {
             "n_wall_faces": n_wall,
             "n_layered": n_layered,
             "coverage": float(n_layered / n_wall) if n_wall else 0.0,
             "h1_median": float(np.median(h1)) if h1.size else None,
             "h1_p10": float(np.percentile(h1, 10)) if h1.size else None,
+            "per_patch": per_patch,
         }
     except Exception:
         logger.debug(
@@ -2505,6 +2533,35 @@ class DualPolyWorker(QObject):
                         f"faces layered ({_rep['n_layered']:,}/"
                         f"{_rep['n_wall_faces']:,}){_extra}"
                     )
+                    for _pn, _st in sorted(
+                        (_rep.get("per_patch") or {}).items()
+                    ):
+                        _cov = 100.0 * float(_st.get("coverage", 0.0))
+                        _h1m = _st.get("h1_median")
+                        _h1p = _st.get("h1_p10")
+                        _det = ""
+                        if _h1m:
+                            _det = (
+                                f", first layer median "
+                                f"{_h1m * 1e3:.4g} mm p10 "
+                                f"{_h1p * 1e3:.4g} mm"
+                            ) if _h1p else (
+                                f", first layer median {_h1m * 1e3:.4g} mm"
+                            )
+                        self.log_line.emit(
+                            f"[poly]   patch {_pn}: "
+                            f"{_st['n_layered']:,}/"
+                            f"{_st['n_wall_faces']:,} layered "
+                            f"({_cov:.1f}%){_det}"
+                        )
+                        if _cov < 90.0:
+                            self.log_line.emit(
+                                f"[poly] WARN: patch {_pn} coverage "
+                                f"{_cov:.1f}% (<90%) - the requested y+ is "
+                                "not reached there (thin features cannot "
+                                "take the stack; use a finer surface or a "
+                                "smaller first layer)"
+                            )
                 if bl.get("concaveClosure") and _cc_too_big:
                     self.log_line.emit(
                         "[poly] WARN: post-BL merge repair skipped — same "
