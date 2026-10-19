@@ -3674,11 +3674,15 @@ class MainWindow(QMainWindow):
             try:
                 args = ["convert_to_foam", str(case_dir), msh_name]
                 cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-convert-to-foam")
+                self._log.append_log(
+                    "[gmshToFoam] converting the tet mesh to OpenFOAM "
+                    "(this can take minutes for large meshes)..."
+                )
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, cwd=run_cwd,
                 )
-                deadline = time.monotonic() + 300
+                deadline = time.monotonic() + 900
                 while proc.poll() is None:
                     if worker.is_cancelled():
                         try:
