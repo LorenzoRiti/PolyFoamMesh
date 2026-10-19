@@ -249,6 +249,10 @@ def tetrahedralize(
     opt_iter: int = DEFAULT_OPT_ITER,
     decimate: float | None = None,
     subdivide: int | None = None,
+    epsilon: float | None = None,
+    stop_energy: float | None = None,
+    disable_filtering: bool = False,
+    simplify: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Run fTetWild on a surface STL. Returns ``(V, T, stats)``.
 
@@ -262,6 +266,18 @@ def tetrahedralize(
     so a caller can subdivide to overshoot and decimate back to the
     target. Import of pytetwild is deferred so every other function in
     this module stays usable without the optional dependency.
+
+    ``epsilon`` (relative surface envelope, default None = pytetwild's
+    1e-3): how far the output surface may deviate from the input.  The
+    default is loose by construction — measured on a real 3 m part: up
+    to 5 mm deviation, 77% of points > 0.3 mm — and that deviation is
+    what warps the dual boundary polygons and makes the poly conversion
+    fail.  A tighter value (1e-4 = 0.3 mm on 3 m) keeps the surface
+    GMSH-like.  ``stop_energy`` (default None = pytetwild's 10.0): the
+    AMIPS energy early-stop; higher = stops sooner (faster, looser).
+    ``disable_filtering`` (default False): keep small input features
+    instead of letting fTetWild's filter remove them (another deviation
+    source).
     """
     try:
         import pyvista as pv
@@ -328,6 +344,15 @@ def tetrahedralize(
         loglevel = int(os.environ.get("FTETWILD_LOGLEVEL", "3"))
     except ValueError:
         loglevel = 3
+    extra_kwargs: dict = {}
+    if epsilon:
+        extra_kwargs["epsilon"] = float(epsilon)
+    if stop_energy:
+        extra_kwargs["stop_energy"] = float(stop_energy)
+    if disable_filtering:
+        extra_kwargs["disable_filtering"] = True
+    if not simplify:
+        extra_kwargs["simplify"] = False
     grid = tetrahedralize_pv(
         surf,
         edge_length_fac=DEFAULT_LR if lr is None else lr,
@@ -335,6 +360,7 @@ def tetrahedralize(
         quiet=quiet,
         loglevel=loglevel,
         num_opt_iter=int(opt_iter),
+        **extra_kwargs,
     )
     elapsed = time.perf_counter() - t0
 
@@ -829,6 +855,10 @@ def run_volume(
     max_cell: float = 0.0,
     lr: float | None = None,
     opt_iter: int | None = None,
+    epsilon: float | None = None,
+    stop_energy: float | None = None,
+    disable_filtering: bool = False,
+    simplify: bool = True,
 ) -> dict:
     """Full experimental tet stage: surface -> fTetWild -> patched .msh.
 
@@ -857,6 +887,26 @@ def run_volume(
             opt_iter = None
     if opt_iter is None:
         opt_iter = DEFAULT_OPT_ITER
+    if epsilon is None:
+        env_eps = os.environ.get("FTETWILD_EPS", "")
+        try:
+            epsilon = float(env_eps) if env_eps else None
+        except ValueError:
+            epsilon = None
+    if stop_energy is None:
+        env_se = os.environ.get("FTETWILD_STOP_ENERGY", "")
+        try:
+            stop_energy = float(env_se) if env_se else None
+        except ValueError:
+            stop_energy = None
+    if not disable_filtering:
+        disable_filtering = os.environ.get(
+            "FTETWILD_NO_FILTERING", "",
+        ).strip().lower() in ("1", "true", "yes", "on")
+    if simplify:
+        simplify = os.environ.get(
+            "FTETWILD_NO_SIMPLIFY", "",
+        ).strip().lower() not in ("1", "true", "yes", "on")
 
     t0 = time.perf_counter()
     if step_path.suffix.lower() == ".stl":
@@ -907,6 +957,8 @@ def run_volume(
         f"experimental tet stage: bbox_diag={bbox_diag:.4g} "
         f"cross_section={cross_scale:.4g} "
         f"target_edge={target_edge:.4g} input_median_edge={med_edge:.4g} "
+        f"eps={epsilon if epsilon else 'default(1e-3)'} "
+        f"simplify={simplify} "
         f"({len(src_tris):,} input triangles, {len(set(raw_names))} "
         "patches) - long runs possible on complex parts; Cancel stays available",
         flush=True,
@@ -965,6 +1017,10 @@ def run_volume(
             opt_iter=opt_iter,
             decimate=reduction,
             subdivide=n_sub,
+            epsilon=epsilon,
+            stop_energy=stop_energy,
+            disable_filtering=disable_filtering,
+            simplify=simplify,
         )
     finally:
         os.chdir(prev_cwd)
@@ -1030,6 +1086,10 @@ def run_volume(
         "lr": lr,
         "la": la_used,
         "opt_iter": opt_iter,
+        "epsilon": epsilon,
+        "stop_energy": stop_energy,
+        "disable_filtering": bool(disable_filtering),
+        "simplify": bool(simplify),
         "target_edge_m": target_edge,
         "input_median_edge_m": med_edge,
         "bbox_diag_m": bbox_diag,
@@ -1070,6 +1130,10 @@ def _cli_main(argv) -> None:
                 max_cell=float(flags.get("max-cell", 0) or 0),
                 lr=float(flags["lr"]) if flags.get("lr") else None,
                 opt_iter=int(flags["opt-iter"]) if flags.get("opt-iter") else None,
+                epsilon=float(flags["epsilon"]) if flags.get("epsilon") else None,
+                stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
+                disable_filtering=bool(flags.get("no-filtering")),
+                simplify=not bool(flags.get("no-simplify")),
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports, never raises
             print(json.dumps({"success": False, "error": str(exc)}))
