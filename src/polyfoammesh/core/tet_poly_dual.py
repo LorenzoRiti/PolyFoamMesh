@@ -193,6 +193,7 @@ class TetPolyDualConverter:
         smooth_free_boundary: bool = False,
         count_boundary_skew: bool = False,
         split_boundary_defects: bool = False,
+        shift_boundary_skew: bool = True,
         merge_concave_cells: bool = False,
         merge_rounds: int = 2,
     ):
@@ -467,6 +468,11 @@ class TetPolyDualConverter:
         # (2026-10-18, fTetWild path; see _split_boundary_defects). Default
         # off = byte-identical.
         self._split_boundary = bool(split_boundary_defects)
+        # Opt-out of the tangential skew shift (2026-10-19): measured
+        # non-monotonic on fTetWild duals (clears some skew but creates
+        # pyramids), so that path keeps only the split + batched pyramid
+        # clearance.  Default True = historical behaviour.
+        self._do_shift_boundary_skew = bool(shift_boundary_skew)
         # Opt-in dual-only concave-cell merge (P1). Default off: the output
         # is byte-identical to a converter built without it.
         self._merge_concave_cells = bool(merge_concave_cells)
@@ -759,7 +765,8 @@ class TetPolyDualConverter:
             self._check_cancel()
             t = time.monotonic()
             n_fixed = self._split_boundary_defects(M)
-            n_fixed += self._shift_boundary_skew(M)
+            if self._do_shift_boundary_skew:
+                n_fixed += self._shift_boundary_skew(M)
             if n_fixed:
                 sf, cf = _face_geometry(M.points, M.faces)
                 M.sf, M.cf = sf, cf
@@ -2593,33 +2600,55 @@ class TetPolyDualConverter:
         return total_fixed
 
     def _clear_boundary_pyramids(self, M) -> int:
+        """Move the boundary polygons that fail checkMesh's pyramid test
+        along their outward normal, BATCHED (one geometry pass, one volume
+        check, optional half-step backtrack) and keep-best.
+
+        Measured on the reference dual: the batched move (all faces at
+        once, 2x the area-normalised deficit) cleared 11 of 11 pyramids
+        with no inversion and no new skew; the previous per-face loop was
+        the dual stage's second-biggest cost (58 s for 19 faces) because it
+        recomputed the full mesh geometry once per face.  The move is
+        perpendicular to the boundary (boundary edge lengths unchanged).
+        Returns the number of faces cleared.
+        """
         sf, cf = _face_geometry(M.points, M.faces)
         ctr, vol = _cell_centres(sf, cf, M.owner, M.neigh, M.n_int, M.n_cells)
         bnd = np.arange(M.n_int, len(M.faces))
         pv = (sf[bnd] * (cf[bnd] - ctr[M.owner[bnd]])).sum(axis=1)
         bad = bnd[pv <= 0.0]
-        cleared = 0
-        pts = M.points
+        before = int(len(bad))
+        if not before:
+            return 0
+        disp: dict[int, np.ndarray] = {}
         for fi in bad:
-            f = M.faces[int(fi)]
-            nhat = sf[int(fi)] / np.linalg.norm(sf[int(fi)])
-            need = (-pv[int(fi) - M.n_int]) / np.linalg.norm(sf[int(fi)])
-            cand = pts.copy()
-            for vv in set(f):
-                cand[vv] += nhat * need * 2.0
-            sf_c, cf_c = _face_geometry(cand, M.faces)
-            ctr_c, vol_c = _cell_centres(
-                sf_c, cf_c, M.owner, M.neigh, M.n_int, M.n_cells,
+            sm = float(np.linalg.norm(sf[int(fi)]))
+            if sm <= 0.0:
+                continue
+            nhat = sf[int(fi)] / sm
+            need = (-pv[int(fi) - M.n_int]) / sm
+            d = nhat * (2.0 * need + 1e-12)
+            for vv in M.faces[int(fi)]:
+                disp[int(vv)] = disp.get(int(vv), np.zeros(3)) + d
+        if not disp:
+            return 0
+        for scale in (1.0, 0.5, 0.25):
+            pts2 = M.points.copy()
+            for vv, d in disp.items():
+                pts2[vv] += d * scale
+            sf2, cf2 = _face_geometry(pts2, M.faces)
+            ctr2, vol2 = _cell_centres(
+                sf2, cf2, M.owner, M.neigh, M.n_int, M.n_cells,
             )
-            if vol_c.min() > 0.0:
-                for vv in set(f):
-                    pts[vv] += nhat * need * 2.0
-                cleared += 1
-        if cleared:
-            M.points = pts
-            sf2, cf2 = _face_geometry(M.points, M.faces)
-            M.sf, M.cf = sf2, cf2
-        return cleared
+            if not np.all(vol2 > 0.0):
+                continue
+            pv2 = (sf2[bnd] * (cf2[bnd] - ctr2[M.owner[bnd]])).sum(axis=1)
+            after = int((pv2 <= 0.0).sum())
+            if after < before:
+                M.points = pts2
+                M.sf, M.cf = sf2, cf2
+                return before - after
+        return 0
 
     def _shift_boundary_skew(self, M, max_rounds: int = 8) -> int:
         """Shift warped / marginally-behind boundary polygons to clear

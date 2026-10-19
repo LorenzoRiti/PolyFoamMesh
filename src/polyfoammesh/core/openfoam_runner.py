@@ -2204,6 +2204,10 @@ class DualPolyWorker(QObject):
                 # centre vertices that clears those boundary pyramid/skew
                 # defects (interior points only; the surface is untouched).
                 split_boundary_defects=self._smooth_free_boundary,
+                # The tangential skew shift is non-monotonic on these duals
+                # (measured: clears a few skew faces, creates pyramids);
+                # keep only the split + the batched pyramid clearance.
+                shift_boundary_skew=not self._smooth_free_boundary,
             )
             t_dual0 = time.perf_counter()
             result = _run_with_profile(
