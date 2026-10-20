@@ -3983,7 +3983,12 @@ class FtetWildVolumeWorker(QObject):
     # mesh legitimately runs for a long time (the GUI must not be held by
     # a false timeout; _stream_subprocess emits synthetic "still running"
     # lines meanwhile, so the TaskManager heartbeat never false-fires).
-    VOLUME_TIMEOUT_S = 3600
+    # fTetWild's optimizer has no wall-clock bound and a tight surface
+    # tolerance legitimately costs over an hour (measured: 0.3 mm envelope
+    # -> 62 min on the reference 3 m part, tighter much longer), so the
+    # ceiling is 4 h: a faithful run must never be killed halfway - that
+    # is exactly the "stuck at the middle" failure the user reported.
+    VOLUME_TIMEOUT_S = 14400
 
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  max_cell_size: float = 0.0, lr: float | None = None,
