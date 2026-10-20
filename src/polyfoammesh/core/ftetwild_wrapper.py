@@ -1317,6 +1317,20 @@ def run_volume(
     la_used = max_cell if max_cell and max_cell > 0 else None
     if la_used is None and lr is None:
         la_used = _default_target_edge(cross_scale, detail)
+    # Sanity clamp: a target edge at/above the part size (a stale unit or
+    # slider value) makes GMSH's surface sizing and fTetWild's optimizer
+    # run away (measured: a 0.1 m part with an 8 m target -> MemoryError /
+    # 'vector too long').  Same ceiling as the GMSH path (max_extent * 0.5).
+    if la_used is not None:
+        _ext_max = float(np.max(dims))
+        if _ext_max > 0 and float(la_used) > 0.5 * _ext_max:
+            print(
+                f"[fTetWild] target edge {float(la_used):.4g} m is larger "
+                f"than half the domain ({0.5 * _ext_max:.4g} m) - clamping; "
+                "check the CAD unit / max cell size.",
+                flush=True,
+            )
+            la_used = 0.5 * _ext_max
     target_edge = la_used if la_used else (lr or DEFAULT_LR) * bbox_diag
     # Dynamic surface envelope (user request 2026-10-19): a fraction of the
     # LOCAL target edge, so fidelity scales with the resolution and the part

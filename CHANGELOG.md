@@ -7,6 +7,27 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### fTetWild path (issue #12) - 2026-10-19, geometry-coverage pass
+- **Geometry battery** (STL: box, sphere, cylinder, torus, 10 mm plate,
+  two bodies, 5 mm-wall washer, 4 mm micromixer, 3 m pipe; STEP via
+  CADQuery: plate with a through hole, L-bracket, thin-wall pipe):
+  all 12 tetrahedralize and convert; all boundary layers build (the
+  washer via the new vertex-decoupled retry).
+- **Envelope capped at 5% of the smallest dimension**: a 10 mm plate with
+  a 15%-of-cell envelope (14.6 mm) made fTetWild return ZERO tets, and a
+  coarse target on the 3 m pipe produced a pinched non-manifold boundary
+  the dual rejected. Both now mesh.
+- **Target-edge clamp**: a target larger than half the domain (stale CAD
+  unit / slider) is clamped with a log line instead of a GMSH MemoryError.
+- **BL vertex-decoupled retry** on inverted thin-feature stacks (the
+  5 mm-wall washer failed every standard height scale with non-positive
+  volumes; decoupled_vertex builds it in 95 s).
+- **Exact-dual retry on closure failure** + repair-aware volume invariant
+  (the collapsed dual left a boundary cell open on the thin-wall pipe;
+  the exact per-corner dual is closed by construction, and its volume
+  drift from the boundary split/shift repairs is now allowed at 1e-2
+  instead of being rejected at 1e-6).
+
 ### fTetWild path (issue #12) - 2026-10-19, geometry recognition + scale + measurements
 - **Adaptive local refinement (cfMesh-like)**: fTetWild now receives a
   background sizing field built from the validated ray-cast passage
