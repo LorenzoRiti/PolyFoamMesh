@@ -258,6 +258,32 @@ def test_snap_boundary_to_surface_restores_displaced_vertices():
         assert vol > 0
 
 
+def test_build_sizing_field_refines_thin_and_curved_regions():
+    """2026-10-19 (cfMesh-like adaptive refinement): the background sizing
+    field samples passage thickness and surface curvature; a sphere must get
+    values strictly below the uniform target where it is curved/thin, and
+    never above it."""
+    import pyvista as pv
+    sph = pv.Sphere(
+        radius=0.05, theta_resolution=30, phi_resolution=30,
+    ).triangulate()
+    grid, st = ftw._build_sizing_field(
+        sph, 0.02, None, cells_across=8, n_samples=300,
+    )
+    assert grid is not None
+    assert grid.n_cells > 0
+    vals = np.asarray(grid.point_data["target_edge"])
+    assert vals.size == grid.n_points
+    assert float(vals.min()) < 0.02 * 0.9
+    assert float(vals.max()) <= 0.02 * 1.0001
+    # grid covers the bbox
+    assert float(grid.points[:, 0].min()) <= -0.049
+    assert float(grid.points[:, 0].max()) >= 0.049
+    # degenerate input -> no field, no crash
+    g2, st2 = ftw._build_sizing_field(sph, 0.0, None)
+    assert g2 is None and st2 == {}
+
+
 def test_dynamic_envelope_scales_with_cell_edge():
     """2026-10-19: the default envelope is a FRACTION of the local target
     cell edge (user request: dynamic eps), so fidelity is proportional to

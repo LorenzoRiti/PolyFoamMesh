@@ -3455,6 +3455,7 @@ class MainWindow(QMainWindow):
                 step_path, msh_path, detail, max_cell_size=max_cell,
                 eps_frac=self._params.get_ftetwild_eps_frac(),
                 simplify=self._params.get_ftetwild_simplify(),
+                adaptive=self._params.get_ftetwild_adaptive(),
             )
         else:
             w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
@@ -3562,6 +3563,7 @@ class MainWindow(QMainWindow):
                     # legacy relative eps and simplify=True (2026-10-19).
                     eps_frac=self._params.get_ftetwild_eps_frac(),
                     simplify=self._params.get_ftetwild_simplify(),
+                    adaptive=self._params.get_ftetwild_adaptive(),
                 )
             return GmshVolumeWorker(
                 ctx["step_path"], ctx["msh_path"], detail,

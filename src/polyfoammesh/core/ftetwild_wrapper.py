@@ -291,6 +291,7 @@ def tetrahedralize(
     stop_energy: float | None = None,
     disable_filtering: bool = False,
     simplify: bool = False,
+    sizing_field=None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Run fTetWild on a surface STL. Returns ``(V, T, stats)``.
 
@@ -423,6 +424,8 @@ def tetrahedralize(
         quiet=quiet,
         loglevel=loglevel,
         num_opt_iter=int(opt_iter),
+        sizing_field=sizing_field,
+        sizing_field_scalars="target_edge" if sizing_field is not None else None,
         **extra_kwargs,
     )
     elapsed = time.perf_counter() - t0
@@ -624,6 +627,135 @@ def _snap_boundary_to_surface(V, T, surface, min_dist: float = 0.0):
         n_snip += 1
         max_move = max(max_move, dist)
     return V, n_snip, max_move
+
+
+def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
+                        cells_across: int = 8, n_samples: int = 3000):
+    """cfMesh-like LOCAL sizing field for fTetWild (user request 2026-10-19:
+    'recognise the geometry and refine where needed in the curvatures').
+
+    cfMesh refines by surface curvature and passage thickness; GMSH does the
+    same through its size callbacks.  pytetwild exposes a background-mesh
+    sizing field (`sizing_field`, target edge length per point), so this
+    builds one from the SAME validated ray-cast thickness sampler the GMSH
+    path already uses:
+
+      1. sample the local passage thickness on the surface (trimesh ray
+         casting, ~n_samples points);
+      2. target = thickness / cells_across, clamped to [min_cell, max_cell]
+         (8 cells across a thin passage, cfMesh's surfaceThicknessRefinement);
+      3. voxelize the bbox at ~max_cell (coarse: the field varies slowly),
+         each grid point takes its nearest sample's target (else max_cell);
+      4. emit an all-tetrahedral UnstructuredGrid with the point scalar
+         'target_edge' for pytetwild.
+
+    Returns (grid, stats) or (None, {}) when sampling is unavailable.
+    """
+    try:
+        import numpy as _np
+        import pyvista as _pv
+        import trimesh
+        from scipy.spatial import cKDTree
+        from polyfoammesh.core.geometry import sample_thickness_field
+    except Exception:  # noqa: BLE001 - optional deps
+        return None, {}
+    try:
+        pts = _np.asarray(surf.points, dtype=_np.float64)
+        tris = _np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
+        tri = trimesh.Trimesh(vertices=pts, faces=tris, process=False)
+        lo = pts.min(axis=0)
+        hi = pts.max(axis=0)
+        ext = hi - lo
+        bbox_max = float(ext.max())
+        if bbox_max <= 0 or max_cell <= 0:
+            return None, {}
+        t_pts, t_thick = sample_thickness_field(
+            tri, int(n_samples), bbox_max,
+        )
+        if len(t_pts) == 0:
+            return None, {}
+        floor = float(min_cell) if min_cell and min_cell > 0 else max_cell / 20.0
+        tgt = _np.clip(
+            t_thick / max(float(cells_across), 1.0),
+            floor, float(max_cell),
+        )
+        # Curvature refinement (cfMesh surfaceCurvatureRefinement): the same
+        # dihedral-angle radius estimate compute_curvature_sizing uses,
+        # sampled at the curved face-adjacency edges, combined per grid
+        # point with the thickness target (min wins).
+        c_pts = None
+        c_tgt = None
+        try:
+            ang = _np.asarray(tri.face_adjacency_angles, dtype=_np.float64)
+            mask = (ang > _np.radians(1.0)) & (ang < _np.radians(30.0))
+            if int(mask.sum()):
+                ee = _np.asarray(tri.face_adjacency_edges, dtype=_np.int64)[mask]
+                aa = ang[mask]
+                vv = _np.asarray(tri.vertices, dtype=_np.float64)
+                elen = _np.linalg.norm(vv[ee[:, 0]] - vv[ee[:, 1]], axis=1)
+                radius = elen / (2.0 * _np.sin(aa / 2.0))
+                c_pts = 0.5 * (vv[ee[:, 0]] + vv[ee[:, 1]])
+                c_tgt = _np.clip(
+                    radius / 8.0, floor, float(max_cell),
+                )
+        except Exception:  # noqa: BLE001
+            c_pts = None
+            c_tgt = None
+        # coarse voxel grid (the field is smooth by construction)
+        spacing = float(max_cell)
+        n = _np.maximum(_np.ceil(ext / spacing).astype(_np.int64) + 1, 2)
+        xs = lo[0] + _np.linspace(0.0, ext[0], int(n[0]))
+        ys = lo[1] + _np.linspace(0.0, ext[1], int(n[1]))
+        zs = lo[2] + _np.linspace(0.0, ext[2], int(n[2]))
+        gx, gy, gz = _np.meshgrid(xs, ys, zs, indexing="ij")
+        grid_pts = _np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+        tree = cKDTree(t_pts)
+        dist, idx = tree.query(grid_pts, k=1, workers=-1)
+        keep = dist <= 2.0 * spacing
+        vals = _np.full(len(grid_pts), float(max_cell), dtype=_np.float64)
+        vals[keep] = tgt[idx[keep]]
+        if c_pts is not None and len(c_pts):
+            ctree = cKDTree(c_pts)
+            cdist, cidx = ctree.query(grid_pts, k=1, workers=-1)
+            ckeep = cdist <= 2.0 * spacing
+            vals[ckeep] = _np.minimum(vals[ckeep], c_tgt[cidx[ckeep]])
+        # cubes -> 6 tets each (standard decomposition)
+        nx, ny, nz = int(n[0]), int(n[1]), int(n[2])
+        def _nid(i, j, k):
+            return (i * ny + j) * nz + k
+        cells = []
+        for i in range(nx - 1):
+            for j in range(ny - 1):
+                for k in range(nz - 1):
+                    v = [
+                        _nid(i, j, k), _nid(i + 1, j, k),
+                        _nid(i + 1, j + 1, k), _nid(i, j + 1, k),
+                        _nid(i, j, k + 1), _nid(i + 1, j, k + 1),
+                        _nid(i + 1, j + 1, k + 1), _nid(i, j + 1, k + 1),
+                    ]
+                    for t in (
+                        (0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6),
+                        (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6),
+                    ):
+                        cells.extend((4, v[t[0]], v[t[1]], v[t[2]], v[t[3]]))
+        grid = _pv.UnstructuredGrid(
+            _np.asarray(cells, dtype=_np.int64),
+            _np.full(len(cells) // 5, 10, dtype=_np.uint8),  # VTK_TETRA
+            grid_pts,
+        )
+        grid.point_data["target_edge"] = vals
+        stats = {
+            "n_samples": int(len(t_pts)),
+            "min": float(vals.min()),
+            "median": float(_np.median(vals)),
+            "max": float(vals.max()),
+            "n_refined": int((vals < float(max_cell) * 0.999).sum()),
+            "n_points": int(len(grid_pts)),
+        }
+        return grid, stats
+    except Exception:  # noqa: BLE001 - never break the tet stage
+        logger.debug("sizing field build failed", exc_info=True)
+        return None, {}
 
 
 def _decimate_surface_bounded(surface, keep: float, max_error: float | None):
@@ -1053,6 +1185,7 @@ def run_volume(
     epsilon: float | None = None,
     epsilon_abs: float | None = None,
     eps_frac: float | None = None,
+    adaptive: bool = True,
     stop_energy: float | None = None,
     disable_filtering: bool = False,
     simplify: bool = False,
@@ -1108,6 +1241,10 @@ def run_volume(
         # Absolute envelope wins over the relative one (scale-safe form).
         epsilon = None
         eps_frac = None
+    if os.environ.get("FTETWILD_ADAPTIVE", "").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        adaptive = False
     if stop_energy is None:
         env_se = os.environ.get("FTETWILD_STOP_ENERGY", "")
         try:
@@ -1252,6 +1389,35 @@ def run_volume(
                     flush=True,
                 )
                 decimated_surface = None
+    # Adaptive local sizing (2026-10-19, cfMesh-like): build a background
+    # sizing field from the validated ray-cast passage-thickness sampler so
+    # thin passages get finer cells while the bulk stays at the target.
+    sizing_field = None
+    if adaptive and epsilon_abs:
+        try:
+            import pyvista as _pv3
+            _field_surf = _pv3.read(
+                str(decimated_surface or stl_source),
+            ).triangulate()
+            sizing_field, _fs = _build_sizing_field(
+                _field_surf, target_edge, None, cells_across=8,
+            )
+            if sizing_field is not None:
+                print(
+                    f"[fTetWild] adaptive sizing field: "
+                    f"{_fs['n_samples']:,} thickness samples, target edge "
+                    f"{_fs['min'] * 1e3:.3g}-{_fs['max'] * 1e3:.3g} mm "
+                    f"({_fs['n_refined']:,}/{_fs['n_points']:,} grid points "
+                    "refined)",
+                    flush=True,
+                )
+        except Exception as _exc:  # noqa: BLE001 - never break the tet stage
+            print(
+                f"[fTetWild] adaptive sizing unavailable ({_exc}); "
+                "using the uniform target edge.",
+                flush=True,
+            )
+            sizing_field = None
     print(
         "starting fTetWild tetrahedralization now - the .stl above is only "
         "the SURFACE (its input); fTetWild runs without output by design, so "
@@ -1277,6 +1443,7 @@ def run_volume(
             stop_energy=stop_energy,
             disable_filtering=disable_filtering,
             simplify=simplify,
+            sizing_field=sizing_field,
         )
     finally:
         os.chdir(prev_cwd)
@@ -1423,6 +1590,7 @@ def _cli_main(argv) -> None:
                     float(flags["eps-frac"])
                     if flags.get("eps-frac") else None
                 ),
+                adaptive=not bool(flags.get("no-adaptive")),
                 stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
                 disable_filtering=bool(flags.get("no-filtering")),
                 simplify=bool(flags.get("simplify")),

@@ -716,6 +716,20 @@ class ParamsPanel(QWidget):
             "faithful and slower; below ~1% the tetrahedralization stalls."
         )
         ftet_form.addRow("Surface tolerance:", self._ftet_eps_frac)
+        self._ftet_adaptive = QCheckBox(
+            "Adaptive refinement (curvature / thin passages)"
+        )
+        self._ftet_adaptive.setChecked(True)
+        self._ftet_adaptive.setToolTip(
+            "Image of cfMesh's surfaceThicknessRefinement + "
+            "surfaceCurvatureRefinement: builds a local sizing field from "
+            "the measured passage thickness and the surface curvature, so "
+            "thin passages and tightly curved regions get finer cells while "
+            "the bulk stays at the target edge. Costs a few seconds of "
+            "sampling before the tetrahedralization; shows its measured "
+            "target-edge range in the log."
+        )
+        ftet_form.addRow(self._ftet_adaptive)
         self._ftet_simplify = QCheckBox(
             "Simplify surface (slower, less faithful)"
         )
@@ -1591,6 +1605,13 @@ class ParamsPanel(QWidget):
         return (
             float(self._ftet_eps_frac.value()) / 100.0
             if hasattr(self, "_ftet_eps_frac") else 0.0
+        )
+
+    def get_ftetwild_adaptive(self) -> bool:
+        """Adaptive local sizing (thickness + curvature) for fTetWild."""
+        return (
+            bool(self._ftet_adaptive.isChecked())
+            if hasattr(self, "_ftet_adaptive") else True
         )
 
     def get_ftetwild_simplify(self) -> bool:
