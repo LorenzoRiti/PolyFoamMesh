@@ -2404,9 +2404,17 @@ class DualPolyWorker(QObject):
                         f"{', '.join(sorted(patch_names))}"
                     )
 
+                # Capture the engine's own diagnostics too: the retry
+                # decision below keys on the exact failure signature.
+                _bl_msgs: list[str] = []
+
+                def _bl_log(_msg: str) -> None:
+                    _bl_msgs.append(_msg)
+                    self.log_line.emit(_msg)
+
                 bres = _run_with_profile(
                     self._case_dir, "bl", lambda: _run_bl(kw),
-                    self.log_line.emit,
+                    _bl_log,
                 )
                 # Fallback chain (2026-10-06): standard robust first (it now
                 # handles concave features on its own via the binary budget
@@ -2418,30 +2426,43 @@ class DualPolyWorker(QObject):
                 # run exhausted 32GB RAM and crashed the system).
                 if bres is None or not bres.success:
                     if self._smooth_free_boundary:
-                        # fTetWild path: measured on the reference part, the
-                        # standard BL fails at EVERY height scale with the
-                        # same inverted thin-feature stacks (60-130 um
-                        # compressed layers at sub-mm wall polygons; real
-                        # checkMesh on the refused build: 36 negative
-                        # volumes, 377 pyramid faces), the concave-closure
-                        # retry diverges (multiply-connected boundary edges
-                        # grow 5 -> 10 -> 15 as exclusions widen, ~8 min
-                        # per round) and the h1-halving retries repeat the
-                        # same failure (h1 scaling cannot fix an inverted
-                        # direction).  Skip all retries: fail fast with an
-                        # explanation instead of burning 20+ minutes.
-                        self.log_line.emit(
-                            "[poly] WARN: boundary layers cannot be built on "
-                            "this dual - the wall has thin-feature spots where "
-                            "the dual cells cannot take any layer stack "
-                            "(measured: real checkMesh rejects every height "
-                            "scale with inverted micro-prisms; the same "
-                            "engine fails the same way on the GMSH-derived "
-                            "dual of this part, so this is not specific to "
-                            "fTetWild). Continuing with the polyhedral mesh "
-                            "WITHOUT boundary layers; a finer surface mesh "
-                            "gives the engine thinner stacks to work with."
+                        # Thin-feature inversion retry (2026-10-19 geometry
+                        # battery): when the standard stack fails with
+                        # NON-POSITIVE volumes (inverted micro-prisms at thin
+                        # walls), the vertex-decoupled closure succeeds where
+                        # the standard termination cannot - measured on a
+                        # 5 mm-wall washer: standard failed all scales after
+                        # 80 s, decoupled_vertex built the BL in 95 s.  Only
+                        # this signature triggers the retry: the divergence
+                        # class (multiply-connected edges growing per round,
+                        # ~8 min/round) keeps the old fail-fast.
+                        _thin_fail = any(
+                            "non-positive volume" in m for m in _bl_msgs
                         )
+                        if _thin_fail:
+                            self.log_line.emit(
+                                "[poly] BL failed on inverted thin-feature "
+                                "stacks - retrying with the vertex-decoupled "
+                                "closure (local_height_retry)..."
+                            )
+                            retry = _run_bl({
+                                **kw,
+                                "local_termination": "decoupled_vertex",
+                                "local_height_retry": True,
+                            })
+                            if retry is not None and retry.success:
+                                bres = retry
+                        if bres is None or not bres.success:
+                            self.log_line.emit(
+                                "[poly] WARN: boundary layers cannot be built "
+                                "on this dual - the wall has thin-feature "
+                                "spots where the dual cells cannot take any "
+                                "layer stack (real checkMesh rejects every "
+                                "height scale with inverted micro-prisms; a "
+                                "finer surface mesh gives the engine thinner "
+                                "stacks to work with). Continuing with the "
+                                "polyhedral mesh WITHOUT boundary layers."
+                            )
                     elif _cc_too_big:
                         self.log_line.emit(
                             "[poly] WARN: concave closure fallback skipped — "
