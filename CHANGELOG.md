@@ -7,6 +7,34 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### fTetWild path (issue #12) - 2026-10-19, geometry recognition + scale + measurements
+- **Adaptive local refinement (cfMesh-like)**: fTetWild now receives a
+  background sizing field built from the validated ray-cast passage
+  thickness (target = thickness / 8 cells across) and the dihedral-angle
+  curvature radius (8 cells per radius) - thin passages and tightly curved
+  regions get finer cells while the bulk stays at the target edge. GUI
+  checkbox "Adaptive refinement" (default on), `--no-adaptive` /
+  `FTETWILD_ADAPTIVE=0` to disable. Measured on the reference part:
+  target edge 0.64-12.75 mm, 8,000/114,708 grid points refined, 11 s.
+- **Working GUI scale**: "Apply Scale" button + automatic refresh; the
+  scale now reaches the meshers (GMSH OCC dilate after open, fTetWild
+  scaled surface) and is part of the mesh-cache fingerprint (with the
+  fTetWild eps/simplify/adaptive). Verified: 0.05 m sphere at 2x ->
+  tet bounds +-0.1 m.
+- **Geometry measurement report**: on load / scale / unit change the log
+  shows domain + cross-section, wall-thickness p10/p50 (ray samples), the
+  curvature-limited cell, suggested max/min cells and the bulk cell
+  estimate - the numbers the sizers use, visible instead of hidden.
+- **Faithful geometry through the surface pipeline**: the destructive
+  Taubin pass after decimation is gone (it moved points up to 60 mm); the
+  decimation is target-driven with a VERIFIED error budget (quadric +
+  sqrt-ladder search) and the tet boundary is snapped back onto the
+  original surface (volume-guarded). E2E medium: 0.128 mm mean surface
+  deviation, dual 0/0/1 defects.
+- fTetWild subprocess ceiling raised to 4 h (a faithful tight-eps run
+  legitimately exceeds 1 h); cache-restore worker now receives
+  eps/simplify/adaptive (was silently falling back to legacy defaults).
+
 ### Added
 
 - **Experimental fTetWild mesher** (issue #12): a new

@@ -102,7 +102,18 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     and the relative form via `FTETWILD_EPS`. The internal edge-collapsing
     simplification is OFF by default (measured: skipping it is faster
     AND more faithful — it was the expensive phase and a deviation
-    source). Boundary layers are built with the fTetWild dual, and the
+    source).
+    **Adaptive refinement** (checkbox, default on) builds a local sizing
+    field from the measured passage thickness and the surface curvature -
+    cfMesh's surfaceThicknessRefinement + surfaceCurvatureRefinement
+    behaviour - so thin passages and tightly curved regions are refined
+    while the bulk keeps the slider's target edge; the log reports the
+    measured target-edge range. On load / scale / unit change the log also
+    prints the geometry measurements every sizer uses (domain,
+    cross-section, wall-thickness p10/p50, curvature-limited cell,
+    suggested cells). The **Scale Factor** + **Apply Scale** in the
+    Geometry tab now really apply: the meshers receive the scaled
+    geometry and the mesh cache is keyed on it. Boundary layers are built with the fTetWild dual, and the
     log reports coverage and achieved first-layer thickness PER PATCH
     (warning when a patch stays below 90%, i.e. a thin feature cannot
     take the stack). Measured: much faster than GMSH on this class of
