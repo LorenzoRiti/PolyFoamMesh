@@ -1186,6 +1186,7 @@ def run_volume(
     epsilon_abs: float | None = None,
     eps_frac: float | None = None,
     adaptive: bool = True,
+    scale: float = 1.0,
     stop_energy: float | None = None,
     disable_filtering: bool = False,
     simplify: bool = False,
@@ -1245,6 +1246,10 @@ def run_volume(
         "0", "false", "no", "off",
     ):
         adaptive = False
+    try:
+        scale = float(scale) if scale else 1.0
+    except (TypeError, ValueError):
+        scale = 1.0
     if stop_energy is None:
         env_se = os.environ.get("FTETWILD_STOP_ENERGY", "")
         try:
@@ -1269,14 +1274,22 @@ def run_volume(
         # surface mesh, so feed it to fTetWild as-is and recover patch
         # names from its solids (binary STLs carry none -> one patch).
         stl_source = step_path
-        src_tris, raw_names = load_surface_solids(step_path)
+        if abs(scale - 1.0) > 1e-12:
+            # Scale the imported STL about the origin (GUI unit/scale): the
+            # mesher and every sizing input must live in the same units.
+            import pyvista as _pvs
+            _sp = _pvs.read(str(step_path)).triangulate()
+            _sp.points = _sp.points * float(scale)
+            stl_source = msh_path.with_name("mesh.surface.scaled.stl")
+            _sp.save(str(stl_source))
+        src_tris, raw_names = load_surface_solids(stl_source)
     else:
         from polyfoammesh.core.gmsh_wrapper import (
             export_tagged_surface_npz,
             generate_surface_stl,
         )
 
-        generate_surface_stl(step_path, stl_path, detail=detail)
+        generate_surface_stl(step_path, stl_path, detail=detail, scale=scale)
         export_tagged_surface_npz(tagged_path)
         tagged = np.load(tagged_path, allow_pickle=True)
         src_tris = tagged["tris"]
@@ -1591,6 +1604,9 @@ def _cli_main(argv) -> None:
                     if flags.get("eps-frac") else None
                 ),
                 adaptive=not bool(flags.get("no-adaptive")),
+                scale=(
+                    float(flags["scale"]) if flags.get("scale") else 1.0
+                ),
                 stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
                 disable_filtering=bool(flags.get("no-filtering")),
                 simplify=bool(flags.get("simplify")),

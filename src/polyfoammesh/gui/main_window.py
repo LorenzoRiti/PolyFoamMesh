@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
         self._restore_settings()
 
         self._params.unit_changed.connect(self._on_unit_changed)
+        self._params.scale_changed.connect(self._apply_scale)
         self._params.cancel_meshing.connect(self._on_cancel_meshing)
         # Cancel moved from the ribbon to the Mesh tab, directly under
         # "Reset All" (user request). The widget is built by the params
@@ -1041,6 +1042,7 @@ class MainWindow(QMainWindow):
         self._params.set_suggest_meshes(self._meshes)
         self._params.set_meshing_enabled(bool(self._meshes))
         self._viewer.show_cad(self._meshes)
+        self._params.auto_analyze()
         dx, dy, dz = compute_bbox_full(self._meshes)
         self._params.set_bbox(dx, dy, dz)
         logger.info("Domain bbox: %.4f x %.4f x %.4f", dx, dy, dz)
@@ -1393,6 +1395,44 @@ class MainWindow(QMainWindow):
             self._meshes = self._scaled_meshes
 
     @Slot(str)
+    def _apply_scale(self) -> None:
+        """Apply the geometry scale from the Geometry tab (Apply Scale).
+
+        Rebuilds the in-memory meshes at the requested factor, refreshes the
+        viewer + the size analysis, and logs the new domain so the user can
+        SEE that the scale took effect (2026-10-19: the field existed but
+        nothing applied it).  The meshers receive the same factor: GMSH
+        scales the model with an OCC dilate, fTetWild scales the surface.
+        """
+        if not self._unscaled_meshes:
+            self._log_line(
+                "[scale] load a geometry first.", tag=Tag.SCALE,
+            )
+            return
+        scale = float(self._params.get_scale_factor())
+        if abs(scale - self._current_scale) < 1e-12:
+            self._log_line(
+                f"[scale] already at {scale:g}x - nothing to do.",
+                tag=Tag.SCALE,
+            )
+            return
+        self._rebuild_scaled_meshes()
+        self._viewer.show_cad(self._meshes)
+        self._params.set_suggest_meshes(self._meshes)
+        self._params.auto_analyze()
+        try:
+            dx, dy, dz = compute_bbox_full(self._meshes)
+            self._params.set_bbox(dx, dy, dz)
+            self._log_line(
+                f"[scale] geometry scaled to {scale:g}x - domain "
+                f"{dx:.4g} x {dy:.4g} x {dz:.4g} m; the meshers will use "
+                "this geometry.", tag=Tag.SCALE,
+            )
+        except Exception:
+            self._log_line(
+                f"[scale] geometry scaled to {scale:g}x.", tag=Tag.SCALE,
+            )
+
     def _on_unit_changed(self, unit: str):
         if not self._unscaled_meshes:
             return
@@ -3160,6 +3200,27 @@ class MainWindow(QMainWindow):
             bl_thickness = None
             bl_expansion = 1.2
             bl_wall_size_floor = 0.0
+        # Settings that SHAPE the produced .msh must invalidate the cache:
+        # the geometry scale (the mesher receives the scaled model), and on
+        # the fTetWild path the surface tolerance / simplify / adaptive
+        # sizing (all of them change the tet mesh; without this, changing
+        # them silently reused the previous .msh - 2026-10-19).
+        try:
+            scale = float(self._params.get_scale_factor())
+        except Exception:
+            scale = 1.0
+        ftw_eps = (
+            float(self._params.get_ftetwild_eps_frac())
+            if mesher == "ftetwild_poly" else 0.0
+        )
+        ftw_simplify = (
+            bool(self._params.get_ftetwild_simplify())
+            if mesher == "ftetwild_poly" else False
+        )
+        ftw_adaptive = (
+            bool(self._params.get_ftetwild_adaptive())
+            if mesher == "ftetwild_poly" else False
+        )
         try:
             st = Path(step_path).stat()
             geometry_path = str(Path(step_path).resolve())
@@ -3188,6 +3249,10 @@ class MainWindow(QMainWindow):
             "bl_thickness": bl_thickness,
             "bl_expansion": bl_expansion,
             "bl_wall_size_floor": bl_wall_size_floor,
+            "scale": scale,
+            "ftw_eps_frac": ftw_eps,
+            "ftw_simplify": ftw_simplify,
+            "ftw_adaptive": ftw_adaptive,
         }
 
     def _reuse_cached_tet_mesh(
@@ -3456,6 +3521,7 @@ class MainWindow(QMainWindow):
                 eps_frac=self._params.get_ftetwild_eps_frac(),
                 simplify=self._params.get_ftetwild_simplify(),
                 adaptive=self._params.get_ftetwild_adaptive(),
+                scale=self._params.get_scale_factor(),
             )
         else:
             w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
@@ -3463,7 +3529,8 @@ class MainWindow(QMainWindow):
                                  max_cell_size=max_cell, min_cell_size=min_cell,
                                  max_cells_target=max_cells_target,
                                  surface_resolution=surface_resolution,
-                                 bl_wall_size_floor=bl_wall_size_floor)
+                                 bl_wall_size_floor=bl_wall_size_floor,
+                                 scale=self._params.get_scale_factor())
         self._gmsh_worker = w
         self._gmsh_vol_ctx = {
             "step_path": step_path, "msh_path": msh_path, "detail": detail,
@@ -3564,6 +3631,7 @@ class MainWindow(QMainWindow):
                     eps_frac=self._params.get_ftetwild_eps_frac(),
                     simplify=self._params.get_ftetwild_simplify(),
                     adaptive=self._params.get_ftetwild_adaptive(),
+                    scale=self._params.get_scale_factor(),
                 )
             return GmshVolumeWorker(
                 ctx["step_path"], ctx["msh_path"], detail,

@@ -3681,6 +3681,7 @@ class GmshVolumeWorker(QObject):
                  size_field_file: str | Path | None = None,
                  surface_resolution: str = "medium",
                  bl_wall_size_floor: float = 0.0,
+                 scale: float = 1.0,
                  parent=None):
         super().__init__(parent)
         # Solution-derived target-size lattice (core.solution_adaptive). Passed
@@ -3700,6 +3701,7 @@ class GmshVolumeWorker(QObject):
         # Surface resolution preset + BL<->sizing wall-size floor (0 = off).
         self._surface_resolution = surface_resolution or "medium"
         self._bl_wall_size_floor = float(bl_wall_size_floor or 0.0)
+        self._scale = float(scale or 1.0)
         self._proc_holder: dict = {}
         self._cancelled = False
 
@@ -3745,6 +3747,8 @@ class GmshVolumeWorker(QObject):
             f"--surface-resolution={self._surface_resolution}",
             f"--bl-wall-size-floor={self._bl_wall_size_floor}",
         ]
+        if abs(getattr(self, "_scale", 1.0) - 1.0) > 1e-12:
+            args.append(f"--scale={self._scale}")
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
         env = os.environ.copy()
@@ -3993,7 +3997,8 @@ class FtetWildVolumeWorker(QObject):
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  max_cell_size: float = 0.0, lr: float | None = None,
                  opt_iter: int | None = None, eps_frac: float = 0.0,
-                 simplify: bool = True, adaptive: bool = True, parent=None):
+                 simplify: bool = True, adaptive: bool = True,
+                 scale: float = 1.0, parent=None):
         super().__init__(parent)
         self._step_path = step_path
         self._msh_path = msh_path
@@ -4004,6 +4009,7 @@ class FtetWildVolumeWorker(QObject):
         self._eps_frac = float(eps_frac)
         self._simplify = bool(simplify)
         self._adaptive = bool(adaptive)
+        self._scale = float(scale or 1.0)
         self._proc_holder: dict = {}
         self._cancelled = False
 
@@ -4035,6 +4041,8 @@ class FtetWildVolumeWorker(QObject):
             args.append("--simplify")
         if not self._adaptive:
             args.append("--no-adaptive")
+        if abs(self._scale - 1.0) > 1e-12:
+            args.append(f"--scale={self._scale}")
         cmd, run_cwd = _gmsh_wrapper_script_cmd(
             args, "--ftetwild-volume", script_name="ftetwild_wrapper.py"
         )

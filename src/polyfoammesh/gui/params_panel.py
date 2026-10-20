@@ -126,6 +126,7 @@ class ParamsPanel(QWidget):
     load_step_requested = Signal()
     cancel_meshing = Signal()
     unit_changed = Signal(str)
+    scale_changed = Signal()
     param_changed = Signal(str, object)
     suggestion_completed = Signal(str)
     pick_refinement_requested = Signal()
@@ -236,6 +237,14 @@ class ParamsPanel(QWidget):
         self._scale_factor.setValue(1.0)
         self._scale_factor.setDecimals(6)
         form_geom.addRow("Scale Factor:", self._scale_factor)
+        self._scale_apply = QPushButton("Apply Scale")
+        self._scale_apply.setToolTip(
+            "Apply the scale factor to the loaded geometry (and to every "
+            "subsequent mesh: the meshers receive the scaled geometry, so "
+            "the cell sizes stay in metres)."
+        )
+        self._scale_apply.clicked.connect(self.scale_changed.emit)
+        form_geom.addRow(self._scale_apply)
         cad_layout.addLayout(form_geom)
 
         geom_layout.addWidget(cad_group)
@@ -1197,6 +1206,69 @@ class ParamsPanel(QWidget):
                 f"first layer {proposed_h1:.4g} m"
             )
         self._refresh_bl_hint()
+
+    def auto_analyze(self) -> None:
+        """Log the geometry measurements the sizers work from (2026-10-19:
+        'we don't have the possibility to understand the measurements').
+
+        Read-only: never changes the cell sizes.  Emits a compact report -
+        bbox / cross-section, thickness percentiles, curvature-limited cell,
+        suggested max/min cells and the expected cell count for the current
+        Detail level - so the user can SEE why a mesh is fine or coarse
+        instead of guessing.  Sampling is the same validated ray-cast used
+        by the sizer (a few seconds); failures only log a warning.
+        """
+        if not self._suggest_meshes:
+            return
+        detail = self.get_detail_level()
+        try:
+            from polyfoammesh.core.geometry import (
+                analyze_local_thickness,
+                compute_curvature_sizing,
+                compute_bbox_full,
+                suggest_cell_sizes,
+            )
+            dx, dy, dz = compute_bbox_full(self._suggest_meshes)
+            analysis = analyze_local_thickness(self._suggest_meshes)
+            s_max, s_min = suggest_cell_sizes(
+                self._suggest_meshes, detail=detail,
+            )
+            bbox_max = max(dx, dy, dz)
+            curv = compute_curvature_sizing(
+                self._suggest_meshes, bbox_max=bbox_max,
+            )
+            cross = sorted([dx, dy, dz])[1]
+            vol = float(sum(float(m.volume) for m in self._suggest_meshes))
+            est_cells = int(vol / max(s_max, 1e-12) ** 3) if vol > 0 else 0
+            lines = [
+                f"[suggest] domain {dx:.4g} x {dy:.4g} x {dz:.4g} m | "
+                f"cross-section {cross:.4g} m"
+            ]
+            if analysis.get("n_samples", 0) > 0:
+                lines.append(
+                    f"[suggest] wall thickness p10 {analysis['p10'] * 1e3:.4g} mm, "
+                    f"p50 {analysis['p50'] * 1e3:.4g} mm "
+                    f"({analysis['n_samples']} ray samples)"
+                )
+            else:
+                lines.append("[suggest] thickness sampling failed - bbox fallback")
+            if curv is not None:
+                lines.append(
+                    f"[suggest] curvature-limited cell {curv * 1e3:.4g} mm "
+                    "(8 cells per curvature radius)"
+                )
+            lines.append(
+                f"[suggest] detail={detail}: suggested max cell "
+                f"{s_max * 1e3:.4g} mm, min cell {s_min * 1e3:.4g} mm, "
+                f"bulk estimate ~{est_cells:,} cells"
+            )
+            for ln in lines:
+                self.suggestion_completed.emit(ln)
+        except Exception:
+            logger.exception("auto geometry analysis failed")
+            self.suggestion_completed.emit(
+                "[suggest] geometry analysis unavailable for this model"
+            )
 
     def _on_suggest_sizes(self):
         if not self._suggest_meshes:

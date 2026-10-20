@@ -1848,6 +1848,37 @@ def from_step(filepath: Path | str) -> list[str]:
     return names
 
 
+def _apply_model_scale(gmsh, scale: float) -> None:
+    """Scale the open GMSH model about the origin (CAD unit / GUI scale).
+
+    The GUI's cell sizes are in METRES while a STEP carries the CAD's native
+    unit (often mm): without this the mesher is asked for metre-scale cells
+    on a millimetre model (or vice versa) - the long-standing "lo scale della
+    GUI non funziona" report.  Applied right after gmsh.open(), BEFORE any
+    sizing/bbox computation, so every downstream size is consistent.
+    """
+    try:
+        sc = float(scale)
+    except (TypeError, ValueError):
+        return
+    if not sc or abs(sc - 1.0) <= 1e-12:
+        return
+    ents = gmsh.model.getEntities()
+    if not ents:
+        return
+    try:
+        gmsh.model.occ.dilate(ents, 0.0, 0.0, 0.0, sc, sc, sc)
+        gmsh.model.occ.synchronize()
+        logger.info("GMSH model scaled by %g about the origin", sc)
+    except Exception:
+        try:
+            gmsh.model.geo.dilate(ents, 0.0, 0.0, 0.0, sc, sc, sc)
+            gmsh.model.geo.synchronize()
+            logger.info("GMSH model scaled by %g (geo kernel)", sc)
+        except Exception:
+            logger.warning("GMSH model scaling failed (scale=%g)", sc, exc_info=True)
+
+
 def compute_sizing(
     filepath: Path | str,
     detail: str = "medium",
@@ -1945,6 +1976,7 @@ def generate_surface_stl(
     output_stl: Path | str,
     detail: str = "medium",
     user_lc: float | None = None,
+    scale: float = 1.0,
 ) -> list[str]:
     """Generate a curvature-adapted surface STL using GMSH.
 
@@ -1962,6 +1994,7 @@ def generate_surface_stl(
     filepath_str = str(Path(filepath).resolve())
     output_stl = str(Path(output_stl).resolve())
     gmsh.open(filepath_str)
+    _apply_model_scale(gmsh, scale)
 
     try:
         bbox = gmsh.model.getBoundingBox(-1, -1)
@@ -2902,6 +2935,7 @@ def generate_volume_mesh(
     size_field_file: Path | str | None = None,
     surface_resolution: str | float = "medium",
     bl_wall_size_floor: float = 0.0,
+    scale: float = 1.0,
 ) -> tuple[Path, list[str]]:
     """Generate a full tetrahedral volume mesh using GMSH (direct flow).
 
@@ -2965,6 +2999,7 @@ def generate_volume_mesh(
                     logger.debug("gmsh_wrapper: robust import option %s not accepted", _opt, exc_info=True)
 
     gmsh.open(filepath_str)
+    _apply_model_scale(gmsh, scale)
 
     if robust and is_step_input:
         _heal_occ_geometry(gmsh, "step")
@@ -3610,8 +3645,14 @@ def _cli_main(argv):
         stl_out = Path(argv[3])
         detail = argv[4] if len(argv) > 4 else "medium"
         stl_out.parent.mkdir(parents=True, exist_ok=True)
+        scale = 1.0
+        for a in argv[5:]:
+            if a.startswith("--scale="):
+                scale = float(a.split("=", 1)[1])
         try:
-            names = generate_surface_stl(geom_path, stl_out, detail=detail)
+            names = generate_surface_stl(
+                geom_path, stl_out, detail=detail, scale=scale,
+            )
             sizing = compute_sizing(geom_path, detail=detail)
             print(json.dumps({
                 "success": True,
@@ -3657,6 +3698,7 @@ def _cli_main(argv):
         max_cells_target = _arg(8, "max-cells-target", int, 0)
         bl_wall_size_floor = _arg(9, "bl-wall-size-floor", float, 0.0)
         surface_resolution = _arg(10, "surface-resolution", str, "medium")
+        scale = _arg(11, "scale", float, 1.0)
         # Read refinement zones from environment variable (set by GmshVolumeWorker)
         refinement_zones = None
         zones_json = os.environ.get("GMSH_REFINEMENT_ZONES", "")
@@ -3681,6 +3723,7 @@ def _cli_main(argv):
                 max_cells_override=max_cells_target if max_cells_target > 0 else None,
                 surface_resolution=surface_resolution,
                 bl_wall_size_floor=bl_wall_size_floor,
+                scale=scale,
             )
             # Cheap post-hoc check (reuses the still-open GMSH model, a
             # few ms) so the GUI can warn about the known polyDualMesh
