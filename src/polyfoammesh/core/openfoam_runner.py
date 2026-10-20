@@ -2253,6 +2253,24 @@ class DualPolyWorker(QObject):
             self.failed.emit(str(exc))
             return
 
+        if result is not None and not result.success and any(
+            ("not watertight" in e or "Open output cell" in e)
+            for e in (result.errors or [])
+        ):
+            # The collapsed (polyDualMesh) boundary can leave a cell open on
+            # some thin-feature stars (measured: a 10 mm-wall pipe at 8 mm
+            # cells -> closure error 1e-1 at one boundary cell).  The exact
+            # per-corner dual is closed by construction, so retry with it -
+            # more boundary faces, but a valid mesh instead of a failure.
+            self.log_line.emit(
+                "[poly] collapsed dual is not watertight on this topology - "
+                "retrying with the exact per-corner boundary..."
+            )
+            converter._collapse = False
+            result = _run_with_profile(
+                self._case_dir, "dual", converter.run, self.log_line.emit,
+            )
+
         if not result.success:
             msg = "; ".join(result.errors) or "Unknown dual conversion error"
             self.log_line.emit(f"[poly] FAILED: {msg}")
