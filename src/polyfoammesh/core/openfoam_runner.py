@@ -2221,7 +2221,13 @@ class DualPolyWorker(QObject):
                 collapse_smooth_edges=True,
                 boundary_feature_angle=40.0,
                 collapse_volume_tolerance=0.10,
-                smooth_free_boundary=self._smooth_free_boundary,
+                # Free-boundary smoothing is OFF even on the fTetWild path
+                # (2026-10-19 measured comparison on the medium reference,
+                # same tet mesh): free boundary -> surface 0.62 mm mean and
+                # 1/4/1 defects; PINNED -> 0.30 mm mean and 0/1/0 defects.
+                # The surface snap now fixes the tet-side surface, so
+                # relaxing the dual boundary only adds offset and skew.
+                smooth_free_boundary=False,
                 # fTetWild path only (same flag as the free-boundary
                 # smoothing): count checkMesh's BOUNDARY-face skewness
                 # exactly (OpenFOAM boundaryFaceSkewness replica) so the
