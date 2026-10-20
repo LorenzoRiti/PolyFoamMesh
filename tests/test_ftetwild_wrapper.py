@@ -221,6 +221,43 @@ def test_relative_epsilon_is_scale_aware():
     assert ftw._relative_epsilon((0.0, 1.0, 0.0, 1.0, 0.0, 1.0), None) is None
 
 
+def test_snap_boundary_to_surface_restores_displaced_vertices():
+    """2026-10-19: fTetWild moves the surface inside the eps envelope while
+    GMSH is exact; the snap projects the tet boundary vertices back onto the
+    input surface (volume-guarded).  Cube of 6 tets, corners displaced by
+    10 mm, snapped onto the exact cube surface -> vertices back on it."""
+    import pyvista as pv
+    V = np.array([
+        [-.5, -.5, -.5], [.5, -.5, -.5], [.5, .5, -.5], [-.5, .5, -.5],
+        [-.5, -.5, .5], [.5, -.5, .5], [.5, .5, .5], [-.5, .5, .5],
+    ], dtype=float)
+    T = np.array([
+        [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6],
+        [0, 7, 4, 6], [0, 4, 5, 6], [0, 5, 1, 6],
+    ], dtype=np.int64)
+    # orient every tet positive
+    for i, (a, b, c, d) in enumerate(T):
+        vol = np.dot(V[b] - V[a], np.cross(V[c] - V[a], V[d] - V[a]))
+        if vol < 0:
+            T[i] = [a, c, b, d]
+    bad = np.arange(8)
+    V_bad = V + np.array([0.01, 0.01, 0.01])
+    cube = pv.Cube().triangulate()
+    snapped, n, mx = ftw._snap_boundary_to_surface(V_bad, T, cube)
+    assert n >= 6
+    assert mx > 1e-3
+    # every vertex is back on one of the six +-0.5 planes
+    plane_err = np.min(np.abs(np.abs(snapped) - 0.5), axis=1)
+    assert float(plane_err.max()) < 1e-6
+    # volumes still positive
+    for a, b, c, d in T:
+        vol = np.dot(
+            snapped[b] - snapped[a],
+            np.cross(snapped[c] - snapped[a], snapped[d] - snapped[a]),
+        )
+        assert vol > 0
+
+
 def test_dynamic_envelope_scales_with_cell_edge():
     """2026-10-19: the default envelope is a FRACTION of the local target
     cell edge (user request: dynamic eps), so fidelity is proportional to
