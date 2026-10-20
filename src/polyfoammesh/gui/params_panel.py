@@ -700,20 +700,22 @@ class ParamsPanel(QWidget):
         # wrapper's knobs exposed so the user can trade fidelity for speed.
         ftet_group = QGroupBox("fTetWild surface fidelity (experimental)")
         ftet_form = QFormLayout(ftet_group)
-        self._ftet_eps_mm = QDoubleSpinBox()
-        self._ftet_eps_mm.setRange(0.01, 100.0)
-        self._ftet_eps_mm.setValue(0.3)
-        self._ftet_eps_mm.setDecimals(4)
-        self._ftet_eps_mm.setSingleStep(0.1)
-        self._ftet_eps_mm.setSuffix(" mm")
-        self._ftet_eps_mm.setToolTip(
-            "Maximum distance between the fTetWild output surface and the "
-            "input surface, in ABSOLUTE millimetres (the engine's relative "
-            "epsilon is derived from the part size). 0.3 mm is faithful on "
-            "every part scale; 0.03 mm is maximum fidelity but much slower. "
-            "Below ~0.01 mm the tetrahedralization stalls (measured)."
+        self._ftet_eps_frac = QDoubleSpinBox()
+        self._ftet_eps_frac.setRange(1.0, 50.0)
+        self._ftet_eps_frac.setValue(15.0)
+        self._ftet_eps_frac.setDecimals(1)
+        self._ftet_eps_frac.setSingleStep(1.0)
+        self._ftet_eps_frac.setSuffix(" % of cell")
+        self._ftet_eps_frac.setToolTip(
+            "Dynamic surface envelope: maximum distance between the fTetWild "
+            "output surface and the input surface, as a PERCENTAGE of the "
+            "local target cell edge. It scales automatically with the part "
+            "and the resolution slider (15% -> 1.2 mm on an 8 mm cell, "
+            "0.15 mm on a 1 mm cell), so fidelity is proportional everywhere "
+            "instead of being a fixed millimetre value. Lower = more "
+            "faithful and slower; below ~1% the tetrahedralization stalls."
         )
-        ftet_form.addRow("Surface envelope:", self._ftet_eps_mm)
+        ftet_form.addRow("Surface tolerance:", self._ftet_eps_frac)
         self._ftet_simplify = QCheckBox(
             "Simplify surface (slower, less faithful)"
         )
@@ -1584,11 +1586,11 @@ class ParamsPanel(QWidget):
         bucket = max(0, min(4, bucket))
         return self._DETAIL_MAP.get(bucket, "medium")
 
-    def get_ftetwild_eps_mm(self) -> float:
-        """fTetWild absolute surface envelope in millimetres (0 = default)."""
+    def get_ftetwild_eps_frac(self) -> float:
+        """Dynamic surface envelope as a fraction of the cell edge."""
         return (
-            float(self._ftet_eps_mm.value())
-            if hasattr(self, "_ftet_eps_mm") else 0.0
+            float(self._ftet_eps_frac.value()) / 100.0
+            if hasattr(self, "_ftet_eps_frac") else 0.0
         )
 
     def get_ftetwild_simplify(self) -> bool:

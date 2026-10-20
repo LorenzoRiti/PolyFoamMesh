@@ -241,6 +241,21 @@ def write_msh22(
         fh.write("$EndElements\n")
 
 
+def _dynamic_envelope(
+    eps_frac: float | None, target_edge: float,
+) -> float | None:
+    """Absolute surface envelope from a fraction of the local cell edge.
+
+    The dynamic (resolution-proportional) form requested 2026-10-19:
+    15% of an 8 mm cell edge -> 1.2 mm envelope; 15% of a 1 mm edge ->
+    0.15 mm.  Fidelity then scales with the slider and the part instead of
+    being a fixed millimetre value.  Returns None when disabled.
+    """
+    if not eps_frac or eps_frac <= 0 or not target_edge or target_edge <= 0:
+        return None
+    return float(eps_frac) * float(target_edge)
+
+
 def _relative_epsilon(bounds, epsilon_abs: float) -> float | None:
     """Convert an ABSOLUTE surface envelope (metres) to pytetwild's
     bbox-relative epsilon.
@@ -906,6 +921,7 @@ def run_volume(
     opt_iter: int | None = None,
     epsilon: float | None = None,
     epsilon_abs: float | None = None,
+    eps_frac: float | None = None,
     stop_energy: float | None = None,
     disable_filtering: bool = False,
     simplify: bool = False,
@@ -951,9 +967,16 @@ def run_volume(
             )
         except ValueError:
             epsilon_abs = None
+    if eps_frac is None:
+        env_frac = os.environ.get("FTETWILD_EPS_FRAC", "")
+        try:
+            eps_frac = float(env_frac) if env_frac else None
+        except ValueError:
+            eps_frac = None
     if epsilon_abs is not None:
         # Absolute envelope wins over the relative one (scale-safe form).
         epsilon = None
+        eps_frac = None
     if stop_energy is None:
         env_se = os.environ.get("FTETWILD_STOP_ENERGY", "")
         try:
@@ -1014,11 +1037,20 @@ def run_volume(
     if la_used is None and lr is None:
         la_used = _default_target_edge(cross_scale, detail)
     target_edge = la_used if la_used else (lr or DEFAULT_LR) * bbox_diag
+    # Dynamic surface envelope (user request 2026-10-19): a fraction of the
+    # LOCAL target edge, so fidelity scales with the resolution and the part
+    # instead of being a fixed millimetre value.  15% of the cell edge is
+    # the default (8 mm cell -> 1.2 mm envelope; 1 mm cell -> 0.15 mm).
+    _dyn = _dynamic_envelope(eps_frac, target_edge)
+    if _dyn is not None:
+        epsilon_abs = _dyn
+        epsilon = None
     print(
         f"experimental tet stage: bbox_diag={bbox_diag:.4g} "
         f"cross_section={cross_scale:.4g} "
         f"target_edge={target_edge:.4g} input_median_edge={med_edge:.4g} "
-        f"eps={f'{epsilon_abs * 1000.0:.4g}mm' if epsilon_abs else (epsilon if epsilon else 'default(1e-3)')} "
+        f"eps={f'{epsilon_abs * 1000.0:.4g}mm' if epsilon_abs else (epsilon if epsilon else 'default(1e-3)')}"
+        f"{f' ({eps_frac:.0%} of the target edge)' if eps_frac else ''} "
         f"simplify={simplify} "
         f"({len(src_tris):,} input triangles, {len(set(raw_names))} "
         "patches) - long runs possible on complex parts; Cancel stays available",
@@ -1150,6 +1182,7 @@ def run_volume(
         "opt_iter": opt_iter,
         "epsilon": epsilon,
         "epsilon_abs": epsilon_abs,
+        "eps_frac": eps_frac,
         "stop_energy": stop_energy,
         "disable_filtering": bool(disable_filtering),
         "simplify": bool(simplify),
@@ -1197,6 +1230,10 @@ def _cli_main(argv) -> None:
                 epsilon_abs=(
                     float(flags["eps-mm"]) / 1000.0
                     if flags.get("eps-mm") else None
+                ),
+                eps_frac=(
+                    float(flags["eps-frac"])
+                    if flags.get("eps-frac") else None
                 ),
                 stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
                 disable_filtering=bool(flags.get("no-filtering")),

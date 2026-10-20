@@ -221,6 +221,18 @@ def test_relative_epsilon_is_scale_aware():
     assert ftw._relative_epsilon((0.0, 1.0, 0.0, 1.0, 0.0, 1.0), None) is None
 
 
+def test_dynamic_envelope_scales_with_cell_edge():
+    """2026-10-19: the default envelope is a FRACTION of the local target
+    cell edge (user request: dynamic eps), so fidelity is proportional to
+    the resolution and the part instead of a fixed millimetre value."""
+    assert ftw._dynamic_envelope(0.15, 0.008) == pytest.approx(0.0012)
+    assert ftw._dynamic_envelope(0.15, 0.001) == pytest.approx(0.00015)
+    assert ftw._dynamic_envelope(0.15, 0.020) == pytest.approx(0.003)
+    assert ftw._dynamic_envelope(0.0, 0.008) is None
+    assert ftw._dynamic_envelope(None, 0.008) is None
+    assert ftw._dynamic_envelope(0.15, 0.0) is None
+
+
 def test_midpoint_subdivide_shares_edge_midpoints():
     """The manifold-free subdivision: 1 triangle -> 4, and two triangles
     sharing an edge must SHARE that edge's midpoint (no cracks) - VTK's

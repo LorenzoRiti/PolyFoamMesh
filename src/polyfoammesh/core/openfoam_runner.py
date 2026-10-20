@@ -3981,7 +3981,7 @@ class FtetWildVolumeWorker(QObject):
 
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  max_cell_size: float = 0.0, lr: float | None = None,
-                 opt_iter: int | None = None, eps_mm: float = 0.0,
+                 opt_iter: int | None = None, eps_frac: float = 0.0,
                  simplify: bool = True, parent=None):
         super().__init__(parent)
         self._step_path = step_path
@@ -3990,7 +3990,7 @@ class FtetWildVolumeWorker(QObject):
         self._max_cell_size = max_cell_size
         self._lr = lr
         self._opt_iter = opt_iter
-        self._eps_mm = float(eps_mm)
+        self._eps_frac = float(eps_frac)
         self._simplify = bool(simplify)
         self._proc_holder: dict = {}
         self._cancelled = False
@@ -4017,8 +4017,8 @@ class FtetWildVolumeWorker(QObject):
             args.append(f"--lr={self._lr}")
         if self._opt_iter:
             args.append(f"--opt-iter={self._opt_iter}")
-        if self._eps_mm:
-            args.append(f"--eps-mm={self._eps_mm}")
+        if self._eps_frac:
+            args.append(f"--eps-frac={self._eps_frac}")
         if self._simplify:
             args.append("--simplify")
         cmd, run_cwd = _gmsh_wrapper_script_cmd(
