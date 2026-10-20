@@ -93,11 +93,24 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     tetrahedralization (`FTETWILD_QUIET=1` silences them). Cancel always
     stops a run, and `FTETWILD_LR` can still be pushed into the
     long-run regime — the log warns explicitly when that happens.
-    Measured: much faster than GMSH on this class of parts (on a real
-    3 m pipe: 150 s vs GMSH's 649 s at matching resolution, with much
-    better tet quality); on hard parts a handful of warped boundary
-    faces can still trip the final checkMesh — historically GMSH failed
-    the same gate on the same part in half of its logged runs.
+    **Surface tolerance** (Advanced tab) is a DYNAMIC envelope: a
+    percentage of the local target cell edge (default 15%), so fidelity
+    scales with the resolution slider and the part instead of a fixed
+    millimetre value (15% -> 1.2 mm on an 8 mm cell, 0.15 mm on a 1 mm
+    cell). Lower is more faithful and slower; below ~1% fTetWild stalls.
+    The absolute form is still available via `--eps-mm` / `FTETWILD_EPS_MM`
+    and the relative form via `FTETWILD_EPS`. The internal edge-collapsing
+    simplification is OFF by default (measured: skipping it is faster
+    AND more faithful — it was the expensive phase and a deviation
+    source). Boundary layers are built with the fTetWild dual, and the
+    log reports coverage and achieved first-layer thickness PER PATCH
+    (warning when a patch stays below 90%, i.e. a thin feature cannot
+    take the stack). Measured: much faster than GMSH on this class of
+    parts (on a real 3 m pipe: 150 s vs GMSH's 649 s at matching
+    resolution, with much better tet quality); on hard parts a handful
+    of warped boundary faces can still trip the final checkMesh —
+    historically GMSH failed the same gate on the same part in half of
+    its logged runs.
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)). Optional: enable `Convert to polyhedral
