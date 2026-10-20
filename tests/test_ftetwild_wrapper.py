@@ -258,6 +258,23 @@ def test_snap_boundary_to_surface_restores_displaced_vertices():
         assert vol > 0
 
 
+def test_thin_plate_survives_the_envelope_cap(tmp_path):
+    """2026-10-19 geometry battery: a 10 mm plate with a 15%-of-cell
+    envelope whose absolute value exceeds the plate thickness made fTetWild
+    return ZERO tetrahedra.  The envelope is now capped at 5% of the
+    smallest bbox dimension, so thin parts always produce a mesh."""
+    pytest.importorskip("pytetwild")
+    import trimesh
+    plate = trimesh.creation.box(extents=[0.5, 0.3, 0.01])
+    stl = tmp_path / "plate.stl"
+    plate.export(str(stl))
+    st = ftw.run_volume(
+        stl, tmp_path / "mesh.msh", detail="medium",
+        max_cell=0.04, eps_frac=0.15, simplify=False,
+    )
+    assert st["n_tets"] > 100
+
+
 def test_build_sizing_field_refines_thin_and_curved_regions():
     """2026-10-19 (cfMesh-like adaptive refinement): the background sizing
     field samples passage thickness and surface curvature; a sphere must get

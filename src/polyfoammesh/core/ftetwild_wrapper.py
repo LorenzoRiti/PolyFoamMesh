@@ -1326,6 +1326,23 @@ def run_volume(
     if _dyn is not None:
         epsilon_abs = _dyn
         epsilon = None
+    # Hard safety cap by the part's own size (2026-10-19, geometry battery):
+    # a 15% envelope on a coarse target can exceed a thin part's thickness
+    # (measured: a 10 mm plate with a 14.6 mm envelope -> fTetWild returns
+    # ZERO tets; a 3 m pipe at a 250 mm target -> a pinched non-manifold
+    # boundary the dual rejects).  Capping at 5% of the smallest bbox
+    # dimension keeps thin features alive at any slider position.
+    if epsilon_abs:
+        _min_dim = float(np.min(dims))
+        _cap = 0.05 * _min_dim
+        if _cap > 0.0 and float(epsilon_abs) > _cap:
+            print(
+                f"[fTetWild] envelope capped to {_cap * 1e3:.3g} mm "
+                "(5% of the smallest dimension) - a larger envelope would "
+                "erase thin features.",
+                flush=True,
+            )
+            epsilon_abs = _cap
     print(
         f"experimental tet stage: bbox_diag={bbox_diag:.4g} "
         f"cross_section={cross_scale:.4g} "
