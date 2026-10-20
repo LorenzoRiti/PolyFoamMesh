@@ -377,19 +377,18 @@ def tetrahedralize(
             logger.warning("surface subdivision failed - using the original", exc_info=True)
     if decimate is not None and 0.0 < decimate < 1.0:
         try:
-            # decimate_pro's parameter is the REDUCTION fraction (0.9
-            # removes 90%); `decimate` is the fraction to KEEP.
-            surf = surf.decimate_pro(1.0 - float(decimate))
-            # Quadric decimation leaves irregular facets; fTetWild follows
-            # them and the barycentric dual then builds warped boundary
-            # polygons at feature edges (measured on a real part: 167
-            # checkMesh-style pyramid violations, ALL within ~1.3 mm of a
-            # >40 deg edge, none on smooth regions; the same measurement
-            # after this pass: 46). Taubin smoothing (feature_smoothing=
-            # False default: sharp edges preserved) regularizes the facets
-            # without shrinking the shape.
-            surf = surf.smooth_taubin(n_iter=20, pass_band=0.1)
-            n_decimated_tris = int(surf.n_cells)
+            # Error-bounded decimation ONLY (2026-10-19, user report "lo
+            # smoothing deve essere integrato correttamente"): the old
+            # unbounded decimate_pro + Taubin(20, 0.1) pass moved surface
+            # points by up to 60 mm on the reference part (mean 1.2 mm,
+            # surface error 0.37 mm mean / 12.2 mm max) - pure geometry
+            # destruction.  The bounded filter stops where the error
+            # budget is reached; no post-smoothing.
+            _err = 0.25 * float(epsilon_abs) if epsilon_abs else None
+            _dec = _decimate_surface_bounded(surf, float(decimate), _err)
+            if _dec is not None:
+                surf = _dec
+                n_decimated_tris = int(surf.n_cells)
         except Exception:
             # Decimation is an optimization; the original surface is still
             # valid input for fTetWild (only slower).
@@ -628,47 +627,71 @@ def _snap_boundary_to_surface(V, T, surface, min_dist: float = 0.0):
 
 
 def _decimate_surface_bounded(surface, keep: float, max_error: float | None):
-    """Error-bounded quadric decimation (user bug 2026-10-19: 'fTetWild
-    works worse than GMSH').
+    """Decimate an over-dense surface toward the target density, then
+    VERIFY the error budget.
 
-    pytetwild's own ``decimate`` is an UNBOUNDED quadric reduction: on the
-    reference 3 m part it took a 634k-triangle surface to 92k (14.5%) and
-    moved the geometry by 1.03 mm mean / 17 mm max - far beyond the eps
-    envelope, invisible to the tet stage because fTetWild then tracks the
-    DECIMATED surface exactly.  GMSH does not decimate, which is why the
-    fTetWild path looked worse.
+    History (2026-10-19): pytetwild's own decimation is unchecked; the
+    vtkDecimatePro/MaximumError variant is checked but far too
+    conservative (it stopped at 14.5% keep with the same triangle count
+    as the plain quadric filter, so no benefit, and on other inputs it
+    keeps the surface dense = far more cells than the resolution slider
+    asks for).  The plain quadric decimation measured 0.012 mm mean /
+    0.14 mm max on the reference part - excellent.  So: decimate with the
+    quadric filter, sample the ORIGINAL surface against the result, and
+    only if the budget is exceeded keep more triangles (retry) or fall
+    back to the untouched surface.
 
-    This uses vtkDecimatePro with ``SetMaximumError`` (a fraction of the
-    bounding-box length): the reduction stops where the surface would move
-    past the error budget, so the result may keep MORE triangles than
-    ``keep`` - fidelity wins over size.  ``keep`` is the fraction to keep
-    (same convention as :func:`_decimation_reduction`); ``max_error`` is
-    absolute (None = unbounded, legacy).  Returns the decimated PolyData
-    or None when the filter cannot run.
+    ``keep`` is the fraction of triangles to keep; ``max_error`` absolute
+    (None = no check).  Returns the decimated PolyData or None.
     """
     try:
-        import vtk
-        from pyvista import wrap
+        import numpy as _np
+        import pyvista as _pv
     except Exception:  # noqa: BLE001 - optional dependency
         return None
-    bounds = surface.bounds
-    if max_error is not None:
-        span = float(max(
-            bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4],
-        ))
-        if span <= 0.0:
-            return None
-    alg = vtk.vtkDecimatePro()
-    alg.SetInputData(surface)
-    alg.SetTargetReduction(1.0 - float(min(max(keep, 0.01), 1.0)))
-    alg.SetPreserveTopology(True)
-    if max_error is not None:
-        alg.SetMaximumError(float(max_error) / span)
-    alg.Update()
-    out = alg.GetOutput()
-    if out is None or out.GetNumberOfPolys() < 4:
+    keep = float(min(max(keep, 0.01), 1.0))
+    if keep >= 0.999:
         return None
-    return wrap(out)
+    try:
+        cand = surface.decimate(1.0 - keep)
+    except Exception:  # noqa: BLE001
+        return None
+    if cand is None or cand.n_cells < 4:
+        return None
+    if max_error is None:
+        return cand
+
+    def _worst(dec):
+        n = min(surface.n_points, 20000)
+        idx = _np.linspace(0, surface.n_points - 1, n).astype(_np.int64)
+        d = _np.abs(_np.asarray(
+            _pv.PolyData(surface.points[idx]).compute_implicit_distance(dec)[
+                "implicit_distance"
+            ]
+        ))
+        return float(d.max()) if d.size else 0.0
+
+    worst = _worst(cand)
+    if worst <= max_error:
+        return cand
+    # Budget exceeded: search upward geometrically (sqrt ladder).  A single
+    # +50% retry was measured to jump from 1% to 50% keep on a real part
+    # (320k triangles, far from the target): four sqrt steps bracket the
+    # largest reduction that still fits the budget.
+    k = keep
+    for _ in range(4):
+        k = float(_np.sqrt(k))
+        if k >= 0.999:
+            break
+        try:
+            alt = surface.decimate(1.0 - k)
+        except Exception:  # noqa: BLE001
+            break
+        if alt is None or alt.n_cells < 4:
+            break
+        if _worst(alt) <= max_error:
+            return alt
+    return None
 
 
 def _refinement_subdivision(med_edge: float, target_edge: float) -> int | None:

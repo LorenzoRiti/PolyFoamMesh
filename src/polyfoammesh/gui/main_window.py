@@ -3557,6 +3557,11 @@ class MainWindow(QMainWindow):
                 return FtetWildVolumeWorker(
                     ctx["step_path"], ctx["msh_path"], detail,
                     max_cell_size=ctx["max_cell"],
+                    # Settings must be identical on the cache-restore path:
+                    # without these the re-tet silently fell back to the
+                    # legacy relative eps and simplify=True (2026-10-19).
+                    eps_frac=self._params.get_ftetwild_eps_frac(),
+                    simplify=self._params.get_ftetwild_simplify(),
                 )
             return GmshVolumeWorker(
                 ctx["step_path"], ctx["msh_path"], detail,
