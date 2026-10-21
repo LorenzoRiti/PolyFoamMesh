@@ -2346,6 +2346,23 @@ class DualPolyWorker(QObject):
                     # default (consume on - it is the promoted default
                     # there).
                     kw["consume"] = False
+                    # The 0.9 sliver-edge filter is a GMSH-dual remedy
+                    # (measured 9/10 across the benchmark there); on the
+                    # fTetWild duals it breaks the build outright - measured
+                    # on the corpus cylinder: dropping the 0.9-edge faces
+                    # leaves the selected region multiply connected ("10
+                    # boundary edges shared by != 2 faces") and every height
+                    # scale fails validation.  With the filter off the BL
+                    # builds (5,440 prisms).  Neutralized here exactly like
+                    # consume - the GMSH path keeps the GUI value.
+                    kw["min_base_edge_fraction"] = 0.0
+                    # Feature-edge drop (GMSH/cfMesh-style): the faces
+                    # incident to a sharp boundary edge (normal turn >
+                    # 50 deg) are dropped so layers never wrap the cap/rim
+                    # edges - the bent stacks there produced the 80 deg
+                    # checkMesh failures.  The terminator machinery closes
+                    # the resulting band.  GMSH path keeps the GUI value.
+                    kw["drop_feature_dihedral"] = 50.0
                     # The fine dual's build adds ~18-180 pyramids at the
                     # terminator bands and no height scale avoids it, so the
                     # strict gate rejected every attempt (measured: 663 s

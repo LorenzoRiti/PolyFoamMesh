@@ -22,10 +22,30 @@ poly (the app's differentiating GMSH tet -> dual poly -> BL path):
   7. Record per-stage times, tet/poly counts, BL stats and the in-process
      defect count from the dual converter's checkMesh replica
 
-Select with --pipeline {hex,poly,all} (default hex).
+ftetwild (the experimental fTetWild tet -> dual poly -> BL path, issue #12):
+  1. fTetWild tetrahedral volume mesh (subprocess through the same
+     dispatcher FtetWildVolumeWorker uses; shipped milestone-A settings:
+     0.3 mm ABSOLUTE surface envelope, internal simplify OFF, adaptive
+     thickness+curvature sizing field ON)
+  2. gmshToFoam via WSL2
+  3. tet -> poly barycentric dual with the fTetWild-path production
+     settings (pinned boundary, boundary-skew replica + split repair,
+     tangential shift off) incl. the exact-dual retry when the collapsed
+     boundary is not watertight
+  4. prismatic BL with the fTetWild-path production settings (consume
+     off, bounded pyramid tolerance, drop-first, sliver-edge filter 0.9,
+     budget termination; vertex-decoupled retry on inverted thin-feature
+     stacks) + post-BL boundary-pyramid clearance
+  5. checkMesh via WSL2
+  6. Record per-stage times, tet/poly counts, BL stats and the in-process
+     defect count from the dual converter's checkMesh replica
 
-Output: benchmarks/results/<ISO_TIMESTAMP>.json (hex) and
-        benchmarks/results/<ISO_TIMESTAMP>_poly.json (poly).
+Select with --pipeline {hex,poly,ftetwild,all} (default hex).
+"all" runs all three pipelines.
+
+Output: benchmarks/results/<ISO_TIMESTAMP>.json (hex),
+        benchmarks/results/<ISO_TIMESTAMP>_poly.json (poly) and
+        benchmarks/results/<ISO_TIMESTAMP>_ftetwild.json (ftetwild).
 """
 
 from __future__ import annotations
@@ -86,6 +106,15 @@ DEFECT_ALLOWANCE_FRACTION = 0.05
 POLY_BL_N_LAYERS = 5
 POLY_BL_GROWTH_RATE = 1.2
 POLY_BL_FIRST_HEIGHT_FRACTION = 0.005
+
+# fTetWild pipeline shipped settings (milestone A, user decision 2026-10-19:
+# quality first): 0.3 mm ABSOLUTE surface envelope, internal simplify OFF
+# (measured faster AND more faithful) and the adaptive thickness+curvature
+# sizing field ON (the run_volume default).  The 5%-of-min-dimension
+# envelope cap and the target-edge clamp inside run_volume stay active -
+# they are part of the shipped path, not harness overrides.
+FTETWILD_EPS_MM = 0.3
+FTETWILD_TIMEOUT_S = 3600
 
 _KEEP_CASE = False
 
@@ -658,6 +687,8 @@ def _make_poly_result(
     min_volume: float = 0.0,
     warnings: list[str] | None = None,
     errors: list[str] | None = None,
+    pipeline: str = "poly",
+    bl_report: dict | None = None,
 ) -> dict:
     """Build a poly-pipeline result dict.
 
@@ -688,7 +719,7 @@ def _make_poly_result(
     overall = all(gates.values())
     return {
         "geometry": geometry,
-        "pipeline": "poly",
+        "pipeline": pipeline,
         "timestamp": now,
         "success": overall,
         "wall_time_s": round(wall_time_s, 2),
@@ -699,6 +730,7 @@ def _make_poly_result(
         "reduction_ratio": round(reduction, 3),
         "bl_prism_cells": bl_prism_cells,
         "bl_thickness": round(bl_thickness, 6),
+        "bl_report": bl_report or {},
         "defect_count": defect_count,
         "defect_breakdown": defect_breakdown or {},
         "defect_allowance": defect_allowance,
@@ -1078,12 +1110,419 @@ def _benchmark_poly_one(
             shutil.rmtree(tmp_root, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# fTetWild pipeline: fTetWild tet -> gmshToFoam -> dual poly -> BL -> checkMesh
+# ---------------------------------------------------------------------------
+
+
+def _benchmark_ftetwild_one(
+    stl_path: Path,
+    keep_case: bool = False,
+    eps_mm: float = FTETWILD_EPS_MM,
+    ftet_timeout_s: int = FTETWILD_TIMEOUT_S,
+    gmsh_to_foam_timeout_s: int = 900,
+    check_timeout_s: int = TIMEOUT_S,
+    # NOTE: the shipped worker NEUTRALIZES the GUI's 0.9 sliver-edge filter
+    # on the fTetWild path (measured: it leaves the selected BL region
+    # multiply connected on the corpus cylinder and every height scale
+    # fails; without it the BL builds).  The harness mirrors the effective
+    # shipped setting.
+    bl_min_edge: float = 0.0,
+    bl_budget_term: bool = True,
+) -> dict:
+    """Run the fTetWild tet -> gmshToFoam -> dual -> BL -> checkMesh pipeline.
+
+    Every setting mirrors the SHIPPED fTetWild path (issue #12 milestone A)
+    so the "Mesh OK" acceptance is measured at what will actually run:
+
+    - tet stage through the production dispatcher
+      (``_gmsh_wrapper_script_cmd`` + ``ftetwild_wrapper.py volume``) with
+      the 0.3 mm absolute envelope, simplify off and the adaptive sizing
+      field on;
+    - dual with the fTetWild-path production kwargs (pinned boundary,
+      boundary-skew replica, split repair, tangential shift OFF) including
+      the exact per-corner retry when the collapsed boundary is not
+      watertight (measured on a 10 mm-wall pipe);
+    - BL with consume off / bounded pyramid tolerance / drop-first / the
+      sliver-edge filter neutralized as the shipped worker does on this
+      path / budget termination and the vertex-decoupled retry on inverted
+      thin-feature stacks (5 mm-wall washer) — the exact chain
+      ``openfoam_runner.DualPolyWorker`` runs — followed by the post-BL
+      boundary-pyramid clearance and the per-patch BL report.
+
+    Harness convention (same as the poly benchmark): the BL covers ALL
+    boundary patches and the first layer is the 0.005 * max_cell app
+    fraction, so the pipelines compare on identical BL coverage policy.
+    """
+    name = stl_path.stem
+    logger.info("=" * 60)
+    logger.info("Benchmarking (ftetwild): %s", name)
+    logger.info("=" * 60)
+
+    early, ctx = _prepare_geometry(stl_path, pipeline="ftetwild")
+    if early is not None:
+        return early
+    assert ctx is not None  # guaranteed when early is None
+    max_cell = ctx["max_cell"]
+    size_warnings = ctx["size_warnings"]
+
+    tmp_root = WORK_ROOT / f"batch_{int(time.time() * 1000)}"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    case_dir = _make_case_dir(tmp_root, name)
+    logger.info("  case_dir: %s", case_dir)
+
+    errors: list[str] = []
+    warnings: list[str] = list(size_warnings)
+    stages: dict[str, bool] = {}
+    stage_times: dict[str, float] = {}
+    ftet_stats: dict = {}
+
+    def _fail() -> dict:
+        return _make_poly_result(
+            name,
+            success=False,
+            wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times,
+            stages=stages,
+            warnings=warnings,
+            errors=errors,
+            pipeline="ftetwild",
+        )
+
+    try:
+        # --- stage 1: fTetWild tetrahedral volume mesh (subprocess) ---------
+        t0 = time.perf_counter()
+        msh_path = case_dir / "mesh.msh"
+        try:
+            from polyfoammesh.core.openfoam_runner import (
+                _gmsh_wrapper_script_cmd,
+                _kill_pid_tree,
+                _parse_gmsh_json,
+            )
+
+            args = [
+                "volume",
+                f"--step={_gmsh_source(stl_path)}",
+                f"--msh={msh_path}",
+                f"--detail={_gmsh_detail(stl_path)}",
+                f"--max-cell={max_cell}",
+                f"--eps-mm={eps_mm}",
+            ]
+            cmd, run_cwd = _gmsh_wrapper_script_cmd(
+                args, "--ftetwild-volume", script_name="ftetwild_wrapper.py"
+            )
+            logger.info("  [ftetwild] %s", " ".join(cmd[1:]))
+            proc = subprocess.Popen(
+                cmd,
+                cwd=run_cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            try:
+                out, err_out = proc.communicate(timeout=ftet_timeout_s)
+            except subprocess.TimeoutExpired:
+                _kill_pid_tree(proc.pid)
+                try:
+                    proc.communicate(timeout=15)
+                except Exception:
+                    proc.kill()
+                stages["ftetwild"] = False
+                stage_times["ftetwild"] = round(time.perf_counter() - t0, 2)
+                errors.append(f"fTetWild timed out after {ftet_timeout_s}s")
+                return _fail()
+            stage_times["ftetwild"] = round(time.perf_counter() - t0, 2)
+            result = _parse_gmsh_json((out or "").splitlines())
+            if result is None or not result.get("success"):
+                if result is not None:
+                    err = result.get("error", "unknown fTetWild error")
+                elif (err_out or "").strip():
+                    err = (err_out or "").strip().splitlines()[-1]
+                else:
+                    err = f"fTetWild failed (exit {proc.returncode})"
+                stages["ftetwild"] = False
+                errors.append(f"ftetwild: {err}")
+                return _fail()
+            stages["ftetwild"] = True
+            ftet_stats = {
+                "n_tets": result.get("n_tets"),
+                "n_nodes": result.get("n_nodes"),
+                "epsilon_abs_mm": eps_mm,
+                "names": result.get("names"),
+                "surface_time_s": result.get("surface_time_s"),
+                "tet_time_s": result.get("tet_time_s"),
+            }
+            logger.info(
+                "  fTetWild: %s tets (surface %.1fs + tet %.1fs)",
+                result.get("n_tets"),
+                float(result.get("surface_time_s") or 0.0),
+                float(result.get("tet_time_s") or 0.0),
+            )
+        except Exception as exc:
+            stages["ftetwild"] = False
+            stage_times.setdefault(
+                "ftetwild", round(time.perf_counter() - t0, 2)
+            )
+            errors.append(f"ftetwild: {exc}")
+            return _fail()
+        tet_count = int(result.get("n_tets") or 0)
+
+        # --- stage 2: gmshToFoam via WSL ------------------------------------
+        _write_ctrl_dict(case_dir)
+        _write_solver_dicts(case_dir)
+        t0 = time.perf_counter()
+        linux = _to_wsl_path(case_dir)
+        rc, out = _wsl_of_run(
+            f"cd {linux} && gmshToFoam mesh.msh 2>&1",
+            timeout=gmsh_to_foam_timeout_s,
+        )
+        stage_times["gmsh_to_foam"] = round(time.perf_counter() - t0, 2)
+        if rc == -1:
+            stages["gmsh_to_foam"] = False
+            errors.append("gmshToFoam timed out")
+            return _fail()
+        if rc == -2:
+            stages["gmsh_to_foam"] = False
+            errors.append("WSL not found")
+            return _fail()
+        if rc != 0:
+            stages["gmsh_to_foam"] = False
+            tail = "\n".join(out.splitlines()[-20:])
+            errors.append(f"gmshToFoam exit {rc}. Last log lines:\n{tail}")
+            return _fail()
+        stages["gmsh_to_foam"] = True
+        logger.info("  gmshToFoam OK")
+
+        # --- stage 3: tet -> poly dual (fTetWild-path production settings) --
+        t0 = time.perf_counter()
+        try:
+            from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
+
+            conv = TetPolyDualConverter(
+                case_dir,
+                log=lambda m: logger.info("  [dual] %s", m),
+                # Production DualPolyWorker kwargs on the fTetWild path:
+                # pinned boundary (free-boundary smoothing measured HARMFUL:
+                # 0.62 mm surface + more defects vs 0.30 mm pinned), the
+                # exact boundary-skew replica + the split repair, tangential
+                # shift off (non-monotonic on these duals).
+                collapse_smooth_edges=True,
+                boundary_feature_angle=40.0,
+                collapse_volume_tolerance=0.10,
+                smooth_free_boundary=False,
+                count_boundary_skew=True,
+                split_boundary_defects=True,
+                shift_boundary_skew=False,
+            )
+            dres = conv.run()
+            if not dres.success and any(
+                ("not watertight" in e or "Open output cell" in e)
+                for e in (dres.errors or [])
+            ):
+                # Same production retry: the exact per-corner dual is closed
+                # by construction (measured on the 10 mm-wall pipe).
+                logger.info(
+                    "  collapsed dual not watertight - exact per-corner retry"
+                )
+                conv._collapse = False
+                dres = conv.run()
+            stage_times["dual"] = round(time.perf_counter() - t0, 2)
+            # keep-best refusals must be visible in the record
+            warnings.extend(getattr(dres, "warnings", []))
+            if not dres.success:
+                stages["dual"] = False
+                errors.append("dual: " + "; ".join(dres.errors))
+                return _fail()
+            stages["dual"] = True
+        except Exception as exc:
+            stages["dual"] = False
+            stage_times.setdefault("dual", round(time.perf_counter() - t0, 2))
+            errors.append(f"dual: {exc}")
+            return _fail()
+
+        poly_count = dres.n_cells_after
+        defect_count = dres.residual_defects
+        defect_breakdown = dict(dres.defect_breakdown)
+        logger.info(
+            "  dual: %d tets -> %d poly cells, defects=%d",
+            tet_count,
+            poly_count,
+            defect_count,
+        )
+
+        # --- stage 4: prismatic BL (fTetWild-path production settings) ------
+        bl_prism_cells = 0
+        bl_thickness = 0.0
+        bl_report: dict = {}
+        _bl_msgs: list[str] = []
+        t0 = time.perf_counter()
+        try:
+            from polyfoammesh.core.bl_poly import (
+                PolyBoundaryLayerEngine,
+                clear_boundary_pyramids_case,
+            )
+
+            def _bl_log(m: str) -> None:
+                _bl_msgs.append(m)
+                logger.info("  [bl] %s", m)
+
+            def _bl_run(extra: dict):
+                return PolyBoundaryLayerEngine(
+                    case_dir, log=_bl_log,
+                ).run(
+                    n_layers=POLY_BL_N_LAYERS,
+                    first_height=POLY_BL_FIRST_HEIGHT_FRACTION * max_cell,
+                    growth_rate=POLY_BL_GROWTH_RATE,
+                    apply_to_all=True,
+                    # Budget termination is shipped-always-on (GUI); the
+                    # sliver-edge filter value arrives here already
+                    # neutralized (0.0) as the shipped worker does on this
+                    # path - see the bl_min_edge note above.
+                    min_base_edge_fraction=bl_min_edge,
+                    terminate_by_budget=bl_budget_term,
+                    # fTetWild-path production extras (DualPolyWorker): the
+                    # consume reflow corrupts these duals; the strict pyramid
+                    # gate rejects every scale at the terminator bands;
+                    # drop-first avoids the compressed-stack dead end.
+                    consume=False,
+                    pyr_tolerance=200,
+                    cover_thin_first=False,
+                    # Feature-edge drop (shipped fTetWild behaviour): no
+                    # layers across sharp edges - the bent rim stacks were
+                    # the 80 deg checkMesh failures on the cylinder.
+                    drop_feature_dihedral=50.0,
+                    **extra,
+                )
+
+            bres = _bl_run({})
+            if not bres.success and any(
+                "non-positive volume" in m for m in _bl_msgs
+            ):
+                # Shipped thin-feature retry: inverted micro-prisms at thin
+                # walls -> the vertex-decoupled closure succeeds (washer).
+                logger.info(
+                    "  BL inverted thin-feature stacks - decoupled retry"
+                )
+                bres = _bl_run({
+                    "local_termination": "decoupled_vertex",
+                    "local_height_retry": True,
+                })
+            stage_times["bl"] = round(time.perf_counter() - t0, 2)
+            if bres.success:
+                stages["bl"] = True
+                bl_prism_cells = bres.n_prism_cells
+                bl_thickness = bres.total_thickness
+                # Post-BL boundary-pyramid clearance (shipped fTetWild step,
+                # batched + volume-guarded, no-op when nothing to clear).
+                t0c = time.perf_counter()
+                n_clr = clear_boundary_pyramids_case(case_dir, log=_bl_log)
+                stage_times["bl_clearance"] = round(
+                    time.perf_counter() - t0c, 2
+                )
+                if n_clr:
+                    logger.info(
+                        "  post-BL clearance: %d face(s) cleared", n_clr
+                    )
+                # Per-patch BL report (coverage + achieved first layer).
+                try:
+                    from polyfoammesh.core.openfoam_runner import (
+                        boundary_layer_report,
+                    )
+
+                    bl_report = dict(boundary_layer_report(case_dir))
+                except Exception:
+                    bl_report = {}
+                logger.info(
+                    "  BL: %d prism cells, total thickness %.6g m",
+                    bl_prism_cells,
+                    bl_thickness,
+                )
+            else:
+                stages["bl"] = False
+                warnings.append("BL failed: " + "; ".join(bres.errors))
+        except Exception as exc:
+            stages["bl"] = False
+            stage_times.setdefault("bl", round(time.perf_counter() - t0, 2))
+            warnings.append(f"BL raised: {exc}")
+
+        # --- stage 5: checkMesh via WSL -------------------------------------
+        t0 = time.perf_counter()
+        cm_rc, cm_out, cm_time = _run_check_mesh(case_dir, timeout=check_timeout_s)
+        stage_times["check_mesh"] = round(time.perf_counter() - t0, 2)
+        logger.info("  checkMesh rc=%d  wall=%.1fs", cm_rc, cm_time)
+
+        if cm_rc == -1:
+            stages["check_mesh"] = False
+            errors.append("checkMesh timed out")
+            return _fail()
+        if cm_rc == -2:
+            stages["check_mesh"] = False
+            errors.append("WSL not found")
+            return _fail()
+        stages["check_mesh"] = True
+
+        report = parse_checkmesh_output(cm_out)
+        logger.info(
+            "  cells=%d  nonOrtho=%.1f/%.1f  skew=%.2f  aspect=%.0f  neg=%d  vol=%.2e",
+            report.cells,
+            report.max_non_ortho,
+            report.avg_non_ortho,
+            report.max_skewness,
+            report.max_aspect_ratio,
+            report.neg_cells,
+            report.min_volume,
+        )
+
+        return _make_poly_result(
+            geometry=name,
+            success=report.passed,
+            wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times,
+            stages=stages,
+            tet_count=tet_count,
+            poly_count=poly_count,
+            bl_prism_cells=bl_prism_cells,
+            bl_thickness=bl_thickness,
+            defect_count=defect_count,
+            defect_breakdown=defect_breakdown,
+            cell_count=report.cells,
+            max_non_ortho=report.max_non_ortho,
+            avg_non_ortho=report.avg_non_ortho,
+            max_skewness=report.max_skewness,
+            max_aspect_ratio=report.max_aspect_ratio,
+            neg_cells=report.neg_cells,
+            min_volume=report.min_volume,
+            warnings=warnings,
+            errors=errors,
+            pipeline="ftetwild",
+            bl_report=bl_report,
+        )
+
+    except Exception as exc:
+        logger.error("  UNEXPECTED ERROR: %s", exc)
+        return _make_poly_result(
+            name,
+            success=False,
+            wall_time_s=sum(stage_times.values()),
+            stage_times=stage_times,
+            stages=stages,
+            warnings=warnings,
+            errors=[str(exc)],
+            pipeline="ftetwild",
+        )
+    finally:
+        if not keep_case:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 def _print_summary(results: list[dict], pipeline: str = "hex"):
     print()
     print("=" * 90)
     print(f"BENCHMARK SUMMARY ({pipeline.upper()} pipeline)")
     print("=" * 90)
-    if pipeline == "poly":
+    if pipeline in ("poly", "ftetwild"):
         header = (
             f"{'Geometry':24s} {'Tet->Poly':>14s} {'Prism':>8s} {'Defects':>8s} "
             f"{'NonOrtho':>10s} {'Skew':>8s} {'Neg':>5s} {'Time(s)':>8s} {'Result':>20s}"
@@ -1097,9 +1536,10 @@ def _print_summary(results: list[dict], pipeline: str = "hex"):
     print("-" * 90)
     for r in results:
         geom = r["geometry"]
-        if pipeline == "poly":
-            # The poly pipeline records checkMesh metrics even when the gates
-            # fail (the mesh was produced, just not good enough) — show them.
+        if pipeline in ("poly", "ftetwild"):
+            # The poly/ftetwild pipelines record checkMesh metrics even when
+            # the gates fail (the mesh was produced, just not good enough) —
+            # show them.
             has_metrics = "max_non_ortho" in r and not r.get("negative_case")
         else:
             has_metrics = r["success"] and "max_non_ortho" in r and not r.get("negative_case")
@@ -1111,7 +1551,7 @@ def _print_summary(results: list[dict], pipeline: str = "hex"):
             status = "PASS (rejected)" if r["success"] else "FAIL (not rejected)"
         else:
             status = "PASS" if r["success"] else "FAIL"
-        if pipeline == "poly":
+        if pipeline in ("poly", "ftetwild"):
             if has_metrics:
                 tp = f"{r.get('tet_count', 0)}->{r.get('poly_count', 0)}"
                 pr = str(r.get("bl_prism_cells", 0))
@@ -1143,9 +1583,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep", action="store_true", help="Keep case dirs for inspection")
     parser.add_argument(
         "--pipeline",
-        choices=["hex", "poly", "all"],
+        choices=["hex", "poly", "ftetwild", "all"],
         default="hex",
-        help="Which meshing pipeline to benchmark (default: hex)",
+        help="Which meshing pipeline to benchmark (default: hex; "
+             "'all' runs hex+poly+ftetwild)",
+    )
+    parser.add_argument(
+        "--only",
+        default="",
+        help="Comma-separated geometry names to benchmark (default: all)",
+    )
+    parser.add_argument(
+        "--ftet-eps-mm",
+        type=float,
+        default=FTETWILD_EPS_MM,
+        help="fTetWild absolute surface envelope in mm (default 0.3)",
+    )
+    parser.add_argument(
+        "--ftet-timeout",
+        type=int,
+        default=FTETWILD_TIMEOUT_S,
+        help="fTetWild subprocess timeout in seconds (default 3600)",
     )
     return parser
 
@@ -1169,11 +1627,21 @@ def main(args: list[str] | None = None) -> int:
         logger.error("No STL files found in %s", GEOMETRIES_DIR)
         return 1
 
+    if opts.only:
+        wanted = {s.strip() for s in opts.only.split(",") if s.strip()}
+        stl_files = [p for p in stl_files if p.stem in wanted]
+        if not stl_files:
+            logger.error("No geometry matches --only=%r", opts.only)
+            return 1
+        logger.info("Filtered to %d geometries via --only", len(stl_files))
+
     logger.info("Found %d geometries to benchmark", len(stl_files))
     for s in stl_files:
         logger.info("  %s", s.name)
 
-    pipelines = ["hex", "poly"] if opts.pipeline == "all" else [opts.pipeline]
+    pipelines = (
+        ["hex", "poly", "ftetwild"] if opts.pipeline == "all" else [opts.pipeline]
+    )
     allowances = _load_poly_allowances() if "poly" in pipelines else {}
 
     results_by_pipeline: dict[str, list[dict]] = {p: [] for p in pipelines}
@@ -1181,11 +1649,18 @@ def main(args: list[str] | None = None) -> int:
         for p in pipelines:
             if p == "hex":
                 result = _benchmark_one(stl_path, keep_case=opts.keep)
-            else:
+            elif p == "poly":
                 result = _benchmark_poly_one(
                     stl_path,
                     keep_case=opts.keep,
                     allowances=allowances,
+                )
+            else:
+                result = _benchmark_ftetwild_one(
+                    stl_path,
+                    keep_case=opts.keep,
+                    eps_mm=opts.ftet_eps_mm,
+                    ftet_timeout_s=opts.ftet_timeout,
                 )
             results_by_pipeline[p].append(result)
 
@@ -1194,7 +1669,7 @@ def main(args: list[str] | None = None) -> int:
     exit_code = 0
     for p in pipelines:
         results = results_by_pipeline[p]
-        suffix = "" if p == "hex" else "_poly"
+        suffix = {"hex": "", "poly": "_poly", "ftetwild": "_ftetwild"}[p]
         out_path = RESULTS_DIR / f"{timestamp}{suffix}.json"
         out_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
         logger.info("Results written to %s", out_path)

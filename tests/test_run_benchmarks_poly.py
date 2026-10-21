@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -53,7 +54,7 @@ def test_defect_tolerance() -> None:
 
 
 def _poly_result(**overrides) -> dict:
-    base = dict(
+    base: dict[str, Any] = dict(
         geometry="pipe",
         success=True,
         wall_time_s=10.0,
@@ -252,12 +253,12 @@ def test_main_all_writes_hex_and_poly_files(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(rb, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(rb, "GEOMETRIES_DIR", tmp_path)
 
-    def _fake_hex(stl_path, keep_case=False):
+    def _fake_hex(stl_path: Path, keep_case: bool = False):
         return rb._make_result(
             stl_path.stem, success=True, wall_time_s=1.0, cell_count=10,
         )
 
-    def _fake_poly(stl_path, keep_case=False, allowances=None):
+    def _fake_poly(stl_path: Path, keep_case: bool = False, allowances: dict[str, int] | None = None):
         return rb._make_poly_result(
             stl_path.stem, success=True, wall_time_s=2.0,
             tet_count=100, poly_count=20, bl_prism_cells=10,
@@ -265,8 +266,17 @@ def test_main_all_writes_hex_and_poly_files(tmp_path, monkeypatch) -> None:
             cell_count=20, max_non_ortho=30.0, max_skewness=1.0,
         )
 
+    def _fake_ftetwild(stl_path: Path, keep_case: bool = False, eps_mm: float = 0.3, ftet_timeout_s: int = 3600):
+        return rb._make_poly_result(
+            stl_path.stem, success=True, wall_time_s=3.0,
+            tet_count=100, poly_count=20, bl_prism_cells=10,
+            bl_thickness=0.001, defect_count=0, defect_allowance=0,
+            cell_count=20, max_non_ortho=30.0, max_skewness=1.0,
+        )
+
     monkeypatch.setattr(rb, "_benchmark_one", _fake_hex)
     monkeypatch.setattr(rb, "_benchmark_poly_one", _fake_poly)
+    monkeypatch.setattr(rb, "_benchmark_ftetwild_one", _fake_ftetwild)
 
     # One watertight STL so the geometry scan finds something.
     mesh = trimesh.creation.box(extents=(0.1, 0.1, 0.1))
@@ -275,9 +285,10 @@ def test_main_all_writes_hex_and_poly_files(tmp_path, monkeypatch) -> None:
     rc = rb.main(["--pipeline", "all"])
     assert rc == 0
     files = sorted(p.name for p in tmp_path.glob("*.json"))
-    assert len(files) == 2
-    assert any(f.endswith(".json") and not f.endswith("_poly.json") for f in files)
+    assert len(files) == 3
+    assert any(f.endswith(".json") and not f.endswith("_poly.json") and not f.endswith("_ftetwild.json") for f in files)
     assert any(f.endswith("_poly.json") for f in files)
+    assert any(f.endswith("_ftetwild.json") for f in files)
     poly_file = next(p for p in tmp_path.glob("*_poly.json"))
     data = json.loads(poly_file.read_text("utf-8"))
     assert data[0]["pipeline"] == "poly"

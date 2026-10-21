@@ -108,6 +108,7 @@ class PolyBoundaryLayerResult:
     n_wall_faces: int = 0
     n_excluded_small_faces: int = 0
     n_excluded_small_edges: int = 0
+    n_excluded_feature_faces: int = 0
     wall_patches: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -557,6 +558,66 @@ def _face_geometry(points: np.ndarray, faces: list[list[int]],
         sf[lo:lo + len(s)] = s
         cf[lo:lo + len(c)] = c
     return sf, cf
+
+
+def _drop_feature_edge_faces(points, faces, n_int, sel, dihedral_deg):
+    """Drop the selected faces that touch a sharp boundary edge.
+
+    Layer growth must not wrap sharp features (GMSH/cfMesh behaviour):
+    every boundary edge shared by exactly two boundary faces whose outward
+    normals turn by more than ``dihedral_deg`` marks ALL incident faces as
+    feature faces; the ones inside ``sel`` are removed from the extrusion
+    set.  ``_build`` closes the resulting BL/non-BL band with terminator
+    strips, exactly like any other selection border.
+
+    The threshold is the per-edge normal TURN (0 deg = flat, 90 deg = a
+    box edge): keep it well below the normal turn between adjacent cells
+    of smooth curvature, otherwise curved regions get dropped too.
+
+    ``sel`` is a sorted list of boundary face indices (>= ``n_int``).
+    Returns ``(kept, n_dropped)`` with ``kept`` in the order of ``sel``.
+    """
+    if not sel or dihedral_deg <= 0.0:
+        return list(sel), 0
+    n_faces = len(faces)
+    if n_int >= n_faces:
+        return list(sel), 0
+
+    # edge -> boundary-face incidences (boundary faces only: >= n_int)
+    edge_faces: dict[tuple[int, int], list[int]] = {}
+    for fi in range(n_int, n_faces):
+        f = faces[fi]
+        m = len(f)
+        prev = f[-1]
+        for v in f:
+            key = (prev, v) if prev < v else (v, prev)
+            edge_faces.setdefault(key, []).append(fi)
+            prev = v
+
+    # keep only manifold boundary edges (exactly 2 boundary faces)
+    pair_a: list[int] = []
+    pair_b: list[int] = []
+    for _key, fl in edge_faces.items():
+        if len(fl) == 2:
+            pair_a.append(fl[0])
+            pair_b.append(fl[1])
+    if not pair_a:
+        return list(sel), 0
+
+    sf, _cf = _face_geometry(points, faces)
+    norm = np.linalg.norm(sf, axis=1)
+    norm[norm == 0.0] = 1.0  # degenerate faces: leave them alone
+    unit = sf / norm[:, None]
+    dots = np.einsum("ij,ij->i", unit[pair_a], unit[pair_b])
+    turn = np.arccos(np.clip(dots, -1.0, 1.0))
+    sharp = turn > np.radians(float(dihedral_deg))
+    if not sharp.any():
+        return list(sel), 0
+    feature = np.unique(np.concatenate((np.array(pair_a)[sharp],
+                                        np.array(pair_b)[sharp])))
+    dropped = set(feature.tolist())
+    kept = [f for f in sel if f not in dropped]
+    return kept, len(sel) - len(kept)
 
 
 def _all_face_edges(faces):
@@ -1378,6 +1439,7 @@ class PolyBoundaryLayerEngine:
         min_base_face_fraction: float = 0.0,
         min_base_edge_fraction: float = 0.0,
         min_base_edge_h1_factor: float = 0.0,
+        drop_feature_dihedral: float = 0.0,
         edge_cap_percentile: float = 0.0,
         terminate_by_budget: bool = False,
         consume: bool | None = None,
@@ -1684,6 +1746,18 @@ class PolyBoundaryLayerEngine:
                     f"[bl] {n_edge_h1} tiny-edge base faces (<"
                     f"{min_base_edge_h1_factor:g}*h1={cut_h1:.6g}m) marked "
                     "thin (compressed stack, NOT dropped)"
+                )
+        if sel and drop_feature_dihedral > 0.0:
+            sel, n_feat = _drop_feature_edge_faces(
+                points, faces, n_int, sel, drop_feature_dihedral,
+            )
+            if n_feat:
+                res.n_excluded_feature_faces = int(n_feat)
+                self._log(
+                    f"[bl] {n_feat} feature faces (normal turn >"
+                    f"{drop_feature_dihedral:g} deg) dropped - no layers "
+                    "across sharp features (GMSH/cfMesh-style); the build "
+                    "closes the band with terminator strips"
                 )
         if not sel:
             res.errors.append("no selected faces")
