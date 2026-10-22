@@ -7,6 +7,20 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### fTetWild path (issue #12) - 2026-10-22, measured-default verdicts
+- **Absolute epsilon 0.3 mm confirmed as the default**: the full fine
+  run with `eps_mm=0.3` finishes cleanly (2.37M tets, 3738 s tet stage,
+  max energy 7.55, no stall); 0.03 mm stays available but is not the
+  default (proportionally slower).
+- **Free-boundary smoothing kept at 3 iterations (2 rejected by A/B)**:
+  on the 15-geometry battery, 2 iterations converge to a worse optimum -
+  9.7% slower end-to-end (77.2 vs 70.3 min) because the downstream stages
+  (BL, clearance) work on rougher geometry, one hard gate regression
+  (cylinder max non-ortho 66.6 -> 76.2 degrees, over the 70 threshold),
+  and mixed per-geometry quality shifts (venturi/groove1/pipe better,
+  external_aero/slot1 worse) with BL coverage unchanged. The knob
+  `--ftet-dual-smooth-iters` remains available for experiments.
+
 ### fTetWild path (issue #12) - 2026-10-19, geometry-coverage pass
 - **Geometry battery** (STL: box, sphere, cylinder, torus, 10 mm plate,
   two bodies, 5 mm-wall washer, 4 mm micromixer, 3 m pipe; STEP via

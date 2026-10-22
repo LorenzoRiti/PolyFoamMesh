@@ -1179,3 +1179,21 @@ COMMITTATO E VERIFICATO:
   ovunque (repo mai pubblicato), .gitignore irrobustito.
 - Albero pulito, corpus pulito, Windows suite verde via pre-commit.
 DOMANI: build (PyInstaller + ISCC) + smoke finale utente.
+
+## 2026-10-22 - W1 verdetti (fTetWild, issue #12)
+
+Fronte W1 chiuso con A/B misurate su corpus (baseline 20261022T000125
+smooth=3 vs 20261022T090226 smooth=2):
+
+- **Clearance batched + opt-out shift**: committati (96d7034); wiring
+  produzione confermato (`shift_boundary_skew=not smooth_free_boundary`).
+- **eps default 0.3 mm CONFERMATO**: misura fine completata (2.37M tets,
+  3738 s, max_energy 7.55, nessuno stallo); 0.03 mm scartato per tempo.
+- **Smoothing 3->2 SCARTATO**: totale 9.7% piu' lento (77.2 vs 70.3 min:
+  il duale converge peggio e il downstream paga), regressione gate sul
+  cylinder (non-ortho 66.6 -> 76.2, oltre soglia 70), qualita' mista
+  per-geometria (venturi/groove1/pipe migliorano, external_aero/slot1
+  peggiorano); coverage BL invariata (±0.003%). Default resta 3.
+- Prossimi: per-patch y+ report (coverage, h1 p10, y+ realizzato),
+  opt_iter 5/10/15 con quality floor, fallback retry con envelope piu'
+  largo su FAIL subdivide_tets.
