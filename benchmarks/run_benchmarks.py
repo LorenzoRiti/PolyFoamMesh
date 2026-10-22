@@ -1129,6 +1129,8 @@ def _benchmark_ftetwild_one(
     # shipped setting.
     bl_min_edge: float = 0.0,
     bl_budget_term: bool = True,
+    # A/B knob (2026-10-22): dual smoothing iterations, default = shipped 3.
+    dual_smooth_iters: int = 3,
 ) -> dict:
     """Run the fTetWild tet -> gmshToFoam -> dual -> BL -> checkMesh pipeline.
 
@@ -1315,6 +1317,8 @@ def _benchmark_ftetwild_one(
                 count_boundary_skew=True,
                 split_boundary_defects=True,
                 shift_boundary_skew=False,
+                # A/B knob (2026-10-22): 3 = shipped default.
+                smooth_iters=dual_smooth_iters,
             )
             dres = conv.run()
             if not dres.success and any(
@@ -1605,6 +1609,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=FTETWILD_TIMEOUT_S,
         help="fTetWild subprocess timeout in seconds (default 3600)",
     )
+    parser.add_argument(
+        "--ftet-dual-smooth-iters",
+        type=int,
+        default=3,
+        help="dual smoothing iterations on the fTetWild path (default 3)",
+    )
     return parser
 
 
@@ -1661,6 +1671,7 @@ def main(args: list[str] | None = None) -> int:
                     keep_case=opts.keep,
                     eps_mm=opts.ftet_eps_mm,
                     ftet_timeout_s=opts.ftet_timeout,
+                    dual_smooth_iters=opts.ftet_dual_smooth_iters,
                 )
             results_by_pipeline[p].append(result)
 

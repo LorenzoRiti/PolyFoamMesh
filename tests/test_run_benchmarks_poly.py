@@ -266,7 +266,7 @@ def test_main_all_writes_hex_and_poly_files(tmp_path, monkeypatch) -> None:
             cell_count=20, max_non_ortho=30.0, max_skewness=1.0,
         )
 
-    def _fake_ftetwild(stl_path: Path, keep_case: bool = False, eps_mm: float = 0.3, ftet_timeout_s: int = 3600):
+    def _fake_ftetwild(stl_path: Path, keep_case: bool = False, eps_mm: float = 0.3, ftet_timeout_s: int = 3600, dual_smooth_iters: int = 3):
         return rb._make_poly_result(
             stl_path.stem, success=True, wall_time_s=3.0,
             tet_count=100, poly_count=20, bl_prism_cells=10,
