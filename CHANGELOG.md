@@ -7,6 +7,31 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### BL fidelity + quality policy (W10.1) - 2026-10-22
+- **Measured h1, not a silent success**: `PolyBoundaryLayerResult` now
+  carries achieved h1 median/p10, ratio, histogram, cap reason and the
+  in-process pyramid count.  R1: 0.142 mm vs 1.26 mm requested (0.113x);
+  the cap is 91.9% support-bound / 8.1% edge-bound, all 70,293 wall vertices
+  below the requested h1.  The report/GUI logs the same facts per patch.
+- **Shared BL attempt policy**: new `core/bl_attempt_policy.py` with
+  declarative attempts, baseline restore, keep-best and explicit gap
+  reasons.  The fTetWild worker uses standard + measured quality attempt;
+  `POLYFOAMMESH_BL_QUALITY_POLICY=0` restores the old single attempt.
+- **R1 real A/B**: standard = 39 pyramids / 5 skew / 26 non-ortho errors /
+  Failed 3; quality = 0 pyramids / 1 skew / 0 non-ortho errors / Failed 1,
+  coverage 99.47% (187 rim faces excluded), h1 unchanged at the declared
+  cap.  Post-BL boundary-pyramid clearance removed the last 8 boundary
+  faces.
+- **Coverage denominator fixed**: 187 bare selected faces now count in the
+  coverage (99.47%, not the old false 100%).
+- **y+ per patch**: `boundary_layer_report` takes requested h1 + optional
+  solver u_tau; without u_tau the value is `null`.  The velocity/fluid
+  correlation is labelled as an estimate and uses the achieved h1.
+- **Corrected diagnosis**: R1's 39 pyramids are internal core/last-prism
+  top faces, not boundary terminator strips (`n_terminator_faces=0`).
+  Terminator internalisation needs vertex splitting and remains the next
+  topology task; the partial-patch boundary terminator test is the guard.
+
 ### Mesh configuration + presets (W10) - 2026-10-22
 - **One `MeshConfig`** (`core/mesh_config.py`): detail slider, mesher,
   adaptive/fTetWild switches and nested `BLConfig`, with `schema_version=1`,

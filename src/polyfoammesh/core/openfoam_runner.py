@@ -24,6 +24,7 @@ import enum
 import logging
 logger = logging.getLogger(__name__)
 from polyfoammesh.core.phase_watchdog import PHASE_BUDGETS
+from polyfoammesh.core.bl_fidelity import estimate_u_tau, fluid_nu
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -1963,7 +1964,30 @@ def polymesh_has_boundary_layer(case_dir: Path | str) -> bool:
         return False
 
 
-def boundary_layer_report(case_dir: Path | str) -> dict:
+def bl_quality_policy_enabled() -> bool:
+    """W10.1 rollback switch; default ON after the measured R1 A/B.
+
+    ``POLYFOAMMESH_BL_QUALITY_POLICY=0`` restores the historical single
+    standard attempt (kept for at least one milestone).
+    """
+    return str(
+        os.environ.get("POLYFOAMMESH_BL_QUALITY_POLICY", "1")
+    ).strip().lower() not in ("0", "false", "no", "off")
+
+
+def boundary_layer_report(
+    case_dir: Path | str,
+    *,
+    requested_h1: float | None = None,
+    u_tau: float | None = None,
+    nu: float | None = None,
+    velocity: float | None = None,
+    reference_length: float | None = None,
+    fluid: str = "air",
+    flow_type: str = "flat_plate",
+    wall_treatment: str = "wall_functions",
+    h1_cap_reason: str = "",
+) -> dict:
     """Factual post-build BL metrics read back from the written polyMesh.
 
     Companion to :func:`polymesh_has_boundary_layer` (a boolean gate): this
@@ -2056,6 +2080,39 @@ def boundary_layer_report(case_dir: Path | str) -> dict:
         )
         h1_all = np.where(layered, 2.0 * dist, np.nan)
         h1 = h1_all[layered]
+        h1_median = float(np.median(h1)) if h1.size else None
+        h1_p10 = float(np.percentile(h1, 10)) if h1.size else None
+        h1_ratio = (
+            float(h1_median / float(requested_h1))
+            if h1_median is not None and requested_h1 and requested_h1 > 0
+            else None
+        )
+        # W10.1 y+: use a provided solver u_tau, or the same documented
+        # flat-plate/pipe correlation as the W7 physics calculator.  The
+        # method is always exported so a correlation is never mistaken for a
+        # solved u_tau.
+        if reference_length is None and len(points):
+            _ext = points.max(axis=0) - points.min(axis=0)
+            reference_length = float(max(_ext))
+        _nu = float(nu) if nu and nu > 0 else fluid_nu(fluid)
+        _utau = float(u_tau) if u_tau and u_tau > 0 else 0.0
+        if _utau > 0:
+            _yplus_method = "provided u_tau"
+        elif velocity is not None and reference_length is not None:
+            _utau, _nu, _yplus_method = estimate_u_tau(
+                float(velocity), float(reference_length), fluid, flow_type,
+            )
+        else:
+            _yplus_method = "unavailable (no u_tau/velocity)"
+        yplus_all = np.full(len(h1_all), np.nan, dtype=np.float64)
+        if _utau > 0 and _nu > 0:
+            yplus_all = np.where(
+                np.isfinite(h1_all), h1_all * _utau / _nu, np.nan,
+            )
+        yplus = yplus_all[np.isfinite(yplus_all)]
+        y_plus_target = (
+            1.0 if "resolved" in str(wall_treatment).lower() else 30.0
+        )
         # Per-patch breakdown (user requirement 2026-10-19: the requested
         # y+ must be reached on EVERY wall surface, so the log has to say
         # which patch falls short - the global median hides it).
@@ -2072,25 +2129,53 @@ def boundary_layer_report(case_dir: Path | str) -> dict:
                 continue
             vals = h1_all[np.asarray(idx, dtype=np.int64)]
             vals = vals[np.isfinite(vals)]
+            vals_y = yplus_all[np.asarray(idx, dtype=np.int64)]
+            vals_y = vals_y[np.isfinite(vals_y)]
+            _h1m = float(np.median(vals)) if vals.size else None
             per_patch[name] = {
                 "n_wall_faces": int(len(idx)),
                 "n_layered": int(vals.size),
                 "coverage": (
                     float(vals.size / len(idx)) if idx else 0.0
                 ),
-                "h1_median": (
-                    float(np.median(vals)) if vals.size else None
-                ),
+                "h1_median": _h1m,
                 "h1_p10": (
                     float(np.percentile(vals, 10)) if vals.size else None
                 ),
+                "h1_ratio": (
+                    float(_h1m / float(requested_h1))
+                    if _h1m is not None and requested_h1
+                    and requested_h1 > 0 else None
+                ),
+                "y_plus_median": (
+                    float(np.median(vals_y)) if vals_y.size else None
+                ),
+                "y_plus_p10": (
+                    float(np.percentile(vals_y, 10)) if vals_y.size else None
+                ),
+                "y_plus_target": y_plus_target,
             }
         return {
             "n_wall_faces": n_wall,
             "n_layered": n_layered,
             "coverage": float(n_layered / n_wall) if n_wall else 0.0,
-            "h1_median": float(np.median(h1)) if h1.size else None,
-            "h1_p10": float(np.percentile(h1, 10)) if h1.size else None,
+            "h1_requested_m": (
+                float(requested_h1) if requested_h1 else None
+            ),
+            "h1_median": h1_median,
+            "h1_p10": h1_p10,
+            "h1_ratio": h1_ratio,
+            "h1_cap_reason": h1_cap_reason,
+            "y_plus_method": _yplus_method,
+            "u_tau_estimate_m_s": _utau if _utau > 0 else None,
+            "nu_m2_s": _nu,
+            "y_plus_target": y_plus_target,
+            "y_plus_median": (
+                float(np.median(yplus)) if yplus.size else None
+            ),
+            "y_plus_p10": (
+                float(np.percentile(yplus, 10)) if yplus.size else None
+            ),
             "per_patch": per_patch,
         }
     except Exception:
@@ -2412,6 +2497,10 @@ class DualPolyWorker(QObject):
                 "[poly] GMSH-baked BL detected: skipping the in-house BL stage"
             )
         elif self._bl_params:
+            from polyfoammesh.core.bl_attempt_policy import (
+                BLAttemptPolicy,
+                BLChainExecutor,
+            )
             from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
 
             # Kept for the legacy post-BL merge-repair switch below; the BL
@@ -2507,15 +2596,75 @@ class DualPolyWorker(QObject):
                 # Capture the engine's own diagnostics too: the retry
                 # decision below keys on the exact failure signature.
                 _bl_msgs: list[str] = []
+                _bl_chain = None
 
                 def _bl_log(_msg: str) -> None:
                     _bl_msgs.append(_msg)
                     self.log_line.emit(_msg)
 
+                def _run_policy():
+                    """One executor for standard + measured quality attempt."""
+                    base_kwargs = dict(kw)
+                    if apply_all:
+                        base_kwargs["apply_to_all"] = True
+                    elif patch_names is None:
+                        return None
+                    else:
+                        base_kwargs["patch_names"] = patch_names
+                        base_kwargs["apply_to_all"] = False
+                    # W10.1: the quality-first closure is the measured
+                    # default for the fTetWild path (R1: 39 -> 0 pyramids,
+                    # Failed 3 -> 1).  The historical single attempt stays
+                    # available with POLYFOAMMESH_BL_QUALITY_POLICY=0 for one
+                    # milestone/rollback.
+                    policy = (
+                        BLAttemptPolicy.for_ftetwild()
+                        if self._smooth_free_boundary
+                        and bl_quality_policy_enabled()
+                        else BLAttemptPolicy.compatibility()
+                    )
+                    self.log_line.emit(
+                        "[poly] BL policy mode: "
+                        + (
+                            "ftetwild-quality"
+                            if policy.name == "ftetwild-quality"
+                            else "compatibility"
+                        )
+                    )
+                    chain = BLChainExecutor(log=_bl_log).run(
+                        engine, base_kwargs, policy=policy,
+                    )
+                    nonlocal _bl_chain
+                    _bl_chain = chain
+                    self.log_line.emit(
+                        f"[poly] BL policy: {chain.to_mapping()['policy']} | "
+                        f"selected={chain.to_mapping()['selected_attempt'] or '-'} | "
+                        f"accepted={chain.accepted}"
+                    )
+                    if chain.gap_reason:
+                        self.log_line.emit(
+                            f"[poly] BL gap: {chain.gap_reason}"
+                        )
+                    return chain.best.result if chain.best else None
+
                 bres = _run_with_profile(
-                    self._case_dir, "bl", lambda: _run_bl(kw),
+                    self._case_dir, "bl", _run_policy,
                     _bl_log,
                 )
+                if _bl_chain is not None:
+                    try:
+                        import json
+
+                        (self._case_dir / "bl_policy.json").write_text(
+                            json.dumps(
+                                _bl_chain.to_mapping(), indent=2,
+                            ),
+                            encoding="utf-8",
+                        )
+                    except OSError as exc:
+                        self.log_line.emit(
+                            f"[poly] WARN: cannot write bl_policy.json: {exc}"
+                        )
                 # W7: every engine-declared clamp/warning must be visible in
                 # the GUI log, not only in result.warnings.
                 if bres is not None:
@@ -2646,25 +2795,53 @@ class DualPolyWorker(QObject):
                 # 2026-10-17): coverage + the REAL first-layer thickness vs
                 # what was requested. The pre-build hint was removed for
                 # the same reason; this is where the user looks now.
+                _h1_req = float(getattr(bres, "first_height", 0.0) or 0.0)
                 try:
-                    _rep = boundary_layer_report(self._case_dir)
+                    _rep = boundary_layer_report(
+                        self._case_dir,
+                        requested_h1=_h1_req,
+                        velocity=float(getattr(cfg, "velocity", 0.0) or 0.0),
+                        fluid=str(getattr(cfg, "fluid", "air") or "air"),
+                        wall_treatment=str(
+                            getattr(cfg, "wall_treatment", "wall_functions")
+                        ),
+                        h1_cap_reason=str(
+                            getattr(bres, "h1_cap_reason", "") or ""
+                        ),
+                    )
                 except Exception:
                     _rep = {}
+                result.bl_report = _rep
+                result.bl_policy = (
+                    _bl_chain.to_mapping() if _bl_chain is not None else {}
+                )
                 if _rep.get("n_wall_faces"):
-                    _h1_req = float(getattr(bres, "first_height", 0.0) or 0.0)
                     _h1_act = _rep.get("h1_median")
                     _extra = ""
                     if _h1_req > 0 and _h1_act:
                         _extra = (
                             f"; effective first layer {_h1_act * 1e3:.4g} mm vs "
                             f"requested {_h1_req * 1e3:.4g} mm "
-                            f"({_h1_act / _h1_req:.2f}x -> y+ scales with it)"
+                            f"({_h1_act / _h1_req:.2f}x; "
+                            f"y+ est {_rep.get('y_plus_median') or float('nan'):.3g}, "
+                            f"target {_rep.get('y_plus_target', 30):g})"
                         )
                     self.log_line.emit(
                         f"[poly] BL report: {_rep['coverage']:.0%} of wall "
                         f"faces layered ({_rep['n_layered']:,}/"
                         f"{_rep['n_wall_faces']:,}){_extra}"
                     )
+                    _yp = _rep.get("y_plus_median")
+                    _ypt = float(_rep.get("y_plus_target") or 0.0)
+                    if _yp is not None and _ypt > 0:
+                        _ratio_yp = float(_yp) / _ypt
+                        if not 0.5 <= _ratio_yp <= 2.0:
+                            self.log_line.emit(
+                                f"[poly] BL WARN: estimated y+ {float(_yp):.3g} "
+                                f"vs target {_ypt:g} "
+                                f"({_ratio_yp:.2f}x); effective h1 is the "
+                                "limiting factor"
+                            )
                     for _pn, _st in sorted(
                         (_rep.get("per_patch") or {}).items()
                     ):
@@ -2680,6 +2857,9 @@ class DualPolyWorker(QObject):
                             ) if _h1p else (
                                 f", first layer median {_h1m * 1e3:.4g} mm"
                             )
+                        _ypm = _st.get("y_plus_median")
+                        if _ypm is not None:
+                            _det += f", y+ est {float(_ypm):.3g}"
                         self.log_line.emit(
                             f"[poly]   patch {_pn}: "
                             f"{_st['n_layered']:,}/"

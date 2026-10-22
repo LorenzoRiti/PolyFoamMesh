@@ -91,6 +91,11 @@ from pathlib import Path
 import numpy as np
 
 from polyfoammesh.core import foam_mesh_io as fio
+from polyfoammesh.core.bl_fidelity import (
+    cap_reason,
+    effective_h1_stats,
+    height_cap_stats,
+)
 from polyfoammesh.core.tet_poly_dual import _newell
 
 logger = logging.getLogger(__name__)
@@ -119,6 +124,15 @@ class PolyBoundaryLayerResult:
     # reported success with an invisible BL.  These fields expose the truth.
     layer_hist: dict = field(default_factory=dict)
     median_layers: float = 0.0
+    #: W10.1 fidelity: requested vs achieved h1 and the measured cap source.
+    #: ``first_height`` is the requested value (already scaled by the accepted
+    #: fallback attempt); the effective values are read back from the built
+    #: first prism, not estimated from the requested stack.
+    h1_median: float | None = None
+    h1_p10: float | None = None
+    h1_ratio: float = 0.0
+    h1_cap_reason: str = ""
+    n_pyramids_after: int = 0
 
 
 def _gil_yield(step: int, every: int = 256) -> None:
@@ -1406,6 +1420,10 @@ class PolyBoundaryLayerEngine:
         self._stage_pre_s = 0.0
         self._stage_build_s = 0.0
 
+    @property
+    def case_dir(self) -> Path:
+        return self._case_dir
+
     def _log_message(self, msg: str) -> None:
         """Forward a log line and feed the phase watchdog.
 
@@ -1936,6 +1954,16 @@ class PolyBoundaryLayerEngine:
                 )
                 res.n_layers = k_sup
 
+        # W10.1: record WHY the requested h1 cannot be met.  This is measured
+        # on the same precompute the build consumes; it is not inferred from
+        # the requested/effective ratio after the fact.
+        _cap = height_cap_stats(
+            pre, res.first_height, res.n_layers, growth=growth,
+        )
+        res.stats["height_cap"] = _cap
+        res.h1_cap_reason = cap_reason(_cap)
+        res.stats["h1_cap_reason"] = res.h1_cap_reason
+
         # Coverage-first, then fall back to the historical drop.  The first
         # pass extrudes EVERY wall face (thin sliver/defect faces with a
         # compressed stack); only if that cannot validate at any height scale
@@ -2179,9 +2207,23 @@ class PolyBoundaryLayerEngine:
             res.stats["first_layer_ratio"] = h_eff / h_req
         res.layer_hist = hist
         res.median_layers = med
-        n_wall = sum(hist.values())
-        n_zero = hist.get(0, 0)
-        coverage = 100.0 * (n_wall - n_zero) / n_wall if n_wall else 0.0
+        # W10.1: coverage denominator is the SELECTED wall-face count, not the
+        # number of faces that happened to be extruded.  The local-termination
+        # path can leave selected faces bare; the old denominator reported
+        # those as 100% (measured R1 quality-first: 35,208/35,395 = 99.47%).
+        n_wall = int(res.n_wall_faces or sum(hist.values()))
+        n_zero = int(hist.get(0, 0))
+        n_layered = sum(v for k, v in hist.items() if int(k) > 0)
+        coverage = 100.0 * n_layered / n_wall if n_wall else 0.0
+        hstats = effective_h1_stats(built, h_req)
+        res.h1_median = hstats["h1_median"]
+        res.h1_p10 = hstats["h1_p10"]
+        res.h1_ratio = float(hstats["h1_ratio"])
+        if not res.h1_cap_reason:
+            res.h1_cap_reason = (
+                "h1 cap: local support/edge (local-termination attempt)"
+            )
+        res.n_pyramids_after = int(built.get("n_pyramids_after", 0))
         res.stats.update(
             scale=scale,
             clamp_factor=clamp,
@@ -2195,6 +2237,16 @@ class PolyBoundaryLayerEngine:
             layers_per_face_max=int(built.get("layers_per_face_max", res.n_layers)),
             median_layers_per_face=med,
             wall_face_coverage_pct=coverage,
+            n_wall_faces=n_wall,
+            n_layered_faces=n_layered,
+            n_bare_faces=max(n_wall - n_layered, 0),
+            n_pyramids_after=res.n_pyramids_after,
+            h1_median_m=res.h1_median,
+            h1_p10_m=res.h1_p10,
+            h1_max_m=hstats["h1_max"],
+            h1_histogram=hstats["h1_histogram"],
+            h1_ratio=res.h1_ratio,
+            h1_cap_reason=res.h1_cap_reason,
         )
         self._log(
             f"[bl] {built['n_prism_cells']:,} prism cells "
@@ -2211,12 +2263,14 @@ class PolyBoundaryLayerEngine:
                 f"boundary layer reduced: median {med:g} of "
                 f"{res.n_layers} requested layers (coverage {coverage:.1f}%)"
             )
-        if res.first_height > 0.0 and h_eff < 0.5 * res.first_height:
+        if (h_req > 0.0 and res.h1_median is not None
+                and res.h1_ratio < 0.9):
             res.warnings.append(
-                f"first layer {h_eff:.3g} m is "
-                f"{100.0 * h_eff / res.first_height:.0f}% of the requested "
-                f"{res.first_height:.3g} m: the y+ target is off by the "
-                "same factor"
+                f"h1 fidelity: median first layer {res.h1_median:.3g} m is "
+                f"{res.h1_ratio:.3f}x the requested {h_req:.3g} m; "
+                f"{res.h1_cap_reason or 'local support/edge cap'}. "
+                "The y+ target is off by the same factor; the structural "
+                "path is consume/reflow or a taller wall-adjacent dual cell."
             )
         return res
 
@@ -4496,6 +4550,16 @@ class PolyBoundaryLayerEngine:
         )
 
         built_terminators = n_terminators
+        # Wall-face centres in the INPUT indexing, for the h1 readback.  The
+        # output face list is re-sorted/re-indexed, so using a global input
+        # index against ``new_faces`` measures a different face (this was a
+        # real 3.6x error in the first W10.1 instrumentation).
+        if bnd:
+            _, wall_face_centres = _face_geometry(
+                pts, [faces[fi] for fi in bnd],
+            )
+        else:
+            wall_face_centres = np.zeros((0, 3), dtype=np.float64)
 
         return {
             "points": new_points,
@@ -4525,6 +4589,8 @@ class PolyBoundaryLayerEngine:
             "prism_start": prism_start,
             "prism_off": dict(off),
             "prism_nf": dict(nf),
+            "wall_faces": list(bnd),
+            "wall_face_centres": wall_face_centres,
             "n_pts_old": n_pts,
         }
 
@@ -4628,6 +4694,7 @@ class PolyBoundaryLayerEngine:
         # violations (the local layer termination drops the layers where
         # they would make things worse).
         n_pyr = _pyramid_violations(pts, faces, owner, neigh, n_int, n_cells)
+        built["n_pyramids_after"] = int(n_pyr)
         pyr_before = built.get("pyr_before", 0)
         pyr_limit = int(pyr_before) + int(getattr(self, "_pyr_tolerance", 0))
         if n_pyr > pyr_limit:

@@ -139,6 +139,9 @@ class DualPolyResult:
     bl_prism_cells: int = 0
     bl_thickness: float = 0.0
     bl_warning: str | None = None
+    #: W10.1 measured BL fidelity/policy evidence (JSON-serializable).
+    bl_report: dict = field(default_factory=dict)
+    bl_policy: dict = field(default_factory=dict)
 
     # Aliases so the GUI's existing poly-conversion result handlers, written
     # against TerminalFaceResult, work with this result type unchanged.

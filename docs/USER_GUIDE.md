@@ -329,7 +329,25 @@ What the log tells you after a run (always read these lines):
   would produce a single flat layer everywhere is **rejected**, not reported
   as success.
 - `first layer X (requested Y)`: if X is much smaller than Y, the y+ target
-  moved by the same factor (the log warns explicitly).
+  moved by the same factor (the log warns explicitly).  W10.1 also reports
+  **why** the cap exists: `h1 cap: support=...%, edge=...%` comes from the
+  distance to the first interior dual vertex and the local wall-edge cap;
+  it is not a silent engine choice.
+- **Measured h1, not the requested one**: the mesh report prints the
+  achieved h1 median/p10 per patch and the ratio.  R1 is the measured
+  example: 0.142 mm vs 1.26 mm requested (0.113x), with 91.9% of wall
+  vertices support-bound.  A ratio below 0.9 is a declared gap; the fix is
+  consume/reflow or a taller wall-adjacent dual cell, not a lower clamp.
+- **BL quality policy**: the fTetWild worker tries the standard stack, then
+  a measured `decoupled_vertex` quality attempt only when the standard adds
+  pyramids; it keeps the better mesh.  R1 A/B: 39 pyramids/Failed 3 ->
+  0 pyramids/1 skew/Failed 1, coverage 99.47%.  Set
+  `POLYFOAMMESH_BL_QUALITY_POLICY=0` to restore the historical single
+  attempt for one milestone.
+- **y+ per patch**: if a solver `u_tau` is not available, y+ is reported
+  as `null` (never fabricated).  The optional velocity/fluid report uses
+  the labelled flat-plate/pipe correlation as an estimate only; it is
+  computed from the **achieved** h1, so it moves with the ratio above.
 - `BL effective` / `BL provenance`: the exact values handed to the engine
   and where each came from (`default`, `user`, `preset`). This line is the
   contract; a value shown there is what the engine used.

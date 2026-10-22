@@ -1338,3 +1338,34 @@ Test: `tests/test_mesh_config.py` (12) + `tests/test_gui_mesh_presets.py`
 20 deselected / 1 xfailed; ruff green.  Debito: A/B completo per preset
 (Fine sperimentale), rimozione delle vecchie chiavi QSettings dopo la
 finestra di migrazione.
+
+## 2026-10-22 - W10.1: BL fedele end-to-end (parziale, onesto)
+
+Diagnosi misurata: R1 h1 0.142 mm vs 1.26 richiesti (0.113x), cube 0.0176
+vs 0.5 (0.035x).  Sul dual R1 fresco 70.280/70.293 vertici sono sotto h1:
+64.615 (91.9%) support-bound, 5.665 (8.1%) edge-bound; il path
+`zero_concave` comprime 5 strati in quel budget.  Cap strutturale, non un
+fallback: servono consume/reflow o una cella duale piu' alta (W10.3).
+I 39 pyramids R1 sono top-face interne core/ultimo prisma, NON terminator
+boundary (`n_terminator_faces=0`): la premessa della fase e' corretta.
+
+Implementato:
+- `core/bl_attempt_policy.py`: policy dichiarativa, restore del dual di
+  input prima di ogni tentativo, keep-best, gap esplicito.
+- `core/bl_fidelity.py`: h1 effettivo/istogramma/cap reason e y+ per patch
+  (u_tau solver oppure `null`; correlazione etichettata come stima).
+- Worker fTetWild: standard + quality `decoupled_vertex` (solo se lo
+  standard aggiunge pyramids), flag di rollback
+  `POLYFOAMMESH_BL_QUALITY_POLICY=0` (vecchio comportamento opt-in).
+- Coverage denominator corretto: 187 facce bare contano (99.47%, non 100%).
+- `bl_report`/`bl_policy.json`/log GUI con h1, ratio, y+ e tentativi.
+
+A/B R1 reale (OF 2512):
+- standard: 176.975 prismi, 100%, h1 0.1423 mm, 39 pyramids, 5 skew,
+  26 non-ortho, Failed 3.
+- quality: 176.040 prismi, 99.47%, h1 0.1424 mm, 0 pyramids, 1 skew,
+  0 non-ortho, Failed 1.  8 pyramids boundary cancellate.
+
+Aperto: h1 0.9x (consume/reflow), terminator interni (vertex splitting),
+benchmark caller ancora sulla vecchia catena locale.  Nessuna chiusura
+finta: W10.1 e' parziale e dichiarata.

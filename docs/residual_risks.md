@@ -1560,6 +1560,40 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   evidence is the measured profiles above plus the synthetic target-count
   ordering (45,731 < 447,214 < 4,373,448); Fine remains experimental.
 
+## BL fidelity / quality policy (W10.1, 2026-10-22)
+
+- **h1 structural cap (open)**: R1 median 0.142 mm vs 1.26 mm requested
+  (0.113x); cube 0.0176 vs 0.5 mm (0.035x).  On the fresh R1 dual, 70,280
+  of 70,293 wall vertices are below h1; 64,615 (91.9%) support-bound and
+  5,665 (8.1%) edge-bound.  The `zero_concave` path forces 5 layers into
+  that budget.  The only root paths are consume/reflow (currently rejected
+  on R1 because the sliver detector flags all wall faces at the 9.376 mm
+  target) or a taller wall-adjacent dual cell (W10.3).  This is declared,
+  not called a pass.
+- **Quality A/B (landed, flag)**: fTetWild worker standard + quality
+  attempt; R1 standard 39 pyramids/5 skew/26 non-ortho/Failed3; quality
+  **0 pyramids/1 skew/0 non-ortho/Failed1**, coverage **99.47%** (187 rim
+  faces excluded), h1 unchanged.  `POLYFOAMMESH_BL_QUALITY_POLICY=0`
+  restores the historical single attempt for one milestone.
+- **Terminator (open)**: R1 has `n_terminator_faces=0`; the 39 pyramids
+  are internal top faces between a core cell and the last prism, not
+  boundary terminator strips.  The partial-patch terminator is still a
+  boundary face by design; internalising it needs split wall vertices/cells
+  at the BL/non-BL rim.  No half-fix is shipped.
+- **y+**: report has requested h1 ratio, per-patch h1 and target y+; with a
+  solver `u_tau` it reports realized y+; without it, y+ is `null`.  The
+  optional velocity/fluid y+ is a labelled flat-plate/pipe correlation
+  estimate from achieved h1, not a solver measurement.
+- **Coverage bug fixed**: selected bare faces are no longer omitted from
+  the denominator (R1 quality: 35,208/35,395 = 99.47%, not 100%).
+- **Benchmark caller**: the production worker and tests use the shared
+  executor; `benchmarks/run_benchmarks.py` still has its historical local
+  retry.  Wire it to `BLChainExecutor` in the corpus re-run, where the
+  result JSON/acceptance can be measured together.
+- **No claim**: h1 0.9x, zero skew, or zero boundary terminators on R1 are
+  not closed.  R1 is Failed 1 (one skew) with the quality flag; the h1 cap
+  is explicit.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
