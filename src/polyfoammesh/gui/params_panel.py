@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -32,6 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from polyfoammesh.core.bl_config import BLConfig, BLConfigError
+from polyfoammesh.core.bl_presets import BLPresetStore
 from polyfoammesh.gui.design_tokens import (
     NEUTRAL_100,
     NEUTRAL_200,
@@ -353,14 +356,17 @@ class ParamsPanel(QWidget):
         # Wall-resolved meshes (y+~1) legitimately need 30+ layers; the old
         # 1..10 cap silently truncated whatever the physics asked for.
         self._bl_n_layers.setRange(1, 40)
-        self._bl_n_layers.setValue(3)
+        self._bl_n_layers.setValue(BLConfig().n_layers)
         bl_form.addRow("nLayers:", self._bl_n_layers)
         self._bl_thick = QDoubleSpinBox()
         # First layer as a fraction of max cell size. y+~1 gives fractions of
         # order 1e-4, far below the old 0.001 floor.
         self._bl_thick.setRange(1e-6, 1.0)
-        self._bl_thick.setValue(0.005)
+        # Decimals BEFORE the value: with the old order Qt rounded 0.005 to
+        # 0.01 and that is the default users actually got. W7 preserves the
+        # measured effective default (0.01) from the single BLConfig source.
         self._bl_thick.setDecimals(6)
+        self._bl_thick.setValue(BLConfig().first_layer_fraction)
         self._bl_thick.setToolTip(
             "First-layer thickness as a fraction of the max cell size. "
             "Use 'Compute layers from physics (y+)' to derive it."
@@ -368,7 +374,7 @@ class ParamsPanel(QWidget):
         bl_form.addRow("First Layer (× cell):", self._bl_thick)
         self._bl_exp = QDoubleSpinBox()
         self._bl_exp.setRange(1.0, 2.0)
-        self._bl_exp.setValue(1.2)
+        self._bl_exp.setValue(BLConfig().growth_rate)
         self._bl_exp.setSingleStep(0.1)
         bl_form.addRow("Expansion Ratio:", self._bl_exp)
         self._bl_apply_all = QCheckBox("Apply BL to all patches")
@@ -394,7 +400,7 @@ class ParamsPanel(QWidget):
         # rather than guessed, which is how commercial meshers do it.
         self._bl_velocity = QDoubleSpinBox()
         self._bl_velocity.setRange(0.001, 1000.0)
-        self._bl_velocity.setValue(10.0)
+        self._bl_velocity.setValue(BLConfig().velocity)
         self._bl_velocity.setDecimals(3)
         self._bl_velocity.setSuffix(" m/s")
         self._bl_velocity.setToolTip("Characteristic flow velocity (free-stream or mean).")
@@ -474,6 +480,11 @@ class ParamsPanel(QWidget):
         self._bl_thick.valueChanged.connect(self._refresh_bl_hint)
         self._bl_exp.valueChanged.connect(self._refresh_bl_hint)
         self._bl_checkbox.toggled.connect(self._refresh_bl_hint)
+        # W7: one provenance record for every BL field.  It is updated by the
+        # dedicated _wire_bl_provenance() pass once the advanced controls
+        # exist; defaults come from BLConfig (single source).
+        self._bl_applying = False
+        self._bl_provenance = dict(BLConfig().provenance)
         mesh_layout.addWidget(bl_group)
 
         mesher_group = QGroupBox("Mesher")
@@ -704,6 +715,10 @@ class ParamsPanel(QWidget):
         # hint, so keep it in sync when the slider/geometry changes it.
         self._min_cell.valueChanged.connect(self._refresh_bl_hint)
         adv_layout.addWidget(mesh_group)
+
+        # W7: the complete poly-path BL controls (the engine already
+        # supported them; before this they were hardcoded in get_bl_params).
+        self._build_bl_advanced_group(adv_layout)
 
         # fTetWild surface fidelity (experimental mesher, issue #12): the
         # wrapper's knobs exposed so the user can trade fidelity for speed.
@@ -952,6 +967,7 @@ class ParamsPanel(QWidget):
         # user who edited the values by hand keeps them (_bl_user_manual).
         if (
             checked
+            and not getattr(self, "_bl_applying", False)
             and not getattr(self, "_bl_user_manual", False)
             and self._suggest_meshes
         ):
@@ -976,10 +992,14 @@ class ParamsPanel(QWidget):
             return
         self._bl_first_layer_abs = None
         self._bl_user_manual = True
+        # The absolute value is gone: its provenance falls back to default.
+        self._bl_provenance["first_height"] = "default"
         self._refresh_bl_hint()
 
     def _on_bl_physics_inputs_changed(self, *_args) -> None:
         """Recompute silently when the physics inputs change after a compute."""
+        if getattr(self, "_bl_applying", False):
+            return
         if getattr(self, "_bl_first_layer_abs", None) is None:
             return
         if not self._suggest_meshes:
@@ -1017,6 +1037,420 @@ class ParamsPanel(QWidget):
                 "the effective first-layer thickness are reported in the "
                 "log after the build."
             )
+
+    # ------------------------------------------------------------------
+    # W7: advanced BL controls, one validated config, presets
+    # ------------------------------------------------------------------
+    def _build_bl_advanced_group(self, parent_layout: QVBoxLayout) -> None:
+        """The complete poly-path BL controls (engine-supported knobs)."""
+        group = QGroupBox("Boundary Layer — advanced (poly path)")
+        form = QFormLayout(group)
+
+        self._bl_min_base_edge = QDoubleSpinBox()
+        self._bl_min_base_edge.setRange(0.0, 2.0)
+        self._bl_min_base_edge.setDecimals(2)
+        self._bl_min_base_edge.setSingleStep(0.05)
+        self._bl_min_base_edge.setValue(BLConfig().min_base_edge_fraction)
+        self._bl_min_base_edge.setToolTip(
+            "Sliver base-face filter, as a fraction of the median boundary "
+            "edge (0 = off). The historical robust value is 0.9: faces with "
+            "a tiny edge are still extruded but with a short stack, so the "
+            "wall is not left bare. Raising it filters more aggressively; "
+            "lowering it keeps more full stacks on faceted duals."
+        )
+        form.addRow("Min base-edge fraction:", self._bl_min_base_edge)
+
+        self._bl_terminate_budget = QCheckBox(
+            "Terminate the stack by local budget (recommended)"
+        )
+        self._bl_terminate_budget.setChecked(BLConfig().terminate_by_budget)
+        self._bl_terminate_budget.setToolTip(
+            "ON: at a narrow wall vertex the engine keeps the full-height "
+            "layers that fit instead of compressing the whole stack into "
+            "pancakes. This is the measured robust default. OFF restores the "
+            "historical uniform compression."
+        )
+        form.addRow(self._bl_terminate_budget)
+
+        self._bl_edge_cap_pct = QDoubleSpinBox()
+        self._bl_edge_cap_pct.setRange(0.0, 100.0)
+        self._bl_edge_cap_pct.setDecimals(1)
+        self._bl_edge_cap_pct.setSingleStep(5.0)
+        self._bl_edge_cap_pct.setSuffix(" %")
+        self._bl_edge_cap_pct.setValue(BLConfig().edge_cap_percentile)
+        self._bl_edge_cap_pct.setToolTip(
+            "Inversion-clamp cap: 0 = the historical smallest incident wall "
+            "edge (a single sliver can collapse the local stack). Above 0 "
+            "uses this percentile of all incident wall-edge lengths, so one "
+            "bad edge no longer dictates the thickness. Measured to have a "
+            "failure mode on some duals (venturi): leave 0 unless you are "
+            "deliberately testing it."
+        )
+        form.addRow("Edge-cap percentile:", self._bl_edge_cap_pct)
+
+        self._bl_local_term = QComboBox()
+        self._bl_local_term.addItem("Off (standard path)", "off")
+        self._bl_local_term.addItem(
+            "Local termination (decoupled)", "decoupled"
+        )
+        self._bl_local_term.addItem(
+            "Local termination (per-vertex, concave closure)",
+            "decoupled_vertex",
+        )
+        self._bl_local_term.setToolTip(
+            "Off: the standard stack. 'decoupled': retry a failed stack at "
+            "smaller height scales without carrying exclusions. 'Per-vertex': "
+            "exclude defective wall VERTICES iteratively; this is the path "
+            "that closes the layer on concave junctions (valve/groove/slot). "
+            "The worker still retries it automatically when the standard "
+            "path fails; selecting it here makes that choice explicit."
+        )
+        form.addRow("Local termination:", self._bl_local_term)
+
+        self._bl_height_retry = QCheckBox(
+            "Retry a shorter local height before excluding a vertex"
+        )
+        self._bl_height_retry.setChecked(False)
+        self._bl_height_retry.setEnabled(False)
+        self._bl_height_retry.setToolTip(
+            "Only available with per-vertex local termination. Before "
+            "excluding a defective wall vertex, try one shorter stack at "
+            "that vertex; if it validates it is kept, so the wall keeps its "
+            "layer. Costs one extra rebuild per exclusion round."
+        )
+        form.addRow(self._bl_height_retry)
+
+        self._bl_local_rounds = QSpinBox()
+        self._bl_local_rounds.setRange(1, 10)
+        self._bl_local_rounds.setValue(BLConfig().local_max_rounds)
+        self._bl_local_rounds.setToolTip(
+            "Maximum exclusion rounds per height scale when local "
+            "termination is active. More rounds can converge on coarsely "
+            "faceted duals, at the cost of extra builds."
+        )
+        form.addRow("Local max rounds:", self._bl_local_rounds)
+
+        preset_row = QHBoxLayout()
+        self._bl_preset_combo = QComboBox()
+        self._bl_preset_combo.setMinimumWidth(180)
+        self._bl_preset_combo.setToolTip(
+            "Named BL presets. Selecting one applies the full snapshot "
+            "(layers, first height, growth, advanced settings)."
+        )
+        self._bl_save_preset_btn = QPushButton("Save preset…")
+        self._bl_save_preset_btn.setToolTip(
+            "Save the current BL configuration under a name. Presets are "
+            "stored with a schema version and restored on the next start."
+        )
+        self._bl_delete_preset_btn = QPushButton("Delete")
+        self._bl_delete_preset_btn.setToolTip("Delete the selected BL preset.")
+        preset_row.addWidget(self._bl_preset_combo, 1)
+        preset_row.addWidget(self._bl_save_preset_btn)
+        preset_row.addWidget(self._bl_delete_preset_btn)
+        form.addRow("Preset:", preset_row)
+
+        self._bl_preset_status = QLabel("")
+        self._bl_preset_status.setWordWrap(True)
+        self._bl_preset_status.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        form.addRow(self._bl_preset_status)
+
+        parent_layout.addWidget(group)
+        self._preset_store = BLPresetStore()
+
+        self._bl_save_preset_btn.clicked.connect(self._on_save_bl_preset_clicked)
+        self._bl_delete_preset_btn.clicked.connect(
+            self._on_delete_bl_preset_clicked
+        )
+        self._bl_preset_combo.currentIndexChanged.connect(
+            self._on_bl_preset_selected
+        )
+        self._bl_local_term.currentIndexChanged.connect(
+            self._on_bl_local_term_changed
+        )
+        self._bl_height_retry.toggled.connect(self._on_bl_height_retry_toggled)
+
+        # Establish the initial enabled/disabled state WITHOUT marking the
+        # default as user provenance.
+        self._bl_applying = True
+        try:
+            self._on_bl_local_term_changed()
+        finally:
+            self._bl_applying = False
+        self._wire_bl_provenance()
+        self._refresh_bl_presets()
+
+    def _wire_bl_provenance(self) -> None:
+        """Attribute a widget edit to 'user' (preset/default stay intact)."""
+        pairs = (
+            (self._bl_checkbox.toggled, "enabled"),
+            (self._bl_n_layers.valueChanged, "n_layers"),
+            (self._bl_thick.valueChanged, "first_layer_fraction"),
+            (self._bl_exp.valueChanged, "growth_rate"),
+            (self._bl_apply_all.toggled, "apply_to_all"),
+            (self._bl_velocity.valueChanged, "velocity"),
+            (self._bl_fluid.currentIndexChanged, "fluid"),
+            (self._bl_wall_treatment.currentIndexChanged, "wall_treatment"),
+            (self._bl_min_base_edge.valueChanged, "min_base_edge_fraction"),
+            (self._bl_terminate_budget.toggled, "terminate_by_budget"),
+            (self._bl_edge_cap_pct.valueChanged, "edge_cap_percentile"),
+            (self._bl_local_rounds.valueChanged, "local_max_rounds"),
+        )
+        for signal, field_name in pairs:
+            signal.connect(
+                lambda *_args, f=field_name: self._mark_bl_user(f)
+            )
+
+    def _mark_bl_user(self, field_name: str) -> None:
+        if getattr(self, "_bl_applying", False):
+            return
+        self._bl_provenance[field_name] = "user"
+
+    def _on_bl_local_term_changed(self, *_args) -> None:
+        mode = self._bl_local_term.currentData()
+        vertex = mode == "decoupled_vertex"
+        self._bl_height_retry.setEnabled(vertex)
+        if not vertex and self._bl_height_retry.isChecked():
+            self._bl_height_retry.blockSignals(True)
+            try:
+                self._bl_height_retry.setChecked(False)
+            finally:
+                self._bl_height_retry.blockSignals(False)
+        self._mark_bl_user("local_termination")
+
+    def _on_bl_height_retry_toggled(self, checked: bool) -> None:
+        if checked and self._bl_local_term.currentData() != "decoupled_vertex":
+            self._bl_height_retry.blockSignals(True)
+            try:
+                self._bl_height_retry.setChecked(False)
+            finally:
+                self._bl_height_retry.blockSignals(False)
+            self._bl_preset_status.setText(
+                "Local height retry requires per-vertex local termination; "
+                "it was left off."
+            )
+            return
+        self._mark_bl_user("local_height_retry")
+
+    def get_bl_config(self) -> BLConfig:
+        """The one validated BL config the GUI hands to the worker."""
+        cfg = BLConfig(
+            enabled=self._bl_checkbox.isChecked(),
+            n_layers=int(self._bl_n_layers.value()),
+            first_height=float(self._bl_first_layer_abs or 0.0),
+            first_layer_fraction=float(self._bl_thick.value()),
+            growth_rate=float(self._bl_exp.value()),
+            apply_to_all=self._bl_apply_all.isChecked(),
+            min_base_edge_fraction=float(self._bl_min_base_edge.value()),
+            terminate_by_budget=self._bl_terminate_budget.isChecked(),
+            edge_cap_percentile=float(self._bl_edge_cap_pct.value()),
+            local_termination=str(self._bl_local_term.currentData() or "off"),
+            local_height_retry=self._bl_height_retry.isChecked(),
+            local_max_rounds=int(self._bl_local_rounds.value()),
+            velocity=float(self._bl_velocity.value()),
+            fluid=(
+                "water" if "Water" in self._bl_fluid.currentText() else "air"
+            ),
+            wall_treatment=(
+                "wall_resolved"
+                if "resolved" in self._bl_wall_treatment.currentText().lower()
+                else "wall_functions"
+            ),
+            provenance=dict(self._bl_provenance),
+        )
+        fixed, warnings = cfg.normalized()
+        for warning in warnings:
+            logger.warning("BL config: %s", warning)
+            self.suggestion_completed.emit(f"[bl] config clamp: {warning}")
+        return fixed
+
+    def set_bl_config(self, config, source: str | None = None) -> None:
+        """Apply a config to the widgets (preset load / project restore).
+
+        *source* attributes every field (``"preset"`` for a preset); when
+        None the provenance carried by *config* is kept.
+        """
+        if isinstance(config, dict):
+            cfg = BLConfig.from_mapping(
+                config, max_cell=max(self._max_cell.value(), 1e-12),
+            )
+        else:
+            cfg = config
+        if source is not None:
+            cfg = cfg.with_provenance(source)
+        cfg.raise_if_invalid()
+
+        self._bl_applying = True
+        try:
+            self._bl_checkbox.blockSignals(True)
+            try:
+                self._bl_checkbox.setChecked(bool(cfg.enabled))
+            finally:
+                self._bl_checkbox.blockSignals(False)
+            self._bl_n_layers.setValue(int(cfg.n_layers))
+            self._bl_exp.setValue(float(cfg.growth_rate))
+            self._bl_apply_all.setChecked(bool(cfg.apply_to_all))
+            self._bl_min_base_edge.setValue(float(cfg.min_base_edge_fraction))
+            self._bl_terminate_budget.setChecked(bool(cfg.terminate_by_budget))
+            self._bl_edge_cap_pct.setValue(float(cfg.edge_cap_percentile))
+            idx = self._bl_local_term.findData(cfg.local_termination)
+            self._bl_local_term.setCurrentIndex(idx if idx >= 0 else 0)
+            self._bl_height_retry.setEnabled(
+                cfg.local_termination == "decoupled_vertex"
+            )
+            self._bl_height_retry.setChecked(bool(cfg.local_height_retry))
+            self._bl_local_rounds.setValue(int(cfg.local_max_rounds))
+            self._bl_velocity.setValue(float(cfg.velocity))
+            self._bl_fluid.setCurrentIndex(
+                1 if cfg.fluid == "water" else 0
+            )
+            self._bl_wall_treatment.setCurrentIndex(
+                1 if cfg.wall_treatment == "wall_resolved" else 0
+            )
+
+            if cfg.first_height_mode == "absolute":
+                self._bl_first_layer_abs = float(cfg.first_height)
+                fraction = cfg.first_height / max(self._max_cell.value(), 1e-12)
+                self._bl_thick_updating = True
+                try:
+                    self._bl_thick.setValue(
+                        min(
+                            max(fraction, self._bl_thick.minimum()),
+                            self._bl_thick.maximum(),
+                        )
+                    )
+                finally:
+                    self._bl_thick_updating = False
+                self._bl_user_manual = True
+            else:
+                self._bl_first_layer_abs = None
+                self._bl_thick_updating = True
+                try:
+                    self._bl_thick.setValue(float(cfg.first_layer_fraction))
+                finally:
+                    self._bl_thick_updating = False
+                self._bl_user_manual = False
+            self._bl_provenance = dict(cfg.provenance)
+        finally:
+            self._bl_applying = False
+        self._refresh_bl_hint()
+
+    # ------------------------------------------------------------------
+    # BL presets
+    # ------------------------------------------------------------------
+    def _refresh_bl_presets(self) -> None:
+        if not hasattr(self, "_bl_preset_combo"):
+            return
+        self._bl_preset_combo.blockSignals(True)
+        try:
+            self._bl_preset_combo.clear()
+            self._bl_preset_combo.addItem("(no preset)", "")
+            for name in self._preset_store.names():
+                self._bl_preset_combo.addItem(name, name)
+            last = self._preset_store.last_used
+            idx = self._bl_preset_combo.findData(last) if last else 0
+            self._bl_preset_combo.setCurrentIndex(max(idx, 0))
+        finally:
+            self._bl_preset_combo.blockSignals(False)
+        if self._preset_store.errors:
+            self._bl_preset_status.setText(
+                "BL presets: " + " | ".join(self._preset_store.errors)
+            )
+
+    def _on_bl_preset_selected(self, _index: int) -> None:
+        name = self._bl_preset_combo.currentData()
+        if not name:
+            return
+        if not self.apply_bl_preset(str(name)):
+            self._bl_preset_combo.blockSignals(True)
+            try:
+                last = self._preset_store.last_used
+                idx = self._bl_preset_combo.findData(last) if last else 0
+                self._bl_preset_combo.setCurrentIndex(max(idx, 0))
+            finally:
+                self._bl_preset_combo.blockSignals(False)
+
+    def apply_bl_preset(self, name: str) -> bool:
+        """Apply a named preset; report clamps without a modal dialog."""
+        cfg = self._preset_store.get(name)
+        if cfg is None:
+            self._bl_preset_status.setText(
+                f"Preset '{name}' was not found; the current values were kept."
+            )
+            return False
+        warnings = [
+            warning for warning in self._preset_store.warnings
+            if warning.startswith(f"preset {name!r}:")
+        ]
+        try:
+            self.set_bl_config(cfg, source="preset")
+        except BLConfigError as exc:
+            self._bl_preset_status.setText(
+                f"Preset '{name}' is invalid and was not applied: {exc}"
+            )
+            return False
+        idx = self._bl_preset_combo.findData(name)
+        self._bl_preset_combo.blockSignals(True)
+        try:
+            self._bl_preset_combo.setCurrentIndex(max(idx, 0))
+        finally:
+            self._bl_preset_combo.blockSignals(False)
+        try:
+            self._preset_store.set_last_used(name)
+        except BLConfigError as exc:
+            logger.debug("Could not persist last BL preset: %s", exc)
+        if warnings:
+            self._bl_preset_status.setText(
+                f"Preset '{name}' loaded with clamping: "
+                + " | ".join(warnings)
+            )
+        else:
+            self._bl_preset_status.setText(f"Preset '{name}' loaded.")
+        return True
+
+    def save_bl_preset(self, name: str, config=None) -> bool:
+        """Save *config* (default: the current widgets) as a named preset."""
+        clean = str(name).strip()
+        if not clean:
+            self._bl_preset_status.setText("Preset name must not be empty.")
+            return False
+        try:
+            self._preset_store.save(
+                clean, config if config is not None else self.get_bl_config(),
+            )
+        except BLConfigError as exc:
+            self._bl_preset_status.setText(f"Cannot save preset: {exc}")
+            return False
+        self._refresh_bl_presets()
+        idx = self._bl_preset_combo.findData(clean)
+        self._bl_preset_combo.blockSignals(True)
+        try:
+            self._bl_preset_combo.setCurrentIndex(max(idx, 0))
+        finally:
+            self._bl_preset_combo.blockSignals(False)
+        self._bl_preset_status.setText(f"Preset '{clean}' saved.")
+        return True
+
+    def delete_bl_preset(self, name: str) -> bool:
+        removed = self._preset_store.delete(name)
+        self._refresh_bl_presets()
+        self._bl_preset_status.setText(
+            f"Preset '{name}' deleted." if removed
+            else f"Preset '{name}' was not found."
+        )
+        return removed
+
+    def _on_save_bl_preset_clicked(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Save BL preset", "Preset name:",
+            text=self._bl_preset_combo.currentData() or "",
+        )
+        if ok:
+            self.save_bl_preset(str(name))
+
+    def _on_delete_bl_preset_clicked(self) -> None:
+        name = self._bl_preset_combo.currentData()
+        if name:
+            self.delete_bl_preset(str(name))
 
     def _on_adaptive_sizing_toggled(self, checked: bool):
         """Adaptive ON: Max/Min Cell Size are read-only DISPLAY of what the
@@ -1148,6 +1582,11 @@ class ParamsPanel(QWidget):
         self._bl_exp.setValue(
             min(max(params.growth_rate, self._bl_exp.minimum()), self._bl_exp.maximum())
         )
+        # Physics-derived values are user-driven, not defaults/presets.
+        for field_name in (
+            "n_layers", "first_height", "first_layer_fraction", "growth_rate",
+        ):
+            self._bl_provenance[field_name] = "user"
 
         note = ""
         if params.n_layers > self._bl_n_layers.maximum():
@@ -1393,29 +1832,17 @@ class ParamsPanel(QWidget):
         return self._bl_checkbox.isChecked()
 
     def get_bl_params(self) -> dict | None:
-        if not self._bl_checkbox.isChecked():
+        """Backward-compatible dict, derived from the ONE BLConfig.
+
+        ``meshDict`` and the autopoly bridge still read these legacy keys;
+        the translation now lives in ``BLConfig.legacy_meshdict_dict`` so
+        this panel cannot disagree with the poly worker.
+        """
+        cfg = self.get_bl_config()
+        if not cfg.enabled:
             return None
-        # Contract: thicknessRatio = growth ratio, firstLayerThickness = metres.
-        # The "First Layer" field is a FRACTION of the max cell size, so convert
-        # it to an absolute thickness here — sending the fraction as
-        # thicknessRatio (the old behaviour) made cfMesh collapse the layers.
-        return {
-            "nLayers": self._bl_n_layers.value(),
-            "thicknessRatio": self._bl_exp.value(),
-            "firstLayerThickness": self._bl_first_layer(),
-            # poly path (barycentric dual): checked -> BL on every boundary
-            # patch; unchecked (default) -> wall-typed / wall-named patches
-            # only (G1 fix, FASE 1)
-            "applyToAll": self._bl_apply_all.isChecked(),
-            # concave closure is now automatic (worker fallback chain), so
-            # no 'concaveClosure' key is emitted any more.
-            # BL quality fixes (poly path): the sliver-edge base-face filter
-            # (0.9) and the budget termination are now ALWAYS ON when the BL
-            # is enabled - measured best across the benchmark (poly 9/10 vs
-            # snappy 6/10) and no longer a user choice (no checkbox).
-            "minBaseEdgeFraction": 0.9,
-            "terminateByBudget": True,
-        }
+        max_cell = max(float(self._max_cell.value()), 1e-12)
+        return cfg.legacy_meshdict_dict(max_cell)
 
     def get_bl_apply_all(self) -> bool:
         return self._bl_apply_all.isChecked()
@@ -2054,6 +2481,9 @@ class ParamsPanel(QWidget):
     def save_params(self, s):
         s.setValue("params/detail_slider", self._detail_slider.value())
         s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
+        # W7: the full BL config (schema-versioned) survives a restart, not
+        # just the checkbox.  Presets live in their own store.
+        s.setValue("params/bl_config", self.get_bl_config().to_json())
         s.setValue("params/unit", self._unit_selector.currentText())
         # surface_resolution / reuse_cached_mesh are AUTOMATIC now (derived
         # from the slider / always on): nothing to persist.
@@ -2073,3 +2503,35 @@ class ParamsPanel(QWidget):
         expert = s.value("ui/expert_mode", None, type=bool)
         if expert is not None:
             self.set_expert_mode(bool(expert))
+
+        # W7: restore the saved BL config; if there is none, restore the
+        # last-used preset (explicit requirement).  A damaged record is
+        # reported, never fatal.
+        raw = s.value("params/bl_config", None)
+        if raw:
+            try:
+                data = raw if isinstance(raw, dict) else json.loads(str(raw))
+                cfg, warnings = BLConfig.from_mapping_tolerant(
+                    data, max_cell=max(self._max_cell.value(), 1e-12),
+                )
+                self.set_bl_config(cfg)
+                # The saved config is authoritative, not the last preset.
+                self._bl_preset_combo.blockSignals(True)
+                try:
+                    self._bl_preset_combo.setCurrentIndex(0)
+                finally:
+                    self._bl_preset_combo.blockSignals(False)
+                if warnings:
+                    self._bl_preset_status.setText(
+                        "Saved BL config restored with clamping: "
+                        + " | ".join(warnings)
+                    )
+            except (TypeError, ValueError, BLConfigError) as exc:
+                logger.warning("Could not restore BL config: %s", exc)
+                self._bl_preset_status.setText(
+                    f"Saved BL config could not be restored: {exc}"
+                )
+        else:
+            last = self._preset_store.last_used
+            if last:
+                self.apply_bl_preset(last)

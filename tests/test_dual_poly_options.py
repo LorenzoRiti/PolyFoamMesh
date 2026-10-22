@@ -136,7 +136,10 @@ def test_concave_closure_flag_no_longer_forces_local_termination_first(tmp_path)
          "applyToAll": True, "concaveClosure": True},
         captured,
     )
-    assert "local_termination" not in captured
+    # W7: the shared BLConfig passes the default explicitly (False means
+    # exactly the same engine behaviour as omitting the key) so the engine
+    # call is fully described by one object.
+    assert captured.get("local_termination") is False
 
 
 def test_concave_closure_triggers_post_bl_merge_repair(tmp_path):
@@ -196,9 +199,11 @@ def test_concave_closure_off_skips_post_bl_merge_repair(tmp_path):
     mock_repair.assert_not_called()
 
 
-def test_concave_closure_off_by_default_leaves_local_termination_unset(tmp_path):
-    """Default (unchecked) behaviour must be byte-identical to before this
-    option existed: local_termination is never passed."""
+def test_concave_closure_off_by_default_passes_local_termination_false(tmp_path):
+    """Default (unchecked) behaviour must be identical to before this option
+    existed.  W7 passes ``local_termination=False`` explicitly (same engine
+    semantics as omitting it) because the engine call now comes from one
+    validated BLConfig instead of a sparse dict."""
     captured: dict = {}
     _run_dual_poly_worker_with_bl(
         tmp_path,
@@ -206,4 +211,4 @@ def test_concave_closure_off_by_default_leaves_local_termination_unset(tmp_path)
          "applyToAll": True, "concaveClosure": False},
         captured,
     )
-    assert "local_termination" not in captured
+    assert captured.get("local_termination") is False

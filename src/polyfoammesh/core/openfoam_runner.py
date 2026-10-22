@@ -2142,10 +2142,19 @@ class DualPolyWorker(QObject):
     failed = Signal(str)
 
     def __init__(self, case_dir: Path | str, bl_params: dict | None = None,
-                 smooth_free_boundary: bool = False, parent=None):
+                 smooth_free_boundary: bool = False,
+                 max_cell: float | None = None, parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._bl_params = bl_params or None
+        # Used only to resolve the first-layer FRACTION and to record the
+        # total thickness.  The GUI normally sends an absolute height, so a
+        # missing value is harmless.
+        try:
+            self._max_cell = float(max_cell) if max_cell else None
+        except (TypeError, ValueError):
+            self._max_cell = None
+        self._bl_config = None
         # Free-boundary smoothing: opt-in for the experimental fTetWild
         # path (its output needs the boundary relaxed too — measured on a
         # real part: 66 -> 5 warped-boundary defect faces with the flag on;
@@ -2156,6 +2165,71 @@ class DualPolyWorker(QObject):
 
     def cancel(self) -> None:
         self._cancelled = True
+
+    def _bl_max_cell(self) -> float:
+        """Max cell used to resolve a fraction-mode first layer."""
+        if self._max_cell and self._max_cell > 0.0:
+            return float(self._max_cell)
+        raw = (self._bl_params or {}).get("maxCellSize")
+        try:
+            if raw and float(raw) > 0.0:
+                return float(raw)
+        except (TypeError, ValueError):
+            pass
+        # Historical panel default.  Only used for a legacy dict that carries
+        # a fraction instead of an absolute first-layer height.
+        return 0.05
+
+    def prepare_bl_config(self):
+        """Validate the GUI dict, log it, and return the engine contract.
+
+        Returns ``(BLConfig, engine_kwargs, warnings)``.  This is the ONE
+        translation from the panel's legacy dict to
+        ``PolyBoundaryLayerEngine.run``; the effective kwargs are also saved
+        to ``<case>/bl_config.json`` with their provenance.
+        """
+        from polyfoammesh.core.bl_config import BLConfig, BLConfigError
+
+        if not self._bl_params:
+            raise BLConfigError("no BL parameters supplied")
+        max_cell = self._bl_max_cell()
+        cfg, warnings = BLConfig.from_mapping_tolerant(
+            self._bl_params, max_cell=max_cell,
+        )
+        kw = cfg.engine_kwargs(max_cell)
+
+        if self._smooth_free_boundary:
+            # Documented fTetWild overrides: these values are NOT what the
+            # user selected, so declare them and record the overridden
+            # engine kwargs in the run JSON (never claim 0.9 when 0 is used).
+            overrides = {
+                "consume": False,
+                "min_base_edge_fraction": 0.0,
+                "drop_feature_dihedral": 50.0,
+                "pyr_tolerance": 200,
+                "cover_thin_first": False,
+            }
+            kw.update(overrides)
+            warnings.append(
+                "fTetWild path overrides "
+                + ", ".join(f"{k}={v!r}" for k, v in overrides.items())
+            )
+
+        self._bl_config = cfg
+        self.log_line.emit(f"[poly] BL effective: {cfg.summary()}")
+        self.log_line.emit(f"[poly] BL provenance: {cfg.provenance_summary()}")
+        for warning in warnings:
+            self.log_line.emit(f"[poly] BL config warning: {warning}")
+        cfg.write_run_json(
+            self._case_dir, max_cell,
+            warnings=warnings,
+            extra={
+                "source": "DualPolyWorker",
+                "max_cell_m": max_cell,
+                "engine_kwargs": kw,
+            },
+        )
+        return cfg, kw, warnings
 
     @Slot()
     def run(self):
@@ -2311,68 +2385,27 @@ class DualPolyWorker(QObject):
         elif self._bl_params:
             from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
 
+            # Kept for the legacy post-BL merge-repair switch below; the BL
+            # parameters themselves now come from BLConfig only.
             bl = dict(self._bl_params)
-            apply_all = bool(bl.get("applyToAll", False))
-            self.log_line.emit(
-                f"[poly] Adding boundary layers: "
-                f"{bl.get('nLayers', 5)} layers, "
-                f"first height {bl.get('firstLayerThickness', 0.0):.6g} m, "
-                f"growth {bl.get('thicknessRatio', 1.2)}"
-            )
-
             try:
                 bres = None
-                kw = dict(
-                    n_layers=int(bl.get("nLayers", 5)),
-                    first_height=float(bl.get("firstLayerThickness", 0.0)),
-                    growth_rate=float(bl.get("thicknessRatio", 1.2)),
-                    # 2026-10-06 BL quality fixes (GUI checkboxes, opt-in):
-                    # the sliver-edge base-face filter and the budget
-                    # termination; 0.0/False reproduce the historical path.
-                    min_base_edge_fraction=float(
-                        bl.get("minBaseEdgeFraction", 0.0) or 0.0
-                    ),
-                    terminate_by_budget=bool(bl.get("terminateByBudget", False)),
+                cfg, kw, _cfg_warnings = self.prepare_bl_config()
+                apply_all = bool(cfg.apply_to_all)
+                self.log_line.emit(
+                    f"[poly] Adding boundary layers: "
+                    f"{cfg.n_layers} layers, first height "
+                    f"{kw['first_height']:.6g} m, growth {cfg.growth_rate}"
                 )
                 if self._smooth_free_boundary:
-                    # fTetWild path: the multi-cell consume reflow corrupts
-                    # the build on these duals (measured: its walk
-                    # double-emits side faces on wall columns with sub-mm
-                    # polygons, leaving 10 boundary edges shared by 4 faces
-                    # at every height scale).  With consume off the drop
-                    # pass validates and the BL builds (measured on the
-                    # reference part: 71k prisms, median 5 layers,
-                    # checkMesh region OK).  The GMSH path keeps the
-                    # default (consume on - it is the promoted default
-                    # there).
-                    kw["consume"] = False
-                    # The 0.9 sliver-edge filter is a GMSH-dual remedy
-                    # (measured 9/10 across the benchmark there); on the
-                    # fTetWild duals it breaks the build outright - measured
-                    # on the corpus cylinder: dropping the 0.9-edge faces
-                    # leaves the selected region multiply connected ("10
-                    # boundary edges shared by != 2 faces") and every height
-                    # scale fails validation.  With the filter off the BL
-                    # builds (5,440 prisms).  Neutralized here exactly like
-                    # consume - the GMSH path keeps the GUI value.
-                    kw["min_base_edge_fraction"] = 0.0
-                    # Feature-edge drop (GMSH/cfMesh-style): the faces
-                    # incident to a sharp boundary edge (normal turn >
-                    # 50 deg) are dropped so layers never wrap the cap/rim
-                    # edges - the bent stacks there produced the 80 deg
-                    # checkMesh failures.  The terminator machinery closes
-                    # the resulting band.  GMSH path keeps the GUI value.
-                    kw["drop_feature_dihedral"] = 50.0
-                    # The fine dual's build adds ~18-180 pyramids at the
-                    # terminator bands and no height scale avoids it, so the
-                    # strict gate rejected every attempt (measured: 663 s
-                    # wasted, 0 prisms).  Accept the build with a bounded
-                    # tolerance and clear the added pyramids after the BL
-                    # (clear_boundary_pyramids_case below).  Also try the
-                    # drop pass FIRST: the compressed-stack pass always
-                    # fails on these duals (dead time).
-                    kw["pyr_tolerance"] = 200
-                    kw["cover_thin_first"] = False
+                    # The documented fTetWild overrides are applied inside
+                    # prepare_bl_config() (and recorded in bl_config.json),
+                    # so this path never claims the GUI value was used.
+                    self.log_line.emit(
+                        "[poly] fTetWild BL overrides: consume off, "
+                        "min-base-edge filter off, feature drop on "
+                        "(recorded in bl_config.json)"
+                    )
                 _cc_n_cells = int(max(int(result.n_cells_after or 0), 0))
                 _cc_n_faces = int(
                     max(int(getattr(result, "n_internal_faces", 0) or 0), 0)
@@ -2451,6 +2484,11 @@ class DualPolyWorker(QObject):
                     self._case_dir, "bl", lambda: _run_bl(kw),
                     _bl_log,
                 )
+                # W7: every engine-declared clamp/warning must be visible in
+                # the GUI log, not only in result.warnings.
+                if bres is not None:
+                    for _warning in (getattr(bres, "warnings", None) or []):
+                        self.log_line.emit(f"[poly] BL warning: {_warning}")
                 # Fallback chain (2026-10-06): standard robust first (it now
                 # handles concave features on its own via the binary budget
                 # semantics and the mesh-aware cap), then the concave closure

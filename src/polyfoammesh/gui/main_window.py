@@ -4817,6 +4817,7 @@ class MainWindow(QMainWindow):
         w = DualPolyWorker(
             self._case_dir, bl_params=bl_params,
             smooth_free_boundary=_ftet,
+            max_cell=self._params.get_max_cell(),
         )
         if _ftet:
             self._log.append_log(

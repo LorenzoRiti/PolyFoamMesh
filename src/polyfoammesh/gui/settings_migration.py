@@ -29,6 +29,8 @@ _SETTINGS_SCHEMA: dict[str, type] = {
     "params/detail_slider": int,
     "params/unit": str,
     "params/bl_checked": bool,
+    # W7: full schema-versioned BLConfig JSON (values + provenance).
+    "params/bl_config": str,
     "params/surface_resolution": str,
     "window/size": object,  # QSize
     "window/pos": object,  # QPoint

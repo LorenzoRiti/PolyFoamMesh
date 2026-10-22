@@ -1392,6 +1392,55 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
 - Not done: AppImage/deb packaging (tarball only for now), native
   OpenFOAM integration tests in CI, `mpirun` as non-root.
 
+## Boundary-layer GUI contract (W7, 2026-10-22)
+
+- **One config, one truth**: `core/bl_config.py` (`BLConfig`) is the only
+  object shared by the GUI, the CLI helpers and `DualPolyWorker`.  The
+  panel's legacy dict is derived from it, so cfMesh `meshDict` and the poly
+  engine cannot disagree.  Defaults live in `BLConfig` only.
+- **Measured default kept**: the panel had always used a first-layer
+  fraction of 0.01, not the documented 0.005 (`setValue(0.005)` ran before
+  `setDecimals(6)`, so Qt rounded it).  W7 preserves 0.01 to avoid an
+  unmeasured default change; the ordering bug is fixed but no default moved.
+- **Exposed advanced knobs**: min base-edge fraction, budget termination,
+  edge-cap percentile, local termination, local height retry and local max
+  rounds.  Every one reaches `PolyBoundaryLayerEngine.run` through
+  `BLConfig.engine_kwargs()`; tests compare the GUI-built kwargs with the
+  engine contract.
+- **Declared clamps**: out-of-range presets/legacy values are clamped by
+  `BLConfig.normalized()` with one message per field; the provenance becomes
+  `clamped`, the worker logs `[poly] BL config warning:` and the same is
+  written to `bl_config.json`.  The engine's own `result.warnings` are now
+  logged too (previously they stayed in memory).
+- **Presets**: named snapshots with `schema_version = 1`, atomic JSON in the
+  app data directory, last-used restored at startup; a corrupt file or a
+  bad preset is reported and skipped/clamped, never fatal.
+- **Legacy project migration**: the old session keys (`bl_n_layers`,
+  `bl_thickness_ratio`, `bl_expansion_ratio`) are read by the tolerant
+  adapter; the old fraction is converted to metres once using the supplied
+  max cell.  A legacy `firstLayerThickness` (already metres) wins.
+- **Residual debt, prioritised**:
+  1. `core/validation.validate_bl_params()` is still the legacy 1..10
+     API used by `commercial/watertight.py`; it is not on the GUI/poly
+     path.  Migrate it to `BLConfig` when that API is next touched.
+  2. cfMesh's BL path writes its parameters into `meshDict` but does not
+     write `bl_config.json`; the poly path does.  Add the same run record
+     to the cfMesh writer if auditability is required for hex runs.
+  3. `bl_poly.run()` still has its own defensive clamps (`n_layers` to
+     40, `growth_rate` to 2.0).  They remain as a last line for direct
+     callers/tools; the GUI path validates first and declares every clamp.
+  4. `edgeCapPercentile` is exposed but experimentally risky (measured
+     failure on the venturi, `docs/residual_risks.md` FASE 4); its default
+     remains 0 and the tooltip says so.  It is not promoted.
+  5. The `SessionSnapshot` BL fields are still unused by the GUI; the new
+     `params/bl_config` QSettings key is the active persistence.  The
+     adapter accepts the old fields, so no second live format exists.
+  6. `bl_config.json` records the INITIAL effective config.  Automatic
+     fallback attempts (concave closure, halved/quartered first layer) are
+     logged with the changed parameter, but the JSON does not yet append an
+     `attempts` list.  Add it if a full audit trail of every retry is
+     required.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.

@@ -254,9 +254,34 @@ Boundary layers are inserted by the poly mesher (CFD Poly path). In the
   - press **Auto-compute**: the first layer height, layer count and total
     thickness are derived from the flat-plate correlation and shown with the
     Reynolds number.
-- **Robust boundary layer (recommended)**: drops sliver base faces and lets
-  the engine cap the stack to what the mesh can actually hold. Use it for
-  real parts.
+- **Advanced controls (poly path)** on the Advanced tab:
+  - **Min base-edge fraction** (default 0.9): faces with a very small
+    boundary edge are still extruded, with a short stack, so the wall is
+    never left bare. 0 disables the filter.
+  - **Terminate the stack by local budget** (default on): at a narrow wall
+    vertex the engine keeps the full-height layers that fit instead of
+    compressing the whole stack into pancakes. Turning it off restores the
+    historical uniform compression.
+  - **Edge-cap percentile** (default 0): 0 uses the smallest incident wall
+    edge for the inversion guard (one sliver can collapse the local
+    stack). Above 0 uses that percentile of all incident wall edges. This
+    is an experimental knob: it has a measured failure mode on some duals.
+  - **Local termination** (default off): `Off` is the standard stack;
+    `Decoupled` retries a failed stack at smaller height scales;
+    `Per-vertex` excludes defective wall vertices iteratively - the path
+    that closes the layer on concave junctions (valve/groove/slot). The
+    worker still retries `Per-vertex` automatically when the standard path
+    fails; selecting it makes the choice explicit.
+  - **Retry a shorter local height before excluding a vertex**: only
+    available with `Per-vertex` termination. Before dropping a defective
+    vertex, one shorter stack is tried; if it validates, the wall keeps its
+    layer.
+  - **Local max rounds**: maximum exclusion rounds per height scale.
+- **Presets**: save the whole BL configuration under a name with
+  **Save preset…**. The list is versioned, survives a restart, and the
+  last-used preset is restored when no newer saved configuration exists.
+  A preset that is out of range is loaded with a declared clamp (the
+  status line says so) instead of breaking the project.
 - **Complex geometry**: the engine builds the full stack on the healthy
   wall and automatically leaves out the faces it cannot grow from -
   sliver faces and the inlet/outlet caps (which are not walls). The log
@@ -266,13 +291,10 @@ Boundary layers are inserted by the poly mesher (CFD Poly path). In the
   layers from the flow conditions on the spot, and the values update
   themselves when you change Velocity / Fluid / Wall treatment. Edit the
   numbers by hand if you want to - the app then leaves them alone.
-- **Mesh/BL consistency hint**: the panel compares the requested stack
-  with the wall cell size the current mesh will produce and tells you if
-  it fits or gets compressed; the engine compresses the stack by itself
-  when needed and the log states it. When boundary layers are enabled,
-  the mesher also enforces a minimum wall cell size (the stack divided
-  by 3, capped at 10% of the model size), logged as
-  `[gmsh] BL wall size floor: ...`.
+- **Effective parameters are recorded**: the run log prints
+  `[poly] BL effective: ...` and `[poly] BL provenance: ...`, every clamp
+  as `[poly] BL config warning: ...`, and the same values with their
+  provenance are written to `<case>/bl_config.json`.
 
 What the log tells you after a run (always read these lines):
 
@@ -291,6 +313,14 @@ What the log tells you after a run (always read these lines):
   as success.
 - `first layer X (requested Y)`: if X is much smaller than Y, the y+ target
   moved by the same factor (the log warns explicitly).
+- `BL effective` / `BL provenance`: the exact values handed to the engine
+  and where each came from (`default`, `user`, `preset`). This line is the
+  contract; a value shown there is what the engine used.
+- `BL config warning`: a value was outside its documented range (for
+  example a preset with 999 layers) and was clamped to the stated value.
+  Nothing is changed silently.
+- `<case>/bl_config.json`: the same effective values, provenance, warnings
+  and resolved first-layer height, for post-run inspection or bug reports.
 
 If the standard path fails, the engine retries automatically, in order:
 

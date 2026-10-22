@@ -7,6 +7,28 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Boundary-layer GUI contract (W7) - 2026-10-22
+- **One validated `BLConfig`** (`core/bl_config.py`) shared by the GUI,
+  CLI helpers and `DualPolyWorker`: canonical units, per-field provenance,
+  `schema_version = 1`, declared clamps, and one translation to
+  `PolyBoundaryLayerEngine.run` / cfMesh `meshDict`.
+- **Advanced tab completed**: min base-edge fraction, terminate-by-budget,
+  edge-cap percentile, local termination (off/decoupled/per-vertex), local
+  height retry and max rounds, each with range, units and tooltip.
+- **Editable presets**: named BL snapshots with schema version, atomic
+  storage, last-used restore at startup; out-of-range presets load with a
+  clear clamped message instead of breaking the project.
+- **Traceability**: `[poly] BL effective:` / `BL provenance:` log lines,
+  every engine/config clamp logged, and `<case>/bl_config.json` with the
+  effective values, provenance and resolved first-layer height.
+- **Cleanup**: removed the panel's hardcoded 0.9/True defaults and the
+  worker's duplicate defaults; made the previously dead `enabled` /
+  `maxThickness` autopoly bindings real.  The measured historical
+  first-layer fraction (0.01) is preserved (no unmeasured default change).
+- Tests: `tests/test_bl_config.py`, `tests/test_gui_bl_advanced.py`
+  (round-trip, provenance, legacy migration, clamp visibility, preset
+  round-trip/invalid, GUI->engine kwargs, CLI/GUI equality, worker JSON).
+
 ### fTetWild path (issue #12) - 2026-10-22, measured-default verdicts
 - **Absolute epsilon 0.3 mm confirmed as the default**: the full fine
   run with `eps_mm=0.3` finishes cleanly (2.37M tets, 3738 s tet stage,

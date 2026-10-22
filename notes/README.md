@@ -12,6 +12,7 @@ state that later changed; the code and tests remain the source of truth.
 ## By theme
 
 ### Boundary layer (BL)
+- `w7_bl_gui_diagnosis.md`, `w7_bl_gui_params_reasoning.md` — W7 GUI↔engine BL contract: parameter map, defaults/provenance, presets, clamps and the tests that prove each binding.
 - `bl_real_layers_reasoning.md`, `bl_local_height_fallback_reasoning.md`, `collapsed_bl_reasoning.md` — BL layer count/thickness collapse on the poly path.
 - `local_height_retry_reasoning.md`, `combined_normal_height_retry_reasoning.md`, `guided_normal_filter_reasoning.md`, `most_visible_normal_reasoning.md` — per-vertex height budgets, retries and normal selection.
 - `normal_smoothing_reasoning.md`, `smoothed_dual_blend_reasoning.md`, `smoothing_gate_fix_reasoning.md` — normal smoothing and the blend/gate between BL and dual core.

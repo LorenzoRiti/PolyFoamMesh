@@ -1197,3 +1197,31 @@ smooth=3 vs 20261022T090226 smooth=2):
 - Prossimi: per-patch y+ report (coverage, h1 p10, y+ realizzato),
   opt_iter 5/10/15 con quality floor, fallback retry con envelope piu'
   largo su FAIL subdivide_tets.
+
+## 2026-10-22 - W7: contratto BL unico in GUI
+
+Un solo `BLConfig` validato (`core/bl_config.py`) con unità canoniche
+(primo strato in metri, frazione risolta in un punto solo), range,
+provenance per campo (`preset|user|default|clamped`) e serializzazione
+`schema_version=1`.  GUI, helper CLI e `DualPolyWorker` usano lo stesso
+oggetto; il dict legacy per meshDict/autopoly è derivato, non un secondo
+canale.
+
+Tab Avanzato completa: min base-edge fraction, terminate-by-budget,
+edge-cap percentile, local termination (off/decoupled/per-vertex), local
+height retry e max rounds.  Ogni controllo è provato fino a
+`engine_kwargs()`; preset editabili con round-trip, ultimo usato
+ripristinato all'avvio e preset fuori range clampati con messaggio.
+
+Tracciabilità: `[poly] BL effective:` + `BL provenance:`, ogni clamp
+(engine e config) nel log, e `<case>/bl_config.json` con valori effettivi,
+provenance e h1 risolto.  Rimosse le duplicazioni di default (pannello e
+worker) e resi reali i binding morti `enabled`/`maxThickness`.
+
+Nota onesta: la frazione effettiva storica del primo strato era 0.01, non
+0.005 (Qt arrotondava per l'ordine setValue/setDecimals); W7 conserva 0.01
+per non cambiare default senza A/B.  Debito residuo e priorità in
+`docs/residual_risks.md` sezione W7.
+
+Test: `tests/test_bl_config.py` (16) + `tests/test_gui_bl_advanced.py`
+(12), più i test BL/GUI preesistenti (76 verdi nel sottoinsieme).
