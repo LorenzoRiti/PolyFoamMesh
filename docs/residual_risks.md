@@ -1441,6 +1441,59 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
      `attempts` list.  Add it if a full audit trail of every retry is
      required.
 
+## Process robustness / watchdog (W8, 2026-10-22)
+
+- **One infrastructure**: `core/phase_watchdog.py::PhaseWatchdog` owns
+  heartbeat, ETA, stall and timeout.  `_stream_subprocess` uses it for every
+  subprocess phase (GMSH volume/surface, checkMesh, gmshToFoam, fTetWild,
+  polyDualMesh).  `TetPolyDualConverter` and `PolyBoundaryLayerEngine` poll
+  the same object; `DualPolyWorker` creates one per dual/BL phase and relays
+  `progress`/`heartbeat` to TaskManager.
+- **No arbitrary timeout as the primary fix**: GMSH keeps its content
+  detector; fTetWild gets a `pass N` progress detector, a 600 s liveness net
+  and the 4 h hard ceiling; dual/BL get 300 s no-progress and 1 h ceiling.
+  The ceilings are last-resort nets, not silence hiders.
+- **Convert orphan fixed**: `PolyDualWorker` no longer uses
+  `subprocess.run(timeout=300)`; it streams through `_stream_subprocess`,
+  publishes the live PID, and Cancel kills the child tree.  This closes the
+  only phase where Cancel was previously visual-only.
+- **CheckMesh is structured**: `CheckMeshReport` carries metrics, failed
+  check count, defect kinds/counts/locations, cause and an explicit
+  acceptance state.  `MeshQualityReport.to_dict()` embeds it (and the GUI
+  logs it), so a `Failed` can no longer be a bare banner.  `accept(reason)`
+  is the only way to turn a failed report into a pass; an empty reason or a
+  fatal output is rejected.
+- **Evidence scope**: the full corpus was NOT re-run in this session (that
+  remains the W9 validation).  W8 evidence is the mandatory real R1
+  checkMesh, a real GMSH volume smoke (cylinder, 7.0 s, watchdog armed, no
+  false stall), the 28 existing real-subprocess watchdog tests and the new
+  fake-clock/unit/integration tests.
+- **R1 measurement (mandatory case, 2026-10-20 baseline)**: 253,681 cells;
+  checkMesh 39 face pyramids, 5 highly skew faces, non-ortho max 128.044,
+  `Failed 3`.  The W1 aggregate "27 pyr + 59 skew" fine baseline is not a
+  case on disk; R1 is the reproducible mandatory case used here.
+- **Internal-pyramid repair: NOT promoted (measured declaration)**:
+  - batch move of the 131 vertices of the 33 in-process internal pyramid
+    faces made it worse (1.0x: 365 violations / 40 negative volumes; 0.5x:
+    200 / 16; 0.25x: 69 / 2) - rejected;
+  - sequential volume-guarded keep-best: 3 accepted moves, total in-process
+    violations 41 -> 38, 0 negative volumes, min volume unchanged, ~250 s;
+  - the 5 skew faces and non-ortho max are untouched, so even that partial
+    win would leave `Failed 3`; the gain is below a material threshold and
+    the min-dihedral floor was not proven.  No default change, no written
+    mesh from a rejected candidate.
+- **Residual debt, prioritised**:
+  1. cfMesh `MeshWorker` still has its own 4 h loop/ETA; migrate it to
+     `PhaseWatchdog` in a follow-up (not in W8's tet/dual/BL/convert scope).
+  2. The internal-pyramid repair needs a topological transition-cell
+     operation, not a vertex nudge; the measurements above are the baseline.
+  3. `CheckMeshReport` classifies the known OpenFOAM v2512/legacy lines; an
+     unknown new failure line becomes an explicit `other` defect, not a pass.
+     Extend the classifier when a new line appears.
+  4. Explicit acceptance is available to callers but not exposed as a GUI
+     button (product decision); the current GUI keeps a failed poly mesh
+     visible and does not silently accept it.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.

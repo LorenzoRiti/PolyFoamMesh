@@ -307,6 +307,7 @@ except ImportError as exc:
     ) from exc
 
 from polyfoammesh.config import OFConfig
+from polyfoammesh.core.checkmesh_report import CheckMeshReport
 from polyfoammesh.octopoda_local import octo
 
 OF_BASHRC = OFConfig().env_script
@@ -1445,9 +1446,15 @@ class MeshQualityReport:
     min_volume: float = 0.0
     has_fatal: bool = False
     raw_output: str = ""
+    #: W8 structured model: defects, locations, cause and explicit acceptance.
+    structured: CheckMeshReport | None = None
 
     @property
     def passed(self) -> bool:
+        if self.structured is not None and self.structured.accepted:
+            return True
+        if self.structured is not None and self.structured.failed:
+            return False
         if self.has_fatal or self.neg_cells > 0:
             return False
         # OpenFOAM can finish with return code 0 while reporting failed
@@ -1497,6 +1504,9 @@ class MeshQualityReport:
             "passed": self.passed,
             "status": self.status,
             "raw_output": self.raw_output,
+            "structured": (
+                self.structured.to_dict() if self.structured is not None else None
+            ),
         }
 
 
@@ -1582,6 +1592,9 @@ def parse_checkmesh_output(text: str) -> MeshQualityReport:
     if m:
         r.min_volume = float(m.group(1))
 
+    # W8: the structured model must be derived from the same text, not from
+    # a second parser that could disagree on metrics or acceptance.
+    r.structured = CheckMeshReport.from_output(text)
     return r
 
 
@@ -1817,12 +1830,26 @@ class PolyDualWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
+    #: Last-resort phase ceiling (same value as the historical subprocess.run
+    #: timeout).  Heartbeat/stall/cancel now come from _stream_subprocess.
+    TIMEOUT_S = 300
+
     def __init__(self, case_dir: Path | str, of_config: OFConfig,
                  feature_angle: float = 90, parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._of_config = of_config
         self._feature_angle = feature_angle
+        self._proc_holder: dict = {}
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self):
+        """Kill the live polyDualMesh child (W8: same path as every phase)."""
+        self._cancelled = True
+        proc = self._proc_holder.get("proc")
+        if proc is not None and proc.poll() is None:
+            _kill_pid_tree(proc.pid)
 
     @Slot()
     def run(self):
@@ -1833,55 +1860,58 @@ class PolyDualWorker(QObject):
         self.log_line.emit(f"[polyDualMesh] {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
+            returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
+                cmd, None, self.TIMEOUT_S,
+                on_line=lambda line: self.log_line.emit(f"[polyDualMesh] {line}"),
+                proc_holder=self._proc_holder,
+                heartbeat_s=10.0,
             )
-            # Always log stdout/stderr so we can diagnose silent failures
-            stdout_text = (result.stdout or "").strip()
-            stderr_text = (result.stderr or "").strip()
-            if stdout_text:
-                for line in stdout_text.splitlines()[-20:]:
-                    self.log_line.emit(f"[polyDualMesh] {line}")
-            if stderr_text:
-                for line in stderr_text.splitlines()[-10:]:
-                    self.log_line.emit(f"[polyDualMesh:err] {line}")
-            if result.returncode == 0:
-                # Verify the mesh actually changed by checking owner file
-                owner_path = self._case_dir / "constant" / "polyMesh" / "owner"
-                if owner_path.exists():
-                    logger.info(
-                        "polyDualMesh OK (rc=0), owner file exists: %s",
-                        owner_path,
-                    )
-                else:
-                    logger.warning(
-                        "polyDualMesh returned rc=0 but owner file NOT found at %s",
-                        owner_path,
-                    )
-                self.log_line.emit(
-                    f"[polyDualMesh] Conversion OK (featureAngle={self._feature_angle})"
-                )
-                self.finished.emit(self._case_dir)
-            else:
-                logger.error(
-                    "polyDualMesh FAILED (rc=%d): %s",
-                    result.returncode,
-                    stdout_text[-500:] if stdout_text else "(no stdout)",
-                )
-                self.log_line.emit(f"[polyDualMesh] Return code {result.returncode}")
-                self.failed.emit(f"polyDualMesh returned {result.returncode}")
-        except subprocess.TimeoutExpired:
-            self.log_line.emit("[polyDualMesh] TIMEOUT (300s)")
-            self.failed.emit("polyDualMesh timed out after 300s")
         except FileNotFoundError:
             self.log_line.emit("[polyDualMesh] WSL not found")
             self.failed.emit("WSL not found")
-        except Exception as exc:
+            return
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
             self.log_line.emit(f"[polyDualMesh] ERROR: {exc}")
             self.failed.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self.log_line.emit("[polyDualMesh] Cancelled.")
+            return
+        if timed_out:
+            self.log_line.emit(f"[polyDualMesh] TIMEOUT ({self.TIMEOUT_S}s)")
+            self.failed.emit(f"polyDualMesh timed out after {self.TIMEOUT_S}s")
+            return
+
+        stdout_text = "\n".join(stdout_lines).strip()
+        stderr_text = "\n".join(stderr_lines).strip()
+        if stderr_text:
+            for line in stderr_text.splitlines()[-10:]:
+                self.log_line.emit(f"[polyDualMesh:err] {line}")
+        if returncode == 0:
+            owner_path = self._case_dir / "constant" / "polyMesh" / "owner"
+            if owner_path.exists():
+                logger.info(
+                    "polyDualMesh OK (rc=0), owner file exists: %s",
+                    owner_path,
+                )
+            else:
+                logger.warning(
+                    "polyDualMesh returned rc=0 but owner file NOT found at %s",
+                    owner_path,
+                )
+            self.log_line.emit(
+                f"[polyDualMesh] Conversion OK (featureAngle={self._feature_angle})"
+            )
+            self.finished.emit(self._case_dir)
+            return
+
+        logger.error(
+            "polyDualMesh FAILED (rc=%d): %s",
+            returncode, stdout_text[-500:] if stdout_text else "(no stdout)",
+        )
+        self.log_line.emit(f"[polyDualMesh] Return code {returncode}")
+        self.failed.emit(f"polyDualMesh returned {returncode}")
 
 
 def count_polymesh_prism_cells(case_dir: Path | str) -> int:
@@ -2140,6 +2170,17 @@ class DualPolyWorker(QObject):
     log_line = Signal(str)
     finished = Signal(object)  # DualPolyResult
     failed = Signal(str)
+    # W8: consumed by TaskManager for the phase bar/ETA/heartbeat.
+    progress = Signal(str, float)
+    heartbeat = Signal()
+
+    #: One declared budget per in-process phase.  These are liveness nets:
+    #: measured healthy R1 is 34 s dual + 58 s BL; a 5-minute silence is a
+    #: diagnosis, not a normal slow pass.
+    DUAL_STALL_S = 300.0
+    DUAL_TIMEOUT_S = 3600.0
+    BL_STALL_S = 300.0
+    BL_TIMEOUT_S = 3600.0
 
     def __init__(self, case_dir: Path | str, bl_params: dict | None = None,
                  smooth_free_boundary: bool = False,
@@ -2231,6 +2272,35 @@ class DualPolyWorker(QObject):
         )
         return cfg, kw, warnings
 
+    def _phase_watchdog(self, phase: str, stall_s: float, timeout_s: float):
+        """One PhaseWatchdog wired to the common GUI progress/heartbeat."""
+        from polyfoammesh.core.phase_watchdog import PhaseWatchdog
+
+        return PhaseWatchdog(
+            phase,
+            stall_s=stall_s,
+            timeout_s=timeout_s,
+            heartbeat_s=30.0,
+            policy="abort",
+            on_event=lambda action: self.log_line.emit(
+                f"[watchdog] {action.message()}"
+            ),
+            on_heartbeat=lambda snap: (
+                self.heartbeat.emit(),
+                self.log_line.emit(
+                    f"[{phase}] ... still running "
+                    f"({int(snap['elapsed_s'])}s elapsed, no progress for "
+                    f"{int(snap['no_progress_s'])}s)"
+                ),
+            ),
+            on_progress=lambda fraction, stage, eta: (
+                self.progress.emit(
+                    stage or phase,
+                    100.0 * max(0.0, min(1.0, fraction)),
+                )
+            ),
+        )
+
     @Slot()
     def run(self):
         from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
@@ -2288,8 +2358,12 @@ class DualPolyWorker(QObject):
             # previously forced-on value was slightly WORSE. wedge_cells made
             # no difference either way in the same A/B (1056 both) and is
             # incompatible with the collapse, which disables it explicitly.
+            dual_watchdog = self._phase_watchdog(
+                "dual", self.DUAL_STALL_S, self.DUAL_TIMEOUT_S,
+            )
             converter = TetPolyDualConverter(
                 self._case_dir,
+                watchdog=dual_watchdog,
                 log=self.log_line.emit,
                 cancel=lambda: self._cancelled,
                 collapse_smooth_edges=True,
@@ -2441,6 +2515,9 @@ class DualPolyWorker(QObject):
                     self._case_dir,
                     log=self.log_line.emit,
                     cancel=lambda: self._cancelled,
+                    watchdog=self._phase_watchdog(
+                        "bl", self.BL_STALL_S, self.BL_TIMEOUT_S,
+                    ),
                 )
                 # Single decision point — see poly_bl_patch_selection for why
                 # the last tier no longer means "apply to ALL".
@@ -2972,6 +3049,13 @@ class QualityFixWorker(QObject):
             self.finished.emit(0)
             return
 
+        structured = getattr(report, "structured", None)
+        if structured is not None:
+            self.log_line.emit(
+                f"[quality-fix] structured checkMesh: "
+                f"{structured.cause()} "
+                f"(acceptance={structured.acceptance})"
+            )
         self._fix_attempts += 1
         if self._fix_attempts >= self.MAX_FIX_ATTEMPTS:
             self.log_line.emit(
@@ -3416,7 +3500,8 @@ class GmshSignatureStallDetector:
 def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
                        heartbeat_s: float = 10, proc_holder=None,
                        stall_s: float | None = None, stall_holder=None,
-                       signature_detector: "GmshSignatureStallDetector | None" = None):
+                       signature_detector: "GmshSignatureStallDetector | None" = None,
+                       watchdog=None):
     """Run cmd via Popen, streaming stdout/stderr line-by-line as they
     arrive instead of buffering everything until the process exits.
 
@@ -3481,12 +3566,70 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
-    last_activity = [time.monotonic()]
-    # Separate clock for the stall watchdog: last_activity is bumped by the
-    # heartbeat itself (to avoid re-printing it), so it must NOT be used to
-    # decide a stall — a silent child would reset it every heartbeat and the
-    # watchdog would never fire. last_output only moves on a real line.
-    last_output = [time.monotonic()]
+
+    # W8: one PhaseWatchdog for stall/timeout/heartbeat.  It is fed by the
+    # real output pump below; its heartbeat is independent of the stall clock
+    # (a silent child cannot reset liveness by receiving a heartbeat).
+    from polyfoammesh.core.phase_watchdog import PhaseWatchdog
+
+    timed_out = False
+    _cpu_prev = [time.monotonic(), _process_cpu_seconds(proc)]
+
+    def _on_watchdog_action(action):
+        nonlocal timed_out
+        if action.reason == "timeout":
+            timed_out = True
+            return
+        if stall_holder is not None:
+            stall_holder["stalled"] = True
+            stall_holder["elapsed_s"] = float(action.elapsed_s)
+            stall_holder["no_output_s"] = float(action.no_progress_s)
+            if action.reason == "external":
+                stall_holder["signature"] = True
+                stall_holder["evidence"] = action.evidence
+        if action.reason == "external":
+            on_line(
+                f"watchdog fired: non-convergence ({action.evidence}) "
+                f"({int(action.elapsed_s)}s elapsed) - killing process tree"
+            )
+        else:
+            on_line(
+                f"watchdog fired: no output for {int(action.no_progress_s)}s "
+                f"({int(action.elapsed_s)}s elapsed) - killing process tree"
+            )
+
+    def _on_watchdog_heartbeat(snapshot):
+        now = time.monotonic()
+        cpu_pct = None
+        cpu_now = _process_cpu_seconds(proc)
+        if cpu_now is not None and _cpu_prev[1] is not None:
+            wall_delta = max(1e-6, now - _cpu_prev[0])
+            cpu_pct = 100.0 * max(0.0, cpu_now - _cpu_prev[1]) / wall_delta
+        _cpu_prev[0], _cpu_prev[1] = now, cpu_now
+        cpu_txt = f", CPU {cpu_pct:.0f}%" if cpu_pct is not None else ", CPU n/a"
+        on_line(
+            f"... still running ({int(snapshot['elapsed_s'])}s elapsed, "
+            f"no output for {int(snapshot['no_progress_s'])}s{cpu_txt})"
+        )
+
+    if watchdog is None:
+        watchdog = PhaseWatchdog(
+            "subprocess",
+            stall_s=stall_s,
+            timeout_s=timeout_s,
+            heartbeat_s=heartbeat_s,
+            policy="abort",
+            on_event=_on_watchdog_action,
+            on_heartbeat=_on_watchdog_heartbeat,
+            abort_check=(
+                (lambda: bool(signature_detector.fired))
+                if signature_detector is not None else None
+            ),
+            abort_evidence=(
+                (lambda: getattr(signature_detector, "evidence", ""))
+                if signature_detector is not None else None
+            ),
+        )
 
     # Flood protection: a pathological child (e.g. cartesianMesh grinding on
     # an invalid mesh) can emit thousands of warning lines/sec; forwarding
@@ -3513,8 +3656,7 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
             for line in iter(stream.readline, ""):
                 line = line.rstrip("\n")
                 _append_capped(sink, line)
-                last_activity[0] = time.monotonic()
-                last_output[0] = last_activity[0]
+                watchdog.beat(line)
                 if signature_detector is not None:
                     # Content-aware non-convergence check, on the SAME streamed
                     # line the watchdog already watches (no second consumer).
@@ -3555,81 +3697,26 @@ def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
     if stall_s is not None:
         on_line(f"watchdog armed: kill after {int(stall_s)}s with no output")
 
-    start = time.monotonic()
-    timed_out = False
-    # CPU-time sampler state for the heartbeat: (wall_time, cumulative_cpu_s).
-    _cpu_prev = [start, _process_cpu_seconds(proc)]
     while True:
-        ret = proc.poll()
-        if ret is not None:
+        if proc.poll() is not None:
             break
-        now = time.monotonic()
-        if now - start > timeout_s:
-            timed_out = True
-            proc.kill()
-            break
-        if signature_detector is not None and signature_detector.fired:
-            # Content-aware runaway: GMSH is not silent, it is provably not
-            # converging. Kill exactly like the no-output path and let the
-            # caller decide whether to retry in robust mode.
-            evidence = signature_detector.evidence
-            elapsed_s = now - start
-            if stall_holder is not None:
-                stall_holder["stalled"] = True
-                stall_holder["signature"] = True
-                stall_holder["evidence"] = evidence
-                stall_holder["elapsed_s"] = elapsed_s
-                stall_holder["no_output_s"] = now - last_output[0]
-            on_line(
-                f"watchdog fired: non-convergence ({evidence}) "
-                f"({int(elapsed_s)}s elapsed) - killing process tree"
-            )
-            _kill_pid_tree(proc.pid)
-            with suppress(Exception):
+        action = watchdog.check()
+        if action is not None:
+            if action.reason == "timeout":
+                timed_out = True
                 proc.kill()
+            else:
+                _kill_pid_tree(proc.pid)
+                with suppress(Exception):
+                    proc.kill()
             break
-        if stall_s is not None and now - last_output[0] > stall_s:
-            # No real output for longer than the threshold: GMSH is stuck in a
-            # surface-recovery loop (or equivalent) and would hang forever.
-            # Kill the whole tree, record the numbers for the caller, and get
-            # out — the caller decides whether to retry in robust mode.
-            no_output_s = now - last_output[0]
-            elapsed_s = now - start
-            if stall_holder is not None:
-                stall_holder["stalled"] = True
-                stall_holder["elapsed_s"] = elapsed_s
-                stall_holder["no_output_s"] = no_output_s
-            on_line(
-                f"watchdog fired: no output for {int(no_output_s)}s "
-                f"({int(elapsed_s)}s elapsed) - killing process tree"
-            )
-            _kill_pid_tree(proc.pid)
-            with suppress(Exception):
-                proc.kill()
-            break
-        if now - last_activity[0] > heartbeat_s:
-            # CPU% over this heartbeat window: a busy-but-silent child shows a
-            # high number here even though no log line arrived (the exact
-            # false-positive the raised budget exists to tolerate).
-            cpu_pct = None
-            cpu_now = _process_cpu_seconds(proc)
-            if cpu_now is not None and _cpu_prev[1] is not None:
-                wall_delta = max(1e-6, now - _cpu_prev[0])
-                cpu_pct = 100.0 * max(0.0, cpu_now - _cpu_prev[1]) / wall_delta
-            _cpu_prev[0], _cpu_prev[1] = now, cpu_now
-            cpu_txt = f", CPU {cpu_pct:.0f}%" if cpu_pct is not None else ", CPU n/a"
-            on_line(
-                f"... still running ({int(now - start)}s elapsed, "
-                f"no output for {int(now - last_output[0])}s{cpu_txt})"
-            )
-            last_activity[0] = now
         # Poll faster than the heartbeat interval: a 0.5 s sleep against a
         # 0.3 s heartbeat made the emission a phase race with the child's
         # own output cadence (under load the check could land right after
         # every tick and NEVER fire - the "healthy stream" watchdog test
         # caught exactly that on the CI/Linux scheduler).  Sub-heartbeat
         # polling also tightens the stall-detection granularity.
-        time.sleep(max(0.05, min(0.5, heartbeat_s / 2.0)))
+        time.sleep(max(0.05, min(0.5, (heartbeat_s or 1.0) / 2.0)))
 
     try:
         proc.wait(timeout=5)
@@ -3760,6 +3847,8 @@ class GmshVolumeWorker(QObject):
     finished = Signal(object)  # dict with path + names
     log_line = Signal(str)
     failed = Signal(str)
+    progress = Signal(str, float)
+    eta_update = Signal(str)
 
     # Keep in sync with gmsh_subprocess.run_gmsh_volume's default (3600 s)
     # and solution_adaptive's solver timeout: a Very Fine 20M-cap mesh can
@@ -3811,6 +3900,32 @@ class GmshVolumeWorker(QObject):
         proc = self._proc_holder.get("proc")
         if proc is not None and proc.poll() is None:
             _kill_pid_tree(proc.pid)
+
+    _PCT_RE = re.compile(r"(?:Progress|Done)\s*[:=]?\s*(\d{1,3})\s*%", re.I)
+    _ANY_PCT_RE = re.compile(r"(\d{1,3})\s*%")
+
+    def _on_stream_line(self, line: str) -> None:
+        """Forward one GMSH line; expose its explicit % as GUI progress.
+
+        No ETA is invented: it is emitted only when the wrapper prints a real
+        percentage (same rule as MeshWorker._emit_eta).
+        """
+        self.log_line.emit(f"[gmsh] {line}")
+        match = self._PCT_RE.search(line) or self._ANY_PCT_RE.search(line)
+        if not match:
+            return
+        try:
+            pct = max(0, min(100, int(match.group(1))))
+        except ValueError:
+            return
+        self.progress.emit("gmsh", float(pct))
+        if pct > 0 and getattr(self, "_attempt_start", 0.0):
+            elapsed = max(0.0, _now() - self._attempt_start)
+            remaining = elapsed * (100 - pct) / pct
+            self.eta_update.emit(
+                f"GMSH ETA {int(remaining // 60)}m{int(remaining % 60):02d}s "
+                f"({pct}%)"
+            )
 
     @Slot()
     def run(self):
@@ -3895,10 +4010,11 @@ class GmshVolumeWorker(QObject):
             self._proc_holder.clear()
             stall_holder: dict = {}
             signature_detector = GmshSignatureStallDetector()
+            self._attempt_start = time.monotonic()
             try:
                 returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                     cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=attempt_env,
-                    on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
+                    on_line=self._on_stream_line,
                     proc_holder=self._proc_holder,
                     stall_s=attempt_stall_s,
                     stall_holder=stall_holder,
@@ -4076,6 +4192,13 @@ class FtetWildVolumeWorker(QObject):
     finished = Signal(object)  # dict with path + names + fTetWild stats
     log_line = Signal(str)
     failed = Signal(str)
+    progress = Signal(str, float)
+    heartbeat = Signal()
+
+    #: No-progress budget: fTetWild prints one ``pass N`` line per optimizer
+    #: iteration (measured ~142 s/pass on the 62-minute fine run), so 600 s
+    #: is a generous liveness net, not a performance target.
+    STALL_S = 600.0
 
     # Same ceiling rationale as GmshVolumeWorker.VOLUME_TIMEOUT_S: a big
     # mesh legitimately runs for a long time (the GUI must not be held by
@@ -4144,11 +4267,55 @@ class FtetWildVolumeWorker(QObject):
             "[fTetWild] Running experimental tet stage in subprocess "
             "(surface + fTetWild + patched .msh)..."
         )
+        from polyfoammesh.core.phase_watchdog import (
+            FtetWildProgressDetector,
+            PhaseWatchdog,
+        )
+
+        detector = FtetWildProgressDetector(self._opt_iter or 0)
+        watchdog = PhaseWatchdog(
+            "fTetWild",
+            stall_s=self.STALL_S,
+            timeout_s=self.VOLUME_TIMEOUT_S,
+            heartbeat_s=60.0,
+            policy="abort",
+            on_event=lambda action: self.log_line.emit(
+                f"[watchdog] {action.message()}"
+            ),
+            on_heartbeat=lambda snap: (
+                self.heartbeat.emit(),
+                self.log_line.emit(
+                    "[fTetWild] ... still running "
+                    f"({int(snap['elapsed_s'])}s elapsed, no progress for "
+                    f"{int(snap['no_progress_s'])}s)"
+                ),
+            ),
+            on_progress=lambda fraction, stage, eta: (
+                self.progress.emit(
+                    "fTetWild", max(0.0, min(100.0, fraction * 100.0)),
+                ),
+            ),
+        )
+        self.log_line.emit(
+            f"[fTetWild] watchdog armed: {self.STALL_S:g}s without a "
+            f"progress line, {self.VOLUME_TIMEOUT_S}s hard ceiling"
+        )
+
+        def _on_line(line: str) -> None:
+            changed = detector.feed(line)
+            if changed and detector.fraction is not None:
+                watchdog.progress(
+                    detector.fraction, detector.evidence(),
+                )
+            self.log_line.emit(f"[fTetWild] {line}")
+
         try:
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, run_cwd, self.VOLUME_TIMEOUT_S,
-                on_line=lambda ln: self.log_line.emit(f"[fTetWild] {ln}"),
+                on_line=_on_line,
                 proc_holder=self._proc_holder,
+                stall_s=None,
+                watchdog=watchdog,
             )
         except Exception as exc:
             if not self._cancelled:

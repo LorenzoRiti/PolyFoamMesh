@@ -7,6 +7,26 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Process robustness / watchdog (W8) - 2026-10-22
+- **One `PhaseWatchdog`** (`core/phase_watchdog.py`) for stall, timeout,
+  heartbeat, ETA and declared action.  `_stream_subprocess` now uses it for
+  GMSH, checkMesh, gmshToFoam and fTetWild; dual/BL poll the same object.
+- **fTetWild progress/ETA**: parses `pass N` / `max_energy` / `#t`; emits
+  `progress` and `heartbeat`; 600 s no-progress net + documented 4 h ceiling.
+- **Visible dual/BL progress and cancellation**: `DualPolyWorker` emits
+  `progress`/`heartbeat`, logs watchdog actions, and `PolyDualWorker` streams
+  its subprocess through the common path so Cancel kills the child tree.
+- **Structured checkMesh**: new `CheckMeshReport` with failed-check count,
+  defect types/counts/locations, cause and explicit acceptance; embedded in
+  `MeshQualityReport.to_dict()` and logged by the GUI/fix loop.  A bare
+  `Failed` is never silent and cannot become a pass without `accept(reason)`.
+- **Internal-pyramid repair: measured declaration, not promoted**.  Batch
+  moves worsen the R1 case; sequential keep-best clears 3 of 41 in 250 s with
+  no negative volumes but leaves the 5 skew faces and `Failed 3`.
+  Details in `docs/residual_risks.md` §W8.
+- Tests: `tests/test_phase_watchdog.py`, `test_phase_watchdog_integration.py`,
+  `test_checkmesh_report.py` (plus the unchanged GMSH watchdog suite).
+
 ### Boundary-layer GUI contract (W7) - 2026-10-22
 - **One validated `BLConfig`** (`core/bl_config.py`) shared by the GUI,
   CLI helpers and `DualPolyWorker`: canonical units, per-field provenance,

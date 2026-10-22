@@ -196,6 +196,7 @@ class TetPolyDualConverter:
         shift_boundary_skew: bool = True,
         merge_concave_cells: bool = False,
         merge_rounds: int = 2,
+        watchdog=None,
     ):
         """
         median_faces
@@ -390,6 +391,7 @@ class TetPolyDualConverter:
         self._case_dir = Path(case_dir).resolve()
         self._log_cb = log
         self._cancel_cb = cancel
+        self._watchdog = watchdog
         self._median_faces = bool(median_faces)
         self._split_rounds = int(split_rounds)
         self._feature_angle = float(feature_angle)
@@ -517,8 +519,16 @@ class TetPolyDualConverter:
                 logger.debug("tet_poly_dual: log callback failed", exc_info=True)
 
     def _check_cancel(self) -> None:
+        if self._watchdog is not None:
+            # Raises PhaseStalled(action) after the declared stall/timeout;
+            # run() turns it into a failed result with the action evidence.
+            self._watchdog.guard()
         if self._cancel_cb is not None and self._cancel_cb():
             raise RuntimeError("poly dual conversion cancelled")
+
+    def _progress(self, fraction: float, stage: str) -> None:
+        if self._watchdog is not None:
+            self._watchdog.progress(fraction, stage)
 
     # ------------------------------------------------------------------
     # public API
@@ -540,8 +550,10 @@ class TetPolyDualConverter:
 
     def _run_inner(self, res: DualPolyResult) -> None:
         t = time.monotonic()
+        self._progress(0.02, "read primal")
         P = self._read_primal(res)
         res.stage_times["read"] = round(time.monotonic() - t, 2)
+        self._progress(0.08, "primal read")
         self._check_cancel()
         orig_tets = res.n_tets_before
 
@@ -628,6 +640,10 @@ class TetPolyDualConverter:
                 f"{counts['skew']} skewness errors "
                 f"({int(bad.sum()):,} cells, {100.0 * bad.sum() / M.n_cells:.3f}%) "
                 f"[{time.monotonic() - t:.1f}s]"
+            )
+            self._progress(
+                0.15 + 0.55 * ((rnd + 1) / max(1, self._split_rounds + 1)),
+                f"round {rnd} quality",
             )
             if best_defects is None or total < best_defects:
                 best_defects, best, best_counts, best_ctr = total, M, counts, ctr
@@ -755,6 +771,7 @@ class TetPolyDualConverter:
                     f"{counts['pyramid']}/{counts['non_ortho']}/{counts['skew']} "
                     f"[{time.monotonic() - t:.1f}s]"
                 )
+        self._progress(0.75, "smoothing/repairs")
 
         # Boundary-defect split (opt-in, fTetWild path): split boundary
         # polygons that fail checkMesh's pyramid criterion along the
@@ -891,14 +908,17 @@ class TetPolyDualConverter:
             if mrep.get("applied"):
                 M.sf, M.cf = _face_geometry(M.points, M.faces)
 
+        self._progress(0.90, "validate")
         t = time.monotonic()
         self._validate(res, M, P)
         res.stage_times["validate"] = round(time.monotonic() - t, 2)
         self._check_cancel()
 
+        self._progress(0.96, "write")
         t = time.monotonic()
         self._write(M.points, M.faces, M.owner, M.neigh, M.patches)
         res.stage_times["write"] = round(time.monotonic() - t, 2)
+        self._progress(1.0, "dual written")
 
         res.n_cells_after = M.n_cells
         res.n_poly_cells = M.n_cells

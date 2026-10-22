@@ -1387,10 +1387,17 @@ class PolyBoundaryLayerEngine:
     them), inserts the layers, validates, and writes back atomically.
     """
 
-    def __init__(self, case_dir: Path | str, log=None, cancel=None):
+    def __init__(self, case_dir: Path | str, log=None, cancel=None,
+                 watchdog=None):
         self._case_dir = Path(case_dir).resolve()
         self._log = log or (lambda msg: logger.info(msg))
         self._cancel = cancel or (lambda: False)
+        # W8: optional PhaseWatchdog.  It is fed by the existing progress
+        # log lines; a declared stall raises PhaseStalled and the worker
+        # reports it instead of spending all height scales blindly.
+        self._watchdog = watchdog
+        self._base_log = log or (lambda msg: logger.info(msg))
+        self._log = self._log_message if watchdog is not None else self._base_log
         # Stage-timing accumulators (task: lightweight instrumentation, no
         # behaviour change).  ``_build_precompute`` and every ``_build`` /
         # ``_retry_local_height`` call site add their wall time here; ``run``
@@ -1399,6 +1406,41 @@ class PolyBoundaryLayerEngine:
         self._stage_pre_s = 0.0
         self._stage_build_s = 0.0
 
+    def _log_message(self, msg: str) -> None:
+        """Forward a log line and feed the phase watchdog.
+
+        The BL engine already prints percentage progress for the long loops
+        (precompute/normals/support/side faces); W8 reuses those lines as the
+        progress source instead of adding a second counter.
+        """
+        self._base_log(msg)
+        wd = self._watchdog
+        if wd is None:
+            return
+        match = re.search(r"(\d{1,3})\s*%", str(msg))
+        if not match:
+            wd.beat(msg)
+            return
+        pct = int(match.group(1)) / 100.0
+        low = str(msg).lower()
+        if "precompute" in low:
+            fraction = 0.05 + 0.25 * pct
+        elif "support" in low:
+            fraction = 0.30 + 0.20 * pct
+        elif "prism side faces" in low:
+            fraction = 0.50 + 0.30 * pct
+        else:
+            fraction = pct
+        current = wd.progress_fraction or 0.0
+        if fraction > current:
+            wd.progress(fraction, msg)
+        else:
+            wd.beat(msg)
+
+    def _check_watchdog(self) -> None:
+        if self._watchdog is not None:
+            self._watchdog.guard()
+
     def _finalize_stage_times(self, res, t0: float) -> None:
         """Log ONE stage-timing line for this run and stash the numbers.
 
@@ -1406,6 +1448,8 @@ class PolyBoundaryLayerEngine:
         additive: it does not touch any mesh data or decision.
         """
         total = time.perf_counter() - t0
+        if self._watchdog is not None:
+            self._watchdog.progress(1.0, "bl done")
         pre = self._stage_pre_s
         build = self._stage_build_s
         res.stats["stage_precompute_s"] = round(pre, 1)
@@ -1603,6 +1647,9 @@ class PolyBoundaryLayerEngine:
                 "(0 keeps the historical min-edge cap)"
             )
         t_run0 = time.perf_counter()
+        self._check_watchdog()
+        if self._watchdog is not None:
+            self._watchdog.progress(0.02, "bl start")
         self._stage_pre_s = 0.0
         self._stage_build_s = 0.0
         # fTetWild path (2026-10-19): accept a build that adds up to this
@@ -1911,6 +1958,7 @@ class PolyBoundaryLayerEngine:
                 (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
                 (0.2, 0.1), (0.1, 0.05),
             ):
+                self._check_watchdog()
                 if self._cancel():
                     res.errors.append("cancelled")
                     self._finalize_stage_times(res, t_run0)
@@ -2419,6 +2467,7 @@ class PolyBoundaryLayerEngine:
             excluded = set() if decoupled else carried
             excluded_verts: set[int] = set()
             for _round in range(max_per_scale):
+                self._check_watchdog()
                 if self._cancel():
                     res.errors.append("cancelled")
                     return res

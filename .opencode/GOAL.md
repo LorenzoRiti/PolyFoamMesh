@@ -1225,3 +1225,37 @@ per non cambiare default senza A/B.  Debito residuo e priorità in
 
 Test: `tests/test_bl_config.py` (16) + `tests/test_gui_bl_advanced.py`
 (12), più i test BL/GUI preesistenti (76 verdi nel sottoinsieme).
+
+## 2026-10-22 - W8: robustezza di processo, infrastruttura unica
+
+Una sola `PhaseWatchdog` (`core/phase_watchdog.py`) per heartbeat, ETA,
+stallo, timeout e azione dichiarata (`abort/retry/fallback/skip/observe`).
+`_stream_subprocess` la usa per GMSH surface/volume, checkMesh, gmshToFoam e
+fTetWild; dual e BL la pollano negli stessi loop.  `PolyDualWorker` non usa
+piu' `subprocess.run(timeout=300)`: streams attraverso la stessa
+infrastruttura, pubblica il PID vivo e Cancel uccide davvero il figlio (chiude
+l'unico orfano rimasto).
+
+fTetWild: detect `pass N` / `max_energy` / `#t`, segnali `progress` e
+`heartbeat`, rete 600 s senza progresso + ceiling 4 h documentato.  GMSH
+espone il `%` esplicito come progress; dual/BL emettono progress e heartbeat
+via TaskManager.
+
+checkMesh: nuovo `CheckMeshReport` con numero di check falliti, tipi/conteggi
+dei difetti, locations/set, causa e accettazione esplicita.  E' incorporato in
+`MeshQualityReport.to_dict()` e loggato da GUI e quality-fix: un `Failed` non
+e' piu' un banner muto e non puo' diventare PASS senza `accept(reason)`.
+
+Repair internal-pyramid: **dichiarazione con misura, non promosso**.  Su R1
+(253.681 celle, checkMesh 39 piramidi + 5 skew + non-ortho 128.044, Failed 3):
+- base in-process 41 violazioni totali su 33 facce interne, 0 volumi negativi;
+- batch move: 1.0x -> 365/40 negativi, 0.5x -> 200/16, 0.25x -> 69/2
+  (rejected);
+- sequenziale keep-best con guardia volume: 3 mosse accettate, 41 -> 38,
+  0 negativi, ~250 s, ma skew invariato e ancora Failed 3: non atterra.
+
+Test nuovi: 9 watchdog unit + 5 integrazione fasi + 8 checkMesh report (22); i 28
+test GMSH watchdog esistenti restano verdi dopo il refactor di
+`_stream_subprocess`.  Nessun default di mesh cambiato; debito residuo
+(cfMesh MeshWorker ancora con loop proprio, repair topologico futuro) in
+`docs/residual_risks.md` sezione W8.

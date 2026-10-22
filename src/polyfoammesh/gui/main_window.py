@@ -3556,6 +3556,10 @@ class MainWindow(QMainWindow):
             "gmsh_volume", w,
             on_finished=lambda _n, result: self._on_gmsh_volume_result(result),
             on_failed=lambda _n, msg: self._on_gmsh_volume_failed(msg),
+            on_progress=lambda _n, stage, pct: (
+                self._on_progress_update(int(pct)),
+                self._status.showMessage(f"{stage}: {pct:.0f}%"),
+            ),
             heartbeat_timeout_s=600.0,
         )
         logger.info("GMSH worker task started: run_id=%d pid_pending=true", my_id)
@@ -4478,6 +4482,24 @@ class MainWindow(QMainWindow):
             self._quality.clear_report()
             return
         self._quality.show_report(payload)
+        # W8: a Failed checkMesh is never just a banner.  Log the structured
+        # defects/locations/acceptance from the same model the JSON carries.
+        structured = payload.get("structured") or {}
+        if structured and not structured.get("passed"):
+            details = structured.get("cause") or structured.get("acceptance_reason")
+            self._log.append_log(
+                f"{Tag.QUALITY} checkMesh defects: {details}"
+            )
+            locations = structured.get("locations") or []
+            if locations:
+                self._log.append_log(
+                    f"{Tag.QUALITY} defect locations: {', '.join(locations[:12])}"
+                )
+            if structured.get("acceptance") == "accepted":
+                self._log.append_log(
+                    f"{Tag.WARN} checkMesh failure accepted: "
+                    f"{structured.get('acceptance_reason', '')}"
+                )
         # Fase 3 P3.5: explicit poly quality gate — converter name, cells
         # before -> after, checkMesh verdict and key numbers in ONE line,
         # for both PASS and FAIL of the polyhedral mesh.
@@ -4837,6 +4859,10 @@ class MainWindow(QMainWindow):
             "polydual", w,
             on_finished=lambda _n, result: self._on_gmsh_polydual_finished(result),
             on_failed=lambda _n, msg: self._on_gmsh_polydual_failed(msg),
+            on_progress=lambda _n, stage, pct: (
+                self._on_progress_update(int(pct)),
+                self._status.showMessage(f"poly: {stage} ({pct:.0f}%)"),
+            ),
             heartbeat_timeout_s=600.0,
         )
 

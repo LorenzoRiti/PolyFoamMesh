@@ -33,5 +33,8 @@ state that later changed; the code and tests remain the source of truth.
 - `perf_baseline_phase0.md`, `sizing_estimate_rebench_reasoning.md`, `split_rounds_rebench_reasoning.md` — profiling baselines and sizing benchmarks.
 - `ram_crash_rootcause_reasoning.md`, `adaptive_runaway_reasoning.md` — memory blow-up and adaptive-refinement runaway root causes.
 
+### Process robustness / watchdog
+- `w8_watchdog_diagnosis.md`, `w8_process_robustness_reasoning.md` — W8 phase map, stall evidence, one `PhaseWatchdog` design, structured checkMesh and the measured internal-pyramid declaration.
+
 ### Cross-cutting
 - `_buglog.md` — out-of-lane findings and repo-hygiene measurements (clone size, branch state, stale README claims).

@@ -336,6 +336,28 @@ Known limit: the layer stack cannot be thicker than the first dual cell
 depth; the log tells you when this binds (`capped ...`). This is a mesh
 resolution limit, not a bug - see [residual_risks.md](residual_risks.md).
 
+## Process watchdog and checkMesh
+
+Every long phase (tet, dual, boundary layer, conversion) reports liveness
+and has one declared recovery policy:
+
+- the log shows `[watchdog] <phase>: ...` only when a phase actually stalls
+  or hits its last-resort ceiling; the line names the phase, elapsed time,
+  no-progress time and the action;
+- a healthy but quiet phase prints `... still running` heartbeats, not a
+  false failure;
+- fTetWild shows its real optimizer progress (`pass N`, tets) instead of an
+  indeterminate bar;
+- Cancel reaches the real child process for GMSH, fTetWild, checkMesh and
+  `polyDualMesh` (no orphaned WSL process).
+
+`checkMesh` failures are reported with their **structured defects**:
+the number of failed checks, the defect kinds and counts (face pyramids,
+wrong orientation, skewness, non-orthogonality, negative volume, ...),
+the sets/positions checkMesh wrote, and the cause.  A failed report is never
+shown as PASS.  It can only be accepted explicitly, with a written reason,
+and the log says so.
+
 ## New Case Wizard and templates
 
 - `File > New Case` (`Ctrl+N`): a guided wizard that walks the same pipeline
