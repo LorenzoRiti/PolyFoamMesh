@@ -28,9 +28,11 @@ _SETTINGS_SCHEMA: dict[str, type] = {
     "ui/theme_mode": str,
     "params/detail_slider": int,
     "params/unit": str,
+    # Legacy W7 keys: read by MeshConfig.from_settings once, no longer written.
     "params/bl_checked": bool,
-    # W7: full schema-versioned BLConfig JSON (values + provenance).
     "params/bl_config": str,
+    # W10: the one schema-versioned MeshConfig JSON (contains BLConfig).
+    "params/mesh_config": str,
     "params/surface_resolution": str,
     "window/size": object,  # QSize
     "window/pos": object,  # QPoint

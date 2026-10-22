@@ -298,9 +298,11 @@ def test_restore_starts_from_the_last_used_preset(panel, tmp_path):
     panel._bl_edge_cap_pct.setValue(17.0)
     s = _Settings()
     panel.save_params(s)
-    data = json.loads(s.values["params/bl_config"])
+    data = json.loads(s.values["params/mesh_config"])
     assert data["schema_version"] == 1
-    assert s.values["params/bl_checked"] is panel._bl_checkbox.isChecked()
+    assert data["bl"]["schema_version"] == 1
+    assert data["bl"]["enabled"] is panel._bl_checkbox.isChecked()
+    assert "params/bl_config" not in s.values
 
     fresh = ParamsPanel()
     fresh._preset_store = BLPresetStore(tmp_path / "fresh_presets.json")

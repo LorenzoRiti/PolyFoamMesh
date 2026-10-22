@@ -7,6 +7,31 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Mesh configuration + presets (W10) - 2026-10-22
+- **One `MeshConfig`** (`core/mesh_config.py`): detail slider, mesher,
+  adaptive/fTetWild switches and nested `BLConfig`, with `schema_version=1`,
+  per-field provenance, tolerant loading and strict validation.  GUI,
+  `params/mesh_config` project state, CLI and `DualPolyWorker` share it.
+- **No geometry-specific cell sizes in presets**: the portable sizing input
+  is the 0..20 detail slider; the shared slider->target mapping moved to
+  `core.mesh_config` and the GUI delegates to it.
+- **Fast / Balanced / Fine** built-in presets with measured evidence;
+  `Fine` is marked **experimental** because its exact full E2E was not
+  re-run.  User presets are full `MeshConfig` snapshots; invalid/out-of-range
+  presets clamp with a clear status, reserved built-in names are rejected.
+- **One preset file format**: `core.preset_store.PresetStore` now backs both
+  `BLPresetStore` and `MeshPresetStore` (`kind` + schema + atomic write);
+  old BL files load unchanged.
+- **Project migration**: `MeshConfig.from_settings` reads the old
+  `detail_slider`/`bl_checked`/`bl_config` keys once; new saves write only
+  `params/mesh_config`.  A project with only the old detail key keeps BL
+  off (the historical default).
+- **Template presets fixed**: `_apply_template_preset` now maps
+  coarse/medium/fine/very_fine to slider 4/10/16/19 and uses the same
+  `MeshConfig`; the old 1/2/3 map (all in the coarse bucket) is gone.
+- Tests: `tests/test_mesh_config.py` (12), `tests/test_gui_mesh_presets.py`
+  (9), plus the W7 BL/preset suite.
+
 ### M2 milestone audit - 2026-10-22 (NOT CLOSED)
 - **Structural consolidations**: `parse_checkmesh_output` is now a view over
   the single `CheckMeshReport` parser (duplicate `_CHECK_*` regexes removed);

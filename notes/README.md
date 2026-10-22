@@ -37,5 +37,8 @@ state that later changed; the code and tests remain the source of truth.
 - `w8_watchdog_diagnosis.md`, `w8_process_robustness_reasoning.md` — W8 phase map, stall evidence, one `PhaseWatchdog` design, structured checkMesh and the measured internal-pyramid declaration.
 - `m2_milestone_diagnosis.md`, `m2_milestone_reasoning.md` — M2 audit: coverage/y+/benchmark gaps, structural consolidations, R1/cube E2E and the honest NOT-CLOSED verdict.
 
+### Configuration / presets
+- `w10_presets_diagnosis.md`, `w10_presets_reasoning.md` - W10 one `MeshConfig`, Fast/Balanced/Fine evidence, shared preset file format, legacy project adapter and the Fine experimental declaration.
+
 ### Cross-cutting
 - `_buglog.md` — out-of-lane findings and repo-hygiene measurements (clone size, branch state, stale README claims).

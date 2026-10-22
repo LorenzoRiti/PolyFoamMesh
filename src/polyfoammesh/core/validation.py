@@ -316,6 +316,10 @@ _SETTINGS_VALIDATORS: dict[str, callable] = {
         _ok() if isinstance(v, str) and v.strip().startswith("{")
         else _err("bl_config must be a JSON object string")
     ),
+    "params/mesh_config": lambda v: (
+        _ok() if isinstance(v, str) and v.strip().startswith("{")
+        else _err("mesh_config must be a JSON object string")
+    ),
     "window/size": lambda v: _ok(),  # QSize — cannot type-check easily
     "window/pos": lambda v: _ok(),  # QPoint — same
     "viewer/background": lambda v: (

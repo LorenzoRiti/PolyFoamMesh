@@ -62,6 +62,23 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
 
 ### 2. Mesh tab
 
+- **Mesh preset**: `Fast`, `Balanced` and `Fine` are one-click full mesh
+  snapshots (detail, mesher, adaptive/fTetWild settings and BL).  The status
+  line states the measured evidence; `Fine` is marked **experimental**
+  because its exact full E2E was not re-run on the current tree.
+  - Fast: coarse detail, 3 BL layers; measured on cube_duct (334 s,
+    256,767 cells, BL 100%, checkMesh Failed 1 non-ortho).
+  - Balanced: medium detail, 5 BL layers; measured on R1 173334 (110 s,
+    253,681 cells, BL 100%, Failed 3 documented).
+  - Fine: fine detail, 5 BL layers; only the W1 fine tet stage is measured
+    (2.37M tets, 3738 s), so it is experimental.
+  - **Save mesh preset…** stores the current full config under a name;
+    **Delete** removes a user preset.  Built-in names are reserved.
+  - Selecting a preset applies it to the widgets; advanced controls remain
+    editable for overrides.  The whole config is saved with the project and
+    restored at startup.
+
+
 - **Detail slider** (Very Coarse -> Very Fine): a cell budget from ~10K to
   ~20M cells. It is a target, not a guarantee - the real size depends on the
   geometry; the label under the slider shows the geometric estimate and the

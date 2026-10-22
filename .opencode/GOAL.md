@@ -1304,3 +1304,37 @@ y+ per patch (P0), W9 corpus + 9/10 re-validation (P0), W2 speed (P1),
 R1 terminator topology (P1), cfMesh MeshWorker watchdog (P2), legacy
 `validate_bl_params` (P2).  Non annunciare M2 chiuso finche' W5/W6/W9 non
 sono misurati.
+
+## 2026-10-22 - W10: preset configurazione (MeshConfig)
+
+Un solo `MeshConfig` (`core/mesh_config.py`) estende il contratto BL di W7:
+detail slider 0..20, mesher, adaptive sizing, parametri fTetWild e
+`BLConfig` annidato, con `schema_version=1`, provenance per campo,
+validazione/tolleranza e adapter per i vecchi progetti.  GUI, progetto
+(`params/mesh_config`), CLI e `DualPolyWorker` (sul sotto-modello BL) usano
+lo stesso oggetto.
+
+Preset:
+- Fast/Balanced/Fine come snapshot completi.  Evidenza: Fast = cube_duct
+  334.4 s / 256.767 celle / BL 100% / Failed 1 (non-ortho 80.48); Balanced =
+  R1 173334 110.0 s / 253.681 celle / 174.265 prismi / Failed 3; Fine =
+  **experimental** (solo tet fine W1: 2.37M tet, 3738 s).
+- Un solo formato preset: `core/preset_store.PresetStore` usato da
+  `BLPresetStore` e `MeshPresetStore` (kind + schema + scrittura atomica).
+  Preset invalido -> clamp + messaggio, progetto intatto; nomi built-in
+  riservati.
+- Migrazione progetto: `MeshConfig.from_settings` legge una volta
+  `detail_slider`/`bl_checked`/`bl_config`; i salvataggi nuovi scrivono solo
+  `params/mesh_config`.  Un progetto con solo il vecchio detail resta con BL
+  off (default storico).
+- Template preset riparati: la GUI mappa coarse/medium/fine/very_fine a
+  4/10/16/19 e usa `MeshConfig`; la vecchia mappa 1/2/3 (tutta nel bucket
+  coarse) e' rimossa.
+- Misura sintetica condivisa: target celle 45.731 < 447.214 < 4.373.448 per
+  Fast/Balanced/Fine.
+
+Test: `tests/test_mesh_config.py` (12) + `tests/test_gui_mesh_presets.py`
+(9), piu' la suite W7 BL/preset.  Suite fast 1635 passed / 2 skipped /
+20 deselected / 1 xfailed; ruff green.  Debito: A/B completo per preset
+(Fine sperimentale), rimozione delle vecchie chiavi QSettings dopo la
+finestra di migrazione.

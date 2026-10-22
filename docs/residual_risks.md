@@ -1531,6 +1531,35 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   R1 terminator topology repair (P1), cfMesh `MeshWorker` watchdog
   migration (P2), legacy `validate_bl_params` (P2, documented).
 
+## Mesh presets / configuration (W10, 2026-10-22)
+
+- **One MeshConfig**: `core/mesh_config.py` carries detail slider, mesher,
+  adaptive/fTetWild switches and nested `BLConfig`; serialization is
+  `schema_version=1` with provenance.  The GUI, project (`params/mesh_config`),
+  CLI helper and `DualPolyWorker` (via the nested BLConfig) consume it.
+- **Portable presets only**: absolute max/min cell sizes are deliberately
+  not stored; they depend on geometry.  A preset stores the 0..20 detail
+  slider and the BL/config switches.
+- **Fast/Balanced/Fine evidence**:
+  - Fast: cube_duct full E2E 334.4 s, 256,767 cells, BL coverage 100%,
+    checkMesh Failed 1 (non-ortho 80.48°); 3 layers, coarse detail.
+  - Balanced: R1 173334 E2E 110.0 s, 253,681 cells, 174,265 prisms, coverage
+    100%, Failed 3 (39 pyr + 5 skew); 5 layers, medium detail.
+  - Fine: **experimental** — only the W1 fine tet stage is measured
+    (2.37M tets, 3738 s, max_energy 7.55); the exact Fine full E2E was not
+    re-run on the current tree.
+- **Old project keys**: `params/detail_slider`, `params/bl_checked` and
+  `params/bl_config` are read once by the adapter, no longer written.
+  `settings_migration` keeps them in the schema for one migration window;
+  remove them after W11/W12 if no rollback is needed.
+- **Template presets**: the GUI now uses `MeshConfig.from_template_preset`;
+  `max_cell_ratio`/`min_cell_ratio` are geometry-relative and are ignored
+  there (they remain used by `TemplateEngine.apply_to_case` for headless
+  case creation).
+- **Not claimed**: a new A/B for each preset on the full corpus.  The
+  evidence is the measured profiles above plus the synthetic target-count
+  ordering (45,731 < 447,214 < 4,373,448); Fine remains experimental.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.

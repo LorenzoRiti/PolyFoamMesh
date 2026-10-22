@@ -2131,10 +2131,14 @@ class DualPolyWorker(QObject):
 
     def __init__(self, case_dir: Path | str, bl_params: dict | None = None,
                  smooth_free_boundary: bool = False,
-                 max_cell: float | None = None, parent=None):
+                 max_cell: float | None = None,
+                 mesh_config=None, parent=None):
         super().__init__(parent)
         self._case_dir = Path(case_dir).resolve()
         self._bl_params = bl_params or None
+        # W10: optional full MeshConfig.  Its BLConfig is the authoritative
+        # sub-model; bl_params stays for legacy callers/tests.
+        self._mesh_config = mesh_config
         # Used only to resolve the first-layer FRACTION and to record the
         # total thickness.  The GUI normally sends an absolute height, so a
         # missing value is harmless.
@@ -2178,11 +2182,15 @@ class DualPolyWorker(QObject):
         """
         from polyfoammesh.core.bl_config import BLConfig, BLConfigError
 
-        if not self._bl_params:
+        bl_source = (
+            self._mesh_config.bl.to_mapping()
+            if self._mesh_config is not None else self._bl_params
+        )
+        if not bl_source:
             raise BLConfigError("no BL parameters supplied")
         max_cell = self._bl_max_cell()
         cfg, warnings = BLConfig.from_mapping_tolerant(
-            self._bl_params, max_cell=max_cell,
+            bl_source, max_cell=max_cell,
         )
         kw = cfg.engine_kwargs(max_cell)
 

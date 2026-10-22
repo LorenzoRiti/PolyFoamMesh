@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -35,6 +34,12 @@ from PySide6.QtWidgets import (
 
 from polyfoammesh.core.bl_config import BLConfig, BLConfigError
 from polyfoammesh.core.bl_presets import BLPresetStore
+from polyfoammesh.core.mesh_config import MeshConfig, target_cells_for_slider
+from polyfoammesh.core.mesh_presets import (
+    MeshPresetStore,
+    list_mesh_presets,
+    resolve_mesh_preset,
+)
 from polyfoammesh.gui.design_tokens import (
     NEUTRAL_100,
     NEUTRAL_200,
@@ -332,6 +337,7 @@ class ParamsPanel(QWidget):
         # (gmsh_wrapper surface_resolution / mesh_cache), the UI does not
         # expose them. See get_surface_resolution / get_reuse_cached_mesh.
         mesh_layout.addWidget(detail_group)
+        self._build_mesh_preset_group(mesh_layout)
 
         self._bbox_dim = 1.0
         self._bbox_extents = (1.0, 1.0, 1.0)
@@ -1179,6 +1185,201 @@ class ParamsPanel(QWidget):
         self._wire_bl_provenance()
         self._refresh_bl_presets()
 
+    # ------------------------------------------------------------------
+    # W10: one MeshConfig + Fast/Balanced/Fine presets
+    # ------------------------------------------------------------------
+    def _build_mesh_preset_group(self, parent_layout: QVBoxLayout) -> None:
+        group = QGroupBox("Mesh preset")
+        layout = QVBoxLayout(group)
+        row = QHBoxLayout()
+        self._mesh_preset_combo = QComboBox()
+        self._mesh_preset_combo.setMinimumWidth(170)
+        self._mesh_preset_combo.setToolTip(
+            "Fast/Balanced/Fine are measured profiles (see the status line "
+            "for their evidence). User presets are full MeshConfig snapshots."
+        )
+        self._mesh_save_preset_btn = QPushButton("Save mesh preset…")
+        self._mesh_delete_preset_btn = QPushButton("Delete")
+        row.addWidget(self._mesh_preset_combo, 1)
+        row.addWidget(self._mesh_save_preset_btn)
+        row.addWidget(self._mesh_delete_preset_btn)
+        layout.addLayout(row)
+        self._mesh_preset_status = QLabel("")
+        self._mesh_preset_status.setWordWrap(True)
+        self._mesh_preset_status.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        layout.addWidget(self._mesh_preset_status)
+
+        parent_layout.addWidget(group)
+        self._mesh_preset_store = MeshPresetStore()
+        self._mesh_preset_combo.currentIndexChanged.connect(
+            self._on_mesh_preset_selected
+        )
+        self._mesh_save_preset_btn.clicked.connect(
+            self._on_save_mesh_preset_clicked
+        )
+        self._mesh_delete_preset_btn.clicked.connect(
+            self._on_delete_mesh_preset_clicked
+        )
+        self._refresh_mesh_presets()
+
+    def _refresh_mesh_presets(self) -> None:
+        if not hasattr(self, "_mesh_preset_combo"):
+            return
+        combo = self._mesh_preset_combo
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem("(custom)", "")
+            for preset in list_mesh_presets(self._mesh_preset_store):
+                label = preset.name
+                if preset.origin == "user":
+                    label += " (user)"
+                if preset.experimental:
+                    label += " (experimental)"
+                combo.addItem(label, preset.name)
+            last = self._mesh_preset_store.last_used
+            idx = combo.findData(last) if last else 0
+            combo.setCurrentIndex(max(idx, 0))
+        finally:
+            combo.blockSignals(False)
+        if self._mesh_preset_store.errors:
+            self._mesh_preset_status.setText(
+                "Mesh presets: " + " | ".join(self._mesh_preset_store.errors)
+            )
+
+    def get_mesh_config(self) -> MeshConfig:
+        cfg = MeshConfig(
+            detail_slider=int(self._detail_slider.value())
+            if hasattr(self, "_detail_slider") else 10,
+            mesher=self.get_mesher_type(),
+            adaptive_sizing=bool(self._adaptive_sizing_check.isChecked())
+            if hasattr(self, "_adaptive_sizing_check") else True,
+            ftet_eps_frac=(
+                float(self._ftet_eps_frac.value()) / 100.0
+                if hasattr(self, "_ftet_eps_frac") else 0.15
+            ),
+            ftet_adaptive=bool(self._ftet_adaptive.isChecked())
+            if hasattr(self, "_ftet_adaptive") else True,
+            ftet_simplify=bool(self._ftet_simplify.isChecked())
+            if hasattr(self, "_ftet_simplify") else False,
+            bl=self.get_bl_config(),
+        )
+        fixed, warnings = cfg.normalized()
+        for warning in warnings:
+            logger.warning("Mesh config: %s", warning)
+            self.suggestion_completed.emit(f"[preset] config clamp: {warning}")
+        return fixed
+
+    def set_mesh_config(self, config: MeshConfig, source: str | None = None) -> None:
+        """Apply a full mesh config (project restore or preset)."""
+        cfg = config
+        cfg.raise_if_invalid()
+        self._detail_slider.setValue(int(cfg.detail_slider))
+        for btn, key in getattr(self, "_mesher_keys", []):
+            if key == cfg.mesher:
+                btn.setChecked(True)
+                self._on_mesher_button_clicked(btn)
+                break
+        if hasattr(self, "_adaptive_sizing_check"):
+            self._adaptive_sizing_check.setChecked(bool(cfg.adaptive_sizing))
+        if hasattr(self, "_ftet_eps_frac"):
+            self._ftet_eps_frac.setValue(float(cfg.ftet_eps_frac) * 100.0)
+        if hasattr(self, "_ftet_adaptive"):
+            self._ftet_adaptive.setChecked(bool(cfg.ftet_adaptive))
+        if hasattr(self, "_ftet_simplify"):
+            self._ftet_simplify.setChecked(bool(cfg.ftet_simplify))
+        # BLConfig provenance only accepts preset|user|default|clamped; the
+        # mesh preset name/origin is carried by the mesh log, not this field.
+        self.set_bl_config(cfg.bl, source="preset" if source else None)
+        if source:
+            self.suggestion_completed.emit(
+                f"[preset] applied {source}: {cfg.to_engine_summary()}"
+            )
+
+    def apply_mesh_preset(self, name: str) -> bool:
+        preset = resolve_mesh_preset(self._mesh_preset_store, name)
+        if preset is None:
+            self._mesh_preset_status.setText(
+                f"Mesh preset '{name}' was not found; current values kept."
+            )
+            return False
+        try:
+            self.set_mesh_config(preset.config, source=f"preset:{name}")
+        except Exception as exc:  # noqa: BLE001 - a bad preset must not crash
+            self._mesh_preset_status.setText(
+                f"Mesh preset '{name}' is invalid and was not applied: {exc}"
+            )
+            return False
+        idx = self._mesh_preset_combo.findData(name)
+        self._mesh_preset_combo.blockSignals(True)
+        try:
+            self._mesh_preset_combo.setCurrentIndex(max(idx, 0))
+        finally:
+            self._mesh_preset_combo.blockSignals(False)
+        if preset.origin == "user":
+            try:
+                self._mesh_preset_store.set_last_used(name)
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not persist last mesh preset", exc_info=True)
+        evidence = preset.evidence or "no measurement recorded"
+        self._mesh_preset_status.setText(
+            f"{name} ({preset.origin}"
+            + (", experimental" if preset.experimental else "")
+            + f"): {evidence}"
+        )
+        self.suggestion_completed.emit(
+            f"[preset] mesh preset '{name}' ({preset.origin}) applied; "
+            f"evidence: {evidence}"
+        )
+        return True
+
+    def save_mesh_preset(self, name: str) -> bool:
+        clean = str(name).strip()
+        if not clean:
+            self._mesh_preset_status.setText("Preset name must not be empty.")
+            return False
+        try:
+            self._mesh_preset_store.save(clean, self.get_mesh_config())
+        except Exception as exc:  # noqa: BLE001 - reported, not fatal
+            self._mesh_preset_status.setText(f"Cannot save mesh preset: {exc}")
+            return False
+        self._refresh_mesh_presets()
+        idx = self._mesh_preset_combo.findData(clean)
+        self._mesh_preset_combo.blockSignals(True)
+        try:
+            self._mesh_preset_combo.setCurrentIndex(max(idx, 0))
+        finally:
+            self._mesh_preset_combo.blockSignals(False)
+        self._mesh_preset_status.setText(f"Mesh preset '{clean}' saved.")
+        return True
+
+    def delete_mesh_preset(self, name: str) -> bool:
+        removed = self._mesh_preset_store.delete(name)
+        self._refresh_mesh_presets()
+        self._mesh_preset_status.setText(
+            f"Mesh preset '{name}' deleted." if removed
+            else f"Mesh preset '{name}' was not found."
+        )
+        return removed
+
+    def _on_save_mesh_preset_clicked(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Save mesh preset", "Preset name:",
+            text=self._mesh_preset_combo.currentData() or "",
+        )
+        if ok:
+            self.save_mesh_preset(str(name))
+
+    def _on_delete_mesh_preset_clicked(self) -> None:
+        name = self._mesh_preset_combo.currentData()
+        if name:
+            self.delete_mesh_preset(str(name))
+
+    def _on_mesh_preset_selected(self, _index: int) -> None:
+        name = self._mesh_preset_combo.currentData()
+        if name:
+            self.apply_mesh_preset(str(name))
+
     def _wire_bl_provenance(self) -> None:
         """Attribute a widget edit to 'user' (preset/default stay intact)."""
         pairs = (
@@ -1396,7 +1597,7 @@ class ParamsPanel(QWidget):
             self._bl_preset_combo.blockSignals(False)
         try:
             self._preset_store.set_last_used(name)
-        except BLConfigError as exc:
+        except (BLConfigError, ValueError) as exc:
             logger.debug("Could not persist last BL preset: %s", exc)
         if warnings:
             self._bl_preset_status.setText(
@@ -1417,7 +1618,7 @@ class ParamsPanel(QWidget):
             self._preset_store.save(
                 clean, config if config is not None else self.get_bl_config(),
             )
-        except BLConfigError as exc:
+        except (BLConfigError, ValueError) as exc:
             self._bl_preset_status.setText(f"Cannot save preset: {exc}")
             return False
         self._refresh_bl_presets()
@@ -1903,19 +2104,12 @@ class ParamsPanel(QWidget):
     def get_poly_conversion(self) -> bool:
         return self._poly_check.isChecked()
 
-    # Cell-count scale for the Mesh Fineness slider (log: 10K .. 20M cells).
-    _CELL_TARGET_MIN = 10_000
-    _CELL_TARGET_MAX = 20_000_000
-    _CELL_TARGET_BUCKETS = 20
-
     _DETAIL_LABELS = ["Very Coarse", "Coarse", "Medium", "Fine", "Very Fine"]
     _DETAIL_MAP = {0: "very_coarse", 1: "coarse", 2: "medium", 3: "fine", 4: "very_fine"}
 
     def _slider_to_cells(self, value: int) -> int:
-        """Map slider position 0..20 to a target cell count (log 10K..20M)."""
-        t = max(0, min(self._CELL_TARGET_BUCKETS, int(value))) / self._CELL_TARGET_BUCKETS
-        cells = self._CELL_TARGET_MIN * (self._CELL_TARGET_MAX / self._CELL_TARGET_MIN) ** t
-        return int(round(cells))
+        """Delegate to the one mapping in ``core.mesh_config``."""
+        return target_cells_for_slider(value)
 
     def _cells_label(self, cells: int) -> str:
         if cells >= 1_000_000:
@@ -2479,24 +2673,16 @@ class ParamsPanel(QWidget):
             self._poly_check.setChecked(False)
 
     def save_params(self, s):
-        s.setValue("params/detail_slider", self._detail_slider.value())
-        s.setValue("params/bl_checked", self._bl_checkbox.isChecked())
-        # W7: the full BL config (schema-versioned) survives a restart, not
-        # just the checkbox.  Presets live in their own store.
-        s.setValue("params/bl_config", self.get_bl_config().to_json())
+        # W10: one versioned MeshConfig for the whole mesh/project state.
+        # The old split keys (detail_slider/bl_checked/bl_config) are no
+        # longer written; MeshConfig.from_settings still reads them once.
+        s.setValue("params/mesh_config", self.get_mesh_config().to_json())
         s.setValue("params/unit", self._unit_selector.currentText())
         # surface_resolution / reuse_cached_mesh are AUTOMATIC now (derived
         # from the slider / always on): nothing to persist.
         s.setValue("ui/expert_mode", self._expert_mode)
 
     def restore_params(self, s):
-        slider = s.value("params/detail_slider", None)
-        if slider is not None:
-            self._detail_slider.setValue(int(slider))
-            self._on_detail_changed(self._detail_slider.value())
-        bl = s.value("params/bl_checked", None, type=bool)
-        if bl is not None:
-            self._bl_checkbox.setChecked(bool(bl))
         unit = s.value("params/unit", None)
         if unit is not None:
             self._unit_selector.setCurrentText(unit)
@@ -2504,34 +2690,28 @@ class ParamsPanel(QWidget):
         if expert is not None:
             self.set_expert_mode(bool(expert))
 
-        # W7: restore the saved BL config; if there is none, restore the
-        # last-used preset (explicit requirement).  A damaged record is
-        # reported, never fatal.
-        raw = s.value("params/bl_config", None)
-        if raw:
-            try:
-                data = raw if isinstance(raw, dict) else json.loads(str(raw))
-                cfg, warnings = BLConfig.from_mapping_tolerant(
-                    data, max_cell=max(self._max_cell.value(), 1e-12),
-                )
-                self.set_bl_config(cfg)
-                # The saved config is authoritative, not the last preset.
-                self._bl_preset_combo.blockSignals(True)
+        # W10: new project key first; the adapter migrates the old
+        # detail_slider/bl_config keys if the project predates W10.  When
+        # there is no project state at all, keep the W7 behaviour: restore
+        # the last-used BL preset (and, if present, the last mesh preset).
+        try:
+            if MeshConfig.has_settings(s):
+                cfg = MeshConfig.from_settings(s)
+                self.set_mesh_config(cfg, source=None)
+                self._mesh_preset_combo.blockSignals(True)
                 try:
-                    self._bl_preset_combo.setCurrentIndex(0)
+                    self._mesh_preset_combo.setCurrentIndex(0)
                 finally:
-                    self._bl_preset_combo.blockSignals(False)
-                if warnings:
-                    self._bl_preset_status.setText(
-                        "Saved BL config restored with clamping: "
-                        + " | ".join(warnings)
-                    )
-            except (TypeError, ValueError, BLConfigError) as exc:
-                logger.warning("Could not restore BL config: %s", exc)
-                self._bl_preset_status.setText(
-                    f"Saved BL config could not be restored: {exc}"
-                )
-        else:
-            last = self._preset_store.last_used
-            if last:
-                self.apply_bl_preset(last)
+                    self._mesh_preset_combo.blockSignals(False)
+            else:
+                last_bl = self._preset_store.last_used
+                if last_bl:
+                    self.apply_bl_preset(last_bl)
+                last_mesh = self._mesh_preset_store.last_used
+                if last_mesh:
+                    self.apply_mesh_preset(last_mesh)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            logger.warning("Could not restore mesh config: %s", exc)
+            self._mesh_preset_status.setText(
+                f"Saved mesh config could not be restored: {exc}"
+            )

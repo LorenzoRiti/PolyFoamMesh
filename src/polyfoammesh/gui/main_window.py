@@ -4840,6 +4840,7 @@ class MainWindow(QMainWindow):
             self._case_dir, bl_params=bl_params,
             smooth_free_boundary=_ftet,
             max_cell=self._params.get_max_cell(),
+            mesh_config=self._params.get_mesh_config(),
         )
         if _ftet:
             self._log.append_log(
@@ -5483,22 +5484,19 @@ class MainWindow(QMainWindow):
             self._apply_template_preset(preset)
 
     def _apply_template_preset(self, preset):
-        self._params._detail_slider.setValue(
-            {"coarse": 1, "medium": 2, "fine": 3, "very_fine": 4}.get(
-                preset.detail, 2
-            )
-        )
-        if hasattr(self._params, '_algorithm_combo'):
-            algo_map = {
-                "CartesianHex": 0, "Tetrahedral": 1,
-                "Polyhedral": 2, "HexCorePoly": 3,
-            }
-            idx = algo_map.get(preset.metadata.solver, 0)
-            self._params._algorithm_combo.setCurrentIndex(idx)
-        if hasattr(self._params, '_bl_checkbox'):
-            self._params._bl_checkbox.setChecked(preset.bl_enabled)
-        if hasattr(self._params, '_bl_n_layers'):
-            self._params._bl_n_layers.setValue(preset.bl_n_layers)
+        """Apply a template's mesh fields through the single MeshConfig.
+
+        The old code mapped ``coarse/medium/fine`` to slider values 1/2/3
+        (all inside the same "coarse" bucket) and ignored the template's
+        BL growth/defaults. W10 maps the five detail names to the real
+        slider range and uses the same config object as the GUI/presets.
+        """
+        from polyfoammesh.core.mesh_config import MeshConfig
+
+        cfg, warnings = MeshConfig.from_template_preset(preset)
+        self._params.set_mesh_config(cfg, source=f"template:{preset.metadata.name}")
+        for warning in warnings:
+            self._log.append_log(f"[template] {warning}")
         if preset.geometry_hint:
             self._log.append_log(
                 f"[template] Geometry hint: {preset.geometry_hint}"
