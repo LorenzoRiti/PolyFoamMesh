@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest  # noqa: E402
 
 from polyfoammesh.core.phase_watchdog import (  # noqa: E402
+    PHASE_BUDGETS,
     FtetWildProgressDetector,
     PhaseStalled,
     PhaseWatchdog,
@@ -136,6 +137,59 @@ def test_external_abort_check_is_content_aware():
     assert action is not None
     assert action.reason == "external"
     assert "6524" in action.evidence
+
+
+def test_named_phase_budgets_are_complete_and_from_budget_uses_them():
+    required = {
+        "gmsh_volume", "gmsh_surface", "ftetwild", "checkmesh",
+        "gmsh_to_foam", "polydual", "dual", "bl",
+    }
+    assert set(PHASE_BUDGETS) == required
+    for name, budget in PHASE_BUDGETS.items():
+        assert budget.timeout_s is None or budget.timeout_s > 0, name
+        assert budget.stall_s is None or budget.stall_s > 0, name
+        assert budget.heartbeat_s > 0, name
+        assert budget.policy in ("abort", "retry", "fallback", "skip", "observe")
+    clock = FakeClock()
+    wd = PhaseWatchdog.from_budget("dual", PHASE_BUDGETS["dual"], clock=clock)
+    assert wd.stall_s == PHASE_BUDGETS["dual"].stall_s
+    assert wd.timeout_s == PHASE_BUDGETS["dual"].timeout_s
+    assert wd.heartbeat_s == PHASE_BUDGETS["dual"].heartbeat_s
+
+
+def test_worker_timeout_constants_come_from_the_named_budgets():
+    from polyfoammesh.core.openfoam_runner import (
+        DualPolyWorker,
+        FtetWildVolumeWorker,
+        GmshSurfaceWorker,
+        GmshVolumeWorker,
+        PolyDualWorker,
+    )
+
+    assert GmshVolumeWorker.VOLUME_TIMEOUT_S == int(
+        PHASE_BUDGETS["gmsh_volume"].timeout_s
+    )
+    assert GmshSurfaceWorker.SURFACE_TIMEOUT_S == int(
+        PHASE_BUDGETS["gmsh_surface"].timeout_s
+    )
+    assert FtetWildVolumeWorker.VOLUME_TIMEOUT_S == int(
+        PHASE_BUDGETS["ftetwild"].timeout_s
+    )
+    assert FtetWildVolumeWorker.STALL_S == PHASE_BUDGETS["ftetwild"].stall_s
+    assert PolyDualWorker.TIMEOUT_S == int(PHASE_BUDGETS["polydual"].timeout_s)
+    assert DualPolyWorker.DUAL_STALL_S == PHASE_BUDGETS["dual"].stall_s
+    assert DualPolyWorker.BL_TIMEOUT_S == PHASE_BUDGETS["bl"].timeout_s
+
+
+def test_gmsh_subprocess_defaults_use_the_named_budgets():
+    from polyfoammesh.core import gmsh_subprocess as gs
+
+    assert gs._DEFAULT_VOLUME_TIMEOUT_S == int(
+        PHASE_BUDGETS["gmsh_volume"].timeout_s
+    )
+    assert gs._DEFAULT_CONVERT_TIMEOUT_S == int(
+        PHASE_BUDGETS["gmsh_to_foam"].timeout_s
+    )
 
 
 def test_snapshot_contains_the_diagnosis_fields():

@@ -18,9 +18,20 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from polyfoammesh.core.phase_watchdog import PHASE_BUDGETS
+
 logger = logging.getLogger(__name__)
 
 LogFn = Callable[[str], None]
+
+#: Canonical helper defaults, kept as numeric signature defaults (the timeout
+#: contract test asserts them) but sourced from the named phase budgets.
+_DEFAULT_VOLUME_TIMEOUT_S = int(
+    PHASE_BUDGETS["gmsh_volume"].timeout_s or 3600
+)
+_DEFAULT_CONVERT_TIMEOUT_S = int(
+    PHASE_BUDGETS["gmsh_to_foam"].timeout_s or 900
+)
 
 
 def _noop(_msg: str) -> None:
@@ -41,7 +52,7 @@ def run_gmsh_volume(
     max_cells_target: int = 0,
     size_field_file: Path | str | None = None,
     on_line: LogFn = _noop,
-    timeout_s: int = 3600,
+    timeout_s: int = _DEFAULT_VOLUME_TIMEOUT_S,
     threads: int = 0,
     algo3d: int | None = None,
     surface_resolution: str = "medium",
@@ -125,7 +136,7 @@ def run_gmsh_to_foam(
     case_dir: Path | str,
     msh_name: str,
     on_line: LogFn = _noop,
-    timeout_s: int = 900,
+    timeout_s: int = _DEFAULT_CONVERT_TIMEOUT_S,
 ) -> None:
     """Convert *.msh* in *case_dir* to OpenFOAM polyMesh via gmshToFoam."""
     from polyfoammesh.core.openfoam_runner import (

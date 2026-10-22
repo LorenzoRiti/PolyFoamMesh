@@ -37,10 +37,11 @@ class SessionSnapshot:
     min_cell: float = 0.01
     detail: str = "medium"
     unit: str = "m"
-    bl_enabled: bool = False
-    bl_n_layers: int = 3
-    bl_thickness_ratio: float = 0.005
-    bl_expansion_ratio: float = 1.2
+    #: W7/M2: the BL state travels as the same schema-versioned BLConfig
+    #: mapping used by QSettings and presets.  The old split fields
+    #: (bl_enabled/bl_n_layers/bl_thickness_ratio/bl_expansion_ratio) were
+    #: never written by the GUI and are ignored on load.
+    bl_config: dict[str, Any] = field(default_factory=dict)
     mesher: str = "cfmesh"
     theme: str = "system"
     viewer_bg: str = "Dark"

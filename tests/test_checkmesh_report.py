@@ -117,6 +117,24 @@ def test_mesh_quality_report_carries_the_structured_model():
     assert payload["structured"]["acceptance"] == "fail"
 
 
+def test_mesh_quality_report_is_a_view_over_the_single_parser():
+    """M2: no second checkMesh parser — every scalar comes from CheckMeshReport."""
+    for text in (R1, HEALTHY):
+        r = parse_checkmesh_output(text)
+        s = r.structured
+        assert s is not None
+        assert r.cells == s.cells
+        assert r.faces == s.faces
+        assert r.points == s.points
+        assert r.max_non_ortho == s.max_non_ortho
+        assert r.avg_non_ortho == s.avg_non_ortho
+        assert r.max_skewness == s.max_skewness
+        assert r.max_aspect_ratio == s.max_aspect_ratio
+        assert r.neg_cells == s.neg_cells
+        assert r.min_volume == s.min_volume
+        assert r.has_fatal == s.fatal
+
+
 def test_explicit_acceptance_reaches_mesh_quality_report():
     r = parse_checkmesh_output(R1)
     assert r.passed is False

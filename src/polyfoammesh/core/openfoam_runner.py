@@ -23,6 +23,7 @@ import time
 import enum
 import logging
 logger = logging.getLogger(__name__)
+from polyfoammesh.core.phase_watchdog import PHASE_BUDGETS
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,9 @@ _now = time.monotonic
 # also reports the child's CPU usage so a busy-but-silent process is visibly
 # different from a dead one.
 # Override the threshold with env POLYFOAMMESH_GMSH_STALL_S (seconds).
-GMSH_STALL_TIMEOUT_S = 300.0
+GMSH_STALL_TIMEOUT_S = float(
+    PHASE_BUDGETS["gmsh_volume"].stall_s or 300.0
+)
 #: Upper bound of the size-scaled no-output budget (large jobs).
 GMSH_STALL_MAX_TIMEOUT_S = 900.0
 #: Estimated-cell bounds over which the budget ramps from base to the max.
@@ -66,6 +69,11 @@ GMSH_ROBUST_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST"
 #: convergence cost on that class, but doubles-to-triples wall time on large
 #: STEP parts, so a generic no-output robust retry leaves it off.
 GMSH_ROBUST_OPT_ENV_VAR = "POLYFOAMMESH_GMSH_ROBUST_OPT"
+#: Optional reproducibility lever: GMSH's parallel tessellation can produce
+#: slightly different meshes for the same input (measured M2: two cube runs
+#: differed in .msh SHA-256).  Default unset keeps the historical/parallel
+#: behaviour; set this to 1 to pin one mesher thread for A/B reproducibility.
+GMSH_THREADS_ENV_VAR = "POLYFOAMMESH_GMSH_THREADS"
 #: Phase D guaranteed fallback: the worker sets this on its last-ditch attempt
 #: so the wrapper runs the explicit-size path with sizes derived to match the
 #: adaptive request's cell target (adaptive sizing OFF). See
@@ -1510,92 +1518,31 @@ class MeshQualityReport:
         }
 
 
-# Regexes for checkMesh output
-_CHECK_CELLS_RE = re.compile(r"cells:\s+(\d+)", re.IGNORECASE)
-_CHECK_FACES_RE = re.compile(r"faces:\s+(\d+)", re.IGNORECASE)
-_CHECK_POINTS_RE = re.compile(r"points:\s+(\d+)", re.IGNORECASE)
-# A float that does NOT swallow a trailing sentence period. checkMesh writes
-# "Min volume = 6.30328e-06. Max volume = ..." and a `[\d.eE+-]+` class ate the
-# final '.', so float() raised ValueError on real output.
-_F = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
-
-# Real OpenFOAM v2512 phrasing differs from the older form these regexes were
-# written against, and the metrics don't always carry an average:
-#   "Mesh non-orthogonality Max: 61.5453 average: 15.0436"   (colon form)
-#   "Max skewness = 0.657556 OK."                            (no average)
-#   "Max aspect ratio = 39.5564 OK."                         (no average)
-# Requiring "average = " with re.DOTALL meant these silently never matched, so
-# quality was reported as 0/perfect regardless of the real mesh. Accept both
-# spellings, make the average optional, and stay within one line ([^\n]) so a
-# missing average can't drag the match onto an unrelated later line.
-_CHECK_NONORTHO_RE = re.compile(
-    rf"(?:Mesh non-orthogonality\s+Max:|Max non-orthogonality\s*=)\s*({_F})"
-    rf"(?:[^\n]*?average\s*[:=]\s*({_F}))?",
-    re.IGNORECASE,
-)
-_CHECK_SKEW_RE = re.compile(
-    rf"Max skewness\s*[:=]\s*({_F})(?:[^\n]*?average\s*[:=]\s*({_F}))?",
-    re.IGNORECASE,
-)
-_CHECK_ASPECT_RE = re.compile(
-    rf"Max aspect ratio\s*[:=]\s*({_F})(?:[^\n]*?average\s*[:=]\s*({_F}))?",
-    re.IGNORECASE,
-)
-_CHECK_NEGVOL_RE = re.compile(
-    r"There are\s+(\d+)\s+cells[^\n]*?negative volume"
-    r"|Writing\s+(\d+)\s+cells with negative volume",
-    re.IGNORECASE,
-)
-_CHECK_MINVOL_RE = re.compile(rf"Min volume\s*=\s*({_F})", re.IGNORECASE)
-_CHECK_MESH_OK_RE = re.compile(r"^\s*Mesh OK\.", re.IGNORECASE | re.MULTILINE)
-_CHECK_FATAL_RE = re.compile(
-    r"FOAM FATAL|FATAL ERROR|--> FOAM FATAL", re.IGNORECASE
-)
-
-
 def parse_checkmesh_output(text: str) -> MeshQualityReport:
-    """Parse checkMesh stdout into a structured report."""
-    r = MeshQualityReport(raw_output=text)
-    r.has_fatal = bool(_CHECK_FATAL_RE.search(text))
+    """Compatibility view over the single :class:`CheckMeshReport` parser.
 
-    m = _CHECK_CELLS_RE.search(text)
-    if m:
-        r.cells = int(m.group(1))
-    m = _CHECK_FACES_RE.search(text)
-    if m:
-        r.faces = int(m.group(1))
-    m = _CHECK_POINTS_RE.search(text)
-    if m:
-        r.points = int(m.group(1))
-
-    m = _CHECK_NONORTHO_RE.search(text)
-    if m:
-        r.max_non_ortho = float(m.group(1))
-        if m.group(2) is not None:
-            r.avg_non_ortho = float(m.group(2))
-
-    m = _CHECK_SKEW_RE.search(text)
-    if m:
-        r.max_skewness = float(m.group(1))
-        if m.group(2) is not None:
-            r.avg_skewness = float(m.group(2))
-
-    m = _CHECK_ASPECT_RE.search(text)
-    if m:
-        r.max_aspect_ratio = float(m.group(1))
-
-    m = _CHECK_NEGVOL_RE.search(text)
-    if m:
-        r.neg_cells = int(m.group(1) or m.group(2))
-
-    m = _CHECK_MINVOL_RE.search(text)
-    if m:
-        r.min_volume = float(m.group(1))
-
-    # W8: the structured model must be derived from the same text, not from
-    # a second parser that could disagree on metrics or acceptance.
-    r.structured = CheckMeshReport.from_output(text)
-    return r
+    W7/W8 left two parsers on the same stdout: the legacy scalar regexes here
+    and ``CheckMeshReport.from_output`` (defects/acceptance).  M2 closes the
+    duplicate by making the structured model the only parser; the old
+    ``MeshQualityReport`` fields are mapped from it, so metrics, defect kinds
+    and acceptance can never disagree.
+    """
+    structured = CheckMeshReport.from_output(text)
+    return MeshQualityReport(
+        cells=structured.cells,
+        faces=structured.faces,
+        points=structured.points,
+        max_non_ortho=structured.max_non_ortho,
+        avg_non_ortho=structured.avg_non_ortho,
+        max_skewness=structured.max_skewness,
+        avg_skewness=structured.avg_skewness,
+        max_aspect_ratio=structured.max_aspect_ratio,
+        neg_cells=structured.neg_cells,
+        min_volume=structured.min_volume,
+        has_fatal=structured.fatal,
+        raw_output=text,
+        structured=structured,
+    )
 
 
 # ------------------------------------------------------------------
@@ -1728,7 +1675,7 @@ class CheckMeshWorker(QObject):
             self.log_line.emit(f"[checkMesh] {' '.join(cmd)}")
             try:
                 returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
-                    cmd, None, 600,
+                    cmd, None, int(PHASE_BUDGETS["checkmesh"].timeout_s or 600),
                     on_line=lambda ln: self.log_line.emit(f"[checkMesh] {ln}"),
                     proc_holder=self._proc_holder,
                 )
@@ -1832,7 +1779,7 @@ class PolyDualWorker(QObject):
 
     #: Last-resort phase ceiling (same value as the historical subprocess.run
     #: timeout).  Heartbeat/stall/cancel now come from _stream_subprocess.
-    TIMEOUT_S = 300
+    TIMEOUT_S = int(PHASE_BUDGETS["polydual"].timeout_s or 300)
 
     def __init__(self, case_dir: Path | str, of_config: OFConfig,
                  feature_angle: float = 90, parent=None):
@@ -2177,10 +2124,10 @@ class DualPolyWorker(QObject):
     #: One declared budget per in-process phase.  These are liveness nets:
     #: measured healthy R1 is 34 s dual + 58 s BL; a 5-minute silence is a
     #: diagnosis, not a normal slow pass.
-    DUAL_STALL_S = 300.0
-    DUAL_TIMEOUT_S = 3600.0
-    BL_STALL_S = 300.0
-    BL_TIMEOUT_S = 3600.0
+    DUAL_STALL_S = float(PHASE_BUDGETS["dual"].stall_s or 300.0)
+    DUAL_TIMEOUT_S = float(PHASE_BUDGETS["dual"].timeout_s or 3600.0)
+    BL_STALL_S = float(PHASE_BUDGETS["bl"].stall_s or 300.0)
+    BL_TIMEOUT_S = float(PHASE_BUDGETS["bl"].timeout_s or 3600.0)
 
     def __init__(self, case_dir: Path | str, bl_params: dict | None = None,
                  smooth_free_boundary: bool = False,
@@ -3748,7 +3695,7 @@ class GmshSurfaceWorker(QObject):
     log_line = Signal(str)
     failed = Signal(str)
 
-    SURFACE_TIMEOUT_S = 180
+    SURFACE_TIMEOUT_S = int(PHASE_BUDGETS["gmsh_surface"].timeout_s or 180)
 
     def __init__(self, geom_path: str, stl_out: Path, detail: str, parent=None):
         super().__init__(parent)
@@ -3854,7 +3801,7 @@ class GmshVolumeWorker(QObject):
     # and solution_adaptive's solver timeout: a Very Fine 20M-cap mesh can
     # legitimately take far longer than the old 600 s, which produced false
     # "GMSH volume exceeded" failures on real runs.
-    VOLUME_TIMEOUT_S = 3600
+    VOLUME_TIMEOUT_S = int(PHASE_BUDGETS["gmsh_volume"].timeout_s or 3600)
 
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  n_layers: int = 0, bl_thickness: float | None = None,
@@ -3961,6 +3908,18 @@ class GmshVolumeWorker(QObject):
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
         self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
         env = os.environ.copy()
+        raw_threads = os.environ.get(GMSH_THREADS_ENV_VAR, "").strip()
+        if raw_threads:
+            try:
+                n_threads = int(raw_threads)
+            except ValueError:
+                n_threads = 0
+            if n_threads > 0:
+                env["GMSH_NUM_THREADS"] = str(n_threads)
+                self.log_line.emit(
+                    f"[gmsh] {GMSH_THREADS_ENV_VAR}={n_threads} "
+                    "(reproducibility pin; default is parallel)"
+                )
         if zones_json:
             env["GMSH_REFINEMENT_ZONES"] = zones_json
         if self._size_field_file:
@@ -4198,7 +4157,7 @@ class FtetWildVolumeWorker(QObject):
     #: No-progress budget: fTetWild prints one ``pass N`` line per optimizer
     #: iteration (measured ~142 s/pass on the 62-minute fine run), so 600 s
     #: is a generous liveness net, not a performance target.
-    STALL_S = 600.0
+    STALL_S = float(PHASE_BUDGETS["ftetwild"].stall_s or 600.0)
 
     # Same ceiling rationale as GmshVolumeWorker.VOLUME_TIMEOUT_S: a big
     # mesh legitimately runs for a long time (the GUI must not be held by
@@ -4209,7 +4168,7 @@ class FtetWildVolumeWorker(QObject):
     # -> 62 min on the reference 3 m part, tighter much longer), so the
     # ceiling is 4 h: a faithful run must never be killed halfway - that
     # is exactly the "stuck at the middle" failure the user reported.
-    VOLUME_TIMEOUT_S = 14400
+    VOLUME_TIMEOUT_S = int(PHASE_BUDGETS["ftetwild"].timeout_s or 14400)
 
     def __init__(self, step_path: str, msh_path: Path, detail: str,
                  max_cell_size: float = 0.0, lr: float | None = None,

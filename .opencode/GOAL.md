@@ -1259,3 +1259,48 @@ test GMSH watchdog esistenti restano verdi dopo il refactor di
 `_stream_subprocess`.  Nessun default di mesh cambiato; debito residuo
 (cfMesh MeshWorker ancora con loop proprio, repair topologico futuro) in
 `docs/residual_risks.md` sezione W8.
+
+## 2026-10-22 - M2 milestone audit: NOT CLOSED (structural fixes landed)
+
+Audit completo in `notes/m2_milestone_diagnosis.md`; previsioni e misure in
+`notes/m2_milestone_reasoning.md`.  La milestone NON si chiude: i numeri
+misurati sotto non raggiungono Exit M2.
+
+Stato misurato del corpus:
+- fTetWild: BL prodotta su 10/15 casi, coverage >=98% su 9/15 (1.0 x9,
+  0.989 x1, 0.915 x1); niente per mini_valve/multi_inlet/venturi e input
+  dirty_cad/non_watertight.
+- GMSH/poly: BL prodotta su 3/15, coverage >=98% su 0/15.
+- y+ per patch: assente; su R1 h1 effettivo 0.1418 mm contro 1.26 richiesti
+  (0.11x), quindi y+ e' fuori di ~9x.
+- W2 (velocita' duale) e W5 (politica/executor BL) non eseguiti; W9
+  ( corpus + 9/10 vs snappy ) non rieseguito.
+
+Fix strutturali atterrati (con test):
+- un solo parser checkMesh: `parse_checkmesh_output` e' una vista su
+  `CheckMeshReport`; rimossi i regex duplicati.  R1 resta 253.681 celle /
+  39 piramidi / 5 skew / 26 errori non-ortho, Failed 3.
+- `PHASE_BUDGETS`/`PhaseBudget` in `phase_watchdog.py`: 300/3600 GMSH,
+  180 surface, 600/14400 fTetWild, 600 checkMesh, 900 gmshToFoam, 300
+  polydual, 300/3600 dual/BL; le costanti dei worker derivano da li'.
+- `SessionSnapshot` usa un solo `bl_config` (schema versionato); rimossi i
+  campi split `bl_*` mai scritti.  Snapshot vecchi: campi ignorati.
+- riproducibilita' GMSH: due run identici del cube hanno dato SHA-256
+  diversi del `.msh`; aggiunto pin opt-in `POLYFOAMMESH_GMSH_THREADS=1`
+  (default invariato, non ancora ri-validato a livello hash).
+
+E2E reali:
+- R1 (obbligatorio): convert 4.8 s + dual/BL 92.6 s = 110.0 s (baseline
+  120.8 s), 253.681 celle, 174.265 prismi, 100% coverage, Failed 3
+  (39/5/26).  Nessuna regressione, ~9% piu' veloce.
+- cube_duct (GMSH tet + convert + dual + BL + checkMesh): 129.1 s tet +
+  9.5 s convert + 183.7 s dual/BL = 334.4 s; 256.767 celle, BL coverage
+  100%, checkMesh Failed 1 (non-ortho 80.48).  Percorso sano completo.
+
+Suite fast 1614 passed / 2 skipped / 20 deselected / 1 xfailed; ruff green.
+
+Prossimo (priorita' in ROADMAP/residual): W5 BL policy+executor (P0), W6
+y+ per patch (P0), W9 corpus + 9/10 re-validation (P0), W2 speed (P1),
+R1 terminator topology (P1), cfMesh MeshWorker watchdog (P2), legacy
+`validate_bl_params` (P2).  Non annunciare M2 chiuso finche' W5/W6/W9 non
+sono misurati.

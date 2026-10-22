@@ -351,6 +351,16 @@ def test_repeated_stalls_do_not_loop_forever(monkeypatch):
     assert "giving up" in joined
 
 
+def test_gmsh_threads_env_is_a_reproducibility_pin(monkeypatch):
+    """M2: GMSH parallel tessellation can differ run-to-run; opt-in pin."""
+    monkeypatch.setenv(ofr.GMSH_THREADS_ENV_VAR, "1")
+    calls, finished, failed, _logs = _run_volume_worker(
+        monkeypatch, outcomes=["ok"],
+    )
+    assert finished and not failed
+    assert calls[0]["env"].get("GMSH_NUM_THREADS") == "1"
+
+
 def test_no_stall_runs_once_without_robust_env(monkeypatch):
     """Healthy volume run: one attempt, no robust flag, stage finishes."""
     calls, finished, failed, _logs = _run_volume_worker(

@@ -350,6 +350,9 @@ and has one declared recovery policy:
   indeterminate bar;
 - Cancel reaches the real child process for GMSH, fTetWild, checkMesh and
   `polyDualMesh` (no orphaned WSL process).
+- GMSH's parallel tessellation can produce slightly different meshes for
+  the same input. For byte-stable A/B comparisons set
+  `POLYFOAMMESH_GMSH_THREADS=1`; the default leaves GMSH parallel.
 
 `checkMesh` failures are reported with their **structured defects**:
 the number of failed checks, the defect kinds and counts (face pyramids,

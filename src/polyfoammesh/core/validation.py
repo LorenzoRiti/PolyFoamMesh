@@ -131,6 +131,12 @@ def validate_bl_params(
 ) -> ValidationResult:
     """Validate boundary-layer parameters.
 
+    Legacy 1..10 API used by ``commercial/watertight.py``.  It is deliberately
+    kept separate from ``BLConfig`` (the GUI/worker path): this module is
+    exec-loaded by ``test_validation`` without the cadquery/core package, and
+    importing ``BLConfig`` here would drag the whole core package in.  The
+    docs list this as residual W7/W8 debt; do not use it for new code.
+
     Args:
         n_layers: Number of prism layers (1–10).
         thickness_ratio: Ratio of first-layer thickness to local cell size

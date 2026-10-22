@@ -35,6 +35,36 @@ POLICIES = ("abort", "retry", "fallback", "skip", "observe")
 
 
 @dataclass(frozen=True)
+class PhaseBudget:
+    """Named liveness/timeout budget for one pipeline phase.
+
+    M2 audit found nine literals spread across workers; this is now the one
+    place where a phase's last-resort numbers are declared.  A budget is not
+    a performance target: it is the point where the phase must log the
+    evidence and apply its declared action.
+    """
+
+    stall_s: float | None
+    timeout_s: float | None
+    heartbeat_s: float
+    policy: str = "abort"
+
+
+#: Measured/declared phase budgets.  ``gmsh_volume``'s stall is the BASE;
+#: the robust/manual attempts scale it up to GMSH_STALL_MAX_TIMEOUT_S.
+PHASE_BUDGETS: dict[str, PhaseBudget] = {
+    "gmsh_volume": PhaseBudget(300.0, 3600.0, 10.0),
+    "gmsh_surface": PhaseBudget(None, 180.0, 10.0),
+    "ftetwild": PhaseBudget(600.0, 14400.0, 60.0),
+    "checkmesh": PhaseBudget(None, 600.0, 10.0),
+    "gmsh_to_foam": PhaseBudget(None, 900.0, 30.0),
+    "polydual": PhaseBudget(None, 300.0, 10.0),
+    "dual": PhaseBudget(300.0, 3600.0, 30.0),
+    "bl": PhaseBudget(300.0, 3600.0, 30.0),
+}
+
+
+@dataclass(frozen=True)
 class WatchdogAction:
     """One declared response to a stalled/timed-out phase."""
 
@@ -140,6 +170,20 @@ class PhaseWatchdog:
         self._action: WatchdogAction | None = None
         self._warnings: list[str] = []
         self._lock = threading.RLock()
+
+    @classmethod
+    def from_budget(
+        cls, phase: str, budget: PhaseBudget, **kwargs,
+    ) -> "PhaseWatchdog":
+        """Build a watchdog from a named :data:`PHASE_BUDGETS` entry."""
+        return cls(
+            phase,
+            stall_s=budget.stall_s,
+            timeout_s=budget.timeout_s,
+            heartbeat_s=budget.heartbeat_s,
+            policy=budget.policy,
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # Liveness

@@ -1432,9 +1432,10 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   4. `edgeCapPercentile` is exposed but experimentally risky (measured
      failure on the venturi, `docs/residual_risks.md` FASE 4); its default
      remains 0 and the tooltip says so.  It is not promoted.
-  5. The `SessionSnapshot` BL fields are still unused by the GUI; the new
-     `params/bl_config` QSettings key is the active persistence.  The
-     adapter accepts the old fields, so no second live format exists.
+  5. `SessionSnapshot` now carries the same `bl_config` mapping as
+     QSettings/presets; the old split `bl_*` fields were removed in the M2
+     audit.  Old snapshot files still load (unknown keys are ignored), and
+     `params/bl_config` remains the active GUI persistence.
   6. `bl_config.json` records the INITIAL effective config.  Automatic
      fallback attempts (concave closure, halved/quartered first layer) are
      logged with the changed parameter, but the JSON does not yet append an
@@ -1493,6 +1494,42 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   4. Explicit acceptance is available to callers but not exposed as a GUI
      button (product decision); the current GUI keeps a failed poly mesh
      visible and does not silently accept it.
+
+## M2 milestone audit (2026-10-22) — NOT CLOSED
+
+- **Coverage (measured corpus)**: fTetWild BL produced on 10/15 cases and
+  ≥98% coverage on 9/15 (1.0 ×9, 0.989 ×1, 0.915 ×1); GMSH/poly BL produced
+  on 3/15 and 0/15 ≥98%.  The W5 fallback-policy/executor designed in
+  `notes/w5_bl_diagnosis.md` was not implemented; that is the P0 engine
+  gap.
+- **y+ per patch (W6)**: not implemented.  R1 has 100% BL coverage but an
+  effective first layer of 0.1418 mm against 1.26 mm requested (0.11×), so
+  the y+ target is off by ~9×.  `boundary_layer_report` exposes coverage and
+  h1 p10 per patch, not achieved y+.
+- **W2 dual speed**: the reasoning file ends with “da misurare”; no
+  `opt_iter`/profiling/pre-subdivision verdict was produced.  No default
+  change.
+- **Real R1 E2E (current tree)**: convert 4.8 s + dual/BL 92.6 s = 110.0 s
+  total; 253,681 cells, 174,265 prisms, 100% coverage, h1 0.1418 mm;
+  checkMesh `Failed 3` (39 face pyramids, 5 highly skew, 26 non-ortho
+  errors, 32 `wrongOrientedFaces`).  Baseline 120.8 s with the same counts:
+  no regression, ~9% faster.
+- **Benchmark**: the 9/10 poly vs snappy baseline has not been re-validated
+  with the current BL semantics; W9 owns that.  No new default is claimed.
+- **GMSH determinism (measured)**: two identical cube-duct runs produced
+  different `.msh` SHA-256 hashes and a 114-cell downstream difference.  M2
+  adds the opt-in `POLYFOAMMESH_GMSH_THREADS=1` pin (default unchanged,
+  parallel); byte-identical output has not been re-validated with the pin.
+  Do not promise deterministic GMSH output without that measurement.
+- **Structural fixes landed in M2**: single checkMesh parser
+  (`CheckMeshReport` is the only parser, `MeshQualityReport` is a view);
+  named `PHASE_BUDGETS` for every in-process/subprocess phase; session BL
+  state consolidated into `bl_config`.  Dead duplicate parser/regex and
+  split session fields removed.
+- **Still open, priority**: W5 BL policy/executor (P0), W6 per-patch y+
+  (P0), W9 corpus + 9/10 re-validation (P0), W2 speed measurement (P1),
+  R1 terminator topology repair (P1), cfMesh `MeshWorker` watchdog
+  migration (P2), legacy `validate_bl_params` (P2, documented).
 
 ## Test Matrix
 

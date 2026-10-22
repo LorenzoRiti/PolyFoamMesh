@@ -7,6 +7,29 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### M2 milestone audit - 2026-10-22 (NOT CLOSED)
+- **Structural consolidations**: `parse_checkmesh_output` is now a view over
+  the single `CheckMeshReport` parser (duplicate `_CHECK_*` regexes removed);
+  named `PHASE_BUDGETS` replace the scattered worker timeout literals;
+  `SessionSnapshot` carries the same `bl_config` mapping as QSettings and
+  drops the never-written split `bl_*` fields.
+- **GMSH reproducibility**: two identical cube runs produced different
+  `.msh` hashes; added opt-in `POLYFOAMMESH_GMSH_THREADS=1` (default
+  unchanged).  The hash-level fix is not yet re-validated end-to-end.
+- **Measured M2 status, not a closure claim**: fTetWild BL produced on
+  10/15 corpus cases and ≥98% coverage on 9/15; GMSH/poly 3/15 produced and
+  0/15 ≥98%; per-patch y+ is still absent (R1 h1 0.1418 mm vs 1.26 requested
+  = 0.11×); the 9/10 poly-vs-snappy baseline has not been re-validated.
+- **Real R1 E2E**: convert 4.8 s + dual/BL 92.6 s = 110.0 s total (baseline
+  120.8 s), 253,681 cells, 174,265 prisms, 100% coverage, checkMesh
+  `Failed 3` (39 pyramids, 5 skew, 26 non-ortho errors) — unchanged defect
+  class, no regression.
+- **Healthy cube-duct E2E**: full GMSH tet → convert → dual → BL → checkMesh
+  path completes with 100% BL coverage; checkMesh `Failed 1` (non-ortho),
+  declared. Details in `notes/m2_milestone_diagnosis.md`.
+- Remaining W2/W5/W6/W9 work is prioritised in `docs/residual_risks.md`;
+  M2 is not announced closed.
+
 ### Process robustness / watchdog (W8) - 2026-10-22
 - **One `PhaseWatchdog`** (`core/phase_watchdog.py`) for stall, timeout,
   heartbeat, ETA and declared action.  `_stream_subprocess` now uses it for
