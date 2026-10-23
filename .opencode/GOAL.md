@@ -1498,3 +1498,29 @@ Test W13: 7 in `tests/test_bl_tets.py` + 8 in
 `tests/test_mesher_registry.py`, oltre alle suite mesher/config/BL
 esistenti.  Gate finale: suite fast 1697 passed / 2 skipped / 20 deselected
 / 1 xfailed (191 s); ruff `src/ tests/` green.
+
+## 2026-10-23 - WALL-03: dirty CAD + mini_valve (ELIMINATO)
+
+Prompt muro; diagnosi `notes/wall_03_dirty_diagnosis.md`, previsione/misura
+in `notes/wall_03_dirty_reasoning.md` (+ addendum "make it" con 4 sonde
+mini_valve). Premessa del prompt corretta dove era stantia: il "mini_valve
+0/5" era il baseline 2026-10-05; Lane A lo aveva gia' portato a PASS 64.33
+(dual-only dichiarato), ma non si riproduce con i default attuali (mesh
+~2.4x piu' grande; Failed 1 con NOmax 78-88 / skew 8-17 su tet GMSH).
+
+Chiuso con sola machinery esistente, zero modifiche `src/`:
+- dirty_cad (cubo aperto da 10 triangoli, snappy FATAL): fTetWild
+  (lr=0.1 + stop_energy) -> 3.515 tet -> convert -> checkMesh **Mesh OK**
+  (0 piramidi, skew 0.87, NOmax 75.3 ok). Il dual rifiuta correttamente
+  l'input aperto. Supera snappy come richiesto dall'exit.
+- mini_valve: fTetWild tet + dual production collapsed +
+  `split_boundary_defects` -> **Mesh OK due volte, indipendenti**
+  (36.949 celle: NO 67.80/skew 3.92; 36.514 celle: NO 64.68/skew 3.93;
+  0 piramidi). GMSH tet resta Failed 1; robust-mode GMSH fallisce il PLC
+  su questa BRep; BL diretto rifiutato (no-support sistemico). Caveat
+  misurato: fTetWild varia run-to-run (~1/5 non-manifold) -> il test
+  codifica il gate manifold con retry fino a 3.
+- multi_inlet: invariato (Lane A PASS confermato per assenza di modifiche).
+- Test: 5 fast + 1 slow in `tests/test_wall03_dirty_paths.py`.
+  Gate: suite fast 1702 passed / 2 skipped / 21 deselected / 1 xfailed;
+  ruff `src/ tests/` green.

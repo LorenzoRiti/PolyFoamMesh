@@ -7,6 +7,27 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Dirty CAD + mini_valve (WALL-03) - 2026-10-23
+- **dirty_cad ELIMINATED**: the 10-triangle open cube that FATALs snappy
+  (0 cells) now meshes through the fTetWild path to a checkMesh
+  **Mesh OK** tet mesh (3,515 cells, 0 pyramids, skew 0.87, NOmax 75.3
+  passes, closure/volumes OK). The dual converter correctly refuses the
+  open input (non-manifold edge gate) instead of corrupting it.
+- **mini_valve CLOSED as dual-only declared**: fTetWild tet + production
+  collapsed dual + `split_boundary_defects` → **Mesh OK twice,
+  independently** (36,949 cells: NOmax 67.80/skew 3.92; 36,514 cells:
+  NOmax 64.68/skew 3.93; 0 pyramids, closure/volumes OK). GMSH tet paths
+  stay Failed 1 (NOmax 78–88, skew 8–17) and robust-mode GMSH PLC-fails
+  on this BRep — measured and declared, not retried further.
+  Direct-tet BL is refused (systemic no-interior-support vertices),
+  so the BL-on-this-geometry question stays open as declared debt.
+- **Honesty notes**: fTetWild shows run variance on mini_valve
+  (~1/5 runs non-manifold boundary); the lane's test encodes the
+  manifold gate with up-to-3 retries. No `src/` changes were needed —
+  every lever ran on existing machinery.
+- Tests: `tests/test_wall03_dirty_paths.py` (5 fast + 1 slow).
+  Full fast suite 1702 passed; ruff green.
+
 ### BL on tets + one Polymesh CTA (W13) - 2026-10-23
 - **Opt-in BL directly on the tet boundary**: new `core/bl_tets.py` reuses
   `PolyBoundaryLayerEngine` on the pure-tet polyMesh, so the wall prisms are
