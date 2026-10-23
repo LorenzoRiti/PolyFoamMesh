@@ -5,6 +5,40 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## Release gate + benchmark finale (W17, 2026-10-23)
+
+- **Gate**: `tools/release_gate.py` — versions/spec-static/smoke/
+  repo-clean fast (<15 s), tet→dual E2E + real checkMesh (OF 2512/WSL2)
+  with `--e2e`, PyInstaller bundle with `--build` (verified 195 s,
+  `PolyFoamMesh.exe` starts and stays alive 45 s offscreen), Inno
+  assembly with `--assemble` (needs ISCC — NOT installed here, stays a
+  declared limit; same for the Linux bundle — spec exists, no Linux host
+  to build it on). checkMesh verdict is REPORTED, not gated (see below).
+- **Finale poly 2026-10-23** (`benchmarks/results/20261023T172959_poly.json`,
+  15/15 geometries, 0 infra failures): 3/15 hard-gate green (cylinder,
+  pipe, non_watertight-rejected). The rest fail (almost) only on the
+  `bl_produced` hard gate — every quality gate (neg_cells, NO<70,
+  skew<4, mesh_ok) is true wherever the mesh exists. No mesh regression
+  vs Lane A (2026-10-06): mini_valve/venturi/multi_inlet byte-identical
+  (8070/64.33, 816/43.28, 961/49.99), other geometries stable-or-better
+  on NOmax/skew with GMSH-side tet-count variance (Lane A rows do not
+  record tet counts or the GMSH version — attribution limit, declared).
+- **Finale ftetwild 2026-10-23** (`.../20261023T010528_ftetwild.json`,
+  15/15): pipeline runs everywhere; quality verdicts = known walls
+  (venturi, thin_gap, mini_valve run-variance ~1/5 non-manifold);
+  dirty_cad correctly produces nothing (open input). Snappy matrix NOT
+  re-run (hour-scale timeouts; last: Lane A 10/06) — declared.
+- **R1-173334 truth missing**: `mesh.msh` (22.6 MB, 2026-10-20), its TEMP
+  logs and the W13 TEMP re-run copy are all gone from this machine; no
+  Parte4 CAD with certain provenance was found. The 5-layer production
+  R1 E2E cannot be re-executed as-recorded — NOT RUN, reconstruction
+  requires the input (owner: user). W13's same-day R1 A/B numbers stand
+  cited (dual-only Failed 3 h1 0.474; direct-BL Mesh OK h1 0.999), not
+  re-executed by the reviewer.
+- **E2E gate case**: venturi coarse dual fails real checkMesh (Failed 3:
+  NOmax 90.82, 154 bad pyramids, skew 25.7) = WALL-01 wall, reported not
+  hidden; release quality acceptance stays with lane suites + this file.
+
 ## REORG architecture audit (2026-10-23, no code changes)
 
 Block A (dead code, repo-wide import/entry-point/test grep; no vulture

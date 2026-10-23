@@ -387,7 +387,7 @@ def stage_build() -> tuple[str, str]:
     t0 = time.monotonic()
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "PyInstaller", "PolyFoamMesh.spec"],
+            [sys.executable, "-m", "PyInstaller", "--noconfirm", "PolyFoamMesh.spec"],
             cwd=str(ROOT),
             capture_output=True,
             text=True,

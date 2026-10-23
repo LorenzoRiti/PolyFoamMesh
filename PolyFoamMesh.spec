@@ -3,7 +3,7 @@
 # Release build (from the repository root, with the release extras):
 #
 #     pip install -e .[ftetwild]
-#     pyinstaller PolyFoamMesh.spec
+#     pyinstaller --noconfirm PolyFoamMesh.spec
 #     ISCC.exe installer\inno_setup.iss
 #
 # Output: dist/PolyFoamMesh/ (frozen one-dir bundle) and

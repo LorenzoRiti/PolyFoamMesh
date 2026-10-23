@@ -50,7 +50,7 @@ casadi_datas, casadi_binaries, casadi_hidden = collect_all("casadi")
 
 # --- release build (from the repository root, with the release extras) -----
 #     pip install -e .[ftetwild]
-#     pyinstaller PolyFoamMesh-linux.spec
+#     pyinstaller --noconfirm PolyFoamMesh-linux.spec
 # --- pytetwild (optional extra) ---------------------------------------
 # Same contract as the Windows spec: the experimental fTetWild tet stage
 # needs it, everything else works without it. Collect when present, warn

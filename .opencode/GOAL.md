@@ -1622,3 +1622,31 @@ artefatto (stash/pop di debug aveva destaged il `git rm`) — causa
 trovata, rm ri-staged, riverificati 7/7 fast + slow E2E 8/8;
 `ruff check src/ tests/` green (spec: F821 preesistenti, fuori scope
 gate).
+
+## 2026-10-23 - MILESTONE REVIEW M3+M4: PARTIAL (chiusura formale)
+
+Audit indipendente in `notes/MILESTONE_REVIEW.md` (procedura
+`.opencode/prompts/MILESTONE_REVIEW.md`; M2 resta NOT CLOSED, nessuna
+review M3 mai scritta — copre Exit M3 + Exit M4 insieme).
+
+W17 riverificato davvero oggi: gate default PASS; `--e2e` PASS
+(venturi 3447 tet → 1082 poli, vol-err 1.7e-16; checkMesh OF2512 rc=0
+verdict Failed = WALL-01, riportato); `--build` PASS (bundle 195 s,
+exe + pytetwild + gmsh DLL verificati, smoke offscreen 45 s vivo);
+assemble SKIP (ISCC assente, dichiarato). Fix emersi: `--noconfirm`
+(gate+spec+docs), skeleton E2E via `write_control_dict` + fvSchemes/
+fvSolution GUI ( riuso, non testo a mano).
+
+Exit: preset MET · docs MET · lane MET · benchmark-finale MET
+(poly 23/10 + ftetwild 23/10, nessuna regressione vs Lane A: identità
+mini_valve/venturi/multi_inlet) · residual-risks MET (sezione W17
+scritta oggi) · corpus PARTIAL (15/15 unattended, quality 3/15 =
+muri dichiarati) · installer PARTIAL (bundle ✓, ISCC/Linux ✗ dichiarati)
+· R1 NOT RUN (verità 22.6MB sparita, evidenza cercata su disco).
+
+Verdetto: PARTIAL → niente bump/tag/release (solo MET chiude).
+Azioni con owner: R1-input (utente), ISCC/Linux/bl_produced (maintainer).
+BACKLOG_1/2/3 non servono (post-M4 per definizione); REORG già chiuso
+(`18e9f28`), nessun resto.
+Gate finale: suite fast 1719 passed / 2 skipped / 22 deselected /
+1 xfailed; ruff green.

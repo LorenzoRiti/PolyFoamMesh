@@ -139,7 +139,7 @@ Reproducible release from the repository root (Windows, Python 3.11+):
 ```powershell
 pip install -e ".[test,ftetwild]"
 python tools/release_gate.py --e2e   # versions, specs, smoke, E2E, checkMesh
-pyinstaller PolyFoamMesh.spec        # -> dist/PolyFoamMesh/ (frozen bundle)
+pyinstaller --noconfirm PolyFoamMesh.spec  # -> dist/PolyFoamMesh/ (frozen bundle)
 ISCC.exe installer\inno_setup.iss    # -> installer/output/PolyFoamMesh-<version>-Setup.exe
 ```
 
