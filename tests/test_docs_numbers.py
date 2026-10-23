@@ -105,11 +105,11 @@ def test_user_guide_wall03_numbers_match_session_notes():
         assert fig in wall03, f"WALL-03 figure {fig} missing from session note"
 
 
-def test_readme_describes_single_polymesh_cta():
-    """README must not present the pre-W13 multi-button mesher UI."""
+def test_readme_describes_two_ctas():
+    """README must present the W18 two-button UI (Polymesh auto + cfMesh)."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8", errors="replace")
-    assert "single" in readme and "**Polymesh** button" in readme
-    assert "lives in Advanced" in readme
+    assert "**Polymesh**" in readme and "**cfMesh**" in readme
+    assert "manual Advanced engine selector was removed" in readme
     assert "Cartesian cfMesh (via WSL2) or the native polyhedral mesher" not in readme
 
 

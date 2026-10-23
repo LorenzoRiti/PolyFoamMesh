@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -77,6 +78,12 @@ class TetSourcePreflight:
     scale: float
     size_bytes: int | None = None
     mtime_ns: int | None = None
+    # W18 geometry-auto signals (None = not measured, rule skips them).
+    # watertight is probed cheaply for STL via trimesh; STEP skips it
+    # (a GMSH surface pass costs ~1 min — declared limit, not silence).
+    watertight: bool | None = None
+    patch_count: int | None = None
+    bbox_diag_m: float | None = None
 
     def to_mapping(self) -> dict:
         return dict(self.__dict__)
@@ -166,6 +173,7 @@ def preflight_tet_source(
     feature_angle: float | None = None,
     scale: float = 1.0,
     fTetWild_available: bool | None = None,
+    probe_surface: bool = True,
 ) -> TetSourcePreflight:
     path = Path(geometry_path)
     try:
@@ -174,6 +182,24 @@ def preflight_tet_source(
     except OSError:
         size, mtime = None, None
     suffix = path.suffix.lower()
+    watertight: bool | None = None
+    patch_count: int | None = None
+    bbox_diag: float | None = None
+    if probe_surface and suffix in STL_SUFFIXES and path.is_file():
+        # Cheap trimesh probe (seconds on typical STLs, fail-soft):
+        # watertightness decides open-input routing.  STEP skips this —
+        # probing would need a full GMSH surface pass (declared, not hidden).
+        try:
+            import numpy as _np
+            import trimesh as _tm
+
+            _mesh = _tm.load(str(path), force="mesh")
+            watertight = bool(_mesh.is_watertight)
+            _box = _np.asarray(_mesh.bounds, dtype=float)
+            if _box.shape == (2, 3) and _np.all(_np.isfinite(_box)):
+                bbox_diag = float(_np.linalg.norm(_box[1] - _box[0]))
+        except Exception:
+            watertight, bbox_diag = None, None
     return TetSourcePreflight(
         geometry_path=str(path.resolve()) if path.exists() else str(path),
         suffix=suffix,
@@ -187,6 +213,9 @@ def preflight_tet_source(
         scale=float(scale or 1.0),
         size_bytes=size,
         mtime_ns=mtime,
+        watertight=watertight,
+        patch_count=patch_count,
+        bbox_diag_m=bbox_diag,
     )
 
 
@@ -245,7 +274,143 @@ def choose_tet_source(
     )
 
 
+#: Mesher keys the W18 geometry-auto may select.  ``bl_on_tets`` is
+#: deliberately absent (W13: opt-in prototype, never promoted to auto).
+AUTO_MESHER_KEYS = ("gmsh_direct_poly", "ftetwild_poly")
+
+
+@dataclass(frozen=True)
+class PolymeshEnginePlan:
+    """Geometry-driven engine choice for the ``auto`` Polymesh CTA.
+
+    ``primary`` runs first; on tet-stage failure or an unaccepted
+    checkMesh FAIL the runner tries ``fallback1`` then ``fallback2``.
+    ``reason`` names the measured features behind the choice and is
+    logged/reported verbatim — no silent routing.
+    """
+
+    primary: str
+    fallback1: str | None
+    fallback2: str | None
+    reason: str
+
+    def chain(self) -> list[str]:
+        """Ordered attempt list, no empties, no repeats."""
+        out: list[str] = []
+        for key in (self.primary, self.fallback1, self.fallback2):
+            if key and key not in out:
+                out.append(key)
+        return out
+
+    def to_mapping(self) -> dict:
+        return dict(self.__dict__)
+
+
+def choose_polymesh_engine(
+    preflight: TetSourcePreflight,
+) -> PolymeshEnginePlan:
+    """Deterministic engine policy from measured preflight features.
+
+    Table-driven on the W18 winners table (``notes/w18_*``), never on
+    geometry names — overfitting on names is forbidden:
+    - open/non-manifold input (measured, STL probe) -> fTetWild: GMSH
+      cannot rebuild an imported discrete surface (verified empty output),
+      and rejects open solids outright (WALL-03);
+    - pytetwild absent -> GMSH, never a crash;
+    - default -> GMSH tet->dual (9/10 Lane A) with fTetWild fallback;
+      the fallback chain plus the checkMesh gate is what wins the cases
+      where GMSH loses (mini_valve), not an oracle.
+    ``bl_on_tets`` is never selected (W13 opt-in verdict stands).
+    """
+    ftet: str | None = "ftetwild_poly" if preflight.fTetWild_available else None
+    if preflight.watertight is False:
+        return PolymeshEnginePlan(
+            primary="ftetwild_poly",
+            fallback1="gmsh_direct_poly",
+            fallback2=None,
+            reason=(
+                f"open/non-manifold {preflight.suffix or 'input'} "
+                "(measured watertight=false): GMSH cannot rebuild it -> "
+                "fTetWild primary, GMSH fallback"
+            ),
+        )
+    if not preflight.fTetWild_available:
+        return PolymeshEnginePlan(
+            primary="gmsh_direct_poly",
+            fallback1=None,
+            fallback2=None,
+            reason="pytetwild unavailable -> GMSH only, no fallback",
+        )
+    return PolymeshEnginePlan(
+        primary="gmsh_direct_poly",
+        fallback1=ftet,
+        fallback2=None,
+        reason=(
+            "default: measured GMSH tet->dual wins 9/10 Lane A; "
+            "fTetWild fallback on failure/invalid mesh"
+        ),
+    )
+
+
+def _has_volume_elements(msh: Path, _scan_lines: int = 200_000) -> bool:
+    """True when a GMSH MSH file contains at least one 3D element.
+
+    A surface-only mesh (e.g. from a solid-less STEP: GMSH meshes the
+    2D shells and stops) is NOT a valid tet stage — without this check
+    the auto chain would "succeed" on 2D output and die later at convert
+    with no fallback.  Supports MSH 2.2 ($Elements id/type lines, type
+    4/5/6/7/11 = tet/hex/prism/pyramid/tet10) and MSH 4.x (block header
+    ``entityDim==3`` with nonzero count).  Unknown formats fail OPEN
+    (treated as valid) so an exotic-but-good mesh is never rejected.
+    """
+    try:
+        with open(msh, encoding="utf-8", errors="replace") as fh:
+            header = ""
+            for _ in range(6):
+                header += fh.readline()
+            if "$MeshFormat" not in header:
+                return True
+            m = re.search(r"\$MeshFormat\n(\d+)\.", header)
+            major = int(m.group(1)) if m else 0
+            if major == 2:
+                for i, line in enumerate(fh):
+                    if i > _scan_lines:
+                        break
+                    s = line.strip()
+                    if not s or not s[0].isdigit():
+                        continue
+                    parts = s.split()
+                    if len(parts) >= 2 and parts[1] in ("4", "5", "6", "7", "11"):
+                        return True
+                return False
+            if major == 4:
+                for i, line in enumerate(fh):
+                    if i > _scan_lines:
+                        break
+                    s = line.strip()
+                    parts = s.split()
+                    if (len(parts) == 4 and parts[0] == "3"
+                            and parts[3].isdigit() and int(parts[3]) > 0):
+                        return True
+                return False
+            return True
+    except OSError:
+        return True
+
+
 def _fingerprint(settings: TetSourceSettings, geometry: Path) -> str:
+    payload = {
+        "settings": settings.to_mapping(),
+        "geometry": str(geometry.resolve()),
+    }
+    try:
+        st = geometry.stat()
+        payload["size"], payload["mtime_ns"] = st.st_size, st.st_mtime_ns
+    except OSError:
+        payload["size"] = payload["mtime_ns"] = None
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     payload = {
         "settings": settings.to_mapping(),
         "geometry": str(geometry.resolve()),
@@ -371,12 +536,20 @@ def run_tet_source(
             wall = time.perf_counter() - t0
             ok = bool(path) and Path(path).is_file() and Path(path).stat().st_size > 0
             ok = ok and bool(names)
+            if ok and not _has_volume_elements(Path(path)):
+                # Surface-only output (e.g. GMSH on a solid-less STEP):
+                # not a valid tet stage — fail fast so the fallback runs
+                # instead of dying later at convert with no chain left.
+                ok = False
+                _vol_err = "MSH has no 3D elements (surface-only mesh)"
+            else:
+                _vol_err = ""
             attempt = TetSourceAttempt(
                 source=source, success=ok, path=str(path) if path else None,
                 names=list(names), stats=dict(stats or {}),
                 stage_times=dict(stages or {}), wall_seconds=wall,
                 n_tets=(stats or {}).get("n_tets"),
-                error="" if ok else "empty MSH or no patch names",
+                error="" if ok else (_vol_err or "empty MSH or no patch names"),
             )
         except Exception as exc:  # noqa: BLE001 - one source must not crash
             attempt = TetSourceAttempt(

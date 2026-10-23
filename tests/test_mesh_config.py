@@ -122,7 +122,7 @@ def test_validation_declares_clamps_and_rejects_in_strict_mode():
         cfg.raise_if_invalid()
     fixed, warnings = cfg.normalized()
     assert fixed.detail_slider == 20
-    assert fixed.mesher == "gmsh_direct_poly"
+    assert fixed.mesher == "auto"
     assert fixed.ftet_eps_frac == pytest.approx(0.5)
     assert fixed.bl.n_layers == 40
     assert len(warnings) >= 4
@@ -221,7 +221,7 @@ def test_invalid_user_preset_is_clamped_and_reported(tmp_path):
     result = store.load_all()
     assert "bad" in result.presets
     assert result.presets["bad"].detail_slider == 20
-    assert result.presets["bad"].mesher == "gmsh_direct_poly"
+    assert result.presets["bad"].mesher == "auto"
     assert result.presets["bad"].bl.n_layers == 40
     assert result.warnings
 

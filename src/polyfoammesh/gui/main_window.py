@@ -2111,37 +2111,69 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Ready")
 
     def _resolve_auto_mesher(self) -> str:
-        """"Automatic" mode: pick the best available mesher so the user
-        never has to think about mesher internals.
+        """"Polymesh (auto)" mode: pick the tet engine from measured
+        geometry features (W18 table-driven policy, deterministic).
 
-        Cartesian cfMesh (hex-dominant via OpenFOAM/cartesianMesh, native
-        on Linux, via WSL2 on Windows) is the highest-quality option when
-        OpenFOAM is available; otherwise our Polymesh (native polyhedral
-        barycentric dual, no OpenFOAM) is the fallback — it always
-        produces a 100% polyhedral mesh.
+        A forced fallback key (set by the auto chain after a failure)
+        wins over a fresh resolution.  Otherwise resolve from preflight:
+        open/non-manifold -> fTetWild, pytetwild absent -> GMSH,
+        default GMSH-first with fTetWild fallback.  cfMesh is NOT part of
+        auto: it is the separate visible CTA now.
         """
-        # Uses the cached startup OpenFOAM availability instead of calling
-        # OFConfig.validate() here — on Windows that launches wsl.exe and
-        # can block for minutes on a cold WSL2 boot, which used to freeze
-        # the whole UI the moment "Automatic" was selected.
-        openfoam_ok = getattr(self, "_openfoam_available", None)
-        if openfoam_ok is None:
-            # Startup check still in flight: assume available; the async
-            # WslCheckWorker path will surface the real state before any
-            # meshing command actually runs.
-            openfoam_ok = True
+        forced = getattr(self, "_auto_forced_key", None)
+        if forced:
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto: fallback attempt with "
+                f"{forced} (chain: {self._auto_engine_chain()})."
+            )
+            return forced
+        from polyfoammesh.core.tet_source import (
+            choose_polymesh_engine, preflight_tet_source,
+        )
+
+        _geom = getattr(self, "_loaded_step_path", None)
         try:
-            if openfoam_ok:
-                return "cfmesh"
+            _pre = preflight_tet_source(
+                _geom or "",
+                detail=self._params.get_detail_level(),
+                refinement_zones=self._gmsh_refinement_zones(),
+                scale=self._params.get_scale_factor(),
+            )
         except Exception as exc:
-            logger.debug("Automatic mesher: OpenFOAM check failed: %s", exc)
-        try:
-            from polyfoammesh.commercial.autopoly_bridge import create_mesher
-            if create_mesher() is not None:
-                return "autopoly"
-        except Exception as exc:
-            logger.debug("Automatic mesher: autopoly unavailable: %s", exc)
-        return "gmsh_direct_poly"  # our Polymesh — always polyhedral
+            logger.warning("Polymesh auto preflight failed: %s", exc)
+            _pre = None
+        if _pre is None:
+            plan_chain = ["gmsh_direct_poly"]
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto: preflight unavailable -> "
+                "GMSH default (declared)."
+            )
+        else:
+            _plan = choose_polymesh_engine(_pre)
+            self._auto_engine_plan = _plan
+            plan_chain = _plan.chain()
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto: primary={_plan.primary} "
+                f"fallbacks={[f for f in (_plan.fallback1, _plan.fallback2) if f]} "
+                f"({_plan.reason}) "
+                f"[watertight={_pre.watertight} suffix={_pre.suffix or '?'} "
+                f"pytetwild={_pre.fTetWild_available}]"
+            )
+        self._auto_engine_chain_cache = plan_chain
+        self._auto_engine_used = [plan_chain[0]]
+        self._auto_engine_results = []
+        return plan_chain[0]
+
+    def _auto_engine_chain(self) -> list:
+        """Attempt order of the current auto run (for logs/tests)."""
+        return list(getattr(self, "_auto_engine_chain_cache", []))
+
+    def _auto_engine_remaining(self) -> list:
+        """Fallback keys not attempted yet in the current auto run."""
+        used = set(getattr(self, "_auto_engine_used", []))
+        return [k for k in self._auto_engine_chain() if k not in used]
+        # (Old OF-availability auto retired in W18: cfMesh is now a
+        # separate visible CTA, never an auto pick.)
 
     def _log_substitution(self, msg: str) -> None:
         """Surface a clear, visible notice when the GUI silently substitutes
@@ -2198,41 +2230,23 @@ class MainWindow(QMainWindow):
         self._refresh_workflow(sizing_ready=True)
 
         mesher_type = self._params.get_mesher_type()
+        # W18: tracks whether THIS run started as Polymesh auto (fallback
+        # chain must not leak into explicit runs).
+        self._auto_run_active = (mesher_type == "auto")
         if mesher_type == "auto":
+            # W18: fresh user run clears any previous auto chain; a
+            # fallback restart (self._auto_restarting) keeps it.
+            if not getattr(self, "_auto_restarting", False):
+                self._auto_forced_key = None
+                self._auto_engine_plan = None
+                self._auto_engine_chain_cache = []
+                self._auto_engine_used = []
+            else:
+                self._auto_restarting = False
             mesher_type = self._resolve_auto_mesher()
-            _friendly = {
-                "cfmesh": (
-                    "Cartesian cfMesh (WSL2)" if sys.platform == "win32"
-                    else "Cartesian cfMesh (OpenFOAM)"
-                ),
-                "autopoly": "Autopoly",
-                "gmsh_direct_poly": "Polymesh (our poly mesher)",
-                "gmsh_direct": "FEM Tetra (GMSH)",
-            }
             self._log.append_log(
-                f"{Tag.CASE} Automatic: using {_friendly.get(mesher_type, mesher_type)}."
+                f"{Tag.CASE} Polymesh auto: using {mesher_type}."
             )
-            if mesher_type == "cfmesh" and not self._params.get_poly_conversion():
-                # "Automatic" should mean "give me a solid polyhedral mesh"
-                # without an extra manual step — cfMesh alone produces a
-                # hex-dominant mesh; polyDualMesh conversion is what
-                # actually makes it polyhedral (verified: clean checkMesh
-                # pass on the same curved geometry autopoly still struggles
-                # with). Only auto-enables it here, never overriding an
-                # explicit user choice when cfMesh is picked directly.
-                self._params._poly_check.setChecked(True)
-                logger.info(
-                    "Automatic mesher resolved to cfmesh — auto-enabling polyDualMesh conversion."
-                )
-                self._log.append_log(
-                    f"{Tag.CASE} Automatic: enabling polyhedral conversion (polyDualMesh)."
-                )
-            # NOTE: _resolve_auto_mesher() now returns "gmsh_direct_poly"
-            # (our Polymesh) as its final fallback, never plain
-            # "gmsh_direct" — so Automatic always produces a polyhedral
-            # mesh; the explicit "FEM Tetra (GMSH)" button is the only way
-            # to ask for pure tetrahedra, and that explicit choice is
-            # respected (no auto-enabling of the poly conversion).
         elif mesher_type == "auto_tet":
             # W10.2 source policy (opt-in): choose a tet SOURCE, not the
             # legacy "automatic mesher" above.  The explicit Polymesh /
@@ -3673,6 +3687,22 @@ class MainWindow(QMainWindow):
             )
             self._start_gmsh_volume_worker(ctx["step_path"], my_id)
             return
+        # W18: same pattern for Polymesh auto (multi-fallback chain).
+        _remaining = self._auto_engine_remaining()
+        if _remaining and getattr(self, "_current_mesher_type", "") in self._auto_engine_chain():
+            _target = _remaining[0]
+            self._auto_engine_used.append(_target)
+            self._auto_forced_key = _target
+            self._current_mesher_type = _target
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto fallback: tet stage failed -> "
+                f"{_target} (chain: {self._auto_engine_chain()})."
+            )
+            self._log_substitution(
+                f"Polymesh auto tet fallback -> {_target}."
+            )
+            self._start_gmsh_volume_worker(ctx["step_path"], my_id)
+            return
         is_ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
         _label = "fTetWild" if is_ftet else "GMSH"
 
@@ -4520,6 +4550,45 @@ class MainWindow(QMainWindow):
             on_failed=on_failed,
         )
 
+    def _maybe_auto_checkmesh_fallback(self, report, payload) -> bool:
+        """W18: restart an auto run with the next chain engine on FAIL.
+
+        Only fires for runs that started as Polymesh auto, with unused
+        fallbacks left, on an UNACCEPTED checkMesh FAIL (a user-accepted
+        residual is final — no second-guessing).  Returns True when a
+        fallback restart was launched; the caller must return immediately
+        (the new run owns the workflow from there).
+        """
+        if not getattr(self, "_auto_run_active", False):
+            return False
+        remaining = self._auto_engine_remaining()
+        if not remaining:
+            return False
+        try:
+            accepted = (payload.get("structured") or {}).get("acceptance") == "accepted"
+        except Exception:
+            accepted = False
+        if accepted:
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto: checkMesh failure accepted, "
+                "chain stops (accepted residual is final)."
+            )
+            return False
+        target = remaining[0]
+        self._auto_engine_used.append(target)
+        self._auto_forced_key = target
+        self._auto_restarting = True
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto fallback: checkMesh "
+            f"{getattr(report, 'status', 'FAIL')} -> {target} "
+            f"(chain: {self._auto_engine_chain()})."
+        )
+        self._log_substitution(
+            f"Polymesh auto checkMesh fallback -> {target}."
+        )
+        self._on_run_meshing()
+        return True
+
     def _on_checkmesh_finished(self, report):
         # Stale guard: checkMesh was launched during a specific meshing
         # run; if a newer run already started, ignore this callback.
@@ -4541,6 +4610,17 @@ class MainWindow(QMainWindow):
             self._quality.clear_report()
             return
         self._quality.show_report(payload)
+        # W18: record every auto attempt outcome (keep-best provenance:
+        # first valid wins; exhausted chain reports the last verdict).
+        if getattr(self, "_auto_run_active", False):
+            try:
+                self._auto_engine_results.append((
+                    getattr(self, "_current_mesher_type", ""),
+                    bool(report.passed),
+                    int(getattr(report, "cells", 0) or 0),
+                ))
+            except Exception:
+                logger.debug("auto result record failed", exc_info=True)
         # W8: a Failed checkMesh is never just a banner.  Log the structured
         # defects/locations/acceptance from the same model the JSON carries.
         structured = payload.get("structured") or {}
@@ -4629,6 +4709,12 @@ class MainWindow(QMainWindow):
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
             self._status.showMessage("Mesh quality check failed")
+            # W18: Polymesh auto falls back on UNACCEPTED checkMesh FAILs
+            # while the chain has unused engines (keep-best: the first
+            # valid attempt wins and stops the chain; an exhausted chain
+            # falls through to the existing handling below).
+            if self._maybe_auto_checkmesh_fallback(report, payload):
+                return
             if getattr(self, "_current_mesher_type", "") == "bl_on_tets":
                 # The opt-in tet+prism mesh failed checkMesh.  Keep it and
                 # show the measured failure; never fall through to the
@@ -5040,8 +5126,33 @@ class MainWindow(QMainWindow):
             heartbeat_timeout_s=600.0,
         )
 
+    def _maybe_auto_dual_fallback(self, msg: str) -> bool:
+        """W18: restart an auto run with the next chain engine when the
+        dual converter fails.  Returns True when a fallback restart was
+        launched (caller must return immediately)."""
+        if not getattr(self, "_auto_run_active", False):
+            return False
+        remaining = self._auto_engine_remaining()
+        if not remaining:
+            return False
+        target = remaining[0]
+        self._auto_engine_used.append(target)
+        self._auto_forced_key = target
+        self._auto_restarting = True
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto fallback: dual invalid ({msg}) -> "
+            f"{target} (chain: {self._auto_engine_chain()})."
+        )
+        self._log_substitution(
+            f"Polymesh auto dual fallback -> {target}."
+        )
+        self._on_run_meshing()
+        return True
+
     def _on_gmsh_polydual_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
+        if self._maybe_auto_dual_fallback(msg):
+            return
         self._log.append_log(f"[poly] FAILED: {msg}")
         QMessageBox.warning(
             self, "Polyhedral Conversion Failed",
@@ -5062,6 +5173,8 @@ class MainWindow(QMainWindow):
         # DualPolyResult: read `success`/`errors` first, then the counts.
         if not result.success:
             err = "; ".join(result.errors) if result.errors else "unknown error"
+            if self._maybe_auto_dual_fallback(err):
+                return
             self._log.append_log(f"[poly] FAILED: {err}")
             QMessageBox.warning(
                 self, "Polyhedral Conversion Failed",

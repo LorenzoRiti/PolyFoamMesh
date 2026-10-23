@@ -1650,3 +1650,33 @@ BACKLOG_1/2/3 non servono (post-M4 per definizione); REORG già chiuso
 (`18e9f28`), nessun resto.
 Gate finale: suite fast 1719 passed / 2 skipped / 22 deselected /
 1 xfailed; ruff green.
+
+## 2026-10-24 - W18: Polymesh auto + cfMesh visibili - PARTIAL
+
+Diagnosi `notes/w18_auto_polymesh_diagnosis.md` (+tabella vincitori),
+previsione `notes/w18_auto_polymesh_reasoning.md`, tabella misurata
+`notes/w18_auto_table_results.md` (JSON in `C:\polyfoammesh_w18\`).
+
+UI: due CTA (Polymesh=auto default, cfMesh hex esplicito), Engine combo
+rimosso; preset/progetti espliciti rispettati. Policy auto
+deterministica per feature (watertight STL economico; STEP salta il
+probe, dichiarato); default GMSH-first + fallback fTet; bl_on_tets
+mai in auto. Validità tet = 3D presenti (fail veloce + fallback).
+Fallback tet/dual/checkMesh-non-accettato con catena loggata;
+keep-best (primo valido vince). Test: 24 registry+policy+validity,
+preset/config adeguati; suite fast 1738 passed, ruff green.
+
+Tabella §3.4 (stessi settings auto vs espliciti): dirty_cad AUTO VINCE
+(fTet Mesh OK, GMSH non carica); cylinder/cube_duct Mesh OK da primary
+(vince/pareggia); venturi/concave/mini_valve/thin_gap PAREGGIO (tutti
+Failed/invalidi, wall03 resta recipe noto mini_valve fuori tabella).
+
+R1 NON raggiunto (criterio 0pyr/skew≤1/Failed≤1/cov≥98%): STEP 30/09
+senza solidi (GMSH impossibile, provato); fTet 18/05 dual 58 pyr → BL
+100% → Failed 3 (NO 141.1); GMSH 18/05 dual 761K poli (531 pyr) → BL
+rifiutato → Failed 3; wall03-recipe dual invalido; medium 7.1M tet
+oltre muro RAM. Solo direct-BL 1L (W13 opt-in) centra il criterio —
+fuori auto per design. Azione: ridefinire criterio o ammettere
+bl_on_tets per R1 (decisione utente); niente promozione.
+Verdetto lane: PARTIAL (R1 box unchecked). M3+M4 resta PARTIAL.
+Commit locale dedicato; user-files e PDF mai staged.

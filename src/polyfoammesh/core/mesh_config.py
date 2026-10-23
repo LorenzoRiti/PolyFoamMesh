@@ -27,6 +27,7 @@ from typing import Any, Mapping
 
 from polyfoammesh.core.bl_config import BLConfig
 from polyfoammesh.core.mesher_registry import (
+    DEFAULT_MESHER_KEY,
     LEGACY_ALIASES,
     MESHERS,
     normalize_mesher_key,
@@ -131,7 +132,9 @@ class MeshConfig:
     """Portable mesh configuration (no geometry-specific cell sizes)."""
 
     detail_slider: int = 10
-    mesher: str = "gmsh_direct_poly"
+    #: W18: geometry auto is the default; the legacy GMSH path stays
+    #: selectable from CLI/config for debug.
+    mesher: str = "auto"
     adaptive_sizing: bool = True
     ftet_eps_frac: float = 0.15
     ftet_adaptive: bool = True
@@ -214,8 +217,8 @@ class MeshConfig:
 
         mesher = str(self.mesher or "").strip()
         if mesher not in MESHERS:
-            _warn("mesher", self.mesher, "gmsh_direct_poly", "is not a known mesher")
-            mesher = "gmsh_direct_poly"
+            _warn("mesher", self.mesher, DEFAULT_MESHER_KEY, "is not a known mesher")
+            mesher = DEFAULT_MESHER_KEY
 
         eps = _as_float(self.ftet_eps_frac)
         if eps is None:

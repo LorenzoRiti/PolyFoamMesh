@@ -37,8 +37,6 @@ from polyfoammesh.core.bl_presets import BLPresetStore
 from polyfoammesh.core.mesh_config import MeshConfig, target_cells_for_slider
 from polyfoammesh.core.mesher_registry import (
     DEFAULT_MESHER_KEY,
-    ENGINE_KEYS,
-    MODE_BY_KEY,
     normalize_mesher_key,
 )
 from polyfoammesh.core.mesh_presets import (
@@ -526,9 +524,9 @@ class ParamsPanel(QWidget):
             )
             if checked:
                 btn.setChecked(True)
-            # W13: the historical engine buttons stay as lossless, tested
-            # controls but are not separate CTAs; the visible Polymesh CTA
-            # and the Advanced Engine selector replace them.
+            # W18: the historical engine buttons stay as hidden lossless,
+            # tested controls; the two visible CTAs (Polymesh auto, cfMesh)
+            # replace the removed Advanced Engine selector.
             btn.setVisible(visible)
             return btn
 
@@ -537,37 +535,38 @@ class ParamsPanel(QWidget):
         # resolved via PATH. Windows text kept byte-identical.
         _w = _platform_mesher_wording()
 
-        # Polymesh is the DEFAULT path and comes FIRST (user request: the
-        # poly route is the product's core, cfMesh is the alternative).
+        # W18: two visible CTAs — Polymesh (geometry auto, the default)
+        # and Cartesian cfMesh (explicit hex path).  Historical engines
+        # stay as hidden lossless controls; there is no manual Engine
+        # selector anymore (debug only via CLI/config).
         _add_mesher_btn(
             "Polymesh",
-            "gmsh_direct_poly",
-            "One CTA for the polyhedral family. The engine (legacy GMSH\n"
-            "tet→poly, fTetWild, Auto, BL on tets) is chosen in Advanced\n"
-            "→ Polymesh engine; cfMesh/FEM tetra remain legacy engines\n"
-            "there for compatibility, not separate CTAs.",
+            "auto",
+            "Automatic polyhedral mesher: picks the engine from the "
+            "geometry (measured policy, GMSH-first with fTetWild "
+            "fallback, keep-best). No manual engine choice.",
             checked=True,
         )
         _add_mesher_btn(
             "Polymesh experimental (fTetWild)",
             "ftetwild_poly",
-            "Legacy hidden control kept lossless. Reachable from\n"
-            "Advanced → Polymesh engine → fTetWild.",
+            "Legacy hidden control kept lossless. Explicit fTetWild path, "
+            "also reachable from CLI/config.",
             visible=False,
         )
         _add_mesher_btn(
             "Auto (GMSH surface + fTetWild volume)",
             "auto_tet",
-            "Legacy hidden control kept lossless. Reachable from\n"
-            "Advanced → Polymesh engine → Auto.",
+            "Legacy hidden control kept lossless. Explicit hybrid source "
+            "policy, also reachable from CLI/config.",
             visible=False,
         )
         _add_mesher_btn(
             f"Cartesian cfMesh ({_w['of_req']})",
             "cfmesh",
-            f"Legacy hidden control kept lossless. Reachable from\n"
-            f"Advanced → Polymesh engine → Cartesian cfMesh. Requires {_w['of_via']}.",
-            visible=False,
+            "Hex-dominant OpenFOAM mesh via cartesianMesh "
+            f"({ _w['of_via'] }). Separate path, chosen explicitly.",
+            visible=True,
         )
         # "FEM Tetra (GMSH)" was removed (user request): a pure tet mesh for
         # FEM solvers was a niche that duplicated the GMSH stage; the
@@ -691,39 +690,6 @@ class ParamsPanel(QWidget):
             "Use only when a polyhedral topology is required."
         )
         adv_layout.addWidget(self._poly_check)
-
-        # W13: one mesher CTA, all historical engines preserved.  This
-        # selector is inside Advanced, not a second row of CTA buttons.
-        engine_group = QGroupBox("Polymesh engine (Advanced)")
-        engine_form = QFormLayout(engine_group)
-        self._engine_combo = QComboBox()
-        for _key in ENGINE_KEYS:
-            _mode = MODE_BY_KEY[_key]
-            self._engine_combo.addItem(_mode.label, _key)
-            self._engine_combo.setItemData(
-                self._engine_combo.count() - 1,
-                f"{_mode.description}\n"
-                f"legacy key: {_mode.key}",
-                Qt.ToolTipRole,
-            )
-        _default_idx = self._engine_combo.findData(DEFAULT_MESHER_KEY)
-        if _default_idx >= 0:
-            self._engine_combo.setCurrentIndex(_default_idx)
-        self._engine_combo.currentIndexChanged.connect(self._on_engine_changed)
-        engine_form.addRow("Engine:", self._engine_combo)
-        _engine_note = QLabel(
-            "One CTA, every historical path. Auto is opt-in until its "
-            "corpus A/B is green; the measured legacy GMSH→dual path is "
-            "the default. cfMesh and FEM tetra remain here for compatibility."
-        )
-        _engine_note.setWordWrap(True)
-        _engine_note.setStyleSheet(f"color:{COLOR_TEXT_DIM};")
-        engine_form.addRow(_engine_note)
-        adv_layout.addWidget(engine_group)
-
-        # Sync the visible CTA and the poly-conversion checkbox to the
-        # engine selected at startup.
-        self._on_engine_changed()
 
         # Cell sizes are derived from the Mesh Fineness slider (single
         # control). They are shown here read-only so the user always sees
@@ -1316,18 +1282,21 @@ class ParamsPanel(QWidget):
         cfg = config
         cfg.raise_if_invalid()
         self._detail_slider.setValue(int(cfg.detail_slider))
+        # W18: two visible CTAs, no Engine combo.  Keys with a button
+        # (auto, cfmesh, hidden legacy) click through normally; explicit
+        # keys without a button (bl_on_tets, gmsh_direct) are respected
+        # via _explicit_mesher_key — the saved choice is never rewritten.
+        self._explicit_mesher_key = None
         for btn, key in getattr(self, "_mesher_keys", []):
             if key == cfg.mesher:
                 btn.setChecked(True)
                 self._on_mesher_button_clicked(btn)
                 break
-        if hasattr(self, "_engine_combo"):
-            idx = self._engine_combo.findData(cfg.mesher)
-            if idx >= 0 and self._engine_combo.currentIndex() != idx:
-                self._engine_combo.blockSignals(True)
-                self._engine_combo.setCurrentIndex(idx)
-                self._engine_combo.blockSignals(False)
-                self._on_engine_changed()
+        else:
+            self._explicit_mesher_key = cfg.mesher
+            for btn, key in getattr(self, "_mesher_keys", []):
+                btn.setChecked(key == "auto")
+            self._on_mesher_changed(cfg.mesher)
         if hasattr(self, "_adaptive_sizing_check"):
             self._adaptive_sizing_check.setChecked(bool(cfg.adaptive_sizing))
         if hasattr(self, "_ftet_eps_frac"):
@@ -2373,13 +2342,13 @@ class ParamsPanel(QWidget):
             self._tabs.setCurrentIndex(index)
 
     def get_mesher_type(self) -> str:
-        # W13: the Advanced Engine selector is authoritative.  The hidden
-        # historical buttons remain for compatibility/tests, but cannot
-        # silently diverge from the visible choice.
-        if hasattr(self, "_engine_combo"):
-            return normalize_mesher_key(
-                self._engine_combo.currentData(), DEFAULT_MESHER_KEY,
-            )
+        # W18: two visible CTAs, no Engine combo.  The checked button
+        # wins; an explicit saved key without a button (bl_on_tets,
+        # gmsh_direct) is respected via _explicit_mesher_key until the
+        # user clicks a CTA (which clears the override).
+        override = getattr(self, "_explicit_mesher_key", None)
+        if override:
+            return normalize_mesher_key(override, DEFAULT_MESHER_KEY)
         for btn, key in getattr(self, "_mesher_keys", []):
             if btn.isChecked():
                 return key
@@ -2664,8 +2633,6 @@ class ParamsPanel(QWidget):
         self._unit_selector.setEnabled(enabled)
         for btn, _key in getattr(self, "_mesher_keys", []):
             btn.setEnabled(enabled)
-        if hasattr(self, "_engine_combo"):
-            self._engine_combo.setEnabled(enabled)
         self._parallel_check.setEnabled(enabled)
         self._parallel_cores.setEnabled(enabled and self._parallel_check.isChecked())
 
@@ -2705,55 +2672,29 @@ class ParamsPanel(QWidget):
         return ("balanced", None)
 
     def _on_mesher_button_clicked(self, clicked_btn: QPushButton) -> None:
-        """Refresh visual state and keep the Advanced selector in sync."""
+        """Refresh visual state and apply the shared UI rules."""
         clicked_key = next(
             (k for b, k in self._mesher_keys if b is clicked_btn),
             None,
         )
-        # Both the visible CTA and the hidden historical buttons map to
-        # their key; every old path stays invocable.  The Advanced selector
-        # is the normal way to choose a non-default engine.
-        if clicked_key and hasattr(self, "_engine_combo"):
-            idx = self._engine_combo.findData(clicked_key)
-            if idx >= 0:
-                self._engine_combo.blockSignals(True)
-                self._engine_combo.setCurrentIndex(idx)
-                self._engine_combo.blockSignals(False)
+        # A user click is an explicit choice: it clears any restored
+        # explicit key without a button (bl_on_tets/gmsh_direct).
+        self._explicit_mesher_key = None
         for b, _k in self._mesher_keys:
             b.setStyleSheet(_MESHER_BTN_ON if b is clicked_btn else _MESHER_BTN_OFF)
         self._on_mesher_changed(self.get_mesher_type())
 
-    def _on_engine_changed(self, *_args) -> None:
-        """Drive the hidden legacy buttons and the shared UI rules."""
-        if not hasattr(self, "_engine_combo"):
-            return
-        key = normalize_mesher_key(
-            self._engine_combo.currentData(), DEFAULT_MESHER_KEY,
-        )
-        matched = False
-        for btn, btn_key in self._mesher_keys:
-            selected = btn_key == key
-            btn.setChecked(selected)
-            btn.setStyleSheet(
-                _MESHER_BTN_ON if selected else _MESHER_BTN_OFF
-            )
-            matched = matched or selected
-        if not matched and getattr(self, "_mesher_keys", None):
-            # Keys with no legacy button (bl_on_tets) still belong to the
-            # Polymesh CTA; keep that single visible control checked.
-            self._mesher_keys[0][0].setChecked(True)
-        self._on_mesher_changed(key)
-
     def _on_mesher_changed(self, key: str) -> None:
-        # "Polymesh" (gmsh_direct_poly) forces the poly conversion ON and
-        # hides the checkbox (nothing to forget); "FEM Tetra" (gmsh_direct)
-        # forces it OFF; "Cartesian cfMesh" shows the manual checkbox,
+        # "Polymesh" (auto) and the explicit poly paths force the poly
+        # conversion ON and hide the checkbox (nothing to forget);
+        # "FEM Tetra" (gmsh_direct, CLI/config only) forces it OFF;
+        # "Cartesian cfMesh" shows the manual checkbox,
         # UNCHECKED by default (user request: with cfMesh the conversion
         # must not be ticked out of the box - the hex-dominant mesh is the
         # point there; the user enables the poly dual explicitly if wanted).
         # The experimental fTetWild Polymesh behaves like Polymesh: its
         # whole point is feeding the poly dual from a different tet mesher.
-        if key in ("gmsh_direct_poly", "ftetwild_poly", "auto_tet"):
+        if key in ("auto", "gmsh_direct_poly", "ftetwild_poly", "auto_tet"):
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(True)
         elif key in ("gmsh_direct", "bl_on_tets"):

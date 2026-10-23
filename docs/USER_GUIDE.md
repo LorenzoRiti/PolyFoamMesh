@@ -87,18 +87,25 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   mesh follows the CAD geometry (exact curvature, sharp edges, narrow
   passages) within the cell budget. How tightly it follows curvature is
   derived automatically from the Detail slider - there is no second knob.
-- **Polymesh CTA and Engine (Advanced)**: the main screen has one visible
-  mesher button, **Polymesh**. Its engine is selected in
-  **Advanced -> Polymesh engine**: `Legacy tet -> poly` (the measured
-  default), `Auto`, `fTetWild`, `BL on tets (prototype)`, `FEM tetra` or
-  `Cartesian cfMesh`. The old experimental buttons are intentionally not
-  separate CTAs; every historical engine remains reachable and tested.
-  Auto is opt-in until its full corpus A/B is green; selecting any engine
-  is recorded in the log (`Mesher:` and the BL provenance).
+- **Polymesh (auto) and cfMesh CTAs**: the main screen shows two visible
+  mesher buttons. **Polymesh** runs the geometry auto: it measures the
+  input (watertight, suffix, patches, size, refinement zones, pytetwild
+  availability) and picks the tet engine from a measured policy
+  (GMSH-first with fTetWild fallback, keep-best across the chain) —
+  there is no manual engine selector anymore. If the first engine fails
+  or its checkMesh is unaccepted, the next one runs automatically and
+  every attempt, reason and fallback is logged (`Mesher:`,
+  `Polymesh auto:`, BL provenance). **Cartesian cfMesh** is the separate
+  explicit hex path (requires WSL2+OpenFOAM on Windows, native OpenFOAM
+  on Linux). Legacy engines (`Legacy tet -> poly`, `Auto`,
+  `fTetWild`, `BL on tets`, `FEM tetra`) stay in code, CLI and config —
+  only the UI shortcut was removed; debug via CLI/config.
   The engine choices are:
-  - **Legacy tet -> poly (GMSH)**: the default path - GMSH tetrahedra ->
-    polyhedral dual (STAR-CCM+ style topology) with boundary layers. No WSL
-    needed.
+  - **Polymesh (auto)**: the default path - geometry auto picks GMSH
+    tetrahedra or fTetWild (see above) -> polyhedral dual
+    (STAR-CCM+ style topology) with boundary layers. No WSL needed.
+  - **Legacy tet -> poly (GMSH)**: same pipeline with the engine pinned
+    (CLI/config debug only).
   - **Polymesh fTetWild**: same poly pipeline, but the tet
     stage runs [fTetWild](https://github.com/wildmeshing/fTetWild)
     instead of GMSH (experimental, issue #12). Requires the optional

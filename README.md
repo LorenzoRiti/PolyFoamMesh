@@ -28,10 +28,11 @@ window:
   <img src="docs/assets/boundary-layers.png" alt="Boundary layer configuration panel" width="49%">
 </p>
 
-*Left: the mesher selector. Since W13 the main screen shows a single
-**Polymesh** button (the engine — legacy GMSH→dual, fTetWild, Auto,
-BL-on-tets, cfMesh, FEM tetra — lives in Advanced → Polymesh engine);
-screenshots below predate that unification but the BL panel on the right
+*Left: the mesher selector. Since W18 the main screen shows two buttons —
+**Polymesh** (geometry auto: picks the tet engine from the measured
+input, GMSH-first with fTetWild fallback) and **cfMesh** (explicit hex
+path); the manual Advanced engine selector was removed. Screenshots
+below predate that change but the BL panel on the right
 is current. Right: the boundary-layer panel, with
 a y+-driven first-layer thickness calculator.*
 

@@ -1,4 +1,4 @@
-"""W13: one Polymesh CTA, one lossless mesher registry, working migration."""
+"""W18: two visible CTAs (Polymesh auto + cfMesh), no manual Engine combo."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,6 @@ from polyfoammesh.core.mesh_config import (  # noqa: E402
 from polyfoammesh.core.mesh_presets import MeshPresetStore  # noqa: E402
 from polyfoammesh.core.mesher_registry import (  # noqa: E402
     DEFAULT_MESHER_KEY,
-    ENGINE_KEYS,
     MESHERS,
     MODE_BY_KEY,
     MODES,
@@ -42,12 +41,13 @@ def panel(app):
     return ParamsPanel()
 
 
-def test_registry_is_lossless_and_has_one_default():
+def test_registry_is_lossless_and_auto_is_the_default():
     assert len(MESHERS) == len(set(MESHERS))
     assert set(MODE_BY_KEY) == set(MESHERS)
     assert len(MODES) == len(MESHERS)
     assert sum(m.default for m in MODES) == 1
-    assert MODE_BY_KEY[DEFAULT_MESHER_KEY].default is True
+    assert DEFAULT_MESHER_KEY == "auto"
+    assert MODE_BY_KEY["auto"].default is True
     for old in (
         "gmsh_direct_poly", "ftetwild_poly", "auto_tet", "cfmesh",
         "gmsh_direct", "bl_on_tets",
@@ -57,84 +57,95 @@ def test_registry_is_lossless_and_has_one_default():
 
 def test_legacy_aliases_are_migrated_not_dropped():
     assert normalize_mesher_key("autopoly") == "gmsh_direct_poly"
-    assert normalize_mesher_key("poly") == "gmsh_direct_poly"
     cfg, warnings = MeshConfig.from_mapping_tolerant({"mesher": "autopoly"})
     assert cfg.mesher == "gmsh_direct_poly"
     assert not warnings
+    assert normalize_mesher_key("auto") == "auto"
 
 
-def test_ui_has_exactly_one_visible_polymesh_cta(panel):
-    visible = [b for b, _k in panel._mesher_keys if not b.isHidden()]
-    assert len(visible) == 1
-    assert visible[0].text() == "Polymesh"
-    hidden = {k for b, k in panel._mesher_keys if b.isHidden()}
-    assert hidden == {"ftetwild_poly", "auto_tet", "cfmesh"}
-    assert "gmsh_direct" not in {k for _b, k in panel._mesher_keys}
+def test_ui_has_exactly_two_visible_ctas(panel):
+    visible = {k for b, k in panel._mesher_keys if not b.isHidden()}
+    assert visible == {"auto", "cfmesh"}
+    texts = {b.text() for b, _k in panel._mesher_keys if not b.isHidden()}
+    assert any("Polymesh" in t for t in texts)
+    assert any("cfMesh" in t for t in texts)
 
 
-def test_advanced_engine_lists_every_historical_path(panel):
-    combo_keys = {
-        panel._engine_combo.itemData(i)
-        for i in range(panel._engine_combo.count())
-    }
-    assert combo_keys == set(ENGINE_KEYS)
-    assert set(MESHERS) == combo_keys
+def test_no_manual_engine_combo(panel):
+    assert not hasattr(panel, "_engine_combo")
 
 
-def test_engine_selector_drives_poly_checkbox_and_dispatch(panel):
-    for key in ENGINE_KEYS:
-        idx = panel._engine_combo.findData(key)
-        panel._engine_combo.setCurrentIndex(idx)
-        assert panel.get_mesher_type() == key
-        if key == "bl_on_tets":
-            assert panel._poly_check.isHidden()
-            assert not panel._poly_check.isChecked()
-            assert panel.get_poly_conversion() is False
-        elif key in ("gmsh_direct_poly", "ftetwild_poly", "auto_tet"):
-            assert panel._poly_check.isHidden()
-            assert panel._poly_check.isChecked()
+def test_polymesh_cta_is_auto_and_default(panel):
+    buttons = {k: b for b, k in panel._mesher_keys}
+    assert panel.get_mesher_type() == "auto"
+    buttons["auto"].click()
+    assert panel.get_mesher_type() == "auto"
+
+
+def test_cfmesh_cta_selects_hex_path(panel):
+    buttons = {k: b for b, k in panel._mesher_keys}
+    buttons["cfmesh"].click()
+    assert panel.get_mesher_type() == "cfmesh"
 
 
 def test_hidden_legacy_buttons_are_still_invocable(panel):
     buttons = {k: b for b, k in panel._mesher_keys}
     buttons["ftetwild_poly"].click()
     assert panel.get_mesher_type() == "ftetwild_poly"
-    buttons["cfmesh"].click()
-    assert panel.get_mesher_type() == "cfmesh"
-    buttons["gmsh_direct_poly"].click()
-    assert panel.get_mesher_type() == "gmsh_direct_poly"
+    buttons["auto_tet"].click()
+    assert panel.get_mesher_type() == "auto_tet"
+    buttons["auto"].click()
+    assert panel.get_mesher_type() == "auto"
 
 
-def test_bl_on_tets_round_trips_through_config_preset_and_cli(tmp_path):
+def test_auto_forces_poly_conversion_on_like_polymesh(panel):
+    panel._on_mesher_changed("auto")
+    assert panel._poly_check.isChecked()
+    assert panel._poly_check.isHidden()
+
+
+def test_explicit_key_without_button_is_respected(panel):
+    """Projects saved with bl_on_tets keep it; a CTA click clears it."""
     cfg = MeshConfig(mesher="bl_on_tets")
-    assert MeshConfig.from_mapping_tolerant(cfg.to_mapping())[0].mesher == (
-        "bl_on_tets"
-    )
-    store = MeshPresetStore(tmp_path / "presets.json")
-    store.save("BL tet", cfg)
-    assert store.get("BL tet").mesher == "bl_on_tets"
-
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    add_cli_arguments(parser)
-    args = parser.parse_args(["--mesher", "bl_on_tets"])
-    assert config_from_cli_args(args).mesher == "bl_on_tets"
+    panel.set_mesh_config(cfg)
+    assert panel.get_mesher_type() == "bl_on_tets"
+    assert not panel.get_poly_conversion()
+    buttons = {k: b for b, k in panel._mesher_keys}
+    buttons["auto"].click()
+    assert panel.get_mesher_type() == "auto"
 
 
-def test_project_restore_selects_the_advanced_engine(panel):
+def test_project_restore_selects_saved_key(panel):
     class _Settings:
-        def __init__(self):
+        def __init__(self, mesher):
             self.values = {
                 "params/mesh_config": json.dumps(
-                    MeshConfig(mesher="bl_on_tets").to_mapping()
+                    MeshConfig(mesher=mesher).to_mapping()
                 )
             }
 
         def value(self, key, default=None, type=None):  # noqa: A002
             return self.values.get(key, default)
 
-    panel.restore_params(_Settings())
-    assert panel.get_mesher_type() == "bl_on_tets"
-    assert panel._engine_combo.currentData() == "bl_on_tets"
-    assert panel.get_poly_conversion() is False
+    panel.restore_params(_Settings("auto"))
+    assert panel.get_mesher_type() == "auto"
+    panel.restore_params(_Settings("gmsh_direct"))
+    assert panel.get_mesher_type() == "gmsh_direct"
+
+
+def test_legacy_and_auto_round_trip_through_config_preset_and_cli(tmp_path):
+    for key in ("auto", "gmsh_direct_poly", "bl_on_tets", "cfmesh"):
+        cfg = MeshConfig(mesher=key)
+        assert MeshConfig.from_mapping_tolerant(cfg.to_mapping())[0].mesher == key
+    store = MeshPresetStore(tmp_path / "presets.json")
+    store.save("auto mesh", MeshConfig(mesher="auto"))
+    assert store.get("auto mesh").mesher == "auto"
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    add_cli_arguments(parser)
+    args = parser.parse_args(["--mesher", "auto"])
+    assert config_from_cli_args(args).mesher == "auto"
+    args = parser.parse_args(["--mesher", "gmsh_direct_poly"])
+    assert config_from_cli_args(args).mesher == "gmsh_direct_poly"

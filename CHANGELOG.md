@@ -7,6 +7,35 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL
+- **UI**: due CTA visibili — `Polymesh` (auto, default) e `cfMesh`
+  (hex esplicito); selettore Engine rimosso (test riscritti, nessun
+  motore/test cancellato). Progetti/preset espliciti migrano e restano
+  rispettati (`_explicit_mesher_key`).
+- **Auto per geometria**: `choose_polymesh_engine` deterministica su
+  preflight misurato (watertight STL via trimesh economico, suffisso,
+  pytetwild; STEP salta il probe — dichiarato). Default GMSH-first con
+  fallback fTetWild; `bl_on_tets` mai in auto (W13 confermato). Validità
+  tet = 3D elements presenti (`_has_volume_elements`, msh2/msh4):
+  output solo-superficie = fail veloce con fallback, non morte al convert.
+- **Fallback chain**: tet-fail, dual-invalido e checkMesh Failed
+  non-accettato rilanciano il motore successivo con catena loggata;
+  il primo valido vince. Provenienza in log/report.
+- **Tabella §3.4 misurata** (`notes/w18_auto_table_results.md`,
+  `benchmarks/`+`C:\polyfoammesh_w18\w18_table.json`): auto vince o
+  pareggia il miglior esplicito su 7/8 casi (dirty_cad WIN via fTet;
+  cylinder/cube_duct Mesh OK; resto pareggi su Failed/invalidi con
+  stessi settings; wall03 resta il noto recipe mini_valve).
+- **R1 NON raggiunto** (criterio: 0 pyr / skew≤1 / Failed≤1 / cov≥98%):
+  STEP 30/09 senza solidi (GMSH impossibile, provato); fTet 18/05:
+  dual 58 pyr → BL 100% (58965 prismi) → checkMesh Failed 3 (NO 141.1,
+  skew 40.5); GMSH 18/05: dual 761K poli (531 pyr) → BL rifiutato →
+  dual-only Failed 3 (523 pyr, NO 105.3); wall03-recipe: dual invalido.
+  Mezzo medium (7.1M tet) oltre muro RAM (WALL-04). Solo il direct-BL
+  1L (W13, opt-in) centra il criterio — fuori auto per design.
+  Verdetto lane: PARTIAL (R1 box unchecked, dichiarato).
+- Gate: suite fast 1738 passed / ruff green; commit locale.
+
 ### Installer + release gate (W17) - 2026-10-23
 - **Executable release gate**: `tools/release_gate.py` with stages
   versions → spec-static → smoke → repo-clean → (opt-in) e2e-flow →

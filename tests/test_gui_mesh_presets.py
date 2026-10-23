@@ -104,7 +104,7 @@ def test_invalid_preset_clamps_and_project_stays_alive(panel, tmp_path):
     panel._refresh_mesh_presets()
     assert panel.apply_mesh_preset("bad") is True
     assert panel._detail_slider.value() == 20
-    assert panel.get_mesher_type() == "gmsh_direct_poly"
+    assert panel.get_mesher_type() == "auto"
     assert panel.get_bl_config().n_layers == 40
 
 

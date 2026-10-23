@@ -39,17 +39,17 @@ def _buttons(panel) -> dict:
     return {k: b for b, k in panel._mesher_keys}
 
 
-def test_default_mesher_is_polymesh_and_fem_is_gone(panel):
-    # Polymesh is the default (user request); cfMesh is the alternative.
-    assert panel.get_mesher_type() == "gmsh_direct_poly"
+def test_default_mesher_is_polymesh_auto_and_fem_is_gone(panel):
+    # Polymesh auto is the default (W18); cfMesh is the visible alternative.
+    assert panel.get_mesher_type() == "auto"
     assert set(_buttons(panel)) == {
-        "cfmesh", "gmsh_direct_poly", "ftetwild_poly", "auto_tet",
+        "cfmesh", "auto", "ftetwild_poly", "auto_tet",
     }
     assert "gmsh_direct" not in _buttons(panel)
     # Polymesh first, its experimental fTetWild sibling second (issue #12),
     # the opt-in Auto source third, cfMesh last.
     assert [k for _b, k in panel._mesher_keys] == [
-        "gmsh_direct_poly", "ftetwild_poly", "auto_tet", "cfmesh",
+        "auto", "ftetwild_poly", "auto_tet", "cfmesh",
     ]
 
 
@@ -67,9 +67,9 @@ def test_experimental_ftetwild_forces_conversion_on_and_hides_checkbox(panel):
     assert panel._poly_check.isHidden()
 
 
-def test_cfd_poly_forces_conversion_on_and_hides_checkbox(panel):
-    _buttons(panel)["gmsh_direct_poly"].click()
-    assert panel.get_mesher_type() == "gmsh_direct_poly"
+def test_auto_poly_forces_conversion_on_and_hides_checkbox(panel):
+    _buttons(panel)["auto"].click()
+    assert panel.get_mesher_type() == "auto"
     assert panel._poly_check.isChecked()
     assert panel._poly_check.isHidden()
 
@@ -83,8 +83,8 @@ def test_switching_back_to_cfmesh_restores_checkbox(panel):
     # mesh is the point there; poly conversion is opt-in).
     assert not panel._poly_check.isHidden()
     assert not panel._poly_check.isChecked()
-    buttons["gmsh_direct_poly"].click()
-    assert panel.get_mesher_type() == "gmsh_direct_poly"
+    buttons["auto"].click()
+    assert panel.get_mesher_type() == "auto"
     assert panel._poly_check.isHidden()
     assert panel._poly_check.isChecked()
 

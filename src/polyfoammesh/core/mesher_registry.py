@@ -1,9 +1,10 @@
 """One lossless registry for the mesher keys used by the GUI, presets and CLI.
 
-W13 keeps every historical pipeline key.  The visible UI has one ``Polymesh``
-CTA; the advanced ``Engine`` selector and the CLI choose among these modes.
-Nothing is removed here: deleting a key from the UI must never delete the
-engine, its tests or its notes.
+W18 keeps every historical pipeline key.  The visible UI has two CTAs —
+``Polymesh`` (geometry auto, the default) and ``cfMesh`` (explicit hex);
+the Advanced Engine selector is removed (debug only via env/config/CLI).
+Deleting a key from the UI must never delete the engine, its tests or
+its notes.
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ class MesherMode:
 
 
 #: Every key accepted by ``MeshConfig``, the GUI and the CLI.  The order is
-#: the historical order plus the W13 opt-in engine at the end.
+#: the historical order plus the W13 opt-in engine and the W18 auto default.
 MESHERS: tuple[str, ...] = (
     "gmsh_direct_poly",
     "ftetwild_poly",
@@ -32,20 +33,28 @@ MESHERS: tuple[str, ...] = (
     "gmsh_direct",
     "auto_tet",
     "bl_on_tets",
+    "auto",
 )
 
-#: The measured default stays the legacy GMSH tet -> dual poly path.  W10.2
-#: ``auto_tet`` remains opt-in because its complete corpus A/B is not green
-#: yet; the default is evidence-driven, not the button hierarchy.
-DEFAULT_MESHER_KEY = "gmsh_direct_poly"
+#: The W18 measured default: geometry auto (table-driven policy, GMSH-first
+#: with fTetWild fallback).  The legacy GMSH tet -> dual path stays
+#: selectable from CLI/config for debug; it is no longer the default.
+DEFAULT_MESHER_KEY = "auto"
 
 MODES: tuple[MesherMode, ...] = (
+    MesherMode(
+        "auto",
+        "Polymesh (auto)",
+        "poly",
+        "Geometry auto: measured engine policy (GMSH-first, fTetWild "
+        "fallback, keep-best). No manual engine choice.",
+        default=True,
+    ),
     MesherMode(
         "gmsh_direct_poly",
         "Legacy tet → poly (GMSH)",
         "poly",
         "GMSH tetrahedra followed by the measured barycentric dual.",
-        default=True,
     ),
     MesherMode(
         "auto_tet",
@@ -97,18 +106,6 @@ LEGACY_ALIASES: dict[str, str] = {
     "polymesh": "gmsh_direct_poly",
 }
 
-#: Options shown inside ``Polymesh > Advanced > Engine``.  The last two are
-#: advanced-only legacy engines; they are not separate CTAs.
-ENGINE_KEYS: tuple[str, ...] = (
-    "gmsh_direct_poly",
-    "auto_tet",
-    "ftetwild_poly",
-    "bl_on_tets",
-    "gmsh_direct",
-    "cfmesh",
-)
-
-
 def normalize_mesher_key(key: object, default: str = DEFAULT_MESHER_KEY) -> str:
     """Map a stored/CLI key to a known key, preserving every legacy path."""
     raw = str(key or "").strip()
@@ -132,7 +129,7 @@ def is_polymesh_key(key: object) -> bool:
 
 
 __all__ = [
-    "DEFAULT_MESHER_KEY", "ENGINE_KEYS", "LEGACY_ALIASES", "MESHERS",
+    "DEFAULT_MESHER_KEY", "LEGACY_ALIASES", "MESHERS",
     "MODE_BY_KEY", "MODES", "MesherMode", "PolyMeshMode", "default_mode",
     "is_polymesh_key", "mode_for", "normalize_mesher_key",
 ]
