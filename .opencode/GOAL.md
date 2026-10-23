@@ -1588,3 +1588,37 @@ Gate: (in attesa - suite fast in corso).
   `ruff check src/ tests/` green. Commit W16 dedicato; PDF generato resta
   untracked, `benchmarks/run_comparison.py` + `tests/test_run_comparison.py`
   (modifiche utente preesistenti) mai toccati.
+
+## 2026-10-23 - W17: installer + release gate (M3, Exit M3)
+
+Diagnosi `notes/w17_installer_diagnosis.md`, previsione/misura in
+`notes/w17_installer_reasoning.md`. Macchina pulita = verita':
+nessun gate fittizio, ogni SKIP e' un limite dichiarato.
+
+Gate eseguibile `tools/release_gate.py`: versions (check_version_sync,
+3 fonti 2.3.0) -> spec-static (entry, hook casadi, datas, no abs-path,
+pytetwild guarded, excludes-vs-imports) -> smoke (import app, gmsh ok,
+pytetwild ok, 3 templates) -> repo-clean (no binari tracked,
+installer/ == allowlist) -> e2e-flow + checkmesh (solo --e2e) ->
+build/assemble (solo --build/--assemble). Default <15 s, exit 1 su FAIL.
+
+Misurato --e2e (venturi STL tracked): fTetWild 3241 tet (3.9 s) ->
+duale 1033 poli (0.3 s), volume conservato 0.0e+00; checkMesh REALE
+(OF 2512 in WSL2-Ubuntu, skeleton via write_control_dict + fvSchemes/
+fvSolution della GUI) rc=0 verdict **Failed 3** (NOmax 90.82, 154
+piramidi errate, skew 25.7) = muro WALL-01 noto su setting coarse,
+REPORTED non gated (quality acceptance resta a lane suites +
+residual_risks). R1-173334 fuori dal gate (verita' persa, dichiarato).
+
+Spec: pytetwild guarded-collect in entrambe le spec (extra opzionale
+`ftetwild`; senza extra warning, non ModuleNotFound) + comando build
+in testa; `git rm` 3 installer morti (2.0.x, uno spediva .py grezzi).
+`valve_dual.npz` 27MB resta (fixture, 6 test). Test:
+`tests/test_release_gate.py` 8 test (7 fast + 1 slow E2E).
+Docs: sezione maintainer in `docs/INSTALL.md`.
+Gate: suite fast 1717 passed (+7 W17) / 2 skipped / 22 deselected /
+1 xfailed; nel run i 2 nuovi test index-sensitive fallivano per un mio
+artefatto (stash/pop di debug aveva destaged il `git rm`) — causa
+trovata, rm ri-staged, riverificati 7/7 fast + slow E2E 8/8;
+`ruff check src/ tests/` green (spec: F821 preesistenti, fuori scope
+gate).

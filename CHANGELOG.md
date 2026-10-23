@@ -7,6 +7,43 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Installer + release gate (W17) - 2026-10-23
+- **Executable release gate**: `tools/release_gate.py` with stages
+  versions → spec-static → smoke → repo-clean → (opt-in) e2e-flow →
+  checkmesh → (opt-in) build → assemble. Every stage prints PASS/FAIL/
+  SKIP with timings; exit non-zero on any FAIL; every SKIP carries its
+  reason and the report ends with declared LIMITS (no clean-machine
+  install, no ISCC here, no R1-173334 truth mesh, no BL stage,
+  checkMesh verdict REPORTED not gated). Default run is fast (<15 s).
+- **Measured E2E** (`--e2e`, venturi STL tracked): fTetWild tet 3241
+  cells (3.9 s) → dual 1033 polys (0.3 s), volume conserved to 0.0e+00;
+  real checkMesh (OF 2512 in WSL2, case skeleton via the app's own
+  `write_control_dict` + GUI fvSchemes/fvSolution) runs rc=0 with verdict
+  **Failed 3** (NOmax 90.82, 154 bad face pyramids, skew 25.7) — the
+  known WALL-01 dual-only wall on coarse settings, honestly reported
+  (quality acceptance stays with lane suites + residual_risks).
+- **Spec fixes**: both `.spec` collect `pytetwild` when present
+  (optional `ftetwild` extra) and warn instead of failing when absent
+  (W17 D5 — the frozen app previously lost the fTetWild path silently);
+  build command documented in-spec (`pip install -e .[test,ftetwild]` +
+  `pyinstaller` + `ISCC.exe`). Static gate rule: no `excludes` entry may
+  amputate a direct `src` import or a known-transitive dep (casadi/nlopt
+  lesson, now executable).
+- **Repo cleanup**: `git rm` of the three dead installer scripts
+  (`installer.iss` 2.0.1, `installer.nsi` 2.0.1, `nsis_installer.nsi`
+  2.0.0/raw-sources — zero references); canonical stays
+  `installer/inno_setup.iss` (2.3.0, version-synced). `valve_dual.npz`
+  (27 MB test fixture, 6 tests, skip-guarded) stays by explicit decision;
+  largest other blob is 294 KB source. `tests/test_release_gate.py`
+  (8 tests: versions, spec-static, excludes, smoke, repo-clean,
+  allowlist, limits-reporting, slow venturi flow) + `test_no_binaries`
+  logic inside the gate. Diagnosis `notes/w17_installer_diagnosis.md`,
+  predictions `notes/w17_installer_reasoning.md`; maintainer build docs
+  in `docs/INSTALL.md`.
+- Gate: fast suite 1717 passed / 2 skipped / 22 deselected / 1 xfailed;
+  `ruff check src/ tests/` green; `tests/test_release_gate.py` 8 passed
+  (7 fast + slow venturi flow); gate default + `--e2e` verified live.
+
 ### Docs + real report (W16) - 2026-10-23
 - **Report v2 append-only extended**: `tools/gen_report_pdf_v2.py`
   (previously untracked, now brought under version control by this lane)

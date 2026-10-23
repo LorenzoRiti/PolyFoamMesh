@@ -131,3 +131,26 @@ logs in `logs/app.log`. On Windows this is unchanged
 
 Open an issue and attach the contents of `%APPDATA%\polyfoammesh\logs\app.log`
 — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Building the installer (maintainers)
+
+Reproducible release from the repository root (Windows, Python 3.11+):
+
+```powershell
+pip install -e ".[test,ftetwild]"
+python tools/release_gate.py --e2e   # versions, specs, smoke, E2E, checkMesh
+pyinstaller PolyFoamMesh.spec        # -> dist/PolyFoamMesh/ (frozen bundle)
+ISCC.exe installer\inno_setup.iss    # -> installer/output/PolyFoamMesh-<version>-Setup.exe
+```
+
+The executable gate is `tools/release_gate.py` (no flags = fast stages;
+`--e2e` adds the tet→dual flow on a tracked STL plus real checkMesh when
+WSL2+OpenFOAM is present; `--build`/`--assemble` run the heavy steps).
+Every SKIP prints its reason, and the report ends with the declared
+LIMITS: no clean-machine install check, no R1-173334 E2E (truth mesh
+lost — see `REGRESSION_CASES.md`), no BL stage (covered by lane suites),
+ISCC required for assembly. `dist/`, `build/`, `installer/output/` are
+gitignored build products — never commit them. Version lives in three
+places kept in sync by `tools/check_version_sync.py` (pyproject,
+`src/polyfoammesh/_version.py`, `installer/inno_setup.iss`); the gate
+runs it as its first stage.

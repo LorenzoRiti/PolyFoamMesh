@@ -48,16 +48,32 @@ else:
 # data and binaries consistent (same rationale as the Windows spec).
 casadi_datas, casadi_binaries, casadi_hidden = collect_all("casadi")
 
+# --- release build (from the repository root, with the release extras) -----
+#     pip install -e .[ftetwild]
+#     pyinstaller PolyFoamMesh-linux.spec
+# --- pytetwild (optional extra) ---------------------------------------
+# Same contract as the Windows spec: the experimental fTetWild tet stage
+# needs it, everything else works without it. Collect when present, warn
+# when absent.
+import importlib.util as _ilu
+if _ilu.find_spec("pytetwild") is not None:
+    pytetwild_datas, pytetwild_binaries, pytetwild_hidden = collect_all("pytetwild")
+else:
+    print("WARNING: PolyFoamMesh-linux.spec: pytetwild not installed — the "
+          "frozen app's fTetWild path will show the install hint. Install "
+          "with `pip install -e .[ftetwild]` for a full release bundle.")
+    pytetwild_datas, pytetwild_binaries, pytetwild_hidden = [], [], []
+
 a = Analysis(
     [os.path.join("src", "polyfoammesh", "app.py")],
     pathex=[],
-    binaries=casadi_binaries + gmsh_binaries + _gmsh_binaries,
-    datas=[("templates", "templates"), ("plugins", "plugins")] + casadi_datas + gmsh_datas,
+    binaries=casadi_binaries + gmsh_binaries + _gmsh_binaries + pytetwild_binaries,
+    datas=[("templates", "templates"), ("plugins", "plugins")] + casadi_datas + gmsh_datas + pytetwild_datas,
     hiddenimports=[
         "PySide6.QtCore", "PySide6.QtWidgets", "PySide6.QtGui",
         "PySide6.QtNetwork", "gmsh", "meshio", "reportlab", "cadquery",
         "pyvista", "pyvistaqt", "numpy", "trimesh", "pymeshfix",
-    ] + casadi_hidden + gmsh_hidden,
+    ] + casadi_hidden + gmsh_hidden + pytetwild_hidden,
     hookspath=[],
     hooksconfig={},
     # Cross-platform guarded no-op on Linux (rthook only acts on win32).

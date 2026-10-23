@@ -1,4 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+#
+# Release build (from the repository root, with the release extras):
+#
+#     pip install -e .[ftetwild]
+#     pyinstaller PolyFoamMesh.spec
+#     ISCC.exe installer\inno_setup.iss
+#
+# Output: dist/PolyFoamMesh/ (frozen one-dir bundle) and
+# installer/output/PolyFoamMesh-<version>-Setup.exe.
 
 from PyInstaller.utils.hooks import collect_all
 
@@ -35,13 +44,28 @@ _GMSH_DLL = sorted(_gmsh_candidates)[-1]  # highest version if multiple
 # path an end user could avoid by not using some optional feature.
 casadi_datas, casadi_binaries, casadi_hidden = collect_all('casadi')
 
+# pytetwild is an OPTIONAL extra (pyproject [project.optional-dependencies]
+# ftetwild): only the experimental fTetWild tet stage needs it — without it
+# that one path fails with an explicit install hint, everything else works.
+# Release bundles are built with `pip install -e .[ftetwild]` (see the build
+# command above), so collect it when present; when absent warn instead of
+# failing, mirroring the Linux spec's gmsh fallback.
+import importlib.util as _ilu
+if _ilu.find_spec("pytetwild") is not None:
+    pytetwild_datas, pytetwild_binaries, pytetwild_hidden = collect_all('pytetwild')
+else:
+    print("WARNING: PolyFoamMesh.spec: pytetwild not installed — the frozen "
+          "app's fTetWild path will show the install hint. Install with "
+          "`pip install -e .[ftetwild]` for a full release bundle.")
+    pytetwild_datas, pytetwild_binaries, pytetwild_hidden = [], [], []
+
 a = Analysis(
     [os.path.join('src', 'polyfoammesh', 'app.py')],
     pathex=[],
-    binaries=casadi_binaries,
+    binaries=casadi_binaries + pytetwild_binaries,
     datas=[('templates', 'templates'), ('plugins', 'plugins'),
-           (_GMSH_DLL, '.')] + casadi_datas,  # ✅ F-028: rimosso src/polyfoammesh (gia come scripts)
-    hiddenimports=['PySide6.QtCore', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtNetwork', 'gmsh', 'meshio', 'reportlab', 'cadquery', 'pyvista', 'pyvistaqt', 'numpy', 'trimesh', 'pymeshfix'] + casadi_hidden,
+           (_GMSH_DLL, '.')] + casadi_datas + pytetwild_datas,  # ✅ F-028: rimosso src/polyfoammesh (gia come scripts)
+    hiddenimports=['PySide6.QtCore', 'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtNetwork', 'gmsh', 'meshio', 'reportlab', 'cadquery', 'pyvista', 'pyvistaqt', 'numpy', 'trimesh', 'pymeshfix'] + casadi_hidden + pytetwild_hidden,
     hookspath=[],
     hooksconfig={},
     # collect_all('casadi') gets every DLL into the bundle, but the OS
