@@ -2191,6 +2191,7 @@ class MainWindow(QMainWindow):
         self._poly_was_converted = False
         self._poly_fallback_active = False
         self._low_ram_gmsh_threads = False
+        self._auto_tet_plan = None
         my_id = self._run_id
         logger.info("Starting meshing run #%d.", my_id)
 
@@ -2242,6 +2243,30 @@ class MainWindow(QMainWindow):
             # mesh; the explicit "FEM Tetra (GMSH)" button is the only way
             # to ask for pure tetrahedra, and that explicit choice is
             # respected (no auto-enabling of the poly conversion).
+        elif mesher_type == "auto_tet":
+            # W10.2 source policy (opt-in): choose a tet SOURCE, not the
+            # legacy "automatic mesher" above.  The explicit Polymesh /
+            # fTetWild buttons remain untouched.
+            from polyfoammesh.core.tet_source import (
+                choose_tet_source, preflight_tet_source,
+            )
+
+            _geom = getattr(self, "_loaded_step_path", None)
+            _pre = preflight_tet_source(
+                _geom or "", detail=self._params.get_detail_level(),
+                refinement_zones=self._gmsh_refinement_zones(),
+                scale=self._params.get_scale_factor(),
+            )
+            _plan = choose_tet_source(_pre)
+            self._auto_tet_plan = _plan
+            mesher_type = (
+                "ftetwild_poly" if _plan.primary == "ftetwild"
+                else "gmsh_direct_poly"
+            )
+            self._log.append_log(
+                f"{Tag.CASE} Auto tet source: primary={_plan.primary}, "
+                f"fallback={_plan.fallback or '-'} ({_plan.reason})"
+            )
         self._current_mesher_type = mesher_type
         adaptive_on = self._params.get_adaptive_sizing_enabled()
         poly_on = self._params.get_poly_conversion()
@@ -3180,22 +3205,17 @@ class MainWindow(QMainWindow):
         cache.  The other BL settings (applyToAll, sliver filters, budget)
         do not touch GMSH and stay excluded.
 
-        For ``mesher == "ftetwild_poly"`` everything GMSH-only is
-        NEUTRALISED instead: fTetWild never bakes BL into the tets (the
-        in-house engine adds them after the dual), and it does not read the
-        adaptive flag, min cell, max-cells target, surface-resolution
-        preset, refinement zones or feature angle. Only the geometry, the
-        Detail slider and the manual Max Cell Size actually change its
-        .msh — so tweaking BL settings (the common loop after reading the
-        BL report) reuses the cached tet mesh instead of paying the whole
-        tet stage again.
+        For ``mesher == "ftetwild_poly"`` fTetWild never bakes BL into the
+        tets (the in-house engine adds them after the dual), and it does not
+        read the adaptive flag, min cell or max-cells target.  Since W10.2
+        the surface-resolution preset, refinement zones and feature angle
+        DO shape its GMSH surface and therefore stay in the key; only the
+        GMSH-BL fields and the volume-only targets are neutralised.
         """
         if mesher == "ftetwild_poly":
             adaptive = False
             min_cell = 0
             max_cells_target = 0
-            surface_resolution = "n/a"
-            refinement_zones = None
             n_layers = 0
             bl_thickness = None
             bl_expansion = 1.2
@@ -3490,6 +3510,7 @@ class MainWindow(QMainWindow):
             os.environ.pop("GMSH_NUM_THREADS", None)
 
         self._cleanup_thread("_gmsh_thread", "_gmsh_worker")
+        _feature_angle = None
         if getattr(self, "_current_mesher_type", "") == "ftetwild_poly":
             # Experimental fTetWild tet stage (issue #12): same worker slot,
             # task name and downstream flow (convert -> checkMesh -> dual),
@@ -3497,9 +3518,10 @@ class MainWindow(QMainWindow):
             # say so explicitly rather than silently dropping them (the
             # no-silent-substitution rule).
             if refinement_zones:
-                self._log_substitution(
-                    "Refinement zones: non supportate dal mesher "
-                    "sperimentale fTetWild — ignorate in questa run."
+                self._log.append_log(
+                    "[fTetWild] Refinement zones: carried into the GMSH "
+                    "surface stage (2D sizing), then consumed by fTetWild "
+                    "through the triangulated surface."
                 )
             if adaptive and max_cells_target:
                 self._log_substitution(
@@ -3516,12 +3538,21 @@ class MainWindow(QMainWindow):
                 "[fTetWild] Experimental mesher (issue #12): tet stage via "
                 "fTetWild (pytetwild), poly pipeline unchanged after it."
             )
+            try:
+                _feature_angle = self._settings().get_value(
+                    "geometry/feature_angle", None,
+                )
+            except Exception:
+                _feature_angle = None
             w = FtetWildVolumeWorker(
                 step_path, msh_path, detail, max_cell_size=max_cell,
                 eps_frac=self._params.get_ftetwild_eps_frac(),
                 simplify=self._params.get_ftetwild_simplify(),
                 adaptive=self._params.get_ftetwild_adaptive(),
                 scale=self._params.get_scale_factor(),
+                refinement_zones=refinement_zones,
+                surface_resolution=surface_resolution,
+                feature_angle=_feature_angle,
             )
         else:
             w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
@@ -3543,6 +3574,7 @@ class MainWindow(QMainWindow):
             "max_cell": max_cell, "min_cell": min_cell,
             "max_cells_target": max_cells_target,
             "surface_resolution": surface_resolution,
+            "feature_angle": _feature_angle,
             "bl_wall_size_floor": bl_wall_size_floor,
             # Tet-sizing snapshot for the mesh cache. Recomputed into a
             # fingerprint on success (and after a detail-level retry), and
@@ -3550,6 +3582,8 @@ class MainWindow(QMainWindow):
             # that actually produced the .msh.
             "fingerprint_inputs": fingerprint_inputs,
             "bl_retried": False, "detail_retried": False, "my_id": my_id,
+            "auto_tet_plan": getattr(self, "_auto_tet_plan", None),
+            "auto_switched": False,
         }
 
         self._submit_task(
@@ -3576,7 +3610,12 @@ class MainWindow(QMainWindow):
         names = result["names"]
         is_ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
         label = "[fTetWild]" if is_ftet else "[gmsh]"
-        self._log.append_log(f"{label} Volume mesh: {msh_path_result} — patches: {names}")
+        _src = result.get("source") or ("ftetwild" if is_ftet else "gmsh")
+        _surf = result.get("surface_source") or "-"
+        self._log.append_log(
+            f"{label} Volume mesh: {msh_path_result} - source={_src} "
+            f"(surface={_surf}) - patches: {names}"
+        )
         if is_ftet and result.get("n_tets"):
             _te = result.get("target_edge_m")
             _te_s = f"{_te:.4g} m" if _te else "?"
@@ -3619,6 +3658,25 @@ class MainWindow(QMainWindow):
         my_id = ctx["my_id"]
         if my_id != self._run_id:
             return
+        _plan = ctx.get("auto_tet_plan")
+        if _plan is not None and _plan.fallback and not ctx.get("auto_switched"):
+            _target = (
+                "ftetwild_poly" if _plan.fallback == "ftetwild"
+                else "gmsh_direct_poly"
+            )
+            ctx["auto_switched"] = True
+            self._current_mesher_type = _target
+            self._auto_tet_plan = None  # do not fall back twice
+            self._log.append_log(
+                f"{Tag.CASE} Auto tet source fallback: "
+                f"{_plan.primary} failed -> {_plan.fallback} "
+                "(visible source substitution)."
+            )
+            self._log_substitution(
+                f"Tet source fallback: {_plan.primary} -> {_plan.fallback}."
+            )
+            self._start_gmsh_volume_worker(ctx["step_path"], my_id)
+            return
         is_ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
         _label = "fTetWild" if is_ftet else "GMSH"
 
@@ -3636,6 +3694,11 @@ class MainWindow(QMainWindow):
                     simplify=self._params.get_ftetwild_simplify(),
                     adaptive=self._params.get_ftetwild_adaptive(),
                     scale=self._params.get_scale_factor(),
+                    refinement_zones=ctx.get("refinement_zones"),
+                    surface_resolution=ctx.get(
+                        "surface_resolution", "medium",
+                    ),
+                    feature_angle=ctx.get("feature_angle"),
                 )
             return GmshVolumeWorker(
                 ctx["step_path"], ctx["msh_path"], detail,

@@ -160,19 +160,35 @@ def orient_faces_outward(
     return out
 
 
+def _triangle_normals(tris: np.ndarray) -> np.ndarray:
+    """Unit normals for a ``(n, 3, 3)`` triangle array (zero-safe)."""
+    tri = np.asarray(tris, dtype=np.float64)
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    mag = np.linalg.norm(n, axis=1)
+    out = np.zeros_like(n)
+    ok = mag > 1e-300
+    out[ok] = n[ok] / mag[ok, None]
+    return out
+
+
 def assign_patches(
     V: np.ndarray,
     faces: np.ndarray,
     src_tris: np.ndarray,
     src_codes: np.ndarray,
+    *,
+    normal_cos_min: float = 0.5,
 ) -> tuple[np.ndarray, dict]:
     """Assign each output boundary face a patch code from the input surface.
 
     fTetWild output carries no physical groups, but its surface stays
-    within the epsilon envelope of the input triangulation — so the
-    nearest input triangle centroid is a reliable patch witness at the
-    input's own sampling density (spike: mean assignment distance 5.6e-7
-    vs 1.2e-6 mean centroid spacing on the same surface).
+    within the epsilon envelope of the input triangulation.  W10.2 keeps
+    the nearest-centroid witness and adds a **normal consistency** filter:
+    among the 5 nearest source triangles, choose the nearest one whose
+    normal agrees (dot >= ``normal_cos_min``).  This prevents a thin gap's
+    opposite sheet from winning purely by centroid proximity.  If no
+    candidate agrees, the nearest centroid remains the fallback (never drop
+    a face).
 
     Returns ``(codes, stats)``.
     """
@@ -181,8 +197,30 @@ def assign_patches(
     in_cent = src_tris.mean(axis=1)
     tree = cKDTree(in_cent)
     out_cent = V[faces].mean(axis=1)
-    dist, nn = tree.query(out_cent)
+    k = min(5, len(src_tris))
+    dist_k, nn_k = tree.query(out_cent, k=k)
+    if k == 1:
+        dist_k = dist_k[:, None]
+        nn_k = nn_k[:, None]
+    src_norm = _triangle_normals(src_tris)
+    out_norm = _triangle_normals(V[faces])
+    dots = np.einsum(
+        "ij,ikj->ik", out_norm, src_norm[nn_k],
+    ) if len(out_norm) else np.zeros_like(dist_k)
+    valid_src = np.linalg.norm(src_norm[nn_k], axis=2) > 0.0
+    compatible = (dots >= float(normal_cos_min)) | (~valid_src)
+    first = np.argmax(compatible, axis=1)
+    rows = np.arange(len(out_cent))
+    nn = nn_k[rows, first]
     codes = src_codes[nn]
+    dist = dist_k[rows, first]
+    # Ambiguity: two near-equal candidates map to different patches.  This
+    # does not change the assignment; it is the measured warning signal.
+    ambiguous = np.zeros(len(out_cent), dtype=bool)
+    if k > 1:
+        close = dist_k[:, 1] <= 1.5 * np.maximum(dist_k[:, 0], 1e-30)
+        different = src_codes[nn_k[:, 0]] != src_codes[nn_k[:, 1]]
+        ambiguous = close & different
     dd, _ = tree.query(in_cent, k=2)
     stats = {
         "n_output_boundary_faces": int(len(faces)),
@@ -191,6 +229,15 @@ def assign_patches(
         "assign_dist_mean": float(dist.mean()),
         "assign_dist_p99": float(np.percentile(dist, 99)),
         "assign_dist_max": float(dist.max()),
+        "normal_cos_min": float(normal_cos_min),
+        "normal_filtered_faces": int(np.sum(first > 0)),
+        "normal_mismatch_never": int(
+            np.sum(~compatible.any(axis=1)) if len(compatible) else 0
+        ),
+        "ambiguous_faces": int(ambiguous.sum()),
+        "ambiguous_fraction": (
+            float(ambiguous.mean()) if len(ambiguous) else 0.0
+        ),
     }
     return codes, stats
 
@@ -1190,6 +1237,9 @@ def run_volume(
     stop_energy: float | None = None,
     disable_filtering: bool = False,
     simplify: bool = False,
+    refinement_zones: list[dict] | None = None,
+    surface_resolution: str = "medium",
+    feature_angle: float | None = None,
 ) -> dict:
     """Full experimental tet stage: surface -> fTetWild -> patched .msh.
 
@@ -1266,6 +1316,7 @@ def run_volume(
         simplify = True
 
     t0 = time.perf_counter()
+    surface_refinement_applied = False
     if step_path.suffix.lower() == ".stl":
         # STL inputs skip GMSH entirely: its sizing probe clears the model
         # and an STL-imported (discretized) surface cannot be re-meshed
@@ -1283,14 +1334,27 @@ def run_volume(
             stl_source = msh_path.with_name("mesh.surface.scaled.stl")
             _sp.save(str(stl_source))
         src_tris, raw_names = load_surface_solids(stl_source)
+        if refinement_zones:
+            print(
+                "[fTetWild] refinement zones were requested but the STL "
+                "input skips GMSH surface sizing; zones cannot be carried "
+                "without re-meshing the discrete surface - ignored, declared.",
+                flush=True,
+            )
     else:
         from polyfoammesh.core.gmsh_wrapper import (
             export_tagged_surface_npz,
             generate_surface_stl,
         )
 
-        generate_surface_stl(step_path, stl_path, detail=detail, scale=scale)
+        generate_surface_stl(
+            step_path, stl_path, detail=detail, scale=scale,
+            refinement_zones=list(refinement_zones or []) or None,
+            surface_resolution=surface_resolution,
+            feature_angle=feature_angle,
+        )
         export_tagged_surface_npz(tagged_path)
+        surface_refinement_applied = bool(refinement_zones)
         tagged = np.load(tagged_path, allow_pickle=True)
         src_tris = tagged["tris"]
         raw_names = list(tagged["names"])
@@ -1569,6 +1633,10 @@ def run_volume(
     total_s = time.perf_counter() - t_start
     return {
         "success": True,
+        "source": "ftetwild",
+        "surface_source": (
+            "input_stl" if step_path.suffix.lower() == ".stl" else "gmsh"
+        ),
         "path": str(msh_path),
         "names": names,
         "surface_time_s": round(surface_time_s, 3),
@@ -1595,6 +1663,72 @@ def run_volume(
         "n_subdivided_tris": tet_stats.get("n_subdivided_tris"),
         "n_manifold_splits": n_splits,
         "tagging": assign_stats,
+        # W10.2 surface strength handoff.  The zones are applied to the GMSH
+        # SURFACE; feature angle remains a CAD/STL grouping input (GMSH CAD
+        # entities already encode it, fTetWild has no volume knob), so it is
+        # reported as not applied rather than silently consumed.
+        "surface_resolution": surface_resolution,
+        "n_refinement_zones": len(refinement_zones or []),
+        "surface_refinement_applied": bool(surface_refinement_applied),
+        "feature_angle": feature_angle,
+        "feature_angle_applied": False,
+        "surface_refinement_stats": surface_refinement_stats(
+            src_tris, list(refinement_zones or []),
+        ),
+    }
+
+
+def surface_refinement_stats(
+    tris: np.ndarray, zones: list[dict] | None,
+) -> dict:
+    """Measured surface density inside vs outside the requested zones.
+
+    A zone is the same box/sphere schema the GMSH field accepts.  This is a
+    *surface* check (triangle centroid + median edge), not a volume-cell
+    count; it proves the GMSH surface refinement reached the handoff.
+    """
+    tris = np.asarray(tris, dtype=np.float64)
+    if not len(tris) or not zones:
+        return {}
+    cent = tris.mean(axis=1)
+    inside = np.zeros(len(tris), dtype=bool)
+    for z in zones or []:
+        try:
+            if "centre" in z or "center" in z:
+                c = np.asarray(
+                    z.get("centre", z.get("center")), dtype=np.float64,
+                )
+                r = float(z.get("radius", 0.0))
+                if r > 0:
+                    inside |= np.linalg.norm(cent - c, axis=1) <= r
+            else:
+                lo = np.array(
+                    [z["xmin"], z["ymin"], z["zmin"]], dtype=np.float64,
+                )
+                hi = np.array(
+                    [z["xmax"], z["ymax"], z["zmax"]], dtype=np.float64,
+                )
+                inside |= np.all((cent >= lo) & (cent <= hi), axis=1)
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not inside.any():
+        return {
+            "zone_tri_fraction": 0.0,
+            "median_edge_inside": None,
+            "median_edge_outside": float(_median_edge_length(tris)),
+        }
+    edges = np.stack([
+        np.linalg.norm(tris[:, 1] - tris[:, 0], axis=1),
+        np.linalg.norm(tris[:, 2] - tris[:, 1], axis=1),
+        np.linalg.norm(tris[:, 0] - tris[:, 2], axis=1),
+    ], axis=1)
+    edge_med = np.median(edges, axis=1)
+    return {
+        "zone_tri_fraction": float(inside.mean()),
+        "median_edge_inside": float(np.median(edge_med[inside])),
+        "median_edge_outside": (
+            float(np.median(edge_med[~inside])) if (~inside).any() else None
+        ),
     }
 
 
@@ -1641,6 +1775,15 @@ def _cli_main(argv) -> None:
                 stop_energy=float(flags["stop-energy"]) if flags.get("stop-energy") else None,
                 disable_filtering=bool(flags.get("no-filtering")),
                 simplify=bool(flags.get("simplify")),
+                refinement_zones=(
+                    json.loads(flags["refinement-zones"])
+                    if flags.get("refinement-zones") else None
+                ),
+                surface_resolution=flags.get("surface-resolution", "medium"),
+                feature_angle=(
+                    float(flags["feature-angle"])
+                    if flags.get("feature-angle") else None
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - CLI reports, never raises
             print(json.dumps({"success": False, "error": str(exc)}))

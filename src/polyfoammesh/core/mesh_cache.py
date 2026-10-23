@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 #: Cache format version — bump when the canonical input schema changes so
 #: stale fingerprints are not silently reused.
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 #: Inputs that affect the TET MESH ONLY, in canonical (hashed) form.
 #:
@@ -72,6 +72,15 @@ CANONICAL_KEYS: tuple[str, ...] = (
     "bl_thickness",
     "bl_expansion",
     "bl_wall_size_floor",
+    # fTetWild settings that shape its .msh (W10.2).  They were passed by the
+    # GUI but silently ignored by the old canonical key list, so changing
+    # surface tolerance/simplify/adaptive reused a stale mesh.
+    "ftw_eps_frac",
+    "ftw_simplify",
+    "ftw_adaptive",
+    "ftw_opt_iter",
+    "ftw_stop_energy",
+    "ftw_disable_filtering",
 )
 
 

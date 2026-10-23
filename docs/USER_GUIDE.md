@@ -102,8 +102,10 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     target itself), and its output is conditioned for the poly pipeline:
     boundary pinches are split, outlier micro-clusters dropped, and the
     dual's smoothing is allowed to relax boundary vertices on this path.
-    Refinement zones / max-cells target / solution size fields do not
-    apply; boundary layers are added after the poly conversion as usual.
+    Refinement zones are carried into the GMSH **surface** (2D sizing) and
+    then consumed by fTetWild through the tagged triangulation; max-cells
+    target and solution size fields remain GMSH-volume-only.  Boundary
+    layers are added after the poly conversion as usual.
     Log lines are prefixed `[fTetWild]`, and the run starts with a
     `bbox_diag / cross_section / target_edge / input_median_edge`
     diagnostic line; fTetWild's own phase lines stream during the
@@ -139,6 +141,14 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     of warped boundary faces can still trip the final checkMesh —
     historically GMSH failed the same gate on the same part in half of
     its logged runs.
+  - **Auto (GMSH surface + fTetWild volume)**: opt-in source policy.
+    For STEP it uses the GMSH surface (physical groups, curvature/gap
+    sizing, refinement zones) with the fTetWild volume; for STL it feeds
+    the input surface to fTetWild (GMSH cannot rebuild a discrete surface).
+    If pytetwild is unavailable it starts with GMSH. On a source failure it
+    performs **one visible fallback** to the other source; the log reports
+    `primary/fallback/effective source`. Explicit Polymesh and fTetWild
+    choices are unchanged and never auto-substituted.
   - **Cartesian (cfMesh)**: Cartesian volume filling via cfMesh -
     requires OpenFOAM (WSL2 on Windows, native on Linux; see
     [INSTALL.md](INSTALL.md)). Optional: enable `Convert to polyhedral

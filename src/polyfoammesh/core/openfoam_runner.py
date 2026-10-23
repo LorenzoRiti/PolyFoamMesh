@@ -4362,7 +4362,9 @@ class FtetWildVolumeWorker(QObject):
                  max_cell_size: float = 0.0, lr: float | None = None,
                  opt_iter: int | None = None, eps_frac: float = 0.0,
                  simplify: bool = True, adaptive: bool = True,
-                 scale: float = 1.0, parent=None):
+                 scale: float = 1.0, refinement_zones: list | None = None,
+                 surface_resolution: str = "medium",
+                 feature_angle: float | None = None, parent=None):
         super().__init__(parent)
         self._step_path = step_path
         self._msh_path = msh_path
@@ -4374,6 +4376,9 @@ class FtetWildVolumeWorker(QObject):
         self._simplify = bool(simplify)
         self._adaptive = bool(adaptive)
         self._scale = float(scale or 1.0)
+        self._refinement_zones = list(refinement_zones or [])
+        self._surface_resolution = str(surface_resolution or "medium")
+        self._feature_angle = feature_angle
         self._proc_holder: dict = {}
         self._cancelled = False
 
@@ -4407,6 +4412,17 @@ class FtetWildVolumeWorker(QObject):
             args.append("--no-adaptive")
         if abs(self._scale - 1.0) > 1e-12:
             args.append(f"--scale={self._scale}")
+        if self._refinement_zones:
+            import json
+
+            args.append(
+                "--refinement-zones="
+                + json.dumps(self._refinement_zones, separators=(",", ":"))
+            )
+        if self._surface_resolution != "medium":
+            args.append(f"--surface-resolution={self._surface_resolution}")
+        if self._feature_angle is not None:
+            args.append(f"--feature-angle={self._feature_angle}")
         cmd, run_cwd = _gmsh_wrapper_script_cmd(
             args, "--ftetwild-volume", script_name="ftetwild_wrapper.py"
         )

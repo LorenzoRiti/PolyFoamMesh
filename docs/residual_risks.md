@@ -1594,6 +1594,35 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   not closed.  R1 is Failed 1 (one skew) with the quality flag; the h1 cap
   is explicit.
 
+## Hybrid tet source (W10.2, 2026-10-23)
+
+- **Contract/policy**: `core/tet_source.py` has requested/effective source,
+  settings, attempts, stats, failure reason and fingerprint.  `auto` is
+  opt-in (`auto_tet` button): STEP -> GMSH surface + fTetWild volume, STL
+  -> fTetWild, pytetwild absent -> GMSH, one logged fallback.  Explicit
+  paths are unchanged.
+- **Surface strengths**: refinement zones, surface-resolution preset and
+  feature-angle provenance reach `generate_surface_stl`; the tagged NPZ
+  keeps physical groups.  Measured small-cylinder probe: 210 -> 748
+  triangles, inside median edge 0.476 -> 0.250 mm, 3 patches retained.
+  Outside also became 0.245 mm because GMSH's characteristic-length field
+  propagates; this is declared, not claimed as strictly local.
+- **Feature angle**: accepted for provenance but not applied to fTetWild
+  volume; GMSH CAD entities already encode feature edges and fTetWild has
+  no volume equivalent.  `feature_angle_applied=false`.
+- **Patch mapping**: normal-compatible nearest candidate + ambiguity
+  stats; nearest centroid is the fallback.  Synthetic thin-gap test avoids
+  choosing the opposite sheet.  No real corpus ambiguity count yet.
+- **Cache**: `ftw_eps_frac`, `ftw_simplify`, `ftw_adaptive` (plus opt-iter/
+  stop-energy/disable-filtering) are canonical now; version 2.  Before this,
+  the GUI passed those settings but the cache ignored them.
+- **Union rejected**: `union_is_conforming()` is false; no conforming
+  interface proof, so no merged GMSH+fTetWild volume is written.
+- **Open**: no full corpus auto A/B and no both-source R1 dual+BL rerun in
+  this pass.  The W10.1 R1 result remains the downstream truth on the
+  fTetWild source.  `auto_tet` must earn promotion with that corpus run;
+  until then it is opt-in.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.

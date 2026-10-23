@@ -1369,3 +1369,30 @@ A/B R1 reale (OF 2512):
 Aperto: h1 0.9x (consume/reflow), terminator interni (vertex splitting),
 benchmark caller ancora sulla vecchia catena locale.  Nessuna chiusura
 finta: W10.1 e' parziale e dichiarata.
+
+## 2026-10-23 - W10.2: sorgente tet ibrida GMSH <-> fTetWild (parziale)
+
+Riuso dell'ibrido esistente: STEP -> GMSH surface + tagged NPZ -> fTetWild
+volume; STL salta GMSH.  Aggiunto un contratto unico `core/tet_source.py`
+(source richiesta/effettiva, settings, tentativi, stats, errore, fingerprint)
+e policy `auto` opt-in deterministica: STEP -> fTetWild (surface GMSH),
+STL -> fTetWild, pytetwild assente -> GMSH, un fallback loggato.  I percorsi
+espliciti restano invariati.
+
+Forze GMSH trasportate alla surface: refinement zones, surface resolution,
+provenienza feature angle; NPZ conserva i gruppi fisici.  Misura reale su
+cilindro STEP piccolo: 210 -> 748 triangoli, mediana edge inside
+0.476 -> 0.250 mm, 3 patch conservate.  Outside 0.245 mm per propagazione
+del campo GMSH: dichiarato, non spacciato per locale.
+
+Patch mapping: filtro normal-compatible sui 5 nearest + stats di
+ambiguita'; nearest centroid resta fallback.  Test thin-gap evita il foglio
+opposto.  Cache: ftw_eps_frac/simplify/adaptive (e opt-iter/stop-energy)
+ora sono chiavi canoniche; CACHE_VERSION=2 (prima venivano ignorate).
+
+Rifiutata esplicitamente l'unione di due volumi tet: nessuna prova di
+interfaccia conforme, `union_is_conforming()` false; nessuna mesh fusa.
+
+Aperto: A/B auto su corpus completo e R1 dual+BL su entrambe le sorgenti;
+feature angle non applicato al volume (nessun knob fTetWild, i gruppi CAD
+gia' lo codificano).  Auto resta opt-in finche' quel corpus non lo promuove.

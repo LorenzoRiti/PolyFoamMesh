@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
-MESHERS = ("gmsh_direct_poly", "ftetwild_poly", "cfmesh", "gmsh_direct")
+MESHERS = (
+    "gmsh_direct_poly", "ftetwild_poly", "cfmesh", "gmsh_direct", "auto_tet",
+)
 DETAILS = ("very_coarse", "coarse", "medium", "fine", "very_fine")
 
 #: Single slider -> cell-target mapping (log 10K..20M).  The GUI delegates

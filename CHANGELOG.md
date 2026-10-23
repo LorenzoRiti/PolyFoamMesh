@@ -7,6 +7,35 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Hybrid tet source + auto policy (W10.2) - 2026-10-23
+- **One `TetSource` contract** (`core/tet_source.py`): requested/effective
+  source, settings, names, per-stage stats, attempts, failure reason and
+  cache fingerprint.  `auto` is deterministic and opt-in: STEP -> GMSH
+  surface + fTetWild volume, STL -> fTetWild, missing pytetwild -> GMSH,
+  with one logged fallback to the other source.
+- **GMSH surface strengths carried**: `generate_surface_stl` accepts
+  refinement zones, surface resolution and feature-angle provenance;
+  `run_volume`/`FtetWildVolumeWorker` forward them; the tagged NPZ keeps
+  physical groups.  Measured probe: 210 -> 748 surface triangles, inside
+  median edge 0.476 -> 0.250 mm (3 patches retained); outside also refined
+  to 0.245 mm by GMSH field propagation, declared.
+- **Patch fidelity**: `assign_patches` adds normal-compatible nearest
+  selection + ambiguity/normal-filter stats; nearest centroid remains the
+  fallback.  Thin-gap synthetic test avoids the opposite sheet.
+- **Cache correctness**: `ftw_eps_frac`/`ftw_simplify`/`ftw_adaptive` (and
+  opt-iteration/stop-energy/disable-filtering) are now in
+  `mesh_cache.CANONICAL_KEYS`; cache version 2.  Previously the GUI passed
+  these but the key ignored them.
+- **GUI**: new opt-in `Auto (GMSH surface + fTetWild volume)` mesher entry,
+  `auto_tet` persisted in MeshConfig; on failure it performs one visible
+  source fallback.  The result log carries source/surface provenance.
+- **Explicitly rejected**: merging GMSH and fTetWild volumes; no conforming
+  interface was proved, so `union_is_conforming()` is false and no merged
+  mesh is written.
+- **Declared open**: full corpus auto A/B, both-source R1 dual+BL run, and
+  feature-angle application to the volume (no fTetWild volume knob; CAD
+  groups already encode it).
+
 ### BL fidelity + quality policy (W10.1) - 2026-10-22
 - **Measured h1, not a silent success**: `PolyBoundaryLayerResult` now
   carries achieved h1 median/p10, ratio, histogram, cap reason and the

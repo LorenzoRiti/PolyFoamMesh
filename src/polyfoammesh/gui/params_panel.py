@@ -549,6 +549,14 @@ class ParamsPanel(QWidget):
             "target vs surface density and warns; Cancel always works).",
         )
         _add_mesher_btn(
+            "Auto  (GMSH surface + fTetWild volume)",
+            "auto_tet",
+            "Opt-in source policy: fTetWild volume (GMSH surface + tagged\n"
+            "groups for STEP, input STL for STL), with GMSH as the measured\n"
+            "fallback. The log/report names the effective source; explicit\n"
+            "Polymesh/fTetWild choices remain unchanged.",
+        )
+        _add_mesher_btn(
             f"Cartesian cfMesh  ({_w['of_req']})",
             "cfmesh",
             f"cartesianMesh via {_w['of_via']} — hex-dominant, the highest "
@@ -2662,7 +2670,7 @@ class ParamsPanel(QWidget):
         # point there; the user enables the poly dual explicitly if wanted).
         # The experimental fTetWild Polymesh behaves like Polymesh: its
         # whole point is feeding the poly dual from a different tet mesher.
-        if key in ("gmsh_direct_poly", "ftetwild_poly"):
+        if key in ("gmsh_direct_poly", "ftetwild_poly", "auto_tet"):
             self._poly_check.setVisible(False)
             self._poly_check.setChecked(True)
         elif key == "gmsh_direct":

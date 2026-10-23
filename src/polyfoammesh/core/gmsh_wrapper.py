@@ -1977,14 +1977,25 @@ def generate_surface_stl(
     detail: str = "medium",
     user_lc: float | None = None,
     scale: float = 1.0,
+    *,
+    refinement_zones: list[dict] | None = None,
+    surface_resolution: str = "medium",
+    feature_angle: float | None = None,
 ) -> list[str]:
     """Generate a curvature-adapted surface STL using GMSH.
 
     This is the *hybrid* flow:
       1. GMSH opens CAD (STEP)
       2. Computes curvature-aware sizing field
-      3. Generates 2D surface mesh (triangles)
-      4. Exports as ASCII STL → can be read by cfMesh for volume fill
+      3. Optionally min-combines manual refinement zones and applies the
+         Surface Resolution preset
+      4. Generates 2D surface mesh (triangles)
+      5. Exports as ASCII STL → can be read by cfMesh/fTetWild
+
+    ``feature_angle`` is accepted for provenance from the CAD/STL split
+    stage, but GMSH's CAD entities already encode feature edges; there is no
+    direct GMSH volume knob for it (the fTetWild volume cannot carry it
+    either).  It is deliberately not used to alter the surface silently.
 
     Returns:
         List of patch names found in the STL (suitable for inlet/outlet/wall mapping).
@@ -2005,6 +2016,7 @@ def generate_surface_stl(
     except Exception as e:
         raise RuntimeError(f"Failed to read geometry bounding box: {e}") from e
 
+    sizing_info: dict = {}
     if user_lc:
         df = _GMSH_DETAIL.get(detail, _GMSH_DETAIL["medium"])
         # Same domain-scale safety clamp as generate_volume_mesh's manual
@@ -2030,9 +2042,42 @@ def generate_surface_stl(
         hw = _hardware_budget()
         feat = _scan_feature_sizes(gmsh, max_extent)
         sizing_info = _configure_adaptive_sizing(
-            gmsh, detail, max_extent, feat, hw, cross_scale, domain_volume=surf_vol,
+            gmsh, detail, max_extent, feat, hw, cross_scale,
+            domain_volume=surf_vol, surface_resolution=surface_resolution,
         )
         logger.info("generate_surface_stl adaptive sizing: %s", sizing_info)
+
+    # W10.2: carry manual refinement zones into the GMSH SURFACE.  The same
+    # MIN-combine / length-floor machinery the volume path uses keeps a zone
+    # refinement-only (it can never coarsen the geometry sizing).
+    if refinement_zones:
+        bg = None
+        if user_lc:
+            bg = float(user_lc)
+        elif sizing_info:
+            bg = sizing_info.get("coarse_max")
+        if bg is None or bg <= 0:
+            bg = max(max_extent * 0.05, 1e-12)
+        zones = _prepare_refinement_zones(
+            list(refinement_zones), bg, None,
+        )
+        zone_fields = _add_refinement_zone_fields(gmsh, zones)
+        if zone_fields:
+            bg_tag = sizing_info.get("bg_field") if sizing_info else None
+            _combine_zone_fields_with_bg(gmsh, zone_fields, bg_tag)
+            _lower_length_min_for_zones(gmsh, zones)
+            logger.info(
+                "generate_surface_stl refinement zones: %d zone(s), "
+                "targets=%s",
+                len(zones),
+                [z.get("cell_size") for z in zones],
+            )
+    if feature_angle is not None:
+        logger.info(
+            "generate_surface_stl feature_angle=%.3g is a CAD/STL grouping "
+            "input; GMSH CAD entities already encode feature edges",
+            float(feature_angle),
+        )
 
     gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal (good for surfaces)
@@ -3741,7 +3786,9 @@ def _cli_main(argv):
                 # risk heuristic is best-effort; default (no risk) is safe
                 logger.debug("gmsh_wrapper: poly_dual_risk probe failed", exc_info=True)
             print(json.dumps({
-                "success": True, "path": str(result_path), "names": names,
+                "success": True, "source": "gmsh",
+                "surface_source": "gmsh",
+                "path": str(result_path), "names": names,
                 "poly_dual_risk": poly_dual_risk, "n_surfaces": n_surfaces, "n_gaps": n_gaps,
             }))
         except Exception as e:
