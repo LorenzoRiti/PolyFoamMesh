@@ -2811,6 +2811,47 @@ class DualPolyWorker(QObject):
                     )
                 except Exception:
                     _rep = {}
+                # W10.3 release attribution: measure the written polyMesh and
+                # keep a pyramid/coverage/checkMesh residual explicit.  This
+                # does not add another geometry lever; it gates what we call
+                # a release-quality mesh.
+                try:
+                    from polyfoammesh.core.poly_release import (
+                        evaluate_release, measure_poly_defects,
+                    )
+
+                    _blm = measure_poly_defects(self._case_dir)
+                    _coverage = (
+                        float(_rep.get("coverage", 0.0)) * 100.0
+                        if _rep.get("coverage") is not None
+                        else float(
+                            (getattr(bres, "stats", {}) or {}).get(
+                                "wall_face_coverage_pct", 0.0,
+                            )
+                        )
+                    )
+                    _release = evaluate_release(_blm, _coverage)
+                    _rep["release"] = _release.to_mapping()
+                    if not _release.accepted:
+                        result.bl_warning = (
+                            "poly release gate not accepted: "
+                            + "; ".join(_release.reasons)
+                        )
+                        self.log_line.emit(
+                            f"[poly] WARN: {result.bl_warning}"
+                        )
+                    else:
+                        self.log_line.emit(
+                            "[poly] release gate: accepted in-process "
+                            f"(pyramids={_blm.pyramids}, "
+                            f"coverage={_coverage:.2f}%, "
+                            "real checkMesh pending; "
+                            f"residual={'; '.join(_release.residual) or '-'})"
+                        )
+                except Exception as exc:  # noqa: BLE001 - report only
+                    self.log_line.emit(
+                        f"[poly] WARN: release attribution failed: {exc}"
+                    )
                 result.bl_report = _rep
                 result.bl_policy = (
                     _bl_chain.to_mapping() if _bl_chain is not None else {}

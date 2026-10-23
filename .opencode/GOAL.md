@@ -1396,3 +1396,30 @@ interfaccia conforme, `union_is_conforming()` false; nessuna mesh fusa.
 Aperto: A/B auto su corpus completo e R1 dual+BL su entrambe le sorgenti;
 feature angle non applicato al volume (nessun knob fTetWild, i gruppi CAD
 gia' lo codificano).  Auto resta opt-in finche' quel corpus non lo promuove.
+
+## 2026-10-23 - W10.3: qualita' poly e bordo duale (parziale, muro dichiarato)
+
+Attribuzione reale R1:
+- dual-only: 79.416 celle, 1 pyramid, NO 48.46, skew 3.31;
+- BL standard vecchio: 39 pyramids, 5 skew, 26 non-ortho, Failed 3
+  (+38 pyramids rispetto al dual-only);
+- BL quality W10.1: 0 pyramids, 1 skew, 0 non-ortho errors, 99.47%
+  coverage, Failed 1.
+
+A/B della combo opt-in edge-filter 0.9 + budget term: 0 pyramids ma
+coverage 87.1% (154.145 prismi, 4.566 facce thin) -> rifiutata, resta
+opt-in.  Nessuna promozione finta.
+
+Nuovo `core/poly_release.py`: misura dual-only e dual+BL separatamente,
+attribuisce i difetti per differenza, richiede 0 pyramids/0 volumi negativi
+e coverage >=98%; accetta il residuo R1 (1 skew / Failed 1) solo con
+residuo esplicito in `bl_report`/log.  Il worker usa il gate; nessun nuovo
+merge/smoothing/split.
+
+Muro: venturi dual-only 224 pyramids / NO 97.2 / skew 18.3, topologico
+(boundary star a pieghe concave); W14 e' il rewrite.  Vietato riprovare le
+leve gia' misurate e scartate.
+
+Aperto: corpus completo col gate, azione di accettazione checkMesh in GUI,
+R1/cube/sample su tutte le sorgenti.  Suite fast 1669 passed / 2 skipped /
+20 deselected / 1 xfailed; ruff green.

@@ -7,6 +7,24 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Poly release gate + boundary attribution (W10.3) - 2026-10-23
+- **Measured attribution**: R1 dual-only has 1 pyramid (79,416 cells, NO
+  48.46/skew 3.31); old BL adds 38 (39 total, Failed 3); W10.1 quality BL
+  has 0 pyramids, 1 skew, 0 non-ortho errors and 99.47% coverage (Failed 1).
+- **Combo A/B rejected**: edge-filter 0.9 + budget termination gives 0
+  pyramids but only **87.1% coverage** (154,145 prisms; 4,566 thin faces),
+  below the 98% release floor.  Not promoted; stays opt-in.
+- **New `core/poly_release.py`**: independent dual-only/dual+BL measurement,
+  BL-added defect attribution, release gate requiring zero pyramids/negative
+  volumes and >=98% coverage, with an explicit documented residual for R1's
+  one skew class.  The worker logs and writes the gate result into
+  `bl_report`; it never relabels a failed checkMesh as a pass.
+- **No fake geometry lever**: merge/relax, smoothing, compact-fan,
+  triangulate, planarize, feature-angle, edge-cap, min-base-edge,
+  budget-term-alone and zonal worst-element remain forbidden; venturi's
+  224-pyramid wall (NO 97.2/skew 18.3) is declared W14 topology debt.
+- Tests: `tests/test_poly_release.py` (10) plus the existing poly/BL suites.
+
 ### Hybrid tet source + auto policy (W10.2) - 2026-10-23
 - **One `TetSource` contract** (`core/tet_source.py`): requested/effective
   source, settings, names, per-stage stats, attempts, failure reason and

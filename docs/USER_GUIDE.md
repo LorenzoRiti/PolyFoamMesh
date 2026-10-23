@@ -439,6 +439,12 @@ contrast is checked automatically in CI-style tests.
   it says `capped`, the mesh is too fine for the requested stack; if it says
   `rejected`, the engine refused to write a useless single-layer shell and
   tried its fallbacks. Coarser surface cells or a smaller first layer fix it.
+- **Poly release residual**: the log now prints `[poly] release gate:
+  accepted ...` (or the rejection reason).  R1 is accepted with an explicit
+  residual: 0 inverted pyramids, 99.47% BL coverage, 1 highly-skewed face
+  (`checkMesh Failed 1`); the residual is written into `bl_report`, never
+  hidden.  The opt-in edge-filter 0.9 + budget combo is not promoted: it
+  reaches 0 pyramids but only 87.1% coverage.
 - **`checkMesh` failed**: open the quality panel, look at the highlighted
   cells, and let the auto-fix run, or relax local refinement.
 - **No boundary layer on a complex part**: if the log reports that the BL

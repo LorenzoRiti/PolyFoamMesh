@@ -41,6 +41,7 @@ state that later changed; the code and tests remain the source of truth.
 - `w10_presets_diagnosis.md`, `w10_presets_reasoning.md` - W10 one `MeshConfig`, Fast/Balanced/Fine evidence, shared preset file format, legacy project adapter and the Fine experimental declaration.
 - `w10_1_bl_fidelity_diagnosis.md`, `w10_1_bl_fidelity_reasoning.md` - W10.1 measured h1 cap, R1 quality-policy A/B, keep-best executor and the open terminator/reflow debt.
 - `w10_2_tet_hybrid_diagnosis.md`, `w10_2_tet_hybrid_reasoning.md` - W10.2 TetSource/auto policy, GMSH surface refinement/groups, patch normal filter, cache fix and the rejected mesh union.
+- `w10_3_poly_boundary_diagnosis.md`, `w10_3_poly_boundary_reasoning.md` - W10.3 R1 dual-only/BL attribution, rejected edge-filter combo, poly release gate and the venturi/W14 topological wall.
 
 ### Cross-cutting
 - `_buglog.md` — out-of-lane findings and repo-hygiene measurements (clone size, branch state, stale README claims).

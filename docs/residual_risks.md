@@ -1623,6 +1623,29 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   fTetWild source.  `auto_tet` must earn promotion with that corpus run;
   until then it is opt-in.
 
+## Poly release / dual boundary (W10.3, 2026-10-23)
+
+- **Attribution**: R1 dual-only = 1 pyramid / 79,416 cells (NO 48.46,
+  skew 3.31); old standard BL = 39 pyramids / 5 skew / 26 non-ortho
+  (Failed 3); W10.1 quality BL = 0 pyramids / 1 skew / 0 non-ortho errors
+  at 99.47% coverage (Failed 1).  The BL adds 38 pyramids in the old path;
+  the quality attempt removes them without a new dual operator.
+- **Combo A/B**: edge-filter 0.9 + budget termination produced 0 pyramids
+  but 87.1% coverage (154,145 prisms, 4,566 thin-edge faces), rejected
+  against the 98% release floor.  It remains opt-in, not default.
+- **Release gate**: `core/poly_release.py` measures dual-only and dual+BL
+  independently, requires zero pyramids/negative volumes and coverage
+  >=98%, and accepts R1's one skew only with an explicit
+  `CheckMeshReport` residual.  Worker logs/`bl_report` carry the result.
+- **Wall**: venturi dual-only 224 pyramids / NO 97.2 / skew 18.3 is a
+  topological boundary-star wall; merge/relax, smoothing, compact-fan,
+  triangulate, planarize, feature-angle, sharp-edge, edge-cap,
+  min-base-edge, budget-term-alone and zonal worst-element are measured and
+  rejected.  W14 is the rewrite lane; no fake split/merge is shipped.
+- **Open**: full corpus re-run with the release gate and a real checkMesh
+  acceptance action in the GUI.  R1+cube+sample were not re-run across every
+  source in this pass; the R1 numbers above are the release truth.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.
