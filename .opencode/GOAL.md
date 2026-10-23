@@ -1423,3 +1423,41 @@ leve gia' misurate e scartate.
 Aperto: corpus completo col gate, azione di accettazione checkMesh in GUI,
 R1/cube/sample su tutte le sorgenti.  Suite fast 1669 passed / 2 skipped /
 20 deselected / 1 xfailed; ruff green.
+
+## 2026-10-23 - W11: multi-patch e zero-config (radice corretta)
+
+Diagnosi in `notes/w11_multipatch_diagnosis.md`, previsione/misura in
+`notes/w11_multipatch_reasoning.md`.
+
+Tre cause radice, tutte nel percorso dati (non filtri a valle):
+1. una faccia 2D con tag fisico 0 sovrascriveva il tag della regione 3D:
+   un `.msh` multi-regione senza gruppi di superficie diventava `surface_0`;
+2. i nomi fisici 2D/3D condividevano un dizionario per tag e le facce
+   boundary erano raggruppate per tag, quindi `wall` tag 1 e `fluid` tag 1
+   si fondevano; ora il nome risolto e' la chiave, i nomi sono sanificati,
+   i duplicati si fondono, ogni faccia e' contata una volta e una faccia
+   con >2 celle fallisce come non-manifold;
+3. `write_polymesh` scriveva i placeholder `-1` nel `neighbour`: `n_int`
+   diventava `n_faces`, il BL selezionava la patch ma non trovava facce.
+   Il writer filtra, il reader normalizza i file legacy.
+
+Report/view coerenti: `boundary_layer_report` elenca ORA tutte le patch con
+`bl_selected` (su R1 7: 5 wall selezionate + 2 cap non-BL a coverage 0),
+`n_boundary_faces` e `patch_names`; il warning <90% vale solo per le patch
+selezionate.  Zero-config: tag di volume -> `region_N`, mesh senza tag ->
+`default`, e `_is_wall_patch` GUI usa `patch_roles.is_wall_patch` (il
+`pressure_side` di una pala e' parete).
+
+R1 misurato dopo W11: 7 patch, 5 selezionate, coverage 99.51% (99.47% nella
+run W10.1), h1 0.145 mm / 1.26 mm = 0.116x (cap W10.1 invariato),
+`n_boundary_faces=36955`, `n_wall_faces=36413`; cap `surface_2`/`surface_7`
+a coverage 0 e `bl_selected=false`.
+
+Verifica sintetica multi-regione: 13 test in
+`tests/test_mesh_converter_multiregion.py` (volume tag, 2D tag 0, collisione
+2D/3D, merge duplicati, default, contabilita', non-manifold, per-patch
+report, viewer, sanitizzazione, mapping esplicito).  Non esiste un `.msh`
+multi-regione reale in `C:\cfmesh_cases`: il caso sintetico e' dichiarato
+come rappresentante.  Gate W11: `pytest -m "not slow and not wsl"` ->
+1682 passed / 2 skipped / 20 deselected / 1 xfailed (184 s); ruff
+`src/ tests/` green.

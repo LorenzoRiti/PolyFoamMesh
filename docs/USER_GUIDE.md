@@ -206,6 +206,13 @@ app treats them as first-class:
   kept the first time).
 - Selecting a row highlights the patch in the 3D view; clicking a patch
   in the viewer (Select Patch) selects its row.
+- **Multi-region `.msh`**: 3D physical groups become patches automatically.
+  A volume without a named 2D surface group is named from its 3D group (or
+  `region_N` when only numeric tags exist); no manual tag mapping is
+  required.  A 2D wall and a 3D volume may share the same numeric tag - the
+  converter keeps them separate, so no region disappears.  Names are made
+  safe for OpenFOAM, duplicate names merge, and a face shared by more than
+  two cells is rejected as non-manifold instead of becoming a ghost patch.
 
 ### 4. Quality
 
@@ -345,9 +352,15 @@ What the log tells you after a run (always read these lines):
   it is not a silent engine choice.
 - **Measured h1, not the requested one**: the mesh report prints the
   achieved h1 median/p10 per patch and the ratio.  R1 is the measured
-  example: 0.142 mm vs 1.26 mm requested (0.113x), with 91.9% of wall
-  vertices support-bound.  A ratio below 0.9 is a declared gap; the fix is
-  consume/reflow or a taller wall-adjacent dual cell, not a lower clamp.
+  example: 0.145 mm vs 1.26 mm requested (0.116x in the W11 read-back),
+  with 91.9% of wall vertices support-bound.  A ratio below 0.9 is a
+  declared gap; the fix is consume/reflow or a taller wall-adjacent dual
+  cell, not a lower clamp.
+- **Every patch is reported**: the per-patch table also lists patches that
+  were not selected for BL, with `bl_selected=false` and coverage 0.  On R1
+  this is 7 rows (5 selected walls + 2 caps), matching the viewer instead
+  of hiding the caps.  Only selected walls can trigger the <90% coverage
+  warning.
 - **BL quality policy**: the fTetWild worker tries the standard stack, then
   a measured `decoupled_vertex` quality attempt only when the standard adds
   pyramids; it keeps the better mesh.  R1 A/B: 39 pyramids/Failed 3 ->

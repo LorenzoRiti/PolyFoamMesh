@@ -181,7 +181,8 @@ def test_conversion_produces_openfoam_valid_orientation(tmp_path):
     def cell_faces(cell: int) -> list[int]:
         out = []
         for fi, o in enumerate(owners):
-            if o == cell or (neighbours[fi] >= 0 and neighbours[fi] == cell):
+            nb = neighbours[fi] if fi < len(neighbours) else -1
+            if o == cell or (nb >= 0 and nb == cell):
                 out.append(fi)
         return out
 
@@ -216,7 +217,7 @@ def test_conversion_produces_openfoam_valid_orientation(tmp_path):
     assert boundary[0]["nFaces"] == 6
     n_boundary = 0
     for fi in range(len(owners)):
-        if neighbours[fi] >= 0:
+        if fi < len(neighbours) and neighbours[fi] >= 0:
             continue
         n_boundary += 1
         owner = owners[fi]

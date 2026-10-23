@@ -1987,6 +1987,7 @@ def boundary_layer_report(
     flow_type: str = "flat_plate",
     wall_treatment: str = "wall_functions",
     h1_cap_reason: str = "",
+    bl_patch_names: list[str] | None = None,
 ) -> dict:
     """Factual post-build BL metrics read back from the written polyMesh.
 
@@ -2059,8 +2060,21 @@ def boundary_layer_report(
         )
         hex_like = (face_count == 6) & (nq_count == 0)
         layered_mask = prism_like | hex_like
+        wall_patch_objs = _wall_patches(Path(case_dir), patches)
+        selected_names = (
+            {str(n) for n in bl_patch_names}
+            if bl_patch_names is not None
+            else {str(p.get("name", "")) for p in wall_patch_objs}
+        )
+        # An explicit BL patch list is authoritative even when the geometric
+        # role inference would call a closed region an inlet/outlet.  The
+        # report must reflect what the engine was asked to extrude.
+        selected_objs = (
+            [p for p in patches if str(p.get("name", "")) in selected_names]
+            if bl_patch_names is not None else wall_patch_objs
+        )
         wall_accum: list[int] = []
-        for p in _wall_patches(Path(case_dir), patches):
+        for p in selected_objs:
             start = max(int(p.get("startFace", 0)), n_internal)
             end = min(start + int(p.get("nFaces", 0)), n_faces)
             wall_accum.extend(range(start, end))
@@ -2113,31 +2127,37 @@ def boundary_layer_report(
         y_plus_target = (
             1.0 if "resolved" in str(wall_treatment).lower() else 30.0
         )
-        # Per-patch breakdown (user requirement 2026-10-19: the requested
-        # y+ must be reached on EVERY wall surface, so the log has to say
-        # which patch falls short - the global median hides it).
+        # Per-patch breakdown: ALL boundary patches are listed, including the
+        # non-BL caps, with `bl_selected=false`.  W11 requires the report and
+        # the viewer to show the same 7 R1 patches, not only the 5 selected
+        # wall patches (a missing row looked like a lost patch).
         row_pos = {int(fi): i for i, fi in enumerate(wall_rows)}
         per_patch: dict = {}
-        for p in _wall_patches(Path(case_dir), patches):
+        for p in patches:
             name = str(p.get("name", "?"))
             start = max(int(p.get("startFace", 0)), n_internal)
             end = min(start + int(p.get("nFaces", 0)), n_faces)
             if end <= start:
                 continue
             idx = [row_pos[fi] for fi in range(start, end) if fi in row_pos]
-            if not idx:
-                continue
-            vals = h1_all[np.asarray(idx, dtype=np.int64)]
+            vals = (
+                h1_all[np.asarray(idx, dtype=np.int64)]
+                if idx else np.zeros(0)
+            )
             vals = vals[np.isfinite(vals)]
-            vals_y = yplus_all[np.asarray(idx, dtype=np.int64)]
+            vals_y = (
+                yplus_all[np.asarray(idx, dtype=np.int64)]
+                if idx else np.zeros(0)
+            )
             vals_y = vals_y[np.isfinite(vals_y)]
             _h1m = float(np.median(vals)) if vals.size else None
             per_patch[name] = {
-                "n_wall_faces": int(len(idx)),
+                "n_wall_faces": int(end - start),
                 "n_layered": int(vals.size),
                 "coverage": (
-                    float(vals.size / len(idx)) if idx else 0.0
+                    float(vals.size / (end - start)) if end > start else 0.0
                 ),
+                "bl_selected": name in selected_names,
                 "h1_median": _h1m,
                 "h1_p10": (
                     float(np.percentile(vals, 10)) if vals.size else None
@@ -2158,6 +2178,11 @@ def boundary_layer_report(
         return {
             "n_wall_faces": n_wall,
             "n_layered": n_layered,
+            "n_boundary_faces": int(
+                sum(int(p.get("nFaces", 0)) for p in patches)
+            ),
+            "patch_names": [str(p.get("name", "")) for p in patches],
+            "bl_patch_names": sorted(selected_names),
             "coverage": float(n_layered / n_wall) if n_wall else 0.0,
             "h1_requested_m": (
                 float(requested_h1) if requested_h1 else None
@@ -2808,6 +2833,9 @@ class DualPolyWorker(QObject):
                         h1_cap_reason=str(
                             getattr(bres, "h1_cap_reason", "") or ""
                         ),
+                        bl_patch_names=list(
+                            getattr(bres, "wall_patches", []) or []
+                        ),
                     )
                 except Exception:
                     _rep = {}
@@ -2907,7 +2935,7 @@ class DualPolyWorker(QObject):
                             f"{_st['n_wall_faces']:,} layered "
                             f"({_cov:.1f}%){_det}"
                         )
-                        if _cov < 90.0:
+                        if _st.get("bl_selected", True) and _cov < 90.0:
                             self.log_line.emit(
                                 f"[poly] WARN: patch {_pn} coverage "
                                 f"{_cov:.1f}% (<90%) - the requested y+ is "

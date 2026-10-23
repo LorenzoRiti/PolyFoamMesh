@@ -7,6 +7,32 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Multi-region patches and zero-config (W11) - 2026-10-23
+- **Root fix in `.msh` detection**: untagged 2D surface elements no longer
+  shadow the owning 3D region tag, so a multi-region mesh without explicit
+  surface groups produces one patch per volume instead of `surface_0`.
+  Physical names are dimension-scoped; boundary faces are grouped by the
+  resolved sanitized name, so a 2D `wall` tag 1 and a 3D `fluid` tag 1 stay
+  separate. Duplicate names merge, names are valid OpenFOAM words, and every
+  boundary face is counted exactly once.
+- **Non-manifold inputs fail clearly**: a face shared by more than two cells
+  raises a precise error before writing instead of becoming a ghost patch.
+- **`neighbour` invariant repaired**: `write_polymesh` no longer writes `-1`
+  boundary placeholders into `neighbour`; `read_polymesh` normalises old
+  files. This was why BL could select a patch by name and still see zero
+  boundary faces (`n_int == n_faces`).
+- **Report/view coherence**: `boundary_layer_report` lists every boundary
+  patch with `bl_selected` (caps included, coverage 0 for non-BL patches),
+  alongside `n_boundary_faces` and `patch_names`. R1 now reports all 7
+  patches: 5 selected walls with 99.51% measured coverage, 2 caps
+  unselected; h1 remains 0.1155x requested (declared cap).
+- **Zero-config**: volume tags alone name `region_N`, a fully untagged mesh
+  gets `default`, and the GUI wall decision delegates to the shared
+  `patch_roles.is_wall_patch` (a blade `pressure_side` is a wall).
+- Tests: `tests/test_mesh_converter_multiregion.py` (13) plus the updated
+  mesh-converter orientation regression. No real multi-region `.msh` case
+  was available; the multi-region test is synthetic and declared.
+
 ### Poly release gate + boundary attribution (W10.3) - 2026-10-23
 - **Measured attribution**: R1 dual-only has 1 pyramid (79,416 cells, NO
   48.46/skew 3.31); old BL adds 38 (39 total, Failed 3); W10.1 quality BL

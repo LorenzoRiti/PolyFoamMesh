@@ -15,12 +15,20 @@ Face extraction strategy:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import meshio
 import numpy as np
 
 from . import foam_mesh_io
+
+
+def _sanitize_patch_name(name, fallback: str = "patch") -> str:
+    """Make a physical-group name a valid, stable OpenFOAM word."""
+    raw = str(name or "").strip()
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+    return cleaned or fallback
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +152,6 @@ def msh_to_of_polymesh(
     phys_tags_seen: set[int] = set()
     cell_3d_counter = 0
     for block_idx, cell_block in enumerate(cells):
-        n_cells = len(cell_block.data)
         phys_data = None
         if cell_data is not None and "gmsh:physical" in cell_data:
             data_array = cell_data["gmsh:physical"]
@@ -159,10 +166,62 @@ def msh_to_of_polymesh(
             if tag > 0:
                 phys_tags_seen.add(tag)
             if is_3d:
-                cell_phys_map[cell_3d_counter] = tag
+                if tag > 0:
+                    cell_phys_map[cell_3d_counter] = tag
                 cell_3d_counter += 1
-            else:
+            elif tag > 0:
+                # CRITICAL W11 root fix: an untagged (tag 0) surface element
+                # must NOT shadow the owning 3D region tag.  Storing it made
+                # every boundary face of a multi-region mesh without 2D
+                # physical groups collapse into a phantom `surface_0`.
                 surface_face_tag_map[tuple(sorted(int(v) for v in verts))] = tag
+
+    # Physical names are dimension-scoped.  A 2D patch and a 3D region can
+    # legitimately share the same numeric tag; the old single dict let one
+    # overwrite the other.  Keep them separate and merge only at the final
+    # boundary-patch build.
+    surface_tag_to_name: dict[int, str] = {}
+    volume_tag_to_name: dict[int, str] = {}
+    if field_data:
+        for raw_name, value in field_data.items():
+            try:
+                arr = np.asarray(value).ravel()
+                tag = int(arr[0])
+                dim = int(arr[1]) if arr.size > 1 else 0
+            except (TypeError, ValueError, IndexError):
+                continue
+            if dim == 2:
+                surface_tag_to_name[tag] = _sanitize_patch_name(
+                    raw_name, f"surface_{tag}",
+                )
+            elif dim == 3:
+                volume_tag_to_name[tag] = _sanitize_patch_name(
+                    raw_name, f"region_{tag}",
+                )
+    if boundary_patches:
+        for raw_tag, raw_name in boundary_patches.items():
+            try:
+                tag = int(raw_tag)
+            except (TypeError, ValueError):
+                continue
+            name = _sanitize_patch_name(raw_name, f"patch_{tag}")
+            surface_tag_to_name[tag] = name
+            volume_tag_to_name[tag] = name
+
+    def _patch_name(tag: int, source: str) -> str:
+        if source == "surface" and tag in surface_tag_to_name:
+            return surface_tag_to_name[tag]
+        if tag in volume_tag_to_name:
+            return volume_tag_to_name[tag]
+        if tag in surface_tag_to_name:
+            return surface_tag_to_name[tag]
+        if tag == 0:
+            return "default"
+        return (
+            _sanitize_patch_name(f"region_{tag}", f"region_{tag}")
+            if source == "volume"
+            else _sanitize_patch_name(f"surface_{tag}", f"surface_{tag}")
+        )
 
     # ------------------------------------------------------------------
     # Phase 2: Extract faces from 3D cells
@@ -177,6 +236,7 @@ def msh_to_of_polymesh(
     face_owner_tags: list[int] = []       # physical tag of owner cell
 
     face_cell_map: dict[tuple[int, ...], tuple[int, int]] = {}
+    face_use_count: dict[tuple[int, ...], int] = {}
 
     # 3D-cell-local counter — do NOT increment for skipped 2D/unsupported
     # blocks (see Phase 1 comment: that was the bug that produced 2956
@@ -197,6 +257,14 @@ def msh_to_of_polymesh(
             for fv_local in face_template:
                 face_verts = [int(verts[v]) for v in fv_local]
                 key = tuple(sorted(face_verts))
+                face_use_count[key] = face_use_count.get(key, 0) + 1
+                if face_use_count[key] > 2:
+                    raise RuntimeError(
+                        "Non-manifold mesh: face "
+                        f"{face_verts} is shared by more than two cells "
+                        f"(occurrence {face_use_count[key]} at cell "
+                        f"{cell_counter})"
+                    )
                 if key in face_cell_map:
                     other_owner, owner_face = face_cell_map.pop(key)
                     # Store the OWNER's winding, not the current (second)
@@ -228,8 +296,16 @@ def msh_to_of_polymesh(
                     face_cell_map[key] = (cell_counter, face_verts)
             cell_counter += 1
 
-    # Remaining entries in face_cell_map = boundary faces
-    boundary_faces_by_tag: dict[int, list[list[int]]] = {}
+    # Remaining entries in face_cell_map = boundary faces.
+    #
+    # Group by the RESOLVED name, not by the numeric tag.  Physical tags are
+    # only unique within a dimension: a surface group `wall` and a volume
+    # region `fluid` may both be tag 1.  Grouping by tag merged those faces
+    # into one patch and then blamed the name on whichever dimension wrote
+    # the source map last.  Names are the final OpenFOAM identity, so make
+    # them the key and merge only genuine duplicate names.
+    boundary_faces_by_name: dict[str, list[list[int]]] = {}
+    boundary_tag_for_name: dict[str, int] = {}
     for key, (owner_cell, face_verts) in face_cell_map.items():
         # A boundary face's patch comes from the named 2D surface element
         # that coincides with it (inlet/outlet/wall/surface_N) — NOT from
@@ -237,13 +313,21 @@ def msh_to_of_polymesh(
         # multi-region meshes with more than one named volume. Using the
         # cell tag here meant every boundary face fell into the same
         # single (or untagged) bucket, losing the actual patch split.
-        tag = surface_face_tag_map.get(key, cell_phys_map.get(owner_cell, 0))
-        if tag not in boundary_faces_by_tag:
-            boundary_faces_by_tag[tag] = []
-        boundary_faces_by_tag[tag].append(face_verts)
+        # Prefer a real 2D physical group; when the surface is untagged,
+        # fall back to the owning 3D region tag (multi-region .msh).  Only a
+        # truly untagged volume reaches tag 0/default.
+        source = "surface"
+        tag = surface_face_tag_map.get(key)
+        if tag is None:
+            source = "volume"
+            tag = cell_phys_map.get(owner_cell, 0)
+        name = _patch_name(int(tag), source)
+        boundary_tag_for_name.setdefault(name, int(tag))
+        boundary_faces_by_name.setdefault(name, []).append(face_verts)
 
     # Append boundary faces to the main arrays
-    start_face_idx = len(all_faces)
+    n_3d_internal = len(all_faces)
+    start_face_idx = n_3d_internal
     # Deterministic owner lookup: every boundary face below comes from
     # ``face_cell_map`` itself, so a missing key is a topology bug — never
     # silently fall back to owner 0 (a wrong owner silently corrupts the
@@ -251,10 +335,11 @@ def msh_to_of_polymesh(
     boundary_owner_by_key: dict[tuple[int, ...], int] = {
         key: owner_cell for key, (owner_cell, _) in face_cell_map.items()
     }
-    boundary_start_faces: dict[int, int] = {}
-    for tag in sorted(boundary_faces_by_tag.keys()):
-        boundary_start_faces[tag] = start_face_idx
-        for fv in boundary_faces_by_tag[tag]:
+    boundary_start_faces: dict[str, int] = {}
+    ordered_names = sorted(boundary_faces_by_name)
+    for name in ordered_names:
+        boundary_start_faces[name] = start_face_idx
+        for fv in boundary_faces_by_name[name]:
             all_faces.append(fv)
             key = tuple(sorted(fv))
             try:
@@ -266,34 +351,34 @@ def msh_to_of_polymesh(
                 ) from None
             all_owners.append(owner)
             all_neighbours.append(-1)
-            face_owner_tags.append(tag)
+            face_owner_tags.append(boundary_tag_for_name[name])
             start_face_idx += 1
 
     # ------------------------------------------------------------------
     # Phase 3: Build boundary patches from physical groups
     # ------------------------------------------------------------------
-    # Build a tag → name map from field_data (physical group definitions)
-    tag_to_name: dict[int, str] = {}
-    if field_data:
-        for name, (tag, dim) in field_data.items():
-            if dim == 2 or dim == 3:  # surface or volume
-                tag_to_name[int(tag)] = name
-
-    # If boundary_patches was provided (explicit mapping), use it
-    if boundary_patches:
-        tag_to_name.update(boundary_patches)
-
-    patches: list[dict] = []
-    for tag in sorted(boundary_faces_by_tag.keys()):
-        name = tag_to_name.get(tag, f"surface_{tag}")
-        n_faces = len(boundary_faces_by_tag[tag])
-        start = boundary_start_faces[tag]
-        patches.append({
+    # One patch per resolved name, in deterministic name order.  Duplicate
+    # physical groups that sanitize to the same OpenFOAM word already share
+    # one bucket and therefore one contiguous face range.
+    patches: list[dict] = [
+        {
             "name": name,
             "type": "patch",
-            "nFaces": n_faces,
-            "startFace": start,
-        })
+            "nFaces": len(boundary_faces_by_name[name]),
+            "startFace": boundary_start_faces[name],
+        }
+        for name in ordered_names
+    ]
+
+    n_boundary = len(all_faces) - n_3d_internal
+    if sum(int(p["nFaces"]) for p in patches) != n_boundary:
+        raise RuntimeError(
+            "boundary patch accounting mismatch: "
+            f"{sum(int(p['nFaces']) for p in patches)} faces in patches, "
+            f"{n_boundary} boundary faces in mesh"
+        )
+    if len({p["name"] for p in patches}) != len(patches):
+        raise RuntimeError("duplicate boundary patch names after detection")
 
     # If no boundary faces at all, create a placeholder
     if not patches:

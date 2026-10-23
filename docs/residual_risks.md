@@ -5,6 +5,30 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## Multi-region patches and zero-config (W11, 2026-10-23)
+
+- **Synthetic representative, no real multi-region `.msh` case**: the W11
+  detection proof uses a real meshio/GMSH22 two-region file generated in the
+  tests.  No multi-region `.msh` existed under `C:\cfmesh_cases`, so the
+  synthetic file is the declared evidence; a real CAD/CHT export remains
+  the next confirmation.
+- **BL parameters are still global**: W11 adds reliable per-patch
+  selection and per-patch reporting, but each patch cannot have an
+  independent layer count/first height.  This reuses the W7/W10 contract on
+  purpose; independent per-patch values are future work.
+- **Non-wall patches have no BL**: R1's two caps are listed in the report
+  with `bl_selected=false` and coverage 0.  This is correct (no layers in
+  an inlet/outlet/cap by policy), but a reader must not interpret the
+  zero as a failed wall extrusion.  Only selected patches produce the
+  <90% warning.
+- **Only a boundary-placeholder tail is normalised**: `read_polymesh`
+  accepts legacy files whose `neighbour` list ends in `-1` placeholders.
+  A negative value before a valid neighbour is rejected as corrupt;
+  arbitrary malformed face ordering is not repaired.
+- **R1 h1 remains capped**: the W11 report reads back 0.145 mm vs 1.26 mm
+  requested (0.116x) and 99.51% coverage over the selected walls.  This is
+  the same declared W10.1 support cap; W11 did not lower it or hide it.
+
 ## Release 2.3.0 — known limitations (2026-10-11)
 
 These are the accepted, documented limits of the 2.3.0 release. Everything

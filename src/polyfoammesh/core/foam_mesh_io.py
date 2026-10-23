@@ -366,6 +366,18 @@ def read_polymesh(poly_dir: Path) -> tuple:
     faces = read_faces(poly_dir / "faces")
     owner = read_label_list(poly_dir / "owner")
     neighbour = read_label_list(poly_dir / "neighbour")
+    # Defensive read-side normalisation for files produced before the W11
+    # writer fix: `-1` boundary placeholders at the tail are not neighbour
+    # entries.  Any negative value before the tail is a corrupt mesh, not
+    # something to silently reinterpret.
+    if neighbour.size and np.any(neighbour < 0):
+        first_negative = int(np.flatnonzero(neighbour < 0)[0])
+        if np.any(neighbour[first_negative:] >= 0):
+            raise ValueError(
+                "corrupt polyMesh neighbour list: negative boundary "
+                "placeholder precedes an internal face"
+            )
+        neighbour = neighbour[:first_negative]
     patches = read_boundary(poly_dir / "boundary")
     return points, faces, owner, neighbour, patches
 
@@ -444,6 +456,28 @@ def write_polymesh(
     import shutil
     import tempfile
 
+    # OpenFOAM's `neighbour` list contains INTERNAL faces only.  Some
+    # converters (notably mesh_converter) build a face-aligned array with
+    # -1 placeholders for boundary faces; writing those placeholders made
+    # read_polymesh treat every boundary face as internal and BL/report
+    # found n_int == n_faces (W11 root).  Drop only a valid boundary tail;
+    # an interspersed negative would shift the face alignment and is a bug.
+    neigh_arr = np.asarray(neighbour, dtype=np.int64).ravel()
+    negative = np.flatnonzero(neigh_arr < 0)
+    if negative.size:
+        first = int(negative[0])
+        if np.any(neigh_arr[first:] >= 0):
+            raise RuntimeError(
+                "invalid neighbour list: a boundary placeholder (-1) "
+                "precedes an internal face"
+            )
+        neigh_arr = neigh_arr[:first]
+    if len(neigh_arr) > len(owner):
+        raise RuntimeError(
+            "neighbour list is longer than owner after dropping boundary "
+            "placeholders"
+        )
+
     tmp_dir = Path(tempfile.mkdtemp(prefix="foam_mesh_io_"))
     tmp_poly = tmp_dir / "polyMesh"
     tmp_poly.mkdir(parents=True, exist_ok=True)
@@ -451,7 +485,7 @@ def write_polymesh(
         write_points(tmp_poly / "points", points)
         write_faces(tmp_poly / "faces", faces)
         write_labels(tmp_poly / "owner", owner)
-        write_labels(tmp_poly / "neighbour", neighbour)
+        write_labels(tmp_poly / "neighbour", neigh_arr)
         write_boundary(tmp_poly / "boundary", patches)
         for name in ("points", "faces", "owner", "neighbour", "boundary"):
             p = tmp_poly / name

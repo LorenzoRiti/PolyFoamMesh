@@ -90,6 +90,7 @@ from polyfoammesh.gui.log_tags import Tag
 from polyfoammesh.gui.params_panel import ParamsPanel
 from polyfoammesh.gui.quality_panel import QualityPanel
 from polyfoammesh.gui.settings_migration import AppSettings
+from polyfoammesh.core.patch_roles import is_wall_patch as _shared_is_wall_patch
 from polyfoammesh.gui.style import COLOR_TEXT_DISABLED
 from polyfoammesh.gui.task_runner import FunctionWorker, TaskManager
 from polyfoammesh.gui.viewer_widget import ViewerWidget
@@ -99,27 +100,13 @@ logger = logging.getLogger(__name__)
 
 
 def _is_wall_patch(name: str) -> bool:
-    """Heuristic: a patch is a wall if its name does NOT match known
-    non-wall boundary types.
+    """W11: one shared wall classifier for zero-config BL.
 
-    Handles Italian names (ingresso/uscita), mixed case (Inlet, WALL_1),
-    numeric suffixes (wall_1, inlet-02), and dotted prefixes (patch.wall).
-    Anything that doesn't match a known non-wall keyword is treated as wall
-    (body, fixed, blade, casing, housing, etc.).
+    Delegates to ``core.patch_roles``.  The old local blocklist treated
+    ``pressure_side`` (a blade wall) as non-wall; the shared rules match
+    only compound non-wall names such as ``pressure_inlet``.
     """
-    name_lower = name.lower().replace("-", "_").replace(".", "_")
-    # Strip trailing numeric suffixes: wall_1, wall_02, wall-003
-    name_stripped = name_lower.rstrip("_0123456789")
-    non_wall_keywords = (
-        "inlet", "outlet", "ingresso", "uscita", "entrance", "exit",
-        "symmetry", "opening", "farfield",
-        "empty", "porous", "interface",
-        "periodic", "cyclic", "freestream",
-        "pressure", "velocity",
-    )
-    if any(kw in name_stripped for kw in non_wall_keywords):
-        return False
-    return True
+    return _shared_is_wall_patch(name)
 
 
 def _free_ram_gb() -> float:
