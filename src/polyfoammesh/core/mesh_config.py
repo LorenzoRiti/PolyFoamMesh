@@ -26,14 +26,15 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from polyfoammesh.core.bl_config import BLConfig
+from polyfoammesh.core.mesher_registry import (
+    LEGACY_ALIASES,
+    MESHERS,
+    normalize_mesher_key,
+)
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
-
-MESHERS = (
-    "gmsh_direct_poly", "ftetwild_poly", "cfmesh", "gmsh_direct", "auto_tet",
-)
 DETAILS = ("very_coarse", "coarse", "medium", "fine", "very_fine")
 
 #: Single slider -> cell-target mapping (log 10K..20M).  The GUI delegates
@@ -142,6 +143,8 @@ class MeshConfig:
     )
 
     def __post_init__(self) -> None:
+        if self.mesher in LEGACY_ALIASES:
+            self.mesher = normalize_mesher_key(self.mesher)
         prov = dict(self.provenance or {})
         for name in _FIELD_ORDER:
             source = str(prov.get(name, "default"))
@@ -301,6 +304,8 @@ class MeshConfig:
         )
         if raw_mesher is not None:
             mesher = str(raw_mesher).strip()
+            if mesher in LEGACY_ALIASES:
+                mesher = normalize_mesher_key(mesher)
             if mesher not in MESHERS:
                 warnings.append(f"mesher: {mesher!r} is not a known mesher")
             else:

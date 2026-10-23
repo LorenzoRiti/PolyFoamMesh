@@ -70,6 +70,7 @@ from polyfoammesh.core import mesh_cache
 from polyfoammesh.core.gmsh_wrapper import gmsh_shutdown
 from polyfoammesh.core.meshdict_gen import write_meshdict
 from polyfoammesh.core.openfoam_runner import (
+    BlOnTetsWorker,
     CheckMeshWorker,
     DecomposeParWorker,
     ErrorType,
@@ -180,8 +181,9 @@ class MainWindow(QMainWindow):
         self._run_id = 0
         self._quality_fix_attempts = 0
         self._poly_was_converted = False
+        self._bl_on_tets_done = False
         # Set when a polyhedral mesh failed checkMesh and was rolled back to
-        # the tet mesh — prevents re-converting the same tet mesh in a loop.
+        # the tet mesh - prevents re-converting the same tet mesh in a loop.
         self._poly_fallback_active = False
         self._unscaled_meshes: list[trimesh.Trimesh] = []
         self._scaled_meshes: list[trimesh.Trimesh] | None = None
@@ -2176,6 +2178,7 @@ class MainWindow(QMainWindow):
 
         self._run_id += 1
         self._poly_was_converted = False
+        self._bl_on_tets_done = False
         self._poly_fallback_active = False
         self._low_ram_gmsh_threads = False
         self._auto_tet_plan = None
@@ -2255,6 +2258,12 @@ class MainWindow(QMainWindow):
                 f"fallback={_plan.fallback or '-'} ({_plan.reason})"
             )
         self._current_mesher_type = mesher_type
+        if mesher_type == "bl_on_tets":
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh engine: BL on tets (opt-in prototype) "
+                "— prism boundary layers are built directly on the tet "
+                "boundary, no dual conversion. Default paths unchanged."
+            )
         adaptive_on = self._params.get_adaptive_sizing_enabled()
         poly_on = self._params.get_poly_conversion()
         logger.info(
@@ -4566,6 +4575,18 @@ class MainWindow(QMainWindow):
         self._refresh_workflow(quality_passed=bool(report.passed))
         if report.cells:
             self._on_cell_count_found(report.cells)
+
+        # W13 opt-in: build the BL on the tet boundary before any poly
+        # conversion decision.  It runs even when the raw tet checkMesh is
+        # imperfect, because the direct BL can remove boundary defects;
+        # the final checkMesh below is the authoritative quality gate.
+        if (
+            getattr(self, "_current_mesher_type", "") == "bl_on_tets"
+            and not getattr(self, "_bl_on_tets_done", False)
+        ):
+            self._launch_bl_on_tets()
+            return
+
         if report.passed:
             self._set_workflow_stage("quality", "done")
             self._log.append_log(f"{Tag.QUALITY} PASS checkMesh")
@@ -4608,6 +4629,17 @@ class MainWindow(QMainWindow):
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
             self._status.showMessage("Mesh quality check failed")
+            if getattr(self, "_current_mesher_type", "") == "bl_on_tets":
+                # The opt-in tet+prism mesh failed checkMesh.  Keep it and
+                # show the measured failure; never fall through to the
+                # cfMesh remesh (that would silently replace the engine).
+                self._log.append_log(
+                    f"{Tag.WARN} BL on tets mesh failed checkMesh "
+                    f"({report.status}). Keeping the tet+prism mesh and "
+                    "showing it with the warning (no engine substitution)."
+                )
+                self._viewer.show_mesh(self._case_dir)
+                return
             if getattr(self, "_poly_was_converted", False):
                 # The POLYHEDRAL mesh failed checkMesh.  Do NOT fall through
                 # to _auto_quality_fix: that re-meshes the tet at a coarser
@@ -4837,6 +4869,97 @@ class MainWindow(QMainWindow):
                 )
         except Exception:
             pass
+        self._launch_checkmesh()
+
+    def _launch_bl_on_tets(self) -> None:
+        """W13 opt-in: build the prism BL on the tet boundary, no dual."""
+        if not self._case_dir:
+            return
+        poly_points = self._case_dir / "constant" / "polyMesh" / "points"
+        if not poly_points.exists():
+            self._log.append_log(
+                f"{Tag.WARN} BL on tets: no mesh in constant/polyMesh."
+            )
+            return
+        bl_params = self._params.get_bl_params()
+        if not bl_params:
+            self._log.append_log(
+                f"{Tag.WARN} BL on tets selected but Boundary Layers are "
+                "disabled; keeping the tet mesh (no silent BL)."
+            )
+            self._bl_on_tets_done = True
+            self._launch_checkmesh()
+            return
+        self._bl_on_tets_done = False
+        self._status.showMessage("Building BL directly on tets...")
+        self._log.append_log(
+            "[bl-tets] prototype: prisms on the tet boundary, tet core kept; "
+            f"{bl_params.get('nLayers')} layers, first "
+            f"{bl_params.get('firstLayerThickness'):.6g} m, growth "
+            f"{bl_params.get('thicknessRatio')} "
+            f"(apply_all={self._params.get_bl_apply_all()})."
+        )
+        w = BlOnTetsWorker(
+            self._case_dir,
+            bl_params,
+            apply_to_all=self._params.get_bl_apply_all(),
+        )
+        self._bl_on_tets_worker = w
+        self._submit_task(
+            "bl_on_tets", w,
+            on_finished=lambda _n, result: self._on_bl_on_tets_finished(result),
+            on_failed=lambda _n, msg: self._on_bl_on_tets_failed(msg),
+            on_progress=lambda _n, stage, pct: (
+                self._on_progress_update(int(pct)),
+                self._status.showMessage(f"{stage} ({pct:.0f}%)"),
+            ),
+            heartbeat_timeout_s=1800.0,
+        )
+
+    def _on_bl_on_tets_finished(self, result) -> None:
+        self._bl_on_tets_done = True
+        if not getattr(result, "success", False):
+            self._log.append_log(
+                f"{Tag.WARN} BL on tets refused: "
+                f"{'; '.join(getattr(result, 'errors', []) or ['unknown'])}"
+            )
+            for warning in (getattr(result, "warnings", []) or [])[:5]:
+                self._log.append_log(f"{Tag.WARN} [bl-tets] {warning}")
+            self._log.append_log(
+                "Tet mesh left unchanged; running the final checkMesh."
+            )
+            self._viewer.show_mesh(self._case_dir)
+            self._launch_checkmesh()
+            return
+        self._log.append_log(
+            f"[bl-tets] {result.n_prism_cells:,} prisms on "
+            f"{result.n_wall_faces:,} wall faces; coverage "
+            f"{100.0 * result.coverage:.2f}%; h1 "
+            f"{result.h1_median if result.h1_median is not None else 'n/a'}"
+            + (
+                f" ({result.h1_ratio:.3f}x requested)"
+                if result.h1_ratio is not None else ""
+            )
+            + f"; {result.elapsed_s:.1f}s; source=tet boundary, no dual."
+        )
+        for name, stats in (getattr(result, "report", {}) or {}).get(
+            "per_patch", {}
+        ).items():
+            self._log.append_log(
+                f"[bl-tets] patch {name}: coverage "
+                f"{100.0 * stats.get('coverage', 0.0):.2f}%, selected="
+                f"{stats.get('bl_selected')}"
+            )
+        self._poly_was_converted = False
+        self._viewer.show_mesh(self._case_dir)
+        self._launch_checkmesh()
+
+    def _on_bl_on_tets_failed(self, msg: str) -> None:
+        self._bl_on_tets_done = True
+        self._log.append_log(f"{Tag.WARN} BL on tets FAILED: {msg}")
+        self._log.append_log(
+            "Tet mesh left unchanged; running the final checkMesh."
+        )
         self._launch_checkmesh()
 
     def _launch_gmsh_poly_dual(self) -> None:

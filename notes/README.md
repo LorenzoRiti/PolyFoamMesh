@@ -43,6 +43,7 @@ state that later changed; the code and tests remain the source of truth.
 - `w10_2_tet_hybrid_diagnosis.md`, `w10_2_tet_hybrid_reasoning.md` - W10.2 TetSource/auto policy, GMSH surface refinement/groups, patch normal filter, cache fix and the rejected mesh union.
 - `w10_3_poly_boundary_diagnosis.md`, `w10_3_poly_boundary_reasoning.md` - W10.3 R1 dual-only/BL attribution, rejected edge-filter combo, poly release gate and the venturi/W14 topological wall.
 - `w11_multipatch_diagnosis.md`, `w11_multipatch_reasoning.md` - W11 untagged-surface shadowing, dimension-scoped physical names, `neighbour` placeholder root cause, all-patch report and zero-config; synthetic multi-region evidence and declared real-case gap.
+- `w13_bl_on_tets_diagnosis.md`, `w13_bl_on_tets_reasoning.md` - W13 direct tet-boundary BL prototype, real R1 A/B versus the dual, opt-in verdict, and the lossless one-CTA Polymesh registry/migration.
 
 ### Cross-cutting
 - `_buglog.md` — out-of-lane findings and repo-hygiene measurements (clone size, branch state, stale README claims).

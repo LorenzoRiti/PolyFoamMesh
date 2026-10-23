@@ -87,10 +87,19 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   mesh follows the CAD geometry (exact curvature, sharp edges, narrow
   passages) within the cell budget. How tightly it follows curvature is
   derived automatically from the Detail slider - there is no second knob.
-- **Mesher choice** (buttons left to right):
-  - **Polymesh (poly)**: the default path - GMSH tetrahedra -> polyhedral
-    dual (STAR-CCM+ style topology) with boundary layers. No WSL needed.
-  - **Polymesh sperimentale (fTetWild)**: same poly pipeline, but the tet
+- **Polymesh CTA and Engine (Advanced)**: the main screen has one visible
+  mesher button, **Polymesh**. Its engine is selected in
+  **Advanced -> Polymesh engine**: `Legacy tet -> poly` (the measured
+  default), `Auto`, `fTetWild`, `BL on tets (prototype)`, `FEM tetra` or
+  `Cartesian cfMesh`. The old experimental buttons are intentionally not
+  separate CTAs; every historical engine remains reachable and tested.
+  Auto is opt-in until its full corpus A/B is green; selecting any engine
+  is recorded in the log (`Mesher:` and the BL provenance).
+  The engine choices are:
+  - **Legacy tet -> poly (GMSH)**: the default path - GMSH tetrahedra ->
+    polyhedral dual (STAR-CCM+ style topology) with boundary layers. No WSL
+    needed.
+  - **Polymesh fTetWild**: same poly pipeline, but the tet
     stage runs [fTetWild](https://github.com/wildmeshing/fTetWild)
     instead of GMSH (experimental, issue #12). Requires the optional
     package `pip install pytetwild`. The target edge is derived from the
@@ -141,6 +150,14 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     of warped boundary faces can still trip the final checkMesh —
     historically GMSH failed the same gate on the same part in half of
     its logged runs.
+  - **BL on tets (prototype, opt-in)**: builds the prism layers directly
+    on the tetrahedral boundary and keeps the tet core, without the dual.
+    It reuses the same BL engine, report and checkMesh gate. On the real R1
+    tet, at the common 1-layer A/B point, it measured 100% coverage,
+    h1 ratio 0.999, `Mesh OK`, 90.5 s; the dual path measured h1 0.474,
+    221.4 s and `Failed 3`, but the direct mesh has ~3.9x more cells. It is
+    not promoted and not the default; thin-feature/venturi/tube and the
+    production 5-layer comparison remain open.
   - **Auto (GMSH surface + fTetWild volume)**: opt-in source policy.
     For STEP it uses the GMSH surface (physical groups, curvature/gap
     sizing, refinement zones) with the fTetWild volume; for STL it feeds
@@ -275,8 +292,10 @@ zones are edited directly with their gizmo in the viewer.
 
 ## Boundary layers
 
-Boundary layers are inserted by the poly mesher (CFD Poly path). In the
-**Advanced** tab:
+Boundary layers are inserted by the poly mesher. The default (legacy
+tet→poly) and fTetWild/Auto engines add them after the dual. The opt-in
+**BL on tets** engine adds them directly on the tet boundary; it is not the
+default, and the log names the mode. In the **Advanced** tab:
 
 - **Enable Boundary Layers**: master switch.
 - **Apply BL to all patches**: otherwise layers are added only to wall-typed

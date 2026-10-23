@@ -304,7 +304,7 @@ __all__ = [
     "DecomposeParWorker", "WslCheckWorker",
     "generate_fms",
     "poly_wall_patch_names", "poly_geo_wall_patch_names",
-    "poly_bl_patch_selection",
+    "poly_bl_patch_selection", "BlOnTetsWorker",
 ]
 
 try:
@@ -2208,6 +2208,60 @@ def boundary_layer_report(
             "boundary_layer_report failed for %s", case_dir, exc_info=True,
         )
         return {}
+
+
+class BlOnTetsWorker(QObject):
+    """W13 opt-in worker: prism BL directly on the tet boundary.
+
+    It returns the ``BlOnTetsResult`` even when the engine cleanly refuses
+    (success=False); only an unexpected exception uses ``failed``.  This
+    keeps the "mesh left unchanged" outcome visible instead of turning it
+    into a generic task crash.
+    """
+
+    finished = Signal(object)
+    failed = Signal(str)
+    log_line = Signal(str)
+    progress = Signal(str, float)
+
+    def __init__(
+        self,
+        case_dir: Path | str,
+        bl_params: dict,
+        *,
+        patch_names: list[str] | None = None,
+        apply_to_all: bool = False,
+    ) -> None:
+        super().__init__()
+        self._case_dir = Path(case_dir)
+        self._bl_params = dict(bl_params or {})
+        self._patch_names = list(patch_names or [])
+        self._apply_to_all = bool(apply_to_all)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from polyfoammesh.core.bl_tets import build_bl_on_tets
+
+            self.progress.emit("BL on tets", 10.0)
+            result = build_bl_on_tets(
+                self._case_dir,
+                n_layers=int(self._bl_params.get("nLayers", 0) or 0),
+                first_height=float(
+                    self._bl_params.get("firstLayerThickness", 0.0) or 0.0
+                ),
+                growth_rate=float(
+                    self._bl_params.get("thicknessRatio", 1.2) or 1.2
+                ),
+                patch_names=self._patch_names or None,
+                apply_to_all=self._apply_to_all,
+                log=self.log_line.emit,
+            )
+            self.progress.emit("BL on tets", 90.0)
+            self.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001 - task boundary
+            logger.exception("BL on tets worker failed")
+            self.failed.emit(str(exc))
 
 
 class DualPolyWorker(QObject):

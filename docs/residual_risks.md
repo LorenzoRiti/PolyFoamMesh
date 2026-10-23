@@ -5,6 +5,33 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## BL on tets and Polymesh CTA (W13, 2026-10-23)
+
+- **BL on tets is opt-in, not promoted**: on the real R1 tet (1 layer,
+  h1=0.2 mm, same parameters as the dual A/B) the direct path measured
+  100% coverage, h1 ratio 0.999, `Mesh OK`, 90.5 s; the dual path measured
+  h1 0.474, 221.4 s and `Failed 3` (11 pyramids, 85 non-orthogonal, skew
+  4.85).  The direct path produced 68,853 prisms / 448,864 cells versus
+  34,853 / 114,269 for the dual, i.e. ~3.9x more cells.  It is a measured
+  opt-in win, not a production replacement.
+- **Missing A/B breadth**: thin_gap, venturi and tube were not re-run as
+  fresh tet polyMeshes in this session; the production 5-layer direct BL
+  was not measured.  Promotion requires those cases and the same
+  params/checkMesh comparison.  The BL verdict does not affect the UI
+  consolidation.
+- **Direct tet limitations**: it inherits input tet boundary defects, is
+  sensitive to interior support/quality, and its prism-to-tet transition
+  can reject a geometry (the mesh is left unchanged, with a warning).
+  There is no silent fallback to the dual or cfMesh in the GUI.
+- **UI migration is lossless but legacy hidden**: the old fTetWild/Auto/
+  cfMesh buttons remain hidden controls, not separate CTAs; every key is
+  in `core/mesher_registry.py` and reachable via Advanced/CLI.  Auto stays
+  opt-in because its full corpus A/B is not green; the measured legacy
+  GMSH→dual path remains the default.
+- **Alias migration**: `autopoly`, `poly` and `polymesh` map to the legacy
+  default; a future preset using `bl_on_tets` requires a build that knows
+  the key (old builds will clamp it with a warning, as before).
+
 ## Multi-region patches and zero-config (W11, 2026-10-23)
 
 - **Synthetic representative, no real multi-region `.msh` case**: the W11

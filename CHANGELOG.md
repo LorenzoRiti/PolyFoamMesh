@@ -7,6 +7,32 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### BL on tets + one Polymesh CTA (W13) - 2026-10-23
+- **Opt-in BL directly on the tet boundary**: new `core/bl_tets.py` reuses
+  `PolyBoundaryLayerEngine` on the pure-tet polyMesh, so the wall prisms are
+  built without a dual boundary and the tet core is preserved.  Reachable
+  only through the `bl_on_tets` engine; defaults are unchanged.  On the real
+  R1 380,011-tet mesh (1 layer, same h1/growth as the dual A/B) it measured
+  68,853 prisms, 100% coverage, h1 ratio 0.999, 90.5 s, final checkMesh
+  **Mesh OK** (skew 2.48, 0 pyramids).  The same dual BL measured h1 0.474,
+  221.4 s and Failed 3 (11 pyramids / 85 non-orthogonal), but the direct
+  path uses ~3.9x more cells; verdict is **opt-in, not promoted** pending
+  thin/venturi/tube and production 5-layer evidence.
+- **One visible Polymesh CTA**: the experimental fTetWild and Auto buttons
+  are no longer separate CTAs.  One lossless `core/mesher_registry.py` keeps
+  every historical key (`gmsh_direct_poly`, `ftetwild_poly`, `auto_tet`,
+  `cfmesh`, `gmsh_direct`) and adds `bl_on_tets`; the Advanced **Polymesh
+  engine** selector exposes Auto, GMSH, fTetWild, legacy tet→poly, BL on
+  tets, cfMesh and FEM tetra.  Old buttons remain hidden/tested controls,
+  not deleted engines.
+- **Migration**: `MeshConfig`, presets, projects and CLI accept the new key;
+  aliases `autopoly`/`poly`/`polymesh` map to the measured legacy default.
+  Auto stays opt-in until its corpus A/B is green; `bl_on_tets` is
+  experimental and never the default.
+- Tests: `tests/test_bl_tets.py` (7) and
+  `tests/test_mesher_registry.py` (8), plus the existing mesher/config/BL
+  suites.  The full fast suite and ruff remain the gate.
+
 ### Multi-region patches and zero-config (W11) - 2026-10-23
 - **Root fix in `.msh` detection**: untagged 2D surface elements no longer
   shadow the owning 3D region tag, so a multi-region mesh without explicit

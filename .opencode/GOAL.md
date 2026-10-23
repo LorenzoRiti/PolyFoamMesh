@@ -1461,3 +1461,40 @@ multi-regione reale in `C:\cfmesh_cases`: il caso sintetico e' dichiarato
 come rappresentante.  Gate W11: `pytest -m "not slow and not wsl"` ->
 1682 passed / 2 skipped / 20 deselected / 1 xfailed (184 s); ruff
 `src/ tests/` green.
+
+## 2026-10-23 - W13: BL sui tetti + CTA Polymesh unica (lossless)
+
+Diagnosi: `notes/w13_bl_on_tets_diagnosis.md`; previsione/misura:
+`notes/w13_bl_on_tets_reasoning.md`.
+
+BL-on-tets: nuovo adapter `core/bl_tets.py` che riusa
+`PolyBoundaryLayerEngine` sul polyMesh **tet** (nessun dual), con
+`BlOnTetsWorker` e instradamento GUI solo per la modalita' opt-in
+`bl_on_tets`.  Default invariati.
+
+A/B reale R1, stesso input tet (380.011 tet), stesse patch (5 wall), stessi
+parametri (1 layer, h1=0.0002 m, growth 1.2):
+- BL su tetti: 68.853 prismi, coverage 100%, h1 ratio 0.999, 90,5 s,
+  checkMesh **Mesh OK** (448.864 celle, 0 pyramids, 0 non-ortho >70,
+  skew 2.477, aspect 201.5);
+- BL su duale: 34.853 prismi, coverage 100%, h1 ratio 0.474, 221,4 s,
+  checkMesh **Failed 3** (114.269 celle, 11 pyramids, 85 non-ortho,
+  skew 4.851).
+Il diretto usa ~3.9x celle: verdetto **opt-in, non promosso**; mancano
+thin_gap/venturi/tubo e il confronto 5-layer di produzione.  Il prototipo
+funziona comunque sul caso reale R1, come richiesto.
+
+UI: una sola CTA visibile **Polymesh**; `core/mesher_registry.py` registra
+tutti i key storici (`gmsh_direct_poly`, `ftetwild_poly`, `auto_tet`,
+`cfmesh`, `gmsh_direct`) + `bl_on_tets`.  I vecchi pulsanti restano come
+controlli nascosti/testati, non vengono cancellati; il selettore
+**Advanced -> Polymesh engine** offre Auto, GMSH, fTetWild, Legacy
+tet->poly, BL on tets, cfMesh e FEM tetra.  Migrazione `MeshConfig`,
+preset, progetto e CLI; alias `autopoly`/`poly`/`polymesh` ->
+`gmsh_direct_poly`.  Auto resta opt-in: il default e' il legacy misurato,
+dichiarato nel log.
+
+Test W13: 7 in `tests/test_bl_tets.py` + 8 in
+`tests/test_mesher_registry.py`, oltre alle suite mesher/config/BL
+esistenti.  Gate finale: suite fast 1697 passed / 2 skipped / 20 deselected
+/ 1 xfailed (191 s); ruff `src/ tests/` green.
