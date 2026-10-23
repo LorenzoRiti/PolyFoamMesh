@@ -7,6 +7,27 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### REORG architecture audit (2026-10-23)
+- **Block A (dead code)**: repo-wide import/entry-point/test audit —
+  nothing qualifies for removal. All 33 `commercial/` modules are
+  imported by GUI/API/dispatch or covered by dedicated tests;
+  `hex_poly_dual`/`native_mesher`/`poly_smoother`/`poly_cell_merge`/
+  `solution_adaptive` are all wired; `validate_bl_params` has a live
+  caller (`watertight.py`, migration to `BLConfig` stays P2 debt).
+  No deletions, by proof rather than caution.
+- **Block B (duplicates)**: the three named sets are proven
+  non-duplicates — `bl_poly._face_geometry` (Newell + arithmetic mean)
+  vs `tet_poly_dual._face_geometry` (centre-point fan + area-weighted
+  centroid) differ by definition, as do `_cell_centroids` vs
+  `_cell_centres`; config/presets/store are model/snapshots/store.
+  Consolidating any of them would change numerics. The
+  `_face_geometry` debt is closed as a decision.
+- **Block C (layout reshuffle)**: skipped as unjustified — the layout
+  absorbed W13 without friction and no defect is attributable to it.
+- Docs: audit record in `docs/residual_risks.md`; reasoning in
+  `notes/reorg_diagnosis.md`, `notes/reorg_reasoning.md`. Gate:
+  targeted suite green, ruff green. No code changes.
+
 ### Dirty CAD + mini_valve (WALL-03) - 2026-10-23
 - **dirty_cad ELIMINATED**: the 10-triangle open cube that FATALs snappy
   (0 cells) now meshes through the fTetWild path to a checkMesh

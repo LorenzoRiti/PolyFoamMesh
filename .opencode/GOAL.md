@@ -1499,6 +1499,27 @@ Test W13: 7 in `tests/test_bl_tets.py` + 8 in
 esistenti.  Gate finale: suite fast 1697 passed / 2 skipped / 20 deselected
 / 1 xfailed (191 s); ruff `src/ tests/` green.
 
+## 2026-10-23 - REORG: audit architettura (blocchi A/B chiusi, C scartato)
+
+Diagnosi `notes/reorg_diagnosis.md`, previsioni in
+`notes/reorg_reasoning.md`. Blocco A (codice morto, grep su
+import/entry-point/test, no vulture disponibile): nessun modulo
+rimuovibile — tutti i 33 moduli `commercial/` sono importati da
+GUI/API/dispatch o coperti da test dedicati; `hex_poly_dual`,
+`native_mesher`, `poly_smoother`, `poly_cell_merge`,
+`solution_adaptive` sono cablati; `validate_bl_params` ha chiamante
+vivo (`watertight.py:182`, migrazione a `BLConfig` resta debito P2).
+Blocco B (duplicati): tutti non-duplicati per costruzione —
+`_face_geometry` bl_poly (Newell + media aritmetica) vs tet_poly_dual
+(fan sul centroide + baricentro pesato), `_cell_centroids` vs
+`_cell_centres`, config/preset/store con ruoli diversi. Consolidare
+cambierebbe i numeri: nessuna modifica. Blocco C scartato con
+motivazione (il layout ha assorbito W13 senza attriti; reshuffle senza
+movente viola le regole). Record in `docs/residual_risks.md`;
+debt `_face_geometry` chiuso come decisione. Gate: 70 test mirati
+verdi + `ruff src/ tests/` green; nessuna modifica al codice
+(solo note + docs), nessun rischio regressione per costruzione.
+
 ## 2026-10-23 - WALL-03: dirty CAD + mini_valve (ELIMINATO)
 
 Prompt muro; diagnosi `notes/wall_03_dirty_diagnosis.md`, previsione/misura

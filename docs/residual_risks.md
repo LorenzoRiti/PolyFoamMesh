@@ -5,6 +5,39 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+## REORG architecture audit (2026-10-23, no code changes)
+
+Block A (dead code, repo-wide import/entry-point/test grep; no vulture
+installed, so module-level proof only — function-level leftovers default
+to keep): **nothing qualifies for removal**. Every named suspect is
+live — all 33 `commercial/` modules are imported by GUI/API/dispatch or
+covered by dedicated tests (`adaptive_*`, `amr`, `cloud_mesh`,
+`mosaic`, `poly_aggregator`, `snappy_hex_mesh`, `mmg_adaptation`,
+`mesh_engine` family); `core/hex_poly_dual.py` + `native_mesher.py` via
+`native_poly_bridge` + CLI; `poly_smoother`/`poly_cell_merge` via the
+dual converter + remediation; `solution_adaptive` via sizing + e2e;
+`validate_bl_params` via `commercial/watertight.py:182` (legacy but
+called — migration to `BLConfig` stays the recorded P2 debt, not a
+REORG deletion). `tools/` (57 scripts) is import-isolated (only
+`poly_fixture_builder.py` is referenced, by a test skip-message);
+moving them would break historical note references for zero functional
+gain — left in place.
+Block B (structural duplicates): all three named sets are **proven
+non-duplicates** — `bl_poly._face_geometry` (Newell areas + arithmetic
+vertex mean) vs `tet_poly_dual._face_geometry` (centre-point fan +
+area-weighted centroid) differ by definition, as do `_cell_centroids`
+vs `_cell_centres`; `mesh_config`/`mesh_presets`/`bl_presets`/
+`preset_store` are model/snapshots/store-subclass/store (one preset
+language since W10). Consolidating any of them would change numerics.
+The `_face_geometry` "duplicate" debt is hereby closed as a decision,
+not carried forward.
+Block C (module reshuffle): skipped as unjustified — the layout
+absorbed W13 (registry + adapter + worker + tests) without friction
+and no defect is attributable to it; reshuffling 15+ files would
+rewrite imports/packaging/CI and invalidate note references for no
+measured gain. Full reasoning in `notes/reorg_diagnosis.md` and
+`notes/reorg_reasoning.md`.
+
 ## BL on tets and Polymesh CTA (W13, 2026-10-23)
 
 - **BL on tets is opt-in, not promoted**: on the real R1 tet (1 layer,
