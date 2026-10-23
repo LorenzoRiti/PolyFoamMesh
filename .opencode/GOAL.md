@@ -1545,3 +1545,46 @@ Chiuso con sola machinery esistente, zero modifiche `src/`:
 - Test: 5 fast + 1 slow in `tests/test_wall03_dirty_paths.py`.
   Gate: suite fast 1702 passed / 2 skipped / 21 deselected / 1 xfailed;
   ruff `src/ tests/` green.
+
+## 2026-10-23 - W16: documentazione + report reale (M3)
+
+Diagnosi `notes/w16_docs_diagnosis.md`, previsione/misura in
+`notes/w16_docs_reasoning.md`. Numeri reali o non si scrivono: ogni
+figura citata ha una fonte nominata (JSON registrato, costante di
+codice, nota di lane).
+
+Report v2 (`tools/gen_report_pdf_v2.py`, finora mai tracciato in git -
+questo lane lo porta sotto version control): aggiunte **Appendice G**
+(fTetWild experimental: eps 0.3 mm fine 2.37M tet/3738 s, tubo 3 m
+150 s vs 649 s GMSH, A/B R1 0.999 vs 0.474, WALL-03 dirty_cad 3.515 tet
+Mesh OK + mini_valve dual-only Mesh OK x2) e **Appendice H** (delta
+W10.2→WALL-03 + muri aperti con numeri: venturi NOmax 97.2, R1 h1
+0.2x vs 0.9x, dual-5M ~45-57 GB). Solo append prima di
+`# === APPEND HERE ===`; D/E esistenti intoccate; PDF ricostruito
+50 pagine, tutte le sezioni preesistenti presenti e ordinate
+(verifica per estrazione testo), TOC stampata con G+H. `get_toc()`
+vuoto e' preesistente by design (TOC stampata via afterFlowable,
+nessun bookmark/outline mai emesso - codice TOC non toccato).
+G/H dopo i references per regola append-only, dichiarato.
+
+v1 (`tools/gen_report_pdf.py`, bozza italiana, mai tracciato):
+deprecato con guard hard (rifiuta senza
+`POLYFOAMMESH_ALLOW_LEGACY_REPORT=1`) perche' scrive sullo stesso OUT
+del v2 - un run accidentale distruggerebbe il PDF canonico. Nulla in
+repo lo referenzia (test). `report_common`/`report_figures` non sono
+duplicati del v2 (pipeline interna separata, PROVENANCE) - intoccati.
+
+Doc: README selector portato sul singolo CTA Polymesh W13
+(screenshot flaggati pre-unificazione, non rifatti); USER_GUIDE con
+paragrafo dirty-CAD WALL-03 a figure esatte + conteggi assoluti A/B R1.
+Test: `tests/test_docs_numbers.py`, 10 test che pinnano ogni numero
+alla sua fonte (JSON, evidence strings, note di lane) + guard v1
+comportamentale + marker append-only + CTA README.
+Duplicazione D1 (preset USER_GUIDE vs evidence) chiusa come test di
+uguaglianza, fonte singola resta il codice.
+Gate: (in attesa - suite fast in corso).
+  CHIUSO: suite fast 1712 passed / 2 skipped / 21 deselected / 1 xfailed
+  in 192 s (+10 nuovi test W16 sul baseline WALL-03 da 1702);
+  `ruff check src/ tests/` green. Commit W16 dedicato; PDF generato resta
+  untracked, `benchmarks/run_comparison.py` + `tests/test_run_comparison.py`
+  (modifiche utente preesistenti) mai toccati.

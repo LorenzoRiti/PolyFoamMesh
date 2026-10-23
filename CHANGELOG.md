@@ -7,6 +7,44 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Docs + real report (W16) - 2026-10-23
+- **Report v2 append-only extended**: `tools/gen_report_pdf_v2.py`
+  (previously untracked, now brought under version control by this lane)
+  gains **Appendix G** (fTetWild experimental path: eps 0.3 mm fine stage
+  2.37M tets/3738 s, 3 m pipe 150 s vs GMSH 649 s, W13 R1 A/B 0.999 vs
+  0.474, WALL-03 dirty_cad 3,515 tets Mesh OK + mini_valve dual-only
+  Mesh OK x2 — every figure names its session note) and **Appendix H**
+  (engineering deltas W10.2→WALL-03 plus the three open walls with
+  numbers: venturi NOmax 97.2, R1 h1 cap 0.2x vs 0.9x, dual-5M ~45-57 GB).
+  Nothing before the `# === APPEND HERE ===` marker was touched; the
+  rebuilt 50-page PDF keeps every pre-existing section in order (verified
+  by text extraction) and the printed TOC lists G+H. Note: v2 never emitted
+  PDF outline bookmarks (`get_toc()` empty is pre-existing design — the
+  TOC is a printed page fed by `afterFlowable`, not an outline tree).
+  Appendices G/H sit after the references section as the append-only rule
+  requires; reordering would break the rule, so it stays declared.
+- **v1 generator deprecated with a guard**: `tools/gen_report_pdf.py`
+  (Italian draft, previously untracked) now refuses to run unless
+  `POLYFOAMMESH_ALLOW_LEGACY_REPORT=1` is set — reason: it writes to the
+  same `PolyFoamMesh_Technical_Report.pdf` path as v2, so an accidental run
+  would silently destroy the canonical PDF. Nothing in-repo references v1
+  (verified by test). `report_common`/`report_figures` are NOT v2
+  duplicates (separate PROVENANCE-pinned internal pipeline) — untouched.
+- **Numbers pinned by tests**: `tests/test_docs_numbers.py` (10 tests)
+  ties every cited figure to its artifact — Lane A mini_valve PASS
+  (8070 cells, NOmax 64.33) to its JSON, dirty_cad shared failure + hex
+  611,958/NOmax 72.58 rows to LEADERBOARD/GAP_ANALYSIS, preset numbers to
+  `mesh_presets.py` evidence strings, W13/WALL-03 doc figures to their
+  session notes, plus v2-marker, v1-guard (behavioral), and README-CTA
+  asserts. Diagnosis in `notes/w16_docs_diagnosis.md`, predictions in
+  `notes/w16_docs_reasoning.md`. Gate: full fast suite 1712 passed /
+  2 skipped / 21 deselected / 1 xfailed; ruff `src/ tests/` green.
+- **Doc touch-ups**: README mesher-selector text fixed to the single W13
+  Polymesh CTA (screenshots flagged as pre-unification, not faked);
+  USER_GUIDE gains the WALL-03 dirty-CAD paragraph with exact run figures
+  (3,515/67.80/64.68/3.92/3.93/36,949/36,514) and absolute R1 A/B cell
+  counts.
+
 ### REORG architecture audit (2026-10-23)
 - **Block A (dead code)**: repo-wide import/entry-point/test audit —
   nothing qualifies for removal. All 33 `commercial/` modules are

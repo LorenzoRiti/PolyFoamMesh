@@ -28,8 +28,11 @@ window:
   <img src="docs/assets/boundary-layers.png" alt="Boundary layer configuration panel" width="49%">
 </p>
 
-*Left: the mesher selector — Cartesian cfMesh (via WSL2) or the native
-polyhedral mesher (no WSL required). Right: the boundary-layer panel, with
+*Left: the mesher selector. Since W13 the main screen shows a single
+**Polymesh** button (the engine — legacy GMSH→dual, fTetWild, Auto,
+BL-on-tets, cfMesh, FEM tetra — lives in Advanced → Polymesh engine);
+screenshots below predate that unification but the BL panel on the right
+is current. Right: the boundary-layer panel, with
 a y+-driven first-layer thickness calculator.*
 
 The actual output, rendered in the built-in 3D viewer — a 398K-cell

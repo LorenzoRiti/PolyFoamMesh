@@ -155,9 +155,22 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     It reuses the same BL engine, report and checkMesh gate. On the real R1
     tet, at the common 1-layer A/B point, it measured 100% coverage,
     h1 ratio 0.999, `Mesh OK`, 90.5 s; the dual path measured h1 0.474,
-    221.4 s and `Failed 3`, but the direct mesh has ~3.9x more cells. It is
+    221.4 s and `Failed 3`, but the direct mesh has ~3.9x more cells
+    (448,864 vs 114,269). It is
     not promoted and not the default; thin-feature/venturi/tube and the
     production 5-layer comparison remain open.
+  - **Dirty CAD**: fTetWild tolerates open/non-watertight input through its
+    envelope (GMSH cannot load such files at all). Measured: a 10-triangle
+    open cube meshes to a checkMesh-passing tet mesh (3,515 tets, skew 0.87,
+    NOmax 75.3, 0 pyramids; snappyHexMesh FATALs
+    on the same file with 0 cells); the dual converter correctly refuses
+    the open boundary instead of corrupting it, and the per-patch report
+    lists coverage 0 rather than an empty result. The mini_valve STEP
+    meshes dual-only to `Mesh OK` twice (36,949 cells: NOmax 67.80,
+    skew 3.92; 36,514 cells: NOmax 64.68, skew 3.93; 0 pyramids)
+    via fTetWild tet + collapsed dual + boundary-defect split;
+    run-to-run variance exists (~1 in 5 fTetWild runs yields a
+    non-manifold boundary), so retry on that explicit error.
   - **Auto (GMSH surface + fTetWild volume)**: opt-in source policy.
     For STEP it uses the GMSH surface (physical groups, curvature/gap
     sizing, refinement zones) with the fTetWild volume; for STL it feeds
