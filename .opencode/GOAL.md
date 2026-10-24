@@ -1680,3 +1680,30 @@ fuori auto per design. Azione: ridefinire criterio o ammettere
 bl_on_tets per R1 (decisione utente); niente promozione.
 Verdetto lane: PARTIAL (R1 box unchecked). M3+M4 resta PARTIAL.
 Commit locale dedicato; user-files e PDF mai staged.
+
+## 2026-10-24 - W18 follow-up: direct-BL 5L + auto indurito (PARTIAL)
+
+Diagnosi `notes/w18_bl_direct_taper_diagnosis.md`; tabella
+`notes/w18_auto_table_results.md` (run in `C:\polyfoammesh_*` + JSON).
+
+Task 1 CHIUSO con numeri — direct-BL 5L R1 (tet fTet condizionati
+18/05): Mesh OK, 0 pyr, skew 2.9 (0 skew-fail), Failed 0, coverage
+100% (74K wall). Trovato il perche' dei fallimenti precedenti:
+`tetrahedralize()` grezzo salta il conditioning di `run_volume`
+(split non-manifold + snap + drop outliers). GMSH coarse R1: dual ok
+ma BL rifiutato; dual-only Failed 3. STEP 30/09: 0 solidi, GMSH
+impossibile per costruzione (provato: mesh 2D-only).
+Criterio R1 RAGGIUNTO sotto lettura-per-difetti; max-skew 2.89 dichiarato.
+
+Task 2 CHIUSO come infrastruttura: taper opt-in (default off),
+keep-best, provenance, GUI-log dedicato, test (no-op, esaurimento,
+validazione). Rescue su caso reale non misurato: nessun fallimento
+totale osservato e' di altezza (sono topologici/difettivi) - dichiarato.
+Per-face taper: mappato, non implementato (nessun caso lo richiede).
+
+Auto indurito: solidi STEP in preflight (0 -> fTetWild diretto),
+validita' 3D del tet, fallback dual/checkMesh, log con solidi.
+GUI coerente senza nuovi selettori.
+Verdetto: PARTIAL (R1 box: numeri via direct esplicito, auto senza
+direct leg - ammissione = decisione utente con questi numeri).
+Gate: suite fast in corso; ruff green.

@@ -84,6 +84,10 @@ class TetSourcePreflight:
     watertight: bool | None = None
     patch_count: int | None = None
     bbox_diag_m: float | None = None
+    # W18.1: STEP solid count (None = not probed/failed). A solid-less
+    # STEP (open shells, no volumes) cannot feed a GMSH volume mesh at
+    # all — the policy must not waste a full GMSH run on it.
+    solid_count: int | None = None
 
     def to_mapping(self) -> dict:
         return dict(self.__dict__)
@@ -200,6 +204,22 @@ def preflight_tet_source(
                 bbox_diag = float(_np.linalg.norm(_box[1] - _box[0]))
         except Exception:
             watertight, bbox_diag = None, None
+    solid_count: int | None = None
+    if probe_surface and suffix in STEP_SUFFIXES and path.is_file():
+        # Cheap OCC solid count (fail-soft): a solid-less STEP (open
+        # shells, measured on Parte4 30/09: 0 solids / 89 surfaces) can
+        # never feed a GMSH volume mesh — the policy must route it to
+        # fTetWild (envelope fills) instead of wasting a full GMSH run
+        # that yields a 2D-only mesh and dies at convert.
+        try:
+            from polyfoammesh.core.gmsh_wrapper import _ensure_gmsh
+
+            _gmsh = _ensure_gmsh()
+            _gmsh.clear()
+            _gmsh.open(str(path.resolve()))
+            solid_count = len(_gmsh.model.getEntities(3))
+        except Exception:
+            solid_count = None
     return TetSourcePreflight(
         geometry_path=str(path.resolve()) if path.exists() else str(path),
         suffix=suffix,
@@ -216,6 +236,7 @@ def preflight_tet_source(
         watertight=watertight,
         patch_count=patch_count,
         bbox_diag_m=bbox_diag,
+        solid_count=solid_count,
     )
 
 
@@ -340,6 +361,17 @@ def choose_polymesh_engine(
             fallback1=None,
             fallback2=None,
             reason="pytetwild unavailable -> GMSH only, no fallback",
+        )
+    if preflight.solid_count == 0:
+        return PolymeshEnginePlan(
+            primary="ftetwild_poly",
+            fallback1=None,
+            fallback2=None,
+            reason=(
+                f"STEP with no solids ({preflight.solid_count} volumes, "
+                "open shells — measured): GMSH cannot volume-mesh it "
+                "(2D-only output dies at convert); fTetWild envelope only"
+            ),
         )
     return PolymeshEnginePlan(
         primary="gmsh_direct_poly",

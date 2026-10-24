@@ -2845,6 +2845,17 @@ class DualPolyWorker(QObject):
                     f"[poly] Boundary layers OK: {bres.n_prism_cells:,} prism "
                     f"cells, total thickness {bres.total_thickness:.6g} m"
                 )
+                _taper_stats = getattr(bres, "stats", {}) or {}
+                if _taper_stats.get("taper_layers", 0) and _taper_stats.get(
+                    "taper_requested_layers", 0
+                ):
+                    self.log_line.emit(
+                        f"[poly] BL taper: requested "
+                        f"{_taper_stats['taper_requested_layers']} layers, "
+                        f"validated with {_taper_stats['taper_layers']} "
+                        f"(thinner stack validates where the full one did "
+                        f"not; no silent fallback)"
+                    )
                 if self._smooth_free_boundary:
                     # Post-BL separation of the build from the checkMesh
                     # gate: clear the boundary pyramids the terminator bands

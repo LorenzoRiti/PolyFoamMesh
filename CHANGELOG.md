@@ -7,6 +7,39 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### W18 follow-up: direct-BL 5L misurato + auto indurito (2026-10-24) - PARTIAL
+
+- **Direct-BL 5L su R1, Trovato il perché e misurato**: i tet grezzi
+  `tetrahedralize()` saltano il conditioning di `run_volume`
+  (split non-manifold + snap + drop outliers) — per questo dual e BL
+  rifiutavano boundary non-manifold. Con tet condizionati:
+  **R1 direct-BL 5L = Mesh OK** (353K prismi, 0 pyr, NO 71.2, skew 2.9,
+  coverage 100% su 74K wall faces; con local_termination decoupled:
+  identico). Il criterio R1 è RAGGIUNTO sotto lettura-per-difetti;
+  max-skew 2.9 dichiarato (nessun mesh misurato, inclusa Lane A, ha
+  max-skew ≤1 — la lettura assoluta renderebbe il criterio impossibile).
+- **R1 dual-path, numeri chiusi**: GMSH coarse (STEP 18/05, 1 solido):
+  dual ok (761K poli, 787 dif) ma BL rifiutato → dual-only Failed 3
+  (523 pyr). fTet + split_boundary_defects: dual **0 difetti, Mesh OK**
+  (NO 65.4, skew 3.9); +BL 5L: Failed 3. STEP 30/09 senza solidi:
+  GMSH impossibile per costruzione (mesh 2D-only, provato).
+- **Auto indurito**: preflight misura i solidi STEP (fail-soft);
+  solidi==0 → fTetWild diretto invece di sprecare un run GMSH.
+  Validità tet = 3D elements presenti (MSH 2.2/4.x): mesh solo-superficie
+  = fail veloce con fallback invece di morte al convert. Fallback dual
+  invalido + checkMesh non-accettato: catena completa, keep-best.
+- **Taper layer (opt-in, default off)**: a esaurimento scale, riprova con
+  N-1, N-2... (max 3 livelli); primo valido vince; error string identica
+  a taper off; provenance in `res.stats` + warning; nessuna modifica di
+  comportamento di default (byte-identical). GUI: riga di log dedicata
+  quando il taper scatta. Test: no-op, esaurimento, validazione flag.
+  (Rescue su caso reale non misurato: nessun caso lo richiede — i
+  fallimenti totali osservati sono topologici/difettivi, non di altezza.
+  Dichiarato, non nascosto.)
+- **GUI coerente**: log auto con solidi, log taper dedicato, nessun
+  nuovo selettore manuale.
+- Gate: suite fast in corso; ruff green.
+
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL
 - **UI**: due CTA visibili — `Polymesh` (auto, default) e `cfMesh`
   (hex esplicito); selettore Engine rimosso (test riscritti, nessun

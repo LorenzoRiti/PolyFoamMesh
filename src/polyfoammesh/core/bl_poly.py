@@ -1507,6 +1507,8 @@ class PolyBoundaryLayerEngine:
         consume: bool | None = None,
         pyr_tolerance: int = 0,
         cover_thin_first: bool = True,
+        taper_layers: bool = False,
+        taper_max_steps: int = 2,
     ) -> PolyBoundaryLayerResult:
         """Insert the boundary layer. `first_height` is ABSOLUTE (metres).
 
@@ -1646,6 +1648,18 @@ class PolyBoundaryLayerEngine:
           more rounds than 3 to converge; raising this trades time for
           convergence without changing any geometry parameter.  Only
           meaningful together with `local_termination`; ignored otherwise.
+        - `taper_layers`: opt-in (default off).  When the requested layer
+          count validates at NO height scale, retry with fewer layers
+          (N-1, N-2, ...) instead of giving up entirely — a thinner
+          stack where the full one cannot validate.  At most
+          `taper_max_steps` extra levels are tried; the first valid
+          build wins (keep-best: most layers first).  The taper is
+          recorded in ``res.stats`` (``taper_requested_layers``,
+          ``taper_layers``) plus a warning.  Off by default: existing
+          behaviour is byte-identical when disabled.
+        - `taper_max_steps`: how many extra (thinner) layer counts to try
+          when `taper_layers` is on (default 2, so N=5 tries 5, 4, 3).
+          Must be in 0..5; 0 disables the descent (equivalent to off).
         """
         if min_base_face_fraction < 0.0:
             raise ValueError(
@@ -1689,6 +1703,9 @@ class PolyBoundaryLayerEngine:
             return res
         if not 1 <= int(local_max_rounds) <= 10:
             res.errors.append("local_max_rounds must be between 1 and 10")
+            return res
+        if not 0 <= int(taper_max_steps) <= 5:
+            res.errors.append("taper_max_steps must be between 0 and 5")
             return res
         if not 0 <= int(local_exclude_widen) <= 3:
             res.errors.append("local_exclude_widen must be between 0 and 3")
@@ -1910,229 +1927,256 @@ class PolyBoundaryLayerEngine:
         # support distances, edge/patch maps) is computed ONCE  -  on the valve
         # it measured ~58 s per attempt, so reusing it across the 5 attempts
         # is most of the speedup.
-        _t_pre = time.perf_counter()
-        pre = self._build_precompute(
-            points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
-            concavity_criterion=concavity_criterion, normal_method=normal_method,
-            edge_cap_percentile=edge_cap_percentile, thin_bnd=thin_bnd,
-            consume=consume,
-            target_depth=float(
-                _stack_depths(res.n_layers, res.first_height, growth)[-1]
-            ),
-            consume_excluded=consume_excluded,
-            detect_caps=not apply_to_all,
-        )
-        self._stage_pre_s += time.perf_counter() - _t_pre
-        for k, v in pre.get("dual_stats", {}).items():
-            res.stats[k] = v
-
-        # Mesh-aware layer cap: the stack cannot exceed the first-cell depth
-        # budget (max_h = angle_fade * min(clamp*d, 0.5*edge_cap)) without
-        # inverting the wall-adjacent cells.  When the requested stack is far
-        # beyond it, most vertices can only take one layer and the
-        # consistency fixpoint floods the whole wall to 1 - a valid but
-        # useless "BL" (measured on the user's Part2: support_d p50 2.35 mm
-        # vs a 43 mm requested stack).  Cap the count to what 90% of the
-        # wall can fully support so the BL stays real.  If even two layers
-        # do not fit, leave the count untouched: the usefulness guard below
-        # rejects the flattened result and the caller can retry with a
-        # smaller first height.
-        if terminate_by_budget and res.n_layers > 1 and not consume:
-            k_sup = self._supported_layers(
-                pre, res.first_height, growth, res.n_layers,
-            )
-            if 1 <= k_sup < res.n_layers:
+        # W18.1 taper (opt-in): when the full stack validates nowhere,
+        # descend the layer count instead of giving up.  First valid
+        # wins (most layers first = keep-best); the descent is bounded
+        # and recorded in res.stats.  Disabled by default: single-level
+        # behaviour is byte-identical to the historical path.
+        _taper_from = int(res.n_layers)
+        _taper_levels = [_taper_from]
+        if taper_layers:
+            _taper_floor = max(1, _taper_from - max(0, int(taper_max_steps)))
+            _taper_levels += [k for k in range(_taper_from - 1, _taper_floor - 1, -1)]
+        for _n in _taper_levels:
+            if _n != _taper_from:
+                self._log(f"[bl] taper: retrying with {_n} layers (from {_taper_from})")
                 res.warnings.append(
-                    f"boundary layer capped from {res.n_layers} to {k_sup} "
-                    "layer(s): the mesh supports no more at full height "
-                    "(first-cell depth budget); use a coarser surface mesh "
-                    "for more layers or a smaller first-layer height"
+                    f"taper: {_taper_from} layers failed validation at every "
+                    f"height scale; retrying with {_n}"
                 )
-                self._log(
-                    f"[bl] capped layers {res.n_layers} -> {k_sup} "
-                    "(mesh support at full height, 90% of wall)"
+                res.stats["taper_requested_layers"] = _taper_from
+                res.stats["taper_layers"] = _n
+            res.n_layers = _n
+            _t_pre = time.perf_counter()
+            pre = self._build_precompute(
+                points, faces, owner, neighbour, patches, n_int, sel, drop_bnd,
+                concavity_criterion=concavity_criterion, normal_method=normal_method,
+                edge_cap_percentile=edge_cap_percentile, thin_bnd=thin_bnd,
+                consume=consume,
+                target_depth=float(
+                    _stack_depths(res.n_layers, res.first_height, growth)[-1]
+                ),
+                consume_excluded=consume_excluded,
+                detect_caps=not apply_to_all,
+            )
+            self._stage_pre_s += time.perf_counter() - _t_pre
+            for k, v in pre.get("dual_stats", {}).items():
+                res.stats[k] = v
+
+            # Mesh-aware layer cap: the stack cannot exceed the first-cell depth
+            # budget (max_h = angle_fade * min(clamp*d, 0.5*edge_cap)) without
+            # inverting the wall-adjacent cells.  When the requested stack is far
+            # beyond it, most vertices can only take one layer and the
+            # consistency fixpoint floods the whole wall to 1 - a valid but
+            # useless "BL" (measured on the user's Part2: support_d p50 2.35 mm
+            # vs a 43 mm requested stack).  Cap the count to what 90% of the
+            # wall can fully support so the BL stays real.  If even two layers
+            # do not fit, leave the count untouched: the usefulness guard below
+            # rejects the flattened result and the caller can retry with a
+            # smaller first height.
+            if terminate_by_budget and res.n_layers > 1 and not consume:
+                k_sup = self._supported_layers(
+                    pre, res.first_height, growth, res.n_layers,
                 )
-                res.n_layers = k_sup
-
-        # W10.1: record WHY the requested h1 cannot be met.  This is measured
-        # on the same precompute the build consumes; it is not inferred from
-        # the requested/effective ratio after the fact.
-        _cap = height_cap_stats(
-            pre, res.first_height, res.n_layers, growth=growth,
-        )
-        res.stats["height_cap"] = _cap
-        res.h1_cap_reason = cap_reason(_cap)
-        res.stats["h1_cap_reason"] = res.h1_cap_reason
-
-        # Coverage-first, then fall back to the historical drop.  The first
-        # pass extrudes EVERY wall face (thin sliver/defect faces with a
-        # compressed stack); only if that cannot validate at any height scale
-        # does the second pass drop the thin faces, exactly as the historical
-        # path did.  This is the "compressed stack as long as validation
-        # passes, leave a face bare only when impossible" policy of the 2026-10
-        # BL closure fix.
-        # Coverage-first is the historical default; the fTetWild path can
-        # try the drop pass first (its duals always fail the compressed-
-        # stack pass at the thin features, so the cover attempts are pure
-        # dead time - measured ~250 s on the fine reference part).
-        if not thin_bnd:
-            cover_passes = (True,)
-        elif self._cover_thin_first:
-            cover_passes = (True, False)
-        else:
-            cover_passes = (False, True)
-        for cover_thin in cover_passes:
-            for scale, clamp in (
-                (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
-                (0.2, 0.1), (0.1, 0.05),
-            ):
-                self._check_watchdog()
-                if self._cancel():
-                    res.errors.append("cancelled")
-                    self._finalize_stage_times(res, t_run0)
-                    return res
-                _t_build = time.perf_counter()
-                try:
-                    built = self._build(
-                        points, faces, owner, neighbour, patches, n_int,
-                        sel, res.n_layers, res.first_height * scale, growth,
-                        clamp,
-                        pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
-                        terminate_by_budget=terminate_by_budget,
-                        # Binary semantics ALWAYS in the standard path
-                        # (2026-10-07): the consistency fixpoint is a MIN over
-                        # the whole connected wall, so a single low-budget
-                        # vertex floods every face to 1 layer.  Binary keeps
-                        # the bulk at the (capped) count and compresses - never
-                        # drops, except for genuine input defects - the stacks
-                        # where max_h binds, so the BL shell stays COMPLETE.
-                        zero_concave=True,
-                        thin_bnd=thin_bnd, cover_thin=cover_thin,
-                        consume=consume,
-                        consume_excluded=consume_excluded,
+                if 1 <= k_sup < res.n_layers:
+                    res.warnings.append(
+                        f"boundary layer capped from {res.n_layers} to {k_sup} "
+                        "layer(s): the mesh supports no more at full height "
+                        "(first-cell depth budget); use a coarser surface mesh "
+                        "for more layers or a smaller first-layer height"
                     )
-                except Exception as exc:  # noqa: BLE001 - keep-best fallback
                     self._log(
-                        f"[bl] attempt scale={scale} clamp={clamp} "
-                        f"(cover_thin={cover_thin}): {exc}"
+                        f"[bl] capped layers {res.n_layers} -> {k_sup} "
+                        "(mesh support at full height, 90% of wall)"
+                    )
+                    res.n_layers = k_sup
+
+            # W10.1: record WHY the requested h1 cannot be met.  This is measured
+            # on the same precompute the build consumes; it is not inferred from
+            # the requested/effective ratio after the fact.
+            _cap = height_cap_stats(
+                pre, res.first_height, res.n_layers, growth=growth,
+            )
+            res.stats["height_cap"] = _cap
+            res.h1_cap_reason = cap_reason(_cap)
+            res.stats["h1_cap_reason"] = res.h1_cap_reason
+
+            # Coverage-first, then fall back to the historical drop.  The first
+            # pass extrudes EVERY wall face (thin sliver/defect faces with a
+            # compressed stack); only if that cannot validate at any height scale
+            # does the second pass drop the thin faces, exactly as the historical
+            # path did.  This is the "compressed stack as long as validation
+            # passes, leave a face bare only when impossible" policy of the 2026-10
+            # BL closure fix.
+            # Coverage-first is the historical default; the fTetWild path can
+            # try the drop pass first (its duals always fail the compressed-
+            # stack pass at the thin features, so the cover attempts are pure
+            # dead time - measured ~250 s on the fine reference part).
+            if not thin_bnd:
+                cover_passes = (True,)
+            elif self._cover_thin_first:
+                cover_passes = (True, False)
+            else:
+                cover_passes = (False, True)
+            for cover_thin in cover_passes:
+                for scale, clamp in (
+                    (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
+                    (0.2, 0.1), (0.1, 0.05),
+                ):
+                    self._check_watchdog()
+                    if self._cancel():
+                        res.errors.append("cancelled")
+                        self._finalize_stage_times(res, t_run0)
+                        return res
+                    _t_build = time.perf_counter()
+                    try:
+                        built = self._build(
+                            points, faces, owner, neighbour, patches, n_int,
+                            sel, res.n_layers, res.first_height * scale, growth,
+                            clamp,
+                            pyr_before=pyr_before, drop_bnd=drop_bnd, pre=pre,
+                            terminate_by_budget=terminate_by_budget,
+                            # Binary semantics ALWAYS in the standard path
+                            # (2026-10-07): the consistency fixpoint is a MIN over
+                            # the whole connected wall, so a single low-budget
+                            # vertex floods every face to 1 layer.  Binary keeps
+                            # the bulk at the (capped) count and compresses - never
+                            # drops, except for genuine input defects - the stacks
+                            # where max_h binds, so the BL shell stays COMPLETE.
+                            zero_concave=True,
+                            thin_bnd=thin_bnd, cover_thin=cover_thin,
+                            consume=consume,
+                            consume_excluded=consume_excluded,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - keep-best fallback
+                        self._log(
+                            f"[bl] attempt scale={scale} clamp={clamp} "
+                            f"(cover_thin={cover_thin}): {exc}"
+                        )
+                        res.warnings.append(
+                            f"attempt at scale={scale} failed: {exc}"
+                        )
+                        continue
+                    finally:
+                        self._stage_build_s += time.perf_counter() - _t_build
+                    self._log(f"[bl] validating attempt at scale={scale} "
+                              f"clamp={clamp} (cover_thin={cover_thin}, "
+                              "checkMesh criteria)...")
+                    ok, msg = self._validate(built, total_vol0,
+                                             max_core_volume_ratio)
+                    if ok:
+                        _hist, _med = self._layer_histogram(built)
+                        if res.n_layers >= 2 and _med <= 1:
+                            res.warnings.append(
+                                f"attempt at scale={scale} clamp={clamp} is valid "
+                                f"but flattened to a single layer (median {_med:g} "
+                                f"of {res.n_layers} requested): rejected as not a "
+                                "boundary layer"
+                            )
+                            self._log(
+                                f"[bl] attempt at scale={scale} clamp={clamp}: "
+                                f"valid but flattened to a single layer (median "
+                                f"{_med:g} of {res.n_layers} requested) - rejected"
+                            )
+                            continue
+                        # Degenerate-prism guard (corpus regression 2026-10-08):
+                        # a build whose first layer is compressed to a few percent
+                        # of the request produces sub-micron pancakes (venturi:
+                        # 80 nm) and catastrophic non-orthogonality (133 deg).
+                        # The old behaviour - BL fails, clean dual-only mesh -
+                        # was strictly better than a valid-but-garbage BL.
+                        _h_eff = (
+                            float(built["heights"][1])
+                            if len(built["heights"]) > 1 else 0.0
+                        )
+                        _h_req = res.first_height * scale
+                        if _h_req > 0.0 and _h_eff < 0.05 * _h_req:
+                            res.warnings.append(
+                                f"attempt at scale={scale} clamp={clamp} would "
+                                f"create degenerate prisms (first layer "
+                                f"{_h_eff:.3g} m = "
+                                f"{100.0 * _h_eff / _h_req:.1f}% of requested): "
+                                "rejected - better no BL than sub-micron pancakes"
+                            )
+                            self._log(
+                                f"[bl] attempt at scale={scale} clamp={clamp}: "
+                                f"first layer {_h_eff:.3g} m "
+                                f"({100.0 * _h_eff / _h_req:.1f}% of requested) "
+                                "- rejected as degenerate"
+                            )
+                            continue
+                        _out = self._accept_built(res, built, scale, clamp, poly)
+                        self._finalize_stage_times(_out, t_run0)
+                        return _out
+                    res.warnings.append(
+                        f"validation failed at scale={scale} clamp={clamp}: {msg}"
+                    )
+                    self._log(
+                        f"[bl] validation failed at scale={scale} clamp={clamp}: "
+                        f"{msg}"
+                    )
+
+                    # Early stop: a fallback attempt only helps if it eventually
+                    # reaches ZERO not-closed cells.  The winding solve is now
+                    # exact (no local-minimum behaviour), so a closure failure
+                    # means a genuinely broken topology (non-manifold edge,
+                    # reported in ``orient_stats``) that thinner layers cannot
+                    # repair.  Keep the stagnation guard for that case: once THREE
+                    # attempts have left a substantial count that is NOT halving,
+                    # cut the run short instead of burning minutes on the
+                    # remaining scales.  A genuinely converging case (count
+                    # dropping steeply, e.g. 300 -> 150 -> 80 -> 30 -> 0) never
+                    # trips this: at attempt 3 the count is already below half of
+                    # the first attempt.
+                    m = re.search(r"(\d+) cells not closed", msg)
+                    if m:
+                        n_open = int(m.group(1))
+                        attempts_done = len([w for w in res.warnings
+                                             if w.startswith("validation failed at")])
+                        if attempts_done == 1:
+                            self._first_open = n_open
+                        if (attempts_done >= 3 and n_open > 40
+                                and n_open >= 0.5 * getattr(
+                                    self, "_first_open", n_open)):
+                            res.warnings.append(
+                                "early stop: still "
+                                f"{n_open} cells not closed after {attempts_done} "
+                                "attempts (topology defect, count not halving); "
+                                "mesh left unchanged"
+                            )
+                            self._log(
+                                "[bl] early stop: still "
+                                f"{n_open} cells not closed after {attempts_done} "
+                                "attempts (topology defect, count not halving); "
+                                "mesh left unchanged"
+                            )
+                            break
+                if not cover_thin:
+                    break
+                if thin_bnd:
+                    self._log(
+                        "[bl] covering the thin (sliver/defect) faces did not "
+                        "validate at any height scale; retrying with the "
+                        "historical drop (partial wall coverage)"
                     )
                     res.warnings.append(
-                        f"attempt at scale={scale} failed: {exc}"
+                        "thin (sliver/defect) faces could not be covered at any "
+                        "height scale; they are left bare (partial wall coverage)"
                     )
-                    continue
-                finally:
-                    self._stage_build_s += time.perf_counter() - _t_build
-                self._log(f"[bl] validating attempt at scale={scale} "
-                          f"clamp={clamp} (cover_thin={cover_thin}, "
-                          "checkMesh criteria)...")
-                ok, msg = self._validate(built, total_vol0,
-                                         max_core_volume_ratio)
-                if ok:
-                    _hist, _med = self._layer_histogram(built)
-                    if res.n_layers >= 2 and _med <= 1:
-                        res.warnings.append(
-                            f"attempt at scale={scale} clamp={clamp} is valid "
-                            f"but flattened to a single layer (median {_med:g} "
-                            f"of {res.n_layers} requested): rejected as not a "
-                            "boundary layer"
-                        )
-                        self._log(
-                            f"[bl] attempt at scale={scale} clamp={clamp}: "
-                            f"valid but flattened to a single layer (median "
-                            f"{_med:g} of {res.n_layers} requested) - rejected"
-                        )
-                        continue
-                    # Degenerate-prism guard (corpus regression 2026-10-08):
-                    # a build whose first layer is compressed to a few percent
-                    # of the request produces sub-micron pancakes (venturi:
-                    # 80 nm) and catastrophic non-orthogonality (133 deg).
-                    # The old behaviour - BL fails, clean dual-only mesh -
-                    # was strictly better than a valid-but-garbage BL.
-                    _h_eff = (
-                        float(built["heights"][1])
-                        if len(built["heights"]) > 1 else 0.0
-                    )
-                    _h_req = res.first_height * scale
-                    if _h_req > 0.0 and _h_eff < 0.05 * _h_req:
-                        res.warnings.append(
-                            f"attempt at scale={scale} clamp={clamp} would "
-                            f"create degenerate prisms (first layer "
-                            f"{_h_eff:.3g} m = "
-                            f"{100.0 * _h_eff / _h_req:.1f}% of requested): "
-                            "rejected - better no BL than sub-micron pancakes"
-                        )
-                        self._log(
-                            f"[bl] attempt at scale={scale} clamp={clamp}: "
-                            f"first layer {_h_eff:.3g} m "
-                            f"({100.0 * _h_eff / _h_req:.1f}% of requested) "
-                            "- rejected as degenerate"
-                        )
-                        continue
-                    _out = self._accept_built(res, built, scale, clamp, poly)
-                    self._finalize_stage_times(_out, t_run0)
-                    return _out
-                res.warnings.append(
-                    f"validation failed at scale={scale} clamp={clamp}: {msg}"
-                )
-                self._log(
-                    f"[bl] validation failed at scale={scale} clamp={clamp}: "
-                    f"{msg}"
-                )
 
-                # Early stop: a fallback attempt only helps if it eventually
-                # reaches ZERO not-closed cells.  The winding solve is now
-                # exact (no local-minimum behaviour), so a closure failure
-                # means a genuinely broken topology (non-manifold edge,
-                # reported in ``orient_stats``) that thinner layers cannot
-                # repair.  Keep the stagnation guard for that case: once THREE
-                # attempts have left a substantial count that is NOT halving,
-                # cut the run short instead of burning minutes on the
-                # remaining scales.  A genuinely converging case (count
-                # dropping steeply, e.g. 300 -> 150 -> 80 -> 30 -> 0) never
-                # trips this: at attempt 3 the count is already below half of
-                # the first attempt.
-                m = re.search(r"(\d+) cells not closed", msg)
-                if m:
-                    n_open = int(m.group(1))
-                    attempts_done = len([w for w in res.warnings
-                                         if w.startswith("validation failed at")])
-                    if attempts_done == 1:
-                        self._first_open = n_open
-                    if (attempts_done >= 3 and n_open > 40
-                            and n_open >= 0.5 * getattr(
-                                self, "_first_open", n_open)):
-                        res.warnings.append(
-                            "early stop: still "
-                            f"{n_open} cells not closed after {attempts_done} "
-                            "attempts (topology defect, count not halving); "
-                            "mesh left unchanged"
-                        )
-                        self._log(
-                            "[bl] early stop: still "
-                            f"{n_open} cells not closed after {attempts_done} "
-                            "attempts (topology defect, count not halving); "
-                            "mesh left unchanged"
-                        )
-                        break
-            if not cover_thin:
-                break
-            if thin_bnd:
-                self._log(
-                    "[bl] covering the thin (sliver/defect) faces did not "
-                    "validate at any height scale; retrying with the "
-                    "historical drop (partial wall coverage)"
-                )
+            if _n != _taper_levels[-1]:
+                continue
+            if len(_taper_levels) > 1:
                 res.warnings.append(
-                    "thin (sliver/defect) faces could not be covered at any "
-                    "height scale; they are left bare (partial wall coverage)"
+                    f"taper exhausted (tried {_taper_levels}); mesh left unchanged"
                 )
-
-        res.errors.append(
-            "could not insert a valid boundary layer (all height scales "
-            "failed validation); mesh left unchanged"
-        )
-        self._finalize_stage_times(res, t_run0)
-        return res
+            res.n_layers = _taper_from
+            res.errors.append(
+                "could not insert a valid boundary layer (all height scales "
+                "failed validation); mesh left unchanged"
+            )
+            self._finalize_stage_times(res, t_run0)
+            return res
 
     @staticmethod
     def _supported_layers(pre, first_height, growth, n_max, quantile=0.10):

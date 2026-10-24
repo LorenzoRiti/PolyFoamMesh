@@ -2157,6 +2157,7 @@ class MainWindow(QMainWindow):
                 f"fallbacks={[f for f in (_plan.fallback1, _plan.fallback2) if f]} "
                 f"({_plan.reason}) "
                 f"[watertight={_pre.watertight} suffix={_pre.suffix or '?'} "
+                f"solids={_pre.solid_count} "
                 f"pytetwild={_pre.fTetWild_available}]"
             )
         self._auto_engine_chain_cache = plan_chain

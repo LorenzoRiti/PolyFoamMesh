@@ -67,8 +67,6 @@ def save():
 
 
 def main() -> int:
-    import numpy as np
-
     WORK.mkdir(parents=True, exist_ok=True)
     assert STEP.is_file(), f"truth input missing: {STEP}"
     h = hashlib.sha256(STEP.read_bytes()).hexdigest()[:16]
@@ -105,25 +103,25 @@ def main() -> int:
         from polyfoammesh.core import ftetwild_wrapper as ftw
 
         stage("tetrahedralize")
-        _npz = WORK / "r1_tet.npz"
-        if REUSE_TET and _npz.is_file():
-            _d = np.load(_npz)
-            V, T, info = np.asarray(_d["V"]), np.asarray(_d["T"]), {}
-            out["tet_reused"] = True
-            print(f"   reused tet from {_npz}: {len(V)} nodes, {len(T)} tets", flush=True)
-        else:
-            V, T, info = ftw.tetrahedralize(surf, epsilon_abs=0.0003)
-        V = np.asarray(V)
-        T = np.asarray(T)
-        assert len(V) > 0 and len(T) > 0
-        out["n_nodes"] = int(len(V))
-        out["n_tets"] = int(len(T))
-        out["ftet_stats"] = {k: (float(v) if isinstance(v, (int, float)) else str(v)) for k, v in dict(info or {}).items()}
-        done("tetrahedralize", n_tets=len(T))
-        # Persist the tet mesh: a crash downstream must never waste
-        # another ~100 min re-tetrahedralizing.
-        np.savez_compressed(WORK / "r1_tet.npz", V=V, T=T)
-        out["tet_npz"] = str(WORK / "r1_tet.npz")
+        # PRODUCTION path (run_volume), not raw tetrahedralize(): the raw
+        # call skips manifold-split + snap + outlier-drop conditioning,
+        # which is exactly why the dual/BL hit non-manifold edges.
+        # run_volume writes the conditioned msh22 itself.
+        msh = WORK / "parte4.msh"
+        _payload = ftw.run_volume(
+            surf, msh, detail=DETAIL, epsilon_abs=0.0003,
+            surface_resolution="medium",
+        )
+        if not _payload.get("success"):
+            raise RuntimeError(f"fTetWild run_volume failed: {_payload.get('error')}")
+        out["n_tets"] = int(_payload.get("n_tets") or 0)
+        out["n_nodes"] = int(_payload.get("n_nodes") or 0)
+        out["ftet_stats"] = {k: v for k, v in _payload.items()
+                             if k not in ("path", "names")}
+        out["tet_path"] = str(_payload["path"])
+        out["tet_patches"] = list(_payload.get("names") or [])
+        assert out["n_tets"] > 0
+        done("tetrahedralize", n_tets=out["n_tets"])
         save()
         if TET_ONLY:
             out["status"] = "TET-ONLY COMPLETE"
@@ -134,10 +132,6 @@ def main() -> int:
         from polyfoammesh.core.mesh_converter import msh_to_of_polymesh
 
         stage("convert")
-        faces, owner = ftw.boundary_faces(V, T)
-        faces = ftw.orient_faces_outward(V, T, faces, owner)
-        msh = WORK / "parte4.msh"
-        ftw.write_msh22(msh, V, T, np.asarray(faces), np.ones(len(faces), dtype=np.int64), ["wall"])
         case = WORK / "case"
         if case.exists():
             shutil.rmtree(case)
@@ -160,53 +154,73 @@ def main() -> int:
             "solvers { p { solver PCG; preconditioner DIC; tolerance 1e-6; relTol 0.1; } }\n",
             encoding="ascii",
         )
-        done("convert", boundary_faces=int(len(faces)))
+        done("convert")
 
-        from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
+        DIRECT_BL = "--direct-bl" in sys.argv
+        if DIRECT_BL:
+            from polyfoammesh.core.bl_tets import build_bl_on_tets
 
-        stage("dual")
-        dres = TetPolyDualConverter(
-            case, log=lambda m: None,
-            collapse_smooth_edges=True,
-            boundary_feature_angle=40.0,
-            collapse_volume_tolerance=0.10,
-            smooth_free_boundary=True,
-        ).run()
-        out["dual"] = {
-            "success": bool(dres.success),
-            "n_cells_after": int(dres.n_cells_after),
-            "n_poly_cells": int(dres.n_poly_cells),
-            "residual_defects": int(dres.residual_defects),
-            "defect_breakdown": {k: int(v) for k, v in dres.defect_breakdown.items()},
-            "min_cell_volume": float(dres.min_cell_volume),
-            "volume_rel_err": float(abs(dres.volume_after - dres.volume_before) / max(dres.volume_before, 1e-300)),
-            "errors": list(dres.errors),
-        }
-        done("dual", **{k: out["dual"][k] for k in ("success", "n_cells_after", "residual_defects")})
-        if not dres.success:
-            raise RuntimeError(f"dual failed: {dres.errors}")
+            stage("bl_5layer_direct")
+            _br = build_bl_on_tets(case, n_layers=5, first_height=0.00126,
+                                   growth_rate=1.2, log=lambda m: None)
+            _bbrep = _br.bl_report if isinstance(getattr(_br, "bl_report", None), dict) else {}
+            out["bl"] = {
+                "success": bool(_br.success),
+                "prisms": int(getattr(_br, "n_prism_cells", 0)),
+                "coverage": _bbrep.get("coverage"),
+                "errors": list(getattr(_br, "errors", [])),
+                "warnings": list(getattr(_br, "warnings", [])),
+            }
+            done("bl_5layer_direct", success=out["bl"]["success"], prisms=out["bl"]["prisms"])
+            if not _br.success:
+                raise RuntimeError(f"direct BL failed: {_br.errors}")
 
-        from polyfoammesh.core.bl_config import BLConfig
-        from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
+        if not DIRECT_BL:
+            from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
 
-        stage("bl_5layer")
-        cfg, warnings = BLConfig.from_mapping_tolerant(dict(BL_PARAMS), max_cell=None)
-        kw = cfg.engine_kwargs(None)
-        kw.update(FTET_OVERRIDES)
-        out["bl_effective_kwargs"] = {k: (float(v) if isinstance(v, float) else v) for k, v in kw.items()}
-        r = PolyBoundaryLayerEngine(case, log=lambda m: None).run(**kw)
-        brep = r.bl_report if isinstance(getattr(r, "bl_report", None), dict) else {}
-        out["bl"] = {
-            "success": bool(r.success),
-            "n_prism_cells": int(getattr(r, "n_prism_cells", getattr(r, "bl_prism_cells", 0))),
-            "coverage": brep.get("coverage"),
-            "h1": brep.get("h1"),
-            "errors": list(getattr(r, "errors", [])),
-            "warnings": list(getattr(r, "warnings", [])),
-        }
-        done("bl_5layer", success=out["bl"]["success"], prisms=out["bl"]["n_prism_cells"])
-        if not r.success:
-            raise RuntimeError(f"BL failed: {r.errors}")
+            stage("dual")
+            dres = TetPolyDualConverter(
+                case, log=lambda m: None,
+                collapse_smooth_edges=True,
+                boundary_feature_angle=40.0,
+                collapse_volume_tolerance=0.10,
+                smooth_free_boundary=True,
+            ).run()
+            out["dual"] = {
+                "success": bool(dres.success),
+                "n_cells_after": int(dres.n_cells_after),
+                "n_poly_cells": int(dres.n_poly_cells),
+                "residual_defects": int(dres.residual_defects),
+                "defect_breakdown": {k: int(v) for k, v in dres.defect_breakdown.items()},
+                "min_cell_volume": float(dres.min_cell_volume),
+                "volume_rel_err": float(abs(dres.volume_after - dres.volume_before) / max(dres.volume_before, 1e-300)),
+                "errors": list(dres.errors),
+            }
+            done("dual", **{k: out["dual"][k] for k in ("success", "n_cells_after", "residual_defects")})
+            if not dres.success:
+                raise RuntimeError(f"dual failed: {dres.errors}")
+
+            from polyfoammesh.core.bl_config import BLConfig
+            from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
+
+            stage("bl_5layer")
+            cfg, warnings = BLConfig.from_mapping_tolerant(dict(BL_PARAMS), max_cell=None)
+            kw = cfg.engine_kwargs(None)
+            kw.update(FTET_OVERRIDES)
+            out["bl_effective_kwargs"] = {k: (float(v) if isinstance(v, float) else v) for k, v in kw.items()}
+            r = PolyBoundaryLayerEngine(case, log=lambda m: None).run(**kw)
+            brep = r.bl_report if isinstance(getattr(r, "bl_report", None), dict) else {}
+            out["bl"] = {
+                "success": bool(r.success),
+                "n_prism_cells": int(getattr(r, "n_prism_cells", getattr(r, "bl_prism_cells", 0))),
+                "coverage": brep.get("coverage"),
+                "h1": brep.get("h1"),
+                "errors": list(getattr(r, "errors", [])),
+                "warnings": list(getattr(r, "warnings", [])),
+            }
+            done("bl_5layer", success=out["bl"]["success"], prisms=out["bl"]["n_prism_cells"])
+            if not r.success:
+                raise RuntimeError(f"BL failed: {r.errors}")
 
         from polyfoammesh.config import OFConfig
 

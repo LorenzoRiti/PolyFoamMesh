@@ -83,6 +83,8 @@ def test_bl_on_tets_never_in_auto_chain():
         _pre(watertight=None),
         _pre(fTetWild_available=False),
         _pre(suffix=".stl", watertight=True),
+        _pre(suffix=".step", solid_count=0),
+        _pre(suffix=".step", solid_count=3),
     ):
         assert "bl_on_tets" not in choose_polymesh_engine(pre).chain()
 
@@ -126,20 +128,45 @@ def test_explicit_tet_sources_unchanged():
         choose_tet_source(pre, "nope")
 
 
-def test_r1_auto_decision_is_gmsh_first_with_fallback():
-    """R1 exit-criterion decision half: auto on a STEP resolves GMSH-first
-    with fTetWild fallback (STEP skips the watertight probe by design).
-    The measured half (0 pyr / skew / Failed / coverage) is the §3.4
-    table run, not a unit test — full BL+checkMesh takes ~1h.
-    """
-    step = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.step")
-    if not step.is_file():
-        pytest.skip("R1 truth input not present on this machine")
-    pre = preflight_tet_source(step)
-    assert pre.watertight is None
-    plan = choose_polymesh_engine(pre)
+def test_solidless_step_routes_to_ftetwild_only():
+    """Parte4.step 30/09 (0 solidi, shell aperte): GMSH non può fare
+    volumi — l'unico tentativo sensato è l'envelope fTetWild."""
+    plan = choose_polymesh_engine(_pre(suffix=".step", solid_count=0))
+    assert plan.primary == "ftetwild_poly"
+    assert plan.fallback1 is None
+    assert "solid" in plan.reason
+
+
+def test_step_with_solids_uses_default_chain():
+    plan = choose_polymesh_engine(_pre(suffix=".step", solid_count=1))
     assert plan.chain()[0] == "gmsh_direct_poly"
     assert "ftetwild_poly" in plan.chain()
+
+
+@pytest.mark.slow
+def test_preflight_counts_step_solids():
+    """Prova reale sui due STEP noti (skip dove assenti: path macchina)."""
+    old = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.step")
+    if old.is_file():
+        assert preflight_tet_source(old).solid_count == 0
+    new = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp")
+    if new.is_file():
+        assert preflight_tet_source(new).solid_count == 1
+    if not old.is_file() and not new.is_file():
+        pytest.skip("R1 STEP inputs not present on this machine")
+
+
+def test_r1_auto_decision_follows_solids_probe():
+    """R1 decision half: 30/09 (0 solidi) -> fTetWild; 18/05 (1 solido)
+    -> GMSH-first. STEP skips the watertight probe by design. The
+    measured half is the §3.4 table run, not a unit test.
+    """
+    old = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.step")
+    new = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp")
+    if not old.is_file() or not new.is_file():
+        pytest.skip("R1 STEP inputs not present on this machine")
+    assert choose_polymesh_engine(preflight_tet_source(old)).primary == "ftetwild_poly"
+    assert choose_polymesh_engine(preflight_tet_source(new)).primary == "gmsh_direct_poly"
 
 
 def _write_msh2(path: Path, with_tet: bool):
