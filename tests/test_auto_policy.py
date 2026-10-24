@@ -154,6 +154,30 @@ def test_auto_direct_bl_next():
     assert auto_direct_bl_next(True, [], False, True, "ftetwild_poly") == "ftetwild_poly"
 
 
+def test_tet_engine_env_override(monkeypatch):
+    import os
+
+    from polyfoammesh.core.tet_source import choose_polymesh_engine
+
+    monkeypatch.setenv("POLYFOAMMESH_TET_ENGINE", "ftetwild")
+    plan = choose_polymesh_engine(_pre(watertight=True))
+    assert plan.primary == "ftetwild_poly"
+    assert "override" in plan.reason
+    monkeypatch.setenv("POLYFOAMMESH_TET_ENGINE", "gmsh")
+    plan = choose_polymesh_engine(_pre(watertight=False))
+    assert plan.primary == "gmsh_direct_poly"
+    assert "override" in plan.reason
+    monkeypatch.setenv("POLYFOAMMESH_TET_ENGINE", "bogus")
+    with pytest.raises(ValueError):
+        choose_polymesh_engine(_pre())
+    monkeypatch.delenv("POLYFOAMMESH_TET_ENGINE")
+    assert "override" not in choose_polymesh_engine(_pre()).reason
+    # override to missing optional dep fails loud instead of crashing later
+    monkeypatch.setenv("POLYFOAMMESH_TET_ENGINE", "ftetwild")
+    with pytest.raises(ValueError):
+        choose_polymesh_engine(_pre(fTetWild_available=False))
+
+
 @pytest.mark.slow
 def test_preflight_counts_step_solids():
     """Prova reale sui due STEP noti (skip dove assenti: path macchina)."""

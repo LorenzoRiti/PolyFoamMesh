@@ -98,7 +98,10 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   with a direct boundary layer on the last validated tet mesh
   (requires BL enabled in the panel, no silent BL). Every attempt,
   reason and fallback is logged (`Mesher:`, `Polymesh auto:`, BL
-  provenance). **Cartesian cfMesh** is the separate
+  provenance). Debug hatch: `POLYFOAMMESH_TET_ENGINE=gmsh|ftetwild`
+  forces the tet engine for one run (logged as override) — useful to
+  A/B the engines on the same geometry without touching the policy.
+  **Cartesian cfMesh** is the separate
   explicit hex path (requires WSL2+OpenFOAM on Windows, native OpenFOAM
   on Linux). Legacy engines (`Legacy tet -> poly`, `Auto`,
   `fTetWild`, `BL on tets`, `FEM tetra`) stay in code, CLI and config —

@@ -15,6 +15,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -343,6 +344,29 @@ def choose_polymesh_engine(
       where GMSH loses (mini_valve), not an oracle.
     ``bl_on_tets`` is never selected (W13 opt-in verdict stands).
     """
+    forced = (os.environ.get("POLYFOAMMESH_TET_ENGINE") or "").strip().lower()
+    if forced in ("gmsh", "gmsh_direct_poly"):
+        return PolymeshEnginePlan(
+            primary="gmsh_direct_poly",
+            fallback1="ftetwild_poly" if preflight.fTetWild_available else None,
+            fallback2=None,
+            reason="POLYFOAMMESH_TET_ENGINE=gmsh override (debug hatch, logged)",
+        )
+    if forced in ("ftetwild", "ftetwild_poly", "ftet", "tetwild"):
+        if not preflight.fTetWild_available:
+            raise ValueError(
+                "POLYFOAMMESH_TET_ENGINE=ftetwild but pytetwild is not installed"
+            )
+        return PolymeshEnginePlan(
+            primary="ftetwild_poly",
+            fallback1="gmsh_direct_poly",
+            fallback2=None,
+            reason="POLYFOAMMESH_TET_ENGINE=ftetwild override (debug hatch, logged)",
+        )
+    if forced:
+        raise ValueError(
+            f"unknown POLYFOAMMESH_TET_ENGINE={forced!r}; expected gmsh|ftetwild"
+        )
     ftet: str | None = "ftetwild_poly" if preflight.fTetWild_available else None
     if preflight.watertight is False:
         return PolymeshEnginePlan(
