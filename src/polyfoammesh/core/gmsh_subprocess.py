@@ -127,7 +127,7 @@ def run_gmsh_volume(
             tail = "\n".join(stdout[-10:])
             last_err = f"GMSH subprocess produced no JSON result:\n{tail}"
         if attempt == 1:
-            on_line(f"[gmsh] attempt {attempt} failed, retrying: {last_err.splitlines()[0]}")
+            on_line(f"[tet:gmsh] attempt {attempt} failed, retrying: {last_err.splitlines()[0]}")
 
     raise RuntimeError(last_err)
 

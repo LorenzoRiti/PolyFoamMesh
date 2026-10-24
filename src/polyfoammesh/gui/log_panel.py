@@ -66,7 +66,7 @@ class LogPanel(QTextEdit):
     * **Batching** — lines received on the GUI thread are buffered and flushed
       on a ~120 ms timer. An isolated line (idle stream, small buffer) is
       flushed synchronously so normal logging stays prompt.
-    * **Coalescing** — consecutive ``[gmsh] ... still running ...`` lines
+    * **Coalescing** — consecutive ``[tet:gmsh] ... still running ...`` lines
       replace the previous one in place, and a run of consecutive
       ``Improving ...`` lines collapses to a single line carrying a running
       ``(N lines)`` count. Only the widget view is affected; no log file,

@@ -1336,7 +1336,7 @@ def run_volume(
         src_tris, raw_names = load_surface_solids(stl_source)
         if refinement_zones:
             print(
-                "[fTetWild] refinement zones were requested but the STL "
+                "[tet:ftetwild] refinement zones were requested but the STL "
                 "input skips GMSH surface sizing; zones cannot be carried "
                 "without re-meshing the discrete surface - ignored, declared.",
                 flush=True,
@@ -1389,7 +1389,7 @@ def run_volume(
         _ext_max = float(np.max(dims))
         if _ext_max > 0 and float(la_used) > 0.5 * _ext_max:
             print(
-                f"[fTetWild] target edge {float(la_used):.4g} m is larger "
+                f"[tet:ftetwild] target edge {float(la_used):.4g} m is larger "
                 f"than half the domain ({0.5 * _ext_max:.4g} m) - clamping; "
                 "check the CAD unit / max cell size.",
                 flush=True,
@@ -1415,7 +1415,7 @@ def run_volume(
         _cap = 0.05 * _min_dim
         if _cap > 0.0 and float(epsilon_abs) > _cap:
             print(
-                f"[fTetWild] envelope capped to {_cap * 1e3:.3g} mm "
+                f"[tet:ftetwild] envelope capped to {_cap * 1e3:.3g} mm "
                 "(5% of the smallest dimension) - a larger envelope would "
                 "erase thin features.",
                 flush=True,
@@ -1484,7 +1484,7 @@ def run_volume(
                     )
                     _dec.save(str(decimated_surface))
                     print(
-                        f"[fTetWild] bounded decimation: "
+                        f"[tet:ftetwild] bounded decimation: "
                         f"{_surf.n_faces:,} -> {_dec.n_faces:,} triangles "
                         f"(max surface error <= 0.25 x envelope = "
                         f"{0.25 * float(epsilon_abs) * 1e3:.3g} mm)",
@@ -1492,7 +1492,7 @@ def run_volume(
                     )
             except Exception as _exc:  # noqa: BLE001 - keep the old path
                 print(
-                    f"[fTetWild] bounded decimation unavailable ({_exc}); "
+                    f"[tet:ftetwild] bounded decimation unavailable ({_exc}); "
                     "using the engine's own decimation.",
                     flush=True,
                 )
@@ -1512,7 +1512,7 @@ def run_volume(
             )
             if sizing_field is not None:
                 print(
-                    f"[fTetWild] adaptive sizing field: "
+                    f"[tet:ftetwild] adaptive sizing field: "
                     f"{_fs['n_samples']:,} thickness samples, target edge "
                     f"{_fs['min'] * 1e3:.3g}-{_fs['max'] * 1e3:.3g} mm "
                     f"({_fs['n_refined']:,}/{_fs['n_points']:,} grid points "
@@ -1521,7 +1521,7 @@ def run_volume(
                 )
         except Exception as _exc:  # noqa: BLE001 - never break the tet stage
             print(
-                f"[fTetWild] adaptive sizing unavailable ({_exc}); "
+                f"[tet:ftetwild] adaptive sizing unavailable ({_exc}); "
                 "using the uniform target edge.",
                 flush=True,
             )
@@ -1577,14 +1577,14 @@ def run_volume(
             _t0 = time.perf_counter()
             V, _n_snap, _snap_max = _snap_boundary_to_surface(V, T, _orig)
             print(
-                f"[fTetWild] boundary snapped onto the input surface: "
+                f"[tet:ftetwild] boundary snapped onto the input surface: "
                 f"{_n_snap:,} vertices (max move {_snap_max * 1e3:.3g} mm) "
                 f"[{time.perf_counter() - _t0:.1f}s]",
                 flush=True,
             )
         except Exception as _exc:  # noqa: BLE001 - keep the tet output
             print(
-                f"[fTetWild] boundary snap unavailable ({_exc}); keeping "
+                f"[tet:ftetwild] boundary snap unavailable ({_exc}); keeping "
                 "the engine surface.",
                 flush=True,
             )

@@ -1733,3 +1733,4 @@ venturi AUTO VALID (gmsh dual Failed 63.1/4.2 -> ftet dual Failed
 (Mesh OK, keep-best verificato: catena ferma al primo valido).
 Taper uniforme incluso ma non decisivo (i fallimenti totali osservati
 restano topologici/difettivi); per-face mappato, non implementato.
+Ammissione direct: default ON (nessun flag), fallback unico, log completo. E2E auto_chain venturi+cylinder verdi (Mesh OK, keep-best verificato). Log tet neutri ([tet:gmsh]/[tet:ftetwild]/[tet], convert [convert]); test di contratto test_log_tags.py; direct resta [bl-tets] + framing auto.

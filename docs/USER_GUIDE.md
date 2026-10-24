@@ -125,7 +125,7 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
     then consumed by fTetWild through the tagged triangulation; max-cells
     target and solution size fields remain GMSH-volume-only.  Boundary
     layers are added after the poly conversion as usual.
-    Log lines are prefixed `[fTetWild]`, and the run starts with a
+    Log lines are prefixed `[tet:ftetwild]`, and the run starts with a
     `bbox_diag / cross_section / target_edge / input_median_edge`
     diagnostic line; fTetWild's own phase lines stream during the
     tetrahedralization (`FTETWILD_QUIET=1` silences them). Cancel always
@@ -206,7 +206,7 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   BL build ...` line so you always know where the time went.
 - If the actual cell count deviates a lot from the budget, the app
   performs ONE automatic size correction (logged as
-  `[gmsh] budget correction: ...`) before giving the mesh.
+  `[tet:gmsh] budget correction: ...`) before giving the mesh.
 
 ### 3. Advanced tab
 

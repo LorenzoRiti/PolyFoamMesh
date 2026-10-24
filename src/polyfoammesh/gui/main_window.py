@@ -3173,7 +3173,7 @@ class MainWindow(QMainWindow):
         all until the freeze fix. Returns the ``.msh`` path GMSH writes to
         (also the destination when a cached mesh is reused).
         """
-        self._log.append_log("[gmsh] Starting volume mesh generation in background...")
+        self._log.append_log("[tet] Starting volume mesh generation in background...")
         self._status.showMessage("GMSH: volume mesh...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = self._resolve_case_root()
@@ -3533,7 +3533,7 @@ class MainWindow(QMainWindow):
             # no-silent-substitution rule).
             if refinement_zones:
                 self._log.append_log(
-                    "[fTetWild] Refinement zones: carried into the GMSH "
+                    "[tet:ftetwild] Refinement zones: carried into the GMSH "
                     "surface stage (2D sizing), then consumed by fTetWild "
                     "through the triangulated surface."
                 )
@@ -3544,12 +3544,12 @@ class MainWindow(QMainWindow):
                 )
             if n_layers > 0:
                 self._log.append_log(
-                    f"[fTetWild] Boundary layer: non inclusa nei tets "
+                    f"[tet:ftetwild] Boundary layer: non inclusa nei tets "
                     f"({n_layers} layers) — verrà aggiunta dal poly BL "
                     "engine dopo la conversione, come sul percorso Polymesh."
                 )
             self._log.append_log(
-                "[fTetWild] Experimental mesher (issue #12): tet stage via "
+                "[tet:ftetwild] Experimental mesher (issue #12): tet stage via "
                 "fTetWild (pytetwild), poly pipeline unchanged after it."
             )
             try:
@@ -3623,7 +3623,7 @@ class MainWindow(QMainWindow):
         msh_path_result = Path(result["path"])
         names = result["names"]
         is_ftet = getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
-        label = "[fTetWild]" if is_ftet else "[gmsh]"
+        label = "[tet:ftetwild]" if is_ftet else "[tet:gmsh]"
         _src = result.get("source") or ("ftetwild" if is_ftet else "gmsh")
         _surf = result.get("surface_source") or "-"
         self._log.append_log(
@@ -3830,7 +3830,7 @@ class MainWindow(QMainWindow):
         delivered back to the GUI thread via the task callbacks — no raw
         threading.Thread/queue/QTimer polling here anymore.
         """
-        self._log.append_log("[gmsh] Converting to OpenFOAM polyMesh...")
+        self._log.append_log("[convert] Converting to OpenFOAM polyMesh...")
         self._status.showMessage("GMSH: conversion...")
         self._progress.setRange(0, 0)
         self._progress.setVisible(True)
@@ -3950,8 +3950,8 @@ class MainWindow(QMainWindow):
                     f"{case_dir / 'constant' / 'polyMesh'}"
                 )
                 return
-            self._log.append_log(f"[gmsh] polyMesh: {case_dir / 'constant' / 'polyMesh'}")
-            self._log.append_log("[gmsh] Conversion complete.")
+            self._log.append_log(f"[convert] polyMesh: {case_dir / 'constant' / 'polyMesh'}")
+            self._log.append_log("[convert] Conversion complete.")
             self._progress.setVisible(False)
 
             try:

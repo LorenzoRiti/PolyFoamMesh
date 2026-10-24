@@ -155,7 +155,7 @@ the GMSH worker. The next required messages are:
 ```text
 GMSH stage entered
 GMSH worker thread started
-[gmsh] Running volume mesh generation in subprocess
+[tet] Starting volume mesh generation in background...
 ```
 
 If those messages are absent and there is no child GMSH/Python worker process,

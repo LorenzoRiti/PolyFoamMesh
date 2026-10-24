@@ -37,7 +37,10 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   fallimenti totali osservati sono topologici/difettivi, non di altezza.
   Dichiarato, non nascosto.)
 - **GUI coerente**: log auto con solidi, log taper dedicato, nessun
-  nuovo selettore manuale.
+  nuovo selettore manuale. Tag log del tet stage neutrali
+  (`[tet:gmsh]` / `[tet:ftetwild]` / `[tet]`, convert `[convert]`)
+  invece di accreditare tutto a GMSH; il direct resta `[bl-tets]`
+  (identita' vera del worker) + framing auto.
 - **Gamba direct-BL in auto (AMMESSA di default, con E2E)**:
   a catena mesher esaurita, un solo retry con BL diretto sul tet
   dell'ultimo engine valido (richiede BL attivo nel pannello; skip

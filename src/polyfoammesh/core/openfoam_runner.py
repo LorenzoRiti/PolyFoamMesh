@@ -4047,11 +4047,11 @@ class GmshSurfaceWorker(QObject):
         import json
         args = ["surface", self._geom_path, str(self._stl_out), self._detail]
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-surface")
-        self.log_line.emit("[gmsh] Running surface STL generation in subprocess...")
+        self.log_line.emit("[tet:gmsh] Running surface STL generation in subprocess...")
         try:
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
                 cmd, run_cwd, self.SURFACE_TIMEOUT_S,
-                on_line=lambda ln: self.log_line.emit(f"[gmsh] {ln}"),
+                on_line=lambda ln: self.log_line.emit(f"[tet:gmsh] {ln}"),
                 proc_holder=self._proc_holder,
             )
         except Exception as exc:
@@ -4060,7 +4060,7 @@ class GmshSurfaceWorker(QObject):
             return
 
         if self._cancelled:
-            self.log_line.emit("[gmsh] Surface generation cancelled.")
+            self.log_line.emit("[tet:gmsh] Surface generation cancelled.")
             return
 
         if timed_out:
@@ -4179,7 +4179,7 @@ class GmshVolumeWorker(QObject):
         No ETA is invented: it is emitted only when the wrapper prints a real
         percentage (same rule as MeshWorker._emit_eta).
         """
-        self.log_line.emit(f"[gmsh] {line}")
+        self.log_line.emit(f"[tet:gmsh] {line}")
         match = self._PCT_RE.search(line) or self._ANY_PCT_RE.search(line)
         if not match:
             return
@@ -4228,7 +4228,7 @@ class GmshVolumeWorker(QObject):
         if abs(getattr(self, "_scale", 1.0) - 1.0) > 1e-12:
             args.append(f"--scale={self._scale}")
         cmd, run_cwd = _gmsh_wrapper_script_cmd(args, "--gmsh-volume")
-        self.log_line.emit("[gmsh] Running volume mesh generation in subprocess...")
+        self.log_line.emit("[tet:gmsh] Running volume mesh generation in subprocess...")
         env = os.environ.copy()
         raw_threads = os.environ.get(GMSH_THREADS_ENV_VAR, "").strip()
         if raw_threads:
@@ -4239,7 +4239,7 @@ class GmshVolumeWorker(QObject):
             if n_threads > 0:
                 env["GMSH_NUM_THREADS"] = str(n_threads)
                 self.log_line.emit(
-                    f"[gmsh] {GMSH_THREADS_ENV_VAR}={n_threads} "
+                    f"[tet:gmsh] {GMSH_THREADS_ENV_VAR}={n_threads} "
                     "(reproducibility pin; default is parallel)"
                 )
         if zones_json:
@@ -4247,7 +4247,7 @@ class GmshVolumeWorker(QObject):
         if self._size_field_file:
             env["GMSH_SOLUTION_SIZE_FIELD"] = self._size_field_file
             self.log_line.emit(
-                f"[gmsh] solution-adaptive size field: {self._size_field_file}"
+                f"[tet:gmsh] solution-adaptive size field: {self._size_field_file}"
             )
 
         # Attempt chain: normal (MeshAdapt) -> robust (OCC healing + Delaunay
@@ -4307,7 +4307,7 @@ class GmshVolumeWorker(QObject):
                 return
 
             if self._cancelled:
-                self.log_line.emit("[gmsh] Volume generation cancelled.")
+                self.log_line.emit("[tet:gmsh] Volume generation cancelled.")
                 return
 
             if timed_out:
@@ -4324,19 +4324,19 @@ class GmshVolumeWorker(QObject):
                     if signature:
                         signature_retry = True
                         self.log_line.emit(
-                            "[gmsh] non-convergence detected: "
+                            "[tet:gmsh] non-convergence detected: "
                             f"{evidence} - retrying robust"
                         )
                     else:
                         self.log_line.emit(
-                            "[gmsh] stalled: no output for "
+                            "[tet:gmsh] stalled: no output for "
                             f"{int(no_output_s)}s (surface meshing loop?) - "
                             "killed; retrying in robust mode (healing + "
                             "Delaunay 2D, no optimization)"
                         )
                     if robust_stall_s > stall_s:
                         self.log_line.emit(
-                            f"[gmsh] robust stall budget raised to "
+                            f"[tet:gmsh] robust stall budget raised to "
                             f"{int(robust_stall_s)}s (estimated {est_cells:,} "
                             f"cells; base {int(stall_s)}s)"
                         )
@@ -4405,18 +4405,18 @@ class GmshVolumeWorker(QObject):
             return False
         if signature:
             self.log_line.emit(
-                "[gmsh] non-convergence detected: "
+                "[tet:gmsh] non-convergence detected: "
                 f"{evidence} - robust attempt did not converge"
             )
         elif no_output_s:
             self.log_line.emit(
-                "[gmsh] robust retry also stalled (no output for "
+                "[tet:gmsh] robust retry also stalled (no output for "
                 f"{int(no_output_s)}s)"
             )
         else:
-            self.log_line.emit("[gmsh] robust attempt failed")
+            self.log_line.emit("[tet:gmsh] robust attempt failed")
         self.log_line.emit(
-            "[gmsh] adaptive sizing did not converge on this geometry - "
+            "[tet:gmsh] adaptive sizing did not converge on this geometry - "
             "meshed with the manual equivalent sizing"
         )
         return True
@@ -4427,7 +4427,7 @@ class GmshVolumeWorker(QObject):
         """Emit the honest terminal failure after the last attempt stalled."""
         if mode == "manual":
             self.log_line.emit(
-                "[gmsh] manual-equivalent fallback also stalled - giving up."
+                "[tet:gmsh] manual-equivalent fallback also stalled - giving up."
             )
             self.failed.emit(
                 "GMSH volume failed after the adaptive, robust and "
@@ -4437,7 +4437,7 @@ class GmshVolumeWorker(QObject):
             )
             return
         self.log_line.emit(
-            "[gmsh] robust retry also "
+            "[tet:gmsh] robust retry also "
             + ("did not converge" if signature else "stalled")
             + " - giving up."
         )
@@ -4561,7 +4561,7 @@ class FtetWildVolumeWorker(QObject):
             args, "--ftetwild-volume", script_name="ftetwild_wrapper.py"
         )
         self.log_line.emit(
-            "[fTetWild] Running experimental tet stage in subprocess "
+            "[tet:ftetwild] Running experimental tet stage in subprocess "
             "(surface + fTetWild + patched .msh)..."
         )
         from polyfoammesh.core.phase_watchdog import (
@@ -4582,7 +4582,7 @@ class FtetWildVolumeWorker(QObject):
             on_heartbeat=lambda snap: (
                 self.heartbeat.emit(),
                 self.log_line.emit(
-                    "[fTetWild] ... still running "
+                    "[tet:ftetwild] ... still running "
                     f"({int(snap['elapsed_s'])}s elapsed, no progress for "
                     f"{int(snap['no_progress_s'])}s)"
                 ),
@@ -4594,7 +4594,7 @@ class FtetWildVolumeWorker(QObject):
             ),
         )
         self.log_line.emit(
-            f"[fTetWild] watchdog armed: {self.STALL_S:g}s without a "
+            f"[tet:ftetwild] watchdog armed: {self.STALL_S:g}s without a "
             f"progress line, {self.VOLUME_TIMEOUT_S}s hard ceiling"
         )
 
@@ -4604,7 +4604,7 @@ class FtetWildVolumeWorker(QObject):
                 watchdog.progress(
                     detector.fraction, detector.evidence(),
                 )
-            self.log_line.emit(f"[fTetWild] {line}")
+            self.log_line.emit(f"[tet:ftetwild] {line}")
 
         try:
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
@@ -4620,7 +4620,7 @@ class FtetWildVolumeWorker(QObject):
             return
 
         if self._cancelled:
-            self.log_line.emit("[fTetWild] Volume generation cancelled.")
+            self.log_line.emit("[tet:ftetwild] Volume generation cancelled.")
             return
 
         if timed_out:

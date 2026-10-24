@@ -1409,7 +1409,7 @@ def _configure_adaptive_sizing(
     _abs_min_floor = max_extent * 1e-6
     if _gmsh_robust_mode() and min_size < _abs_min_floor:
         _msg = (
-            f"[gmsh] robust: min size {min_size:.3e} below absolute floor "
+            f"[tet:gmsh] robust: min size {min_size:.3e} below absolute floor "
             f"{_abs_min_floor:.3e} (=max_extent*1e-6) — clamping"
         )
         logger.warning(_msg)
@@ -1438,7 +1438,7 @@ def _configure_adaptive_sizing(
         sharp_edge_tags = _detect_sharp_edge_curves(gmsh_mod)
         if sharp_edge_tags:
             logger.info(
-                "[gmsh] sharp-edge refinement: %d edges (opt-in)", len(sharp_edge_tags),
+                "[tet:gmsh] sharp-edge refinement: %d edges (opt-in)", len(sharp_edge_tags),
             )
 
     _seen_curves = set(int(t) for t in feat["small_curve_tags"])
@@ -1535,7 +1535,7 @@ def _configure_adaptive_sizing(
                 wall_floor_field, "DistMax", max(coarse_max, min_size)
             )
             _floor_msg = (
-                f"[gmsh] BL wall size floor: "
+                f"[tet:gmsh] BL wall size floor: "
                 f"{bl_wall_size_floor * 1000.0:.4g} mm "
                 f"(stack {bl_wall_size_floor * _BL_CELLS_ACROSS_STACK * 1000.0:.4g} mm "
                 f"/ {_BL_CELLS_ACROSS_STACK}, wall surfaces {len(wall_tags)})"
@@ -2567,9 +2567,9 @@ def _heal_occ_geometry(gmsh_mod, tag: str) -> None:
     try:
         healed = gmsh_mod.model.occ.healShapes()
         gmsh_mod.model.occ.synchronize()
-        msg = f"[gmsh] robust[{tag}]: healShapes -> {len(healed)} entities"
+        msg = f"[tet:gmsh] robust[{tag}]: healShapes -> {len(healed)} entities"
     except Exception as exc:  # noqa: BLE001 — healing is best-effort
-        msg = f"[gmsh] robust[{tag}]: healShapes failed ({exc}); using geometry as-is"
+        msg = f"[tet:gmsh] robust[{tag}]: healShapes failed ({exc}); using geometry as-is"
         logger.warning(msg)
     logger.info(msg)
     try:
@@ -3027,7 +3027,7 @@ def generate_volume_mesh(
     is_step_input = filepath_str.lower().endswith((".step", ".stp"))
     if robust:
         _robust_opt = _resolve_optimize(True) == 1
-        msg = ("[gmsh] robust mode ON (POLYFOAMMESH_GMSH_ROBUST=1): "
+        msg = ("[tet:gmsh] robust mode ON (POLYFOAMMESH_GMSH_ROBUST=1): "
                "OCC healing + Delaunay 2D"
                + (" + optimizer ON (signature retry)" if _robust_opt
                   else " + no optimizer"))
@@ -3100,7 +3100,7 @@ def generate_volume_mesh(
             _equiv_target = int(_hardware_budget(None)["max_cells"])
         user_lc, min_cell_size = derive_manual_equivalent_sizes(vol, _equiv_target)
         _equiv_msg = (
-            f"[gmsh] manual-equivalent sizing: max-cell={user_lc:.6g} "
+            f"[tet:gmsh] manual-equivalent sizing: max-cell={user_lc:.6g} "
             f"min-cell={min_cell_size:.6g} for target {_equiv_target:,} cells "
             f"(bbox volume {vol:.6g} m^3)"
         )
@@ -3224,7 +3224,7 @@ def generate_volume_mesh(
         # history below). An explicit CFMESH_GMSH_ALGO3D still wins.
         if robust and is_step_input:
             algo3d = 1  # Delaunay 3D
-            _algo3d_msg = ("[gmsh] robust: volume algorithm -> Delaunay 3D (1) "
+            _algo3d_msg = ("[tet:gmsh] robust: volume algorithm -> Delaunay 3D (1) "
                            "for STEP/OCC (HXT boundary recovery was not "
                            "dual-able on this class)")
             logger.info(_algo3d_msg)
@@ -3263,7 +3263,7 @@ def generate_volume_mesh(
     # robust retry after the default path has already stalled.
     if robust:
         algo2d = 5  # Delaunay — robust fallback (measured to complete)
-        _algo2d_msg = ("[gmsh] robust: surface algorithm -> Delaunay (5) "
+        _algo2d_msg = ("[tet:gmsh] robust: surface algorithm -> Delaunay (5) "
                        "instead of MeshAdapt (stalls on this CAD class)")
         logger.info(_algo2d_msg)
         print(_algo2d_msg, flush=True)
@@ -3289,7 +3289,7 @@ def generate_volume_mesh(
                     "gmsh_wrapper: could not pin algorithm on surface %d",
                     _tag, exc_info=True,
                 )
-        _pin_msg = (f"[gmsh] robust: Delaunay (5) pinned explicitly on "
+        _pin_msg = (f"[tet:gmsh] robust: Delaunay (5) pinned explicitly on "
                     f"{_pinned} 2D surface(s); no per-surface fallback")
         logger.info(_pin_msg)
         print(_pin_msg, flush=True)
@@ -3303,14 +3303,14 @@ def generate_volume_mesh(
     gmsh.option.setNumber("Mesh.OptimizeNetgen", _opt)
     if _opt == 0:
         _opt_msg = (
-            "[gmsh] Mesh.Optimize/OptimizeNetgen DISABLED"
+            "[tet:gmsh] Mesh.Optimize/OptimizeNetgen DISABLED"
             + (" (robust mode)" if robust else " (CFMESH_GMSH_OPTIMIZE=0)")
         )
         logger.info(_opt_msg)
         print(_opt_msg, flush=True)
     elif robust:
         _opt_msg = (
-            "[gmsh] Mesh.Optimize/OptimizeNetgen ENABLED (robust signature "
+            "[tet:gmsh] Mesh.Optimize/OptimizeNetgen ENABLED (robust signature "
             "retry: measured quality win, no convergence cost on this class)"
         )
         logger.info(_opt_msg)
@@ -3440,12 +3440,12 @@ def generate_volume_mesh(
                 gmsh.model.mesh.field.setNumbers(bl_field, "CurvesList", bl_curves)
                 bl_field_tag = bl_field
                 logger.info(
-                    "[gmsh] POLYFOAMMESH_GMSH_BL=1: BoundaryLayer field %d "
+                    "[tet:gmsh] POLYFOAMMESH_GMSH_BL=1: BoundaryLayer field %d "
                     "configured on %d wall-boundary curve(s)",
                     bl_field, len(bl_curves),
                 )
                 print(
-                    f"[gmsh] POLYFOAMMESH_GMSH_BL=1: BoundaryLayer field "
+                    f"[tet:gmsh] POLYFOAMMESH_GMSH_BL=1: BoundaryLayer field "
                     f"configured on {len(bl_curves)} wall-boundary curve(s)",
                     flush=True,
                 )
@@ -3508,7 +3508,7 @@ def generate_volume_mesh(
         # without it rather than failing a run that worked before the gate.
         if bl_field_tag is not None and "boundary layer" in str(e).lower():
             msg = (
-                f"[gmsh] GMSH-baked BL refused by GMSH ({e}); the "
+                f"[tet:gmsh] GMSH-baked BL refused by GMSH ({e}); the "
                 "BoundaryLayer field is 2D-only and cannot extrude 3D prisms "
                 "on a closed solid. Falling back to a pure-tet mesh."
             )
@@ -3538,14 +3538,14 @@ def generate_volume_mesh(
         n_prism = _count_prism_cells(gmsh)
         if n_prism > 0:
             msg = (
-                f"[gmsh] GMSH-baked BL: {n_prism:,} prism elements written "
+                f"[tet:gmsh] GMSH-baked BL: {n_prism:,} prism elements written "
                 "(type 6) — 3D boundary layer present in the .msh."
             )
             logger.info(msg)
             print(msg, flush=True)
         else:
             msg = (
-                "[gmsh] GMSH-baked BL: 0 prism elements — GMSH did not bake a "
+                "[tet:gmsh] GMSH-baked BL: 0 prism elements — GMSH did not bake a "
                 "3D boundary layer (the BoundaryLayer field is 2D-only on a "
                 "closed solid). The .msh is pure tetrahedra."
             )
@@ -3568,12 +3568,12 @@ def generate_volume_mesh(
         deviation = abs(actual_cells - _budget_target) / float(_budget_target)
         if _budget_target > _BUDGET_CORRECTION_MAX_TARGET:
             logger.info(
-                "[gmsh] budget correction skipped: target %d > %d cells",
+                "[tet:gmsh] budget correction skipped: target %d > %d cells",
                 _budget_target, _BUDGET_CORRECTION_MAX_TARGET,
             )
         elif deviation <= _BUDGET_CORRECTION_DEVIATION:
             logger.info(
-                "[gmsh] budget check OK: actual %d vs target %d (%.0f%% off)",
+                "[tet:gmsh] budget check OK: actual %d vs target %d (%.0f%% off)",
                 actual_cells, _budget_target, deviation * 100.0,
             )
         else:
@@ -3583,7 +3583,7 @@ def generate_volume_mesh(
                 1.0 + _BUDGET_CORRECTION_FACTOR_CLAMP,
             )
             msg = (
-                f"[gmsh] budget correction: actual {actual_cells} vs target "
+                f"[tet:gmsh] budget correction: actual {actual_cells} vs target "
                 f"{_budget_target} -> rescaling sizes by {factor:.3f}"
             )
             logger.info(msg)
@@ -3594,7 +3594,7 @@ def generate_volume_mesh(
                 gmsh.model.mesh.generate(3)
                 corrected = _count_volume_cells(gmsh)
                 result_msg = (
-                    f"[gmsh] budget correction result: {actual_cells} -> "
+                    f"[tet:gmsh] budget correction result: {actual_cells} -> "
                     f"{corrected} cells (target {_budget_target}, "
                     f"{abs(corrected - _budget_target) / _budget_target * 100.0:.0f}% off)"
                 )
@@ -3610,7 +3610,7 @@ def generate_volume_mesh(
                 gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", 1.0)
                 gmsh.model.mesh.generate(3)
     else:
-        logger.info("[gmsh] budget check skipped: no explicit cell target")
+        logger.info("[tet:gmsh] budget check skipped: no explicit cell target")
 
     # Get patch names
     groups = gmsh.model.getPhysicalGroups()
