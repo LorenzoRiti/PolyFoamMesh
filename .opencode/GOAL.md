@@ -1704,6 +1704,23 @@ Per-face taper: mappato, non implementato (nessun caso lo richiede).
 Auto indurito: solidi STEP in preflight (0 -> fTetWild diretto),
 validita' 3D del tet, fallback dual/checkMesh, log con solidi.
 GUI coerente senza nuovi selettori.
+Gamba direct-BL in auto IMPLEMENTATA (catena esaurita -> un retry
+direct sul tet valido, BL richiesto nel pannello, skip del dual;
+decisione unit-testata; E2E GUI da eseguire).
 Verdetto: PARTIAL (R1 box: numeri via direct esplicito, auto senza
 direct leg - ammissione = decisione utente con questi numeri).
 Gate: suite fast in corso; ruff green.
+
+## 2026-10-24 (sera) - W18 follow-up, verdetto finale: PARTIAL
+
+Direct-BL 5L misurato su tre geometrie (tet condizionati run_volume):
+R1 Mesh OK 100% (353K prismi, 0 pyr, skew 2.9); venturi Mesh OK 76%;
+pipe/thin_gap NON-BL per topologia (5/60 edge non-manifold - il taper
+uniforme non copre questo caso: serve per-face, mappato non implementato).
+Split dual+BL su R1: dual 0 difetti ma BL Failed 3 (skew 165) - il dual
+pulito non basta quando i prismi collassano su thin features.
+Taper implementato+testato (keep-best, provenance, no-op invariato).
+R1 box: RAGGIUNTO via direct esplicito (0 pyr / 0 skew-def / 0 Failed /
+100% cov). Auto resta senza gamba direct (implementata, non promossa
+in attesa di decisione utente). Prossimo: E2E GUI della gamba direct
++ eventuale per-face taper solo se un caso lo richiede.

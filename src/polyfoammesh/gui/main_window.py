@@ -2242,6 +2242,9 @@ class MainWindow(QMainWindow):
                 self._auto_engine_plan = None
                 self._auto_engine_chain_cache = []
                 self._auto_engine_used = []
+                self._auto_direct_bl = False
+                self._auto_direct_done = False
+                self._auto_last_tet_ok = None
             else:
                 self._auto_restarting = False
             mesher_type = self._resolve_auto_mesher()
@@ -3660,6 +3663,10 @@ class MainWindow(QMainWindow):
                 self._store_tet_mesh_cache(ctx, msh_path_result, names)
         except OSError:
             logger.debug("Mesh cache post-run stat failed", exc_info=True)
+        if getattr(self, "_auto_run_active", False):
+            # Last engine whose tet stage validated: the direct-BL leg
+            # restarts from here when the dual chain is exhausted.
+            self._auto_last_tet_ok = getattr(self, "_current_mesher_type", None)
         self._continue_gmsh_direct(my_id, msh_path_result, names)
 
     def _on_gmsh_volume_failed(self, msg: str):
@@ -4713,8 +4720,10 @@ class MainWindow(QMainWindow):
             # W18: Polymesh auto falls back on UNACCEPTED checkMesh FAILs
             # while the chain has unused engines (keep-best: the first
             # valid attempt wins and stops the chain; an exhausted chain
-            # falls through to the existing handling below).
+            # falls through to the direct-BL leg, then existing handling).
             if self._maybe_auto_checkmesh_fallback(report, payload):
+                return
+            if self._maybe_auto_direct_bl(getattr(report, "status", "checkMesh Failed")):
                 return
             if getattr(self, "_current_mesher_type", "") == "bl_on_tets":
                 # The opt-in tet+prism mesh failed checkMesh.  Keep it and
@@ -5054,6 +5063,14 @@ class MainWindow(QMainWindow):
         tetrahedral meshes — the one and only tet->poly converter this
         pipeline uses (100% polyhedral, best measured on every axis; the
         merge-based terminal-face converter is retired and unreachable)."""
+        if getattr(self, "_auto_direct_bl", False):
+            # W18 auto direct leg: skip the dual, BL straight on the tets.
+            self._log.append_log(
+                "[poly] Polymesh auto: skipping dual, building the BL "
+                "directly on the tet mesh."
+            )
+            self._launch_bl_on_tets()
+            return
         if not self._case_dir:
             return
         poly_points = self._case_dir / "constant" / "polyMesh" / "points"
@@ -5150,9 +5167,55 @@ class MainWindow(QMainWindow):
         self._on_run_meshing()
         return True
 
+    def _maybe_auto_direct_bl(self, msg: str) -> bool:
+        """W18 direct leg: after the mesher chain is exhausted, rebuild
+        the BL directly on the last validated tet mesh (no dual).
+
+        Requires BL enabled in the panel (no silent BL) and runs once.
+        Returns True when the fallback restart was launched.
+        """
+        from polyfoammesh.core.tet_source import auto_direct_bl_next
+
+        bl_on = bool(self._params.get_bl_params())
+        target = auto_direct_bl_next(
+            bool(getattr(self, "_auto_run_active", False)),
+            self._auto_engine_remaining(),
+            bool(getattr(self, "_auto_direct_done", False)),
+            bl_on,
+            getattr(self, "_auto_last_tet_ok", None),
+        )
+        if target is None:
+            if getattr(self, "_auto_run_active", False) and not self._auto_engine_remaining():
+                if not bl_on:
+                    why = "BL disabled in the panel"
+                elif not getattr(self, "_auto_last_tet_ok", None):
+                    why = "no validated tet mesh recorded"
+                else:
+                    why = "direct leg already attempted"
+                self._log.append_log(
+                    f"{Tag.CASE} Polymesh auto: chain exhausted, "
+                    f"direct-BL leg skipped ({why})."
+                )
+            return False
+        self._auto_direct_bl = True
+        self._auto_direct_done = True
+        self._auto_forced_key = target
+        self._auto_restarting = True
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto: mesher chain exhausted ({msg}) -> "
+            f"direct BL on {target} tets (no dual, BL from panel settings)."
+        )
+        self._log_substitution(
+            f"Polymesh auto direct-BL fallback on {target} tets."
+        )
+        self._on_run_meshing()
+        return True
+
     def _on_gmsh_polydual_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
         if self._maybe_auto_dual_fallback(msg):
+            return
+        if self._maybe_auto_direct_bl(msg):
             return
         self._log.append_log(f"[poly] FAILED: {msg}")
         QMessageBox.warning(
@@ -5175,6 +5238,8 @@ class MainWindow(QMainWindow):
         if not result.success:
             err = "; ".join(result.errors) if result.errors else "unknown error"
             if self._maybe_auto_dual_fallback(err):
+                return
+            if self._maybe_auto_direct_bl(err):
                 return
             self._log.append_log(f"[poly] FAILED: {err}")
             QMessageBox.warning(

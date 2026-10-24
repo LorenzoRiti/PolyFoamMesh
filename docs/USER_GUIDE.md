@@ -89,13 +89,16 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   derived automatically from the Detail slider - there is no second knob.
 - **Polymesh (auto) and cfMesh CTAs**: the main screen shows two visible
   mesher buttons. **Polymesh** runs the geometry auto: it measures the
-  input (watertight, suffix, patches, size, refinement zones, pytetwild
-  availability) and picks the tet engine from a measured policy
-  (GMSH-first with fTetWild fallback, keep-best across the chain) —
-  there is no manual engine selector anymore. If the first engine fails
-  or its checkMesh is unaccepted, the next one runs automatically and
-  every attempt, reason and fallback is logged (`Mesher:`,
-  `Polymesh auto:`, BL provenance). **Cartesian cfMesh** is the separate
+  input (watertight, STEP solids, suffix, patches, size, refinement
+  zones, pytetwild availability) and picks the tet engine from a
+  measured policy (GMSH-first with fTetWild fallback, keep-best across
+  the chain) — there is no manual engine selector anymore. If the first
+  engine fails or its checkMesh is unaccepted, the next one runs
+  automatically; when the mesher chain is exhausted, auto retries once
+  with a direct boundary layer on the last validated tet mesh
+  (requires BL enabled in the panel, no silent BL). Every attempt,
+  reason and fallback is logged (`Mesher:`, `Polymesh auto:`, BL
+  provenance). **Cartesian cfMesh** is the separate
   explicit hex path (requires WSL2+OpenFOAM on Windows, native OpenFOAM
   on Linux). Legacy engines (`Legacy tet -> poly`, `Auto`,
   `fTetWild`, `BL on tets`, `FEM tetra`) stay in code, CLI and config —

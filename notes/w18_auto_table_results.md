@@ -39,3 +39,20 @@ Note misurate:
 - dirty_cad medium: fTet chiude il buco (envelope) → dual valido Mesh OK;
   a lr=0.1 (wall03) il buco resta e il dual rifiuta (corretto). Dettaglio
  -dipendente, dichiarato.
+
+## Verdetto W18 follow-up (2026-10-24 sera) - PARTIAL confermato
+
+Direct-BL 5L (tet condizionati run_volume, stesse impostazioni):
+- R1: Mesh OK, 0 pyr, 0 fail, coverage 100% (353K prismi) - CRITERIO RAGGIUNTO
+- venturi: Mesh OK, 0 pyr, 0 fail, coverage 76% (thin features scoperte)
+- pipe/thin_gap: NON-BL (5/60 edge non-manifold: topologia, non altezza)
+Split dual+BL su R1: dual 0 difetti (Mesh OK) ma BL Failed 3 (skew 165) -
+il dual pulito non basta quando i prismi collassano su thin features.
+Taper uniforme implementato+testato (keep-best, provenance, no-op invariato,
+fallback dual/checkMesh esteso alla gamba direct con skip del dual).
+Rescue reale non misurato: i fallimenti totali osservati sono topologici o
+difettivi; il per-face taper resta mappato ma non implementato (nessun caso
+lo richiede).
+Auto resta SENZA gamba direct (implementata, testata a livello decisionale,
+E2E GUI da eseguire): ammissione = decisione utente con questi numeri.
+M3+M4 resta PARTIAL.

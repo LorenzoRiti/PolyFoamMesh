@@ -430,6 +430,27 @@ def _has_volume_elements(msh: Path, _scan_lines: int = 200_000) -> bool:
         return True
 
 
+def auto_direct_bl_next(
+    auto_active: bool,
+    remaining: list,
+    direct_done: bool,
+    bl_enabled: bool,
+    last_tet_ok: str | None,
+) -> str | None:
+    """Direct-BL fallback leg for Polymesh auto (pure decision, tested).
+
+    When the mesher chain is exhausted and a tet mesh validated earlier,
+    restart with that tet engine and build the BL directly (no dual).
+    Requires BL enabled in the panel (no silent BL).  Returns the tet
+    engine key to re-run, or None (stay on the standard error path).
+    """
+    if not auto_active:
+        return None
+    if remaining or direct_done or not bl_enabled or not last_tet_ok:
+        return None
+    return last_tet_ok
+
+
 def _fingerprint(settings: TetSourceSettings, geometry: Path) -> str:
     payload = {
         "settings": settings.to_mapping(),

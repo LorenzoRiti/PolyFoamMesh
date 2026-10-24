@@ -143,6 +143,17 @@ def test_step_with_solids_uses_default_chain():
     assert "ftetwild_poly" in plan.chain()
 
 
+def test_auto_direct_bl_next():
+    from polyfoammesh.core.tet_source import auto_direct_bl_next
+
+    assert auto_direct_bl_next(False, [], False, True, "gmsh_direct_poly") is None
+    assert auto_direct_bl_next(True, ["ftetwild_poly"], False, True, "gmsh_direct_poly") is None
+    assert auto_direct_bl_next(True, [], True, True, "gmsh_direct_poly") is None
+    assert auto_direct_bl_next(True, [], False, False, "gmsh_direct_poly") is None
+    assert auto_direct_bl_next(True, [], False, True, None) is None
+    assert auto_direct_bl_next(True, [], False, True, "ftetwild_poly") == "ftetwild_poly"
+
+
 @pytest.mark.slow
 def test_preflight_counts_step_solids():
     """Prova reale sui due STEP noti (skip dove assenti: path macchina)."""

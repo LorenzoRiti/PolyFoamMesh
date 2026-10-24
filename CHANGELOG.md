@@ -38,6 +38,13 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   Dichiarato, non nascosto.)
 - **GUI coerente**: log auto con solidi, log taper dedicato, nessun
   nuovo selettore manuale.
+- **Gamba direct-BL in auto (implementata, E2E GUI da eseguire)**:
+  a catena mesher esaurita, un solo retry con BL diretto sul tet
+  dell'ultimo engine valido (richiede BL attivo nel pannello; skip
+  del dual via flag; keep-best: i tentativi precedenti erano tutti
+  invalidi). Decisione unit-testata (`auto_direct_bl_next`); log
+  completo inclusi i casi di skip (BL spento, nessun tet valido,
+  gamba già tentata).
 - Gate: suite fast in corso; ruff green.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL
