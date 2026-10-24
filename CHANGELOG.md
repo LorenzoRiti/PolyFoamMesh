@@ -38,7 +38,16 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   Dichiarato, non nascosto.)
 - **GUI coerente**: log auto con solidi, log taper dedicato, nessun
   nuovo selettore manuale.
-- **Gamba direct-BL in auto (implementata, E2E GUI da eseguire)**:
+- **Gamba direct-BL in auto (AMMESSA di default, con E2E)**:
+  a catena mesher esaurita, un solo retry con BL diretto sul tet
+  dell'ultimo engine valido (richiede BL attivo nel pannello; skip
+  del dual via flag; keep-best: i tentativi precedenti erano tutti
+  invalidi). Decisione unit-testata; log completo inclusi i casi
+  di skip. E2E headless tools/auto_chain_e2e.py (stessa catena
+  della GUI): venturi AUTO VALID (gmsh dual Failed 63.1/4.2 ->
+  ftet dual Failed 46.9/2.5 -> direct Mesh OK 73.0/3.2, 316 s);
+  cylinder AUTO VALID al primary (Mesh OK 41.9/1.4 in 19 s,
+  keep-best: la catena si ferma al primo valido)**:
   a catena mesher esaurita, un solo retry con BL diretto sul tet
   dell'ultimo engine valido (richiede BL attivo nel pannello; skip
   del dual via flag; keep-best: i tentativi precedenti erano tutti

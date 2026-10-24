@@ -1721,6 +1721,15 @@ Split dual+BL su R1: dual 0 difetti ma BL Failed 3 (skew 165) - il dual
 pulito non basta quando i prismi collassano su thin features.
 Taper implementato+testato (keep-best, provenance, no-op invariato).
 R1 box: RAGGIUNTO via direct esplicito (0 pyr / 0 skew-def / 0 Failed /
-100% cov). Auto resta senza gamba direct (implementata, non promossa
-in attesa di decisione utente). Prossimo: E2E GUI della gamba direct
-+ eventuale per-face taper solo se un caso lo richiede.
+100% cov).
+
+## 2026-10-24 (sera) - AMMISSIONE gamba direct in auto (default)
+Decisione utente: ammessa. Implementata come ultimo anello della
+catena (mesher esauriti -> un retry direct-BL sul tet dell'ultimo
+engine valido, solo con BL attivo, keep-best, log completo).
+E2E headless tools/auto_chain_e2e.py (stessa catena della GUI):
+venturi AUTO VALID (gmsh dual Failed 63.1/4.2 -> ftet dual Failed
+46.9/2.5 -> direct Mesh OK 73.0/3.2); cylinder AUTO VALID al primary
+(Mesh OK, keep-best verificato: catena ferma al primo valido).
+Taper uniforme incluso ma non decisivo (i fallimenti totali osservati
+restano topologici/difettivi); per-face mappato, non implementato.
