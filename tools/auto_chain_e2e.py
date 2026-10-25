@@ -3,9 +3,11 @@
 
 Resolves the W18 policy, then walks the chain exactly like MainWindow:
 tet failure -> next engine; dual invalid -> next engine;
-unaccepted checkMesh FAIL -> next engine; chain exhausted ->
-one direct-BL leg on the last validated tet mesh (BL always enabled
-here, mirroring a user who turned BL on). First valid wins (keep-best).
+unaccepted checkMesh FAIL -> next engine; weak-valid (Mesh OK yet dual
+residual defects) -> one challenge attempt with the next engine,
+keep-best; chain exhausted -> one direct-BL leg on the last validated
+tet mesh (BL always enabled here, mirroring a user who turned BL on).
+First strong-valid wins; a weak-valid winner is compared, never blind.
 
 Usage: python tools/auto_chain_e2e.py venturi [--workdir DIR]
 """
@@ -63,10 +65,19 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
                         "stage": "checkmesh",
                         "detail": f"{c.get('verdict')} NO={c.get('nomax')} skew={c.get('skewmax')}",
                         "case": str(case_dir), "tet_engine": engine}
-            print(f"[auto] {tag}: VALID ({c.get('verdict')})", flush=True)
+            from polyfoammesh.core.tet_source import is_weak_auto_result
+            score = {"passed": True,
+                     "failed_checks": c.get("failed_checks") or 0,
+                     "residual": int(d.get("defects") or 0),
+                     "skew": c.get("skewmax"),
+                     "non_ortho": c.get("nomax")}
+            weak = is_weak_auto_result(True, score["residual"])
+            print(f"[auto] {tag}: VALID ({c.get('verdict')}, "
+                  f"dual defects={score['residual']}"
+                  f"{', WEAK' if weak else ''})", flush=True)
             return {"engine": engine, "direct": direct, "ok": True,
                     "stage": "checkmesh", "detail": c.get("verdict"),
-                    "case": str(case_dir)}
+                    "case": str(case_dir), "weak": weak, "score": score}
         case_dir = wd_tag / "case_direct"
         if case_dir.exists():
             shutil.rmtree(case_dir)
@@ -114,6 +125,27 @@ def main() -> int:
         out["attempts"].append(result)
         if result.get("tet_engine"):
             last_tet_engine = result["tet_engine"]
+        if result["ok"] and result.get("weak") and i + 1 < len(chain):
+            # Weak-valid primary: keep it as the candidate and challenge
+            # with the next engine (keep-best, GUI compare-leg mirror).
+            from polyfoammesh.core.tet_source import compare_auto_results
+            nxt = chain[i + 1]
+            chal = attempt(nxt, f"a{i + 1}_{nxt}", wd, geom)
+            out["attempts"].append(chal)
+            if chal.get("tet_engine"):
+                last_tet_engine = chal["tet_engine"]
+            if chal["ok"]:
+                winner = compare_auto_results(result["score"], chal["score"])
+                result = chal if winner == "challenger" else result
+                print(f"[auto] compare: incumbent {result['engine']} kept"
+                      if winner == "candidate"
+                      else f"[auto] compare: challenger {nxt} wins",
+                      flush=True)
+            else:
+                print(f"[auto] compare: challenger {nxt} failed, "
+                      f"keeping {engine}", flush=True)
+            out["winner"] = result
+            break
         if result["ok"]:
             out["winner"] = result
             break

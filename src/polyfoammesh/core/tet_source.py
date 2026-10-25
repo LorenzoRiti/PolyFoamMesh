@@ -489,6 +489,80 @@ def auto_direct_bl_next(
     return last_tet_ok
 
 
+def is_weak_auto_result(passed: bool, residual_defects: int | None) -> bool:
+    """Weak-but-valid: checkMesh passed yet the dual carried residual
+    in-process defects (pyramid/non-ortho/skew counts from
+    ``DualPolyResult``).  A clean dual has zero; anything above is
+    measured evidence the tet stage was poor and the other engine
+    deserves one attempt (keep-best, never a regression).  A failed
+    checkMesh is NOT weak — it takes the existing fallback path.
+    """
+    return bool(passed) and int(residual_defects or 0) > 0
+
+
+def auto_compare_next(
+    auto_active: bool,
+    remaining: list,
+    compare_done: bool,
+    weak: bool,
+) -> str | None:
+    """Compare-leg decision for Polymesh auto (pure, tested).
+
+    When the primary engine completed with a weak-but-valid mesh and an
+    unused engine remains, restart once with that engine; the winner is
+    picked by :func:`compare_auto_results`.  Runs at most once per run.
+    """
+    if not auto_active:
+        return None
+    if compare_done or not weak or not remaining:
+        return None
+    return remaining[0]
+
+
+def auto_compare_score(
+    passed: bool,
+    failed_checks: int | None,
+    residual_defects: int | None,
+    max_skewness: float | None,
+    max_non_ortho: float | None,
+) -> tuple:
+    """Total order for keep-best (higher wins).
+
+    checkMesh verdict first, then failed checks, then dual residual
+    defects, then skewness, then non-orthogonality.  Unparsed metrics
+    (None) sort as worst — an unknown quality never beats a measured one.
+    """
+    big = float("inf")
+    return (
+        1 if passed else 0,
+        -(int(failed_checks) if failed_checks is not None else 10**9),
+        -(int(residual_defects) if residual_defects is not None else 10**9),
+        -float(max_skewness) if max_skewness is not None else -big,
+        -float(max_non_ortho) if max_non_ortho is not None else -big,
+    )
+
+
+def compare_auto_results(candidate: dict, challenger: dict) -> str:
+    """Pick the better auto mesh: ``"candidate"`` or ``"challenger"``.
+
+    Both are score dicts with keys ``passed``, ``failed_checks``,
+    ``residual``, ``skew``, ``non_ortho``.  Ties keep the candidate
+    (the incumbent — no churn without strict improvement).
+    """
+    def _score(r: dict) -> tuple:
+        return auto_compare_score(
+            bool(r.get("passed")),
+            r.get("failed_checks"),
+            r.get("residual"),
+            r.get("skew"),
+            r.get("non_ortho"),
+        )
+
+    if _score(challenger) > _score(candidate):
+        return "challenger"
+    return "candidate"
+
+
 def _fingerprint(settings: TetSourceSettings, geometry: Path) -> str:
     payload = {
         "settings": settings.to_mapping(),

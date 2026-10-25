@@ -94,7 +94,11 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   measured policy (GMSH-first with fTetWild fallback, keep-best across
   the chain) — there is no manual engine selector anymore. If the first
   engine fails or its checkMesh is unaccepted, the next one runs
-  automatically; when the mesher chain is exhausted, auto retries once
+  automatically; a valid-but-weak primary (Mesh OK yet dual residual
+  defects, e.g. leftover face pyramids) opens one challenge attempt
+  with the other engine and the better mesh wins (ties keep the
+  incumbent; a failed challenger restores the incumbent). When the
+  mesher chain is exhausted, auto retries once
   with a direct boundary layer on the last validated tet mesh
   (requires BL enabled in the panel, no silent BL). Every attempt,
   reason and fallback is logged (`Mesher:`, `Polymesh auto:`, BL

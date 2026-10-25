@@ -2114,6 +2114,8 @@ class MainWindow(QMainWindow):
         self._auto_direct_applied = False
         self._auto_forced_key = None
         self._auto_last_tet_ok = None
+        self._auto_compare_done = False
+        self._auto_compare_candidate = None
 
     def _resolve_auto_mesher(self) -> str:
         """"Polymesh (auto)" mode: pick the tet engine from measured
@@ -2251,6 +2253,10 @@ class MainWindow(QMainWindow):
                 self._auto_direct_done = False
                 self._auto_direct_applied = False
                 self._auto_last_tet_ok = None
+                self._auto_compare_done = False
+                self._auto_compare_candidate = None
+                self._last_dual_residual = 0
+                self._last_dual_breakdown = {}
             else:
                 self._auto_restarting = False
             mesher_type = self._resolve_auto_mesher()
@@ -3706,6 +3712,10 @@ class MainWindow(QMainWindow):
             self._start_gmsh_volume_worker(ctx["step_path"], my_id)
             return
         # W18: same pattern for Polymesh auto (multi-fallback chain).
+        # Compare-leg first: a pending weak-valid candidate beats a tet
+        # failure — restore it instead of burning the next chain engine.
+        if self._restore_auto_compare_candidate("tet stage failed"):
+            return
         _remaining = self._auto_engine_remaining()
         if _remaining and getattr(self, "_current_mesher_type", "") in self._auto_engine_chain():
             _target = _remaining[0]
@@ -4367,6 +4377,8 @@ class MainWindow(QMainWindow):
         self._auto_direct_applied = False
         self._auto_forced_key = None
         self._auto_last_tet_ok = None
+        self._auto_compare_done = False
+        self._auto_compare_candidate = None
 
     @Slot(int, str, int)
     def _on_meshing_finished(self, exit_code: int, output: str, attempts: int = 1):
@@ -4589,6 +4601,12 @@ class MainWindow(QMainWindow):
         fallback restart was launched; the caller must return immediately
         (the new run owns the workflow from there).
         """
+        # Compare-leg first: a pending weak-valid candidate beats a FAIL —
+        # restore it instead of burning the next chain engine.
+        if self._restore_auto_compare_candidate(
+            f"checkMesh fallback pre-empted ({getattr(report, 'status', 'FAIL')})"
+        ):
+            return True
         if not getattr(self, "_auto_run_active", False):
             return False
         remaining = self._auto_engine_remaining()
@@ -4733,6 +4751,13 @@ class MainWindow(QMainWindow):
                 logger.info("Poly conversion already done, skipping.")
                 self._poly_was_converted = True
 
+            # W18 compare-leg: challenger verdict first (keep-best), then a
+            # weak-valid mesh may open one challenge attempt.  Either may
+            # consume this callback (caller must not fall through).
+            if self._maybe_auto_compare_resolve(report, payload):
+                return
+            if self._maybe_auto_compare(report, payload):
+                return
             self._launch_decomposepar()
             self._viewer.show_mesh(self._case_dir)
         else:
@@ -4991,6 +5016,11 @@ class MainWindow(QMainWindow):
 
     def _launch_bl_on_tets(self) -> None:
         """W13 opt-in: build the prism BL on the tet boundary, no dual."""
+        # No dual stage runs here, so there are no dual residual defects by
+        # construction (keeps a stale primary-dual stash from being
+        # misattributed to this attempt in a compare resolution).
+        self._last_dual_residual = 0
+        self._last_dual_breakdown = {}
         if not self._case_dir:
             return
         poly_points = self._case_dir / "constant" / "polyMesh" / "points"
@@ -5191,6 +5221,10 @@ class MainWindow(QMainWindow):
         """W18: restart an auto run with the next chain engine when the
         dual converter fails.  Returns True when a fallback restart was
         launched (caller must return immediately)."""
+        # Compare-leg first: a pending weak-valid candidate beats a dual
+        # failure — restore it instead of burning the next chain engine.
+        if self._restore_auto_compare_candidate(f"dual fallback pre-empted ({msg})"):
+            return True
         if not getattr(self, "_auto_run_active", False):
             return False
         remaining = self._auto_engine_remaining()
@@ -5217,6 +5251,10 @@ class MainWindow(QMainWindow):
         Requires BL enabled in the panel (no silent BL) and runs once.
         Returns True when the fallback restart was launched.
         """
+        # Compare-leg first: a pending weak-valid candidate beats any
+        # failure — restore it instead of opening the direct leg.
+        if self._restore_auto_compare_candidate(f"direct-BL pre-empted ({msg})"):
+            return True
         from polyfoammesh.core.tet_source import auto_direct_bl_next
 
         bl_on = bool(self._params.get_bl_params())
@@ -5253,6 +5291,145 @@ class MainWindow(QMainWindow):
         )
         self._on_run_meshing()
         return True
+
+    def _auto_compare_score_now(self, report) -> dict:
+        """Score dict for the attempt that just finished checkMesh."""
+        try:
+            failed = int(getattr(report, "failed_checks", 0) or 0)
+        except (TypeError, ValueError):
+            failed = 0
+        return {
+            "passed": bool(getattr(report, "passed", False)),
+            "failed_checks": failed,
+            "residual": int(getattr(self, "_last_dual_residual", 0) or 0),
+            "skew": getattr(report, "max_skewness", None),
+            "non_ortho": getattr(report, "max_non_ortho", None),
+        }
+
+    def _maybe_auto_compare(self, report, payload) -> bool:
+        """W18 compare-leg (option A): a weak-but-valid primary gets one
+        challenger.  Fires once per run, only when the mesh is final
+        (poly converted), checkMesh passed, the dual carried residual
+        defects, and an unused engine remains.  Snapshots the winner so
+        far and restarts with the other engine; keep-best is decided when
+        the challenger finishes.  Returns True when a restart launched.
+        """
+        from polyfoammesh.core.tet_source import auto_compare_next, is_weak_auto_result
+
+        if not getattr(self, "_auto_run_active", False):
+            return False
+        if not getattr(self, "_poly_was_converted", False):
+            return False
+        weak = is_weak_auto_result(
+            bool(getattr(report, "passed", False)),
+            int(getattr(self, "_last_dual_residual", 0) or 0),
+        )
+        target = auto_compare_next(
+            True,
+            self._auto_engine_remaining(),
+            bool(getattr(self, "_auto_compare_done", False)),
+            weak,
+        )
+        if target is None:
+            if (
+                weak
+                and not self._auto_engine_remaining()
+                and not getattr(self, "_auto_compare_done", False)
+            ):
+                self._log.append_log(
+                    f"{Tag.CASE} Polymesh auto compare: weak-valid mesh "
+                    f"({int(getattr(self, '_last_dual_residual', 0) or 0)} dual "
+                    "residual defects) but no unused engine left — keeping it "
+                    "(declared, single-engine chain)."
+                )
+            return False
+        self._auto_compare_candidate = {
+            "engine": getattr(self, "_current_mesher_type", ""),
+            "case_dir": str(getattr(self, "_case_dir", "")),
+            "score": self._auto_compare_score_now(report),
+            "residual": int(getattr(self, "_last_dual_residual", 0) or 0),
+            "breakdown": dict(getattr(self, "_last_dual_breakdown", {}) or {}),
+            "poly_converted": True,
+            "bl_done": bool(getattr(self, "_bl_on_tets_done", False)),
+            "direct_applied": bool(getattr(self, "_auto_direct_applied", False)),
+            "cells_before": int(getattr(self, "_cells_before_poly", 0) or 0),
+            "converter": str(getattr(self, "_poly_converter_name", "")),
+        }
+        self._auto_compare_done = True
+        self._auto_engine_used.append(target)
+        self._auto_forced_key = target
+        self._auto_restarting = True
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto compare: primary valid but weak "
+            f"({self._auto_compare_candidate['residual']} dual residual defects) "
+            f"-> challenging with {target} (keep-best, one attempt)."
+        )
+        self._log_substitution(
+            f"Polymesh auto compare challenger -> {target}."
+        )
+        self._on_run_meshing()
+        return True
+
+    def _restore_auto_compare_candidate(self, reason: str) -> bool:
+        """Restore a pending weak-valid candidate after the challenger
+        failed anywhere (tet/dual/checkMesh/convert): a valid mesh beats
+        no mesh.  Re-runs checkMesh on the restored case so the shown
+        verdict always matches the shown mesh.  One-shot per run."""
+        cand = getattr(self, "_auto_compare_candidate", None)
+        if not getattr(self, "_auto_run_active", False) or not cand:
+            return False
+        self._auto_compare_candidate = None
+        from pathlib import Path as _Path
+
+        self._case_dir = _Path(cand["case_dir"])
+        self._current_mesher_type = cand["engine"]
+        self._poly_was_converted = bool(cand.get("poly_converted", True))
+        self._bl_on_tets_done = bool(cand.get("bl_done", False))
+        self._auto_direct_applied = bool(cand.get("direct_applied", False))
+        self._cells_before_poly = int(cand.get("cells_before", 0) or 0)
+        self._poly_converter_name = cand.get("converter", "")
+        self._auto_forced_key = cand["engine"]
+        self._last_dual_residual = int(cand.get("residual", 0) or 0)
+        try:
+            self._last_dual_breakdown = dict(cand.get("breakdown", {}) or {})
+        except (TypeError, ValueError):
+            self._last_dual_breakdown = {}
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto compare: challenger failed, keeping "
+            f"{cand['engine']} ({reason}); re-running checkMesh on it."
+        )
+        self._viewer.show_mesh(self._case_dir)
+        self._launch_checkmesh()
+        return True
+
+    def _maybe_auto_compare_resolve(self, report, payload) -> bool:
+        """Decide keep-best when a challenger completed checkMesh PASS.
+
+        Only the PASS path reaches here (failures restore the candidate
+        via the helpers above).  A strictly better challenger dethrones
+        the candidate; ties keep the incumbent.  Returns True when the
+        candidate was restored (caller must return immediately).
+        """
+        from polyfoammesh.core.tet_source import compare_auto_results
+
+        cand = getattr(self, "_auto_compare_candidate", None)
+        if not getattr(self, "_auto_run_active", False) or not cand:
+            return False
+        challenger = self._auto_compare_score_now(report)
+        winner = compare_auto_results(cand["score"], challenger)
+        if winner == "challenger":
+            self._auto_compare_candidate = None
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto compare: challenger "
+                f"{getattr(self, '_current_mesher_type', '')} wins over "
+                f"{cand['engine']} (keep-best, numbers in log)."
+            )
+            return False
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto compare: incumbent {cand['engine']} "
+            "kept (challenger not strictly better)."
+        )
+        return self._restore_auto_compare_candidate("challenger not better")
 
     def _on_gmsh_polydual_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
@@ -5320,6 +5497,15 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Polyhedral mesh ready — running quality check...")
         self._viewer.show_mesh(self._case_dir)
         self._poly_was_converted = True
+        # W18 compare-leg: stash this attempt's dual residual defects so the
+        # checkMesh verdict can tell weak-valid (passed yet defective) from
+        # strong-valid.  Overwritten by every dual run, including the
+        # challenger's — the candidate's score is snapshotted separately.
+        self._last_dual_residual = int(getattr(result, "residual_defects", 0) or 0)
+        try:
+            self._last_dual_breakdown = dict(getattr(result, "defect_breakdown", {}) or {})
+        except (TypeError, ValueError):
+            self._last_dual_breakdown = {}
         if cells_before > 0 and cells_after > 0:
             pct = round((cells_after / cells_before - 1) * 100, 1)
             self._log.append_log(

@@ -57,6 +57,16 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   invalidi). Decisione unit-testata (`auto_direct_bl_next`); log
   completo inclusi i casi di skip (BL spento, nessun tet valido,
   gamba già tentata).
+- **Compare-leg in auto (opzione A, keep-best)**: un primario valido ma
+  debole (checkMesh PASS con difetti residui del dual >0, es. le 5 pyr
+  di venturi-gmsh) apre UN tentativo con l'altro engine; vince il
+  migliore per (verdetto, failed checks, residui, skew, NO), pari =
+  resta l'incumbent. Se lo sfidante fallisce ovunque, l'incumbent
+  viene ripristinato + ricontrollato (mai mostrato un mesh diverso dal
+  verdetto). Costo limitato: scatta solo su evidenza di difetti, mai
+  sul valido pulito (0 residui → stop). Decisione pura unit-testata
+  (`is_weak_auto_result`, `auto_compare_next`, `compare_auto_results`);
+  mirror E2E aggiornato con la stessa logica.
 - Gate: suite fast in corso; ruff green.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL

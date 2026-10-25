@@ -17,8 +17,11 @@ from polyfoammesh.core.mesher_registry import (  # noqa: E402
 from polyfoammesh.core.tet_source import (  # noqa: E402
     PolymeshEnginePlan,
     TetSourcePreflight,
+    auto_compare_next,
     choose_polymesh_engine,
     choose_tet_source,
+    compare_auto_results,
+    is_weak_auto_result,
     preflight_tet_source,
 )
 
@@ -160,6 +163,44 @@ def test_auto_direct_bl_next():
     assert auto_direct_bl_next(True, [], False, False, "gmsh_direct_poly") is None
     assert auto_direct_bl_next(True, [], False, True, None) is None
     assert auto_direct_bl_next(True, [], False, True, "ftetwild_poly") == "ftetwild_poly"
+
+
+def test_is_weak_auto_result():
+    # Weak = passed AND dual residual defects; a FAIL takes the existing
+    # fallback path and is never "weak".
+    assert is_weak_auto_result(True, 0) is False
+    assert is_weak_auto_result(True, None) is False
+    assert is_weak_auto_result(True, 5) is True
+    assert is_weak_auto_result(False, 5) is False
+    assert is_weak_auto_result(False, 0) is False
+
+
+def test_auto_compare_next():
+    assert auto_compare_next(False, ["ftetwild_poly"], False, True) is None
+    assert auto_compare_next(True, [], False, True) is None
+    assert auto_compare_next(True, ["ftetwild_poly"], True, True) is None
+    assert auto_compare_next(True, ["ftetwild_poly"], False, False) is None
+    assert auto_compare_next(True, ["ftetwild_poly"], False, True) == "ftetwild_poly"
+
+
+def _score(passed=True, failed=0, residual=0, skew=1.0, non_ortho=40.0):
+    return {"passed": passed, "failed_checks": failed, "residual": residual,
+            "skew": skew, "non_ortho": non_ortho}
+
+
+def test_compare_auto_results():
+    # A PASS beats any FAIL, even a weak one.
+    assert compare_auto_results(_score(True, 0, 6), _score(False, 1, 0)) == "candidate"
+    assert compare_auto_results(_score(False, 1, 0), _score(True, 0, 6)) == "challenger"
+    # Fewer failed checks, then fewer dual residuals, then lower skew/NO.
+    assert compare_auto_results(_score(True, 0, 6), _score(True, 0, 0)) == "challenger"
+    assert compare_auto_results(_score(True, 0, 0), _score(True, 0, 6)) == "candidate"
+    assert compare_auto_results(_score(True, 0, 0, skew=3.9), _score(True, 0, 0, skew=1.2)) == "challenger"
+    assert compare_auto_results(_score(True, 0, 0, non_ortho=49.0), _score(True, 0, 0, non_ortho=41.0)) == "challenger"
+    # Ties keep the incumbent (no churn without strict improvement).
+    assert compare_auto_results(_score(True, 0, 0), _score(True, 0, 0)) == "candidate"
+    # Unknown metrics never beat measured ones.
+    assert compare_auto_results(_score(True, 0, 0, skew=2.0), _score(True, 0, 0, skew=None)) == "candidate"
 
 
 def test_tet_engine_env_override(monkeypatch):

@@ -1,9 +1,11 @@
-"""W18 direct leg: wiring guards (repo precedent: source-inspection tests).
+"""W18 direct leg + compare leg: wiring guards (repo precedent:
+source-inspection tests).
 
 Full offscreen auto runs are minutes-long and WSL-dependent, so like
 test_cancel_meshing.py this pins the wiring structurally:
 - the dual launcher branches to direct-BL when the auto flag is set;
 - all three failure points consult the direct leg after the mesher chain;
+- a weak-valid mesh opens one compare challenge, keep-best;
 - the decision itself stays in tested pure code (test_auto_policy).
 """
 from __future__ import annotations
@@ -57,7 +59,9 @@ def test_tet_success_records_last_engine_for_direct_leg():
 
 def test_fresh_run_resets_direct_leg_state():
     src = _src("_on_run_meshing")
-    for token in ("_auto_direct_bl", "_auto_direct_done", "_auto_last_tet_ok"):
+    for token in ("_auto_direct_bl", "_auto_direct_done", "_auto_last_tet_ok",
+                  "_auto_compare_done", "_auto_compare_candidate",
+                  "_last_dual_residual"):
         assert token in src, token
 
 
@@ -95,9 +99,67 @@ def test_cancel_and_reset_clear_auto_state():
         "_auto_direct_bl = False",
         "_auto_forced_key = None",
         "_auto_last_tet_ok = None",
+        "_auto_compare_done = False",
+        "_auto_compare_candidate = None",
         "_bl_on_tets_worker",
     ):
         assert token in cancel, token
     reset = _src("_on_reset")
     assert "_auto_restarting = False" in reset
     assert "_auto_direct_bl = False" in reset
+    assert "_auto_compare_candidate = None" in reset
+
+
+def test_compare_trigger_fires_once_on_weak_valid():
+    src = _src("_maybe_auto_compare")
+    for token in (
+        "is_weak_auto_result",
+        "auto_compare_next",
+        "_auto_compare_done",
+        "_auto_compare_candidate",
+        "_auto_restarting",
+        "_on_run_meshing",
+    ):
+        assert token in src, token
+
+
+def test_dual_success_stashes_residuals_for_compare():
+    src = _src("_on_gmsh_polydual_finished")
+    assert "_last_dual_residual" in src
+    assert "residual_defects" in src
+
+
+def test_pass_path_resolves_then_maybe_challenges():
+    """Keep-best order: the challenger's verdict is decided before any
+    new challenge opens (no challenge-on-challenge, no lost candidate)."""
+    src = _src("_on_checkmesh_finished")
+    assert "_maybe_auto_compare_resolve" in src
+    assert "_maybe_auto_compare" in src
+    assert src.index("_maybe_auto_compare_resolve") < src.index("_launch_decomposepar")
+
+
+def test_failure_paths_restore_candidate_first():
+    """Tet/dual/checkMesh failures and the direct leg all restore a
+    pending weak-valid candidate before anything else: a valid mesh
+    beats no mesh."""
+    for name in (
+        "_maybe_auto_checkmesh_fallback",
+        "_maybe_auto_dual_fallback",
+        "_maybe_auto_direct_bl",
+    ):
+        assert "_restore_auto_compare_candidate" in _src(name), name
+    assert "_restore_auto_compare_candidate" in _src("_on_gmsh_volume_failed")
+
+
+def test_compare_restore_revalidates():
+    """Restoring the incumbent re-runs checkMesh on its case so the shown
+    verdict always matches the shown mesh (no stale-report swap)."""
+    src = _src("_restore_auto_compare_candidate")
+    for token in (
+        "_case_dir",
+        "_current_mesher_type",
+        "_poly_was_converted",
+        "_launch_checkmesh",
+        "_auto_compare_candidate = None",
+    ):
+        assert token in src, token
