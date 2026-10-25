@@ -112,3 +112,22 @@ def test_bl_on_tets_worker_emits_a_result(tmp_path):
     assert results
     assert results[0].success is True
     assert results[0].n_prism_cells > 0
+
+
+def test_bl_on_tets_worker_is_cancellable(tmp_path):
+    """A pre-cancelled worker must fail fast with 'cancelled', not run."""
+    from polyfoammesh.core.openfoam_runner import BlOnTetsWorker
+
+    case = _cube_case(tmp_path / "cube_cancel")
+    worker = BlOnTetsWorker(
+        case, {"nLayers": 5, "firstLayerThickness": 0.01,
+               "thicknessRatio": 1.2},
+        apply_to_all=True,
+    )
+    worker.cancel()
+    results = []
+    worker.finished.connect(results.append)
+    worker.run()
+    assert results
+    assert results[0].success is False
+    assert any("cancel" in str(e).lower() for e in results[0].errors)

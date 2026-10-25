@@ -369,6 +369,20 @@ def choose_polymesh_engine(
         )
     ftet: str | None = "ftetwild_poly" if preflight.fTetWild_available else None
     if preflight.watertight is False:
+        if not preflight.fTetWild_available:
+            # No engine can handle an open input without pytetwild:
+            # GMSH cannot rebuild it, fTetWild is absent.  Fail loudly
+            # with a named cause instead of picking a doomed primary.
+            return PolymeshEnginePlan(
+                primary="gmsh_direct_poly",
+                fallback1=None,
+                fallback2=None,
+                reason=(
+                    "open/non-manifold input but pytetwild is missing: "
+                    "no engine can mesh it (GMSH cannot rebuild open "
+                    "solids); install pytetwild for the fTetWild path"
+                ),
+            )
         return PolymeshEnginePlan(
             primary="ftetwild_poly",
             fallback1="gmsh_direct_poly",

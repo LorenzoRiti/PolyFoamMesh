@@ -107,3 +107,19 @@ def test_taper_max_steps_validated(box_case, tmp_path):
         n_layers=5, first_height=0.01, growth_rate=1.2,
         taper_layers=True, taper_max_steps=-1)
     assert any("taper_max_steps" in e for e in r2.errors)
+
+
+def test_taper_ignored_under_local_termination(box_case, tmp_path):
+    """Taper + local_termination: the local path wins outright and says so
+    (no silent combination)."""
+    kw = dict(n_layers=3, first_height=0.01, growth_rate=1.2,
+              local_termination="decoupled")
+    plain = PolyBoundaryLayerEngine(
+        _fresh_copy(box_case, tmp_path / "plain"), log=lambda m: None).run(**kw)
+    combo = PolyBoundaryLayerEngine(
+        _fresh_copy(box_case, tmp_path / "combo"), log=lambda m: None).run(
+        **kw, taper_layers=True)
+    assert any("taper_layers ignored" in w for w in combo.warnings)
+    assert combo.success == plain.success
+    assert combo.n_prism_cells == plain.n_prism_cells
+    assert "taper_requested_layers" not in (combo.stats or {})

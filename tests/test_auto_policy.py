@@ -143,6 +143,14 @@ def test_step_with_solids_uses_default_chain():
     assert "ftetwild_poly" in plan.chain()
 
 
+def test_open_input_without_pytetwild_falls_back_to_gmsh_with_reason():
+    """Open input + no pytetwild: no engine can mesh it, but the plan must
+    never select the missing one (fail loud upstream, no ImportError)."""
+    plan = choose_polymesh_engine(_pre(suffix=".stl", watertight=False, fTetWild_available=False))
+    assert plan.primary == "gmsh_direct_poly"
+    assert "pytetwild" in plan.reason.lower()
+
+
 def test_auto_direct_bl_next():
     from polyfoammesh.core.tet_source import auto_direct_bl_next
 

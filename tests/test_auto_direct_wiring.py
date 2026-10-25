@@ -59,3 +59,45 @@ def test_fresh_run_resets_direct_leg_state():
     src = _src("_on_run_meshing")
     for token in ("_auto_direct_bl", "_auto_direct_done", "_auto_last_tet_ok"):
         assert token in src, token
+
+
+def test_direct_leg_is_single_shot():
+    """The direct leg must fire exactly once per run: dispatch consumes
+    the flag and records _auto_direct_applied, and the post-BL PASS path
+    skips the dual when it is set (no re-BL loop, no dual-on-BL)."""
+    launch = _src("_launch_gmsh_poly_dual")
+    assert "_auto_direct_applied = True" in launch
+    assert "_auto_direct_bl = False" in launch
+    checkmesh = _src("_on_checkmesh_finished")
+    assert "_auto_direct_applied" in checkmesh
+
+
+def test_stale_dual_failure_cannot_restart():
+    """A late dual failure after Cancel/new run must not resurrect auto."""
+    src = _src("_on_gmsh_polydual_failed")
+    assert "_polydual_run_id" in src
+    assert "!= self._run_id" in src
+
+
+def test_bl_callbacks_are_run_guarded():
+    src = _src("_launch_bl_on_tets")
+    assert "_bl_on_tets_run_id" in src
+    for name in ("_on_bl_on_tets_finished", "_on_bl_on_tets_failed"):
+        s = _src(name)
+        assert "_bl_on_tets_run_id" in s, name
+        assert "!= self._run_id" in s, name
+
+
+def test_cancel_and_reset_clear_auto_state():
+    cancel = _src("_on_cancel_meshing")
+    for token in (
+        "_auto_restarting = False",
+        "_auto_direct_bl = False",
+        "_auto_forced_key = None",
+        "_auto_last_tet_ok = None",
+        "_bl_on_tets_worker",
+    ):
+        assert token in cancel, token
+    reset = _src("_on_reset")
+    assert "_auto_restarting = False" in reset
+    assert "_auto_direct_bl = False" in reset

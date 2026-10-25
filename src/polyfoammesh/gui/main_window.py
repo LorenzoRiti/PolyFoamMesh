@@ -2109,6 +2109,11 @@ class MainWindow(QMainWindow):
         logger.info("State reset (run_id=%d).", self._run_id)
         self._log.append_log(f"{Tag.RESET} State cleared.")
         self._status.showMessage("Ready")
+        self._auto_restarting = False
+        self._auto_direct_bl = False
+        self._auto_direct_applied = False
+        self._auto_forced_key = None
+        self._auto_last_tet_ok = None
 
     def _resolve_auto_mesher(self) -> str:
         """"Polymesh (auto)" mode: pick the tet engine from measured
@@ -2244,6 +2249,7 @@ class MainWindow(QMainWindow):
                 self._auto_engine_used = []
                 self._auto_direct_bl = False
                 self._auto_direct_done = False
+                self._auto_direct_applied = False
                 self._auto_last_tet_ok = None
             else:
                 self._auto_restarting = False
@@ -3306,6 +3312,10 @@ class MainWindow(QMainWindow):
         names = meta.get("names") or []
         # Same continuation GmshVolumeWorker's success callback invokes — no
         # duplicated conversion/setup logic.
+        if getattr(self, "_auto_run_active", False):
+            # Same as a fresh tet success: the direct-BL leg may restart
+            # from this engine.
+            self._auto_last_tet_ok = getattr(self, "_current_mesher_type", None)
         self._continue_gmsh_direct(my_id, dest_msh, names)
 
     def _store_tet_mesh_cache(
@@ -3979,7 +3989,10 @@ class MainWindow(QMainWindow):
             on_finished=on_conv_finished,
             on_failed=on_conv_failed,
             on_cancelled=on_conv_cancelled,
-            heartbeat_timeout_s=360.0,
+            # Must exceed the internal 900 s gmshToFoam deadline: this path
+            # emits no progress heartbeats, so a shorter watchdog would kill
+            # legitimate long conversions and report them as cancellations.
+            heartbeat_timeout_s=960.0,
         )
 
     # -----------------------------------------------------------------------
@@ -4309,6 +4322,7 @@ class MainWindow(QMainWindow):
             "_wsl_check_worker", "_feature_worker", "_polydual_worker",
             "_checkmesh_worker", "_quality_fix_worker", "_decompose_worker",
             "_watertight_worker", "_export_worker", "_samr_worker",
+            "_bl_on_tets_worker",
         ):
             worker = getattr(self, w_attr, None)
             cancel = getattr(worker, "cancel", None)
@@ -4345,6 +4359,14 @@ class MainWindow(QMainWindow):
         self._ribbon_btns["cancel"].setVisible(False)
         self._status.showMessage("Cancelled")
         self._log.append_log(f"{Tag.CANCELLED} Meshing cancelled by user.")
+        # Auto chain state must not leak into the next user run: a cancelled
+        # fallback restart would otherwise skip the reset in _on_run_meshing
+        # and reuse a stale engine/forced key.
+        self._auto_restarting = False
+        self._auto_direct_bl = False
+        self._auto_direct_applied = False
+        self._auto_forced_key = None
+        self._auto_last_tet_ok = None
 
     @Slot(int, str, int)
     def _on_meshing_finished(self, exit_code: int, output: str, attempts: int = 1):
@@ -4694,7 +4716,7 @@ class MainWindow(QMainWindow):
             )
             if poly_conv and not poly_done and not getattr(
                 self, "_poly_fallback_active", False
-            ):
+            ) and not getattr(self, "_auto_direct_applied", False):
                 if is_gmsh_tet:
                     # polyDualMesh has a confirmed structural defect on
                     # complex real geometry, and terminal-face merging only
@@ -5001,6 +5023,7 @@ class MainWindow(QMainWindow):
             apply_to_all=self._params.get_bl_apply_all(),
         )
         self._bl_on_tets_worker = w
+        self._bl_on_tets_run_id = self._run_id
         self._submit_task(
             "bl_on_tets", w,
             on_finished=lambda _n, result: self._on_bl_on_tets_finished(result),
@@ -5013,6 +5036,13 @@ class MainWindow(QMainWindow):
         )
 
     def _on_bl_on_tets_finished(self, result) -> None:
+        bl_run_id = getattr(self, "_bl_on_tets_run_id", self._run_id)
+        if bl_run_id != self._run_id:
+            logger.debug(
+                "Stale bl-on-tets callback ignored (%d != %d).",
+                bl_run_id, self._run_id,
+            )
+            return
         self._bl_on_tets_done = True
         if not getattr(result, "success", False):
             self._log.append_log(
@@ -5051,6 +5081,13 @@ class MainWindow(QMainWindow):
         self._launch_checkmesh()
 
     def _on_bl_on_tets_failed(self, msg: str) -> None:
+        bl_run_id = getattr(self, "_bl_on_tets_run_id", self._run_id)
+        if bl_run_id != self._run_id:
+            logger.debug(
+                "Stale bl-on-tets failure ignored (%d != %d).",
+                bl_run_id, self._run_id,
+            )
+            return
         self._bl_on_tets_done = True
         self._log.append_log(f"{Tag.WARN} BL on tets FAILED: {msg}")
         self._log.append_log(
@@ -5065,6 +5102,12 @@ class MainWindow(QMainWindow):
         merge-based terminal-face converter is retired and unreachable)."""
         if getattr(self, "_auto_direct_bl", False):
             # W18 auto direct leg: skip the dual, BL straight on the tets.
+            # The flag is consumed here (one direct attempt per run) and
+            # _auto_direct_applied records it so the post-BL checkMesh PASS
+            # does not fall through to the dual below (that would re-BL an
+            # already layered mesh, or loop forever).
+            self._auto_direct_bl = False
+            self._auto_direct_applied = True
             self._log.append_log(
                 "[poly] Polymesh auto: skipping dual, building the BL "
                 "directly on the tet mesh."
@@ -5213,6 +5256,13 @@ class MainWindow(QMainWindow):
 
     def _on_gmsh_polydual_failed(self, msg: str) -> None:
         self._stop_polydual_heartbeat()
+        poly_run_id = getattr(self, "_polydual_run_id", self._run_id)
+        if poly_run_id != self._run_id:
+            logger.debug(
+                "Stale gmsh-polydual failure ignored (%d != %d).",
+                poly_run_id, self._run_id,
+            )
+            return
         if self._maybe_auto_dual_fallback(msg):
             return
         if self._maybe_auto_direct_bl(msg):

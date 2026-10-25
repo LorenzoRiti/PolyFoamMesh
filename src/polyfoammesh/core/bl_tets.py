@@ -51,6 +51,7 @@ def build_bl_on_tets(
     patch_names: list[str] | None = None,
     apply_to_all: bool = False,
     log: Callable[[str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> BlOnTetsResult:
     """Add a prism BL to a pure-tet case and keep the tet core.
 
@@ -82,7 +83,7 @@ def build_bl_on_tets(
             )
 
     started = time.monotonic()
-    result = PolyBoundaryLayerEngine(case, log=log).run(
+    result = PolyBoundaryLayerEngine(case, log=log, cancel=cancel).run(
         n_layers=int(n_layers),
         first_height=float(first_height),
         growth_rate=float(growth_rate),

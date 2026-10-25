@@ -2237,6 +2237,11 @@ class BlOnTetsWorker(QObject):
         self._bl_params = dict(bl_params or {})
         self._patch_names = list(patch_names or [])
         self._apply_to_all = bool(apply_to_all)
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Cooperative cancel: checked by the BL engine between attempts."""
+        self._cancelled = True
 
     @Slot()
     def run(self) -> None:
@@ -2256,6 +2261,7 @@ class BlOnTetsWorker(QObject):
                 patch_names=self._patch_names or None,
                 apply_to_all=self._apply_to_all,
                 log=self.log_line.emit,
+                cancel=lambda: self._cancelled,
             )
             self.progress.emit("BL on tets", 90.0)
             self.finished.emit(result)

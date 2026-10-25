@@ -1904,6 +1904,11 @@ class PolyBoundaryLayerEngine:
                     "(expected True, 'decoupled' or 'decoupled_vertex')"
                 )
                 return res
+            if taper_layers:
+                res.warnings.append(
+                    "taper_layers ignored: local_termination takes over the "
+                    "fallback loop (layer counts handled per-face there)"
+                )
             out = self._run_local_termination(
                 res, points, faces, owner, neighbour, patches, n_int,
                 sel, drop_bnd, pyr_before, total_vol0,
