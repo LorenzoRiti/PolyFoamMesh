@@ -105,7 +105,9 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   be pinned in Advanced (Tet engine: Automatic / GMSH / fTetWild):
   a pin runs that engine alone with no fallback — a failure is a
   declared error, never a silent swap (fTetWild requires
-  `pip install pytetwild`). Every attempt,
+  `pip install pytetwild`). The pin is read once at run start and the
+  selector locks during runs, so a mid-run change cannot silently miss
+  its run. Every attempt,
   reason and fallback is logged (`Mesher:`, `Polymesh auto:`, BL
   provenance). Debug hatch: `POLYFOAMMESH_TET_ENGINE=gmsh|ftetwild`
   forces the tet engine for one run (logged as override) — useful to

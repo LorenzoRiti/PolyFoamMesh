@@ -2834,6 +2834,25 @@ class ParamsPanel(QWidget):
             btn.setEnabled(enabled)
         self._parallel_check.setEnabled(enabled)
         self._parallel_cores.setEnabled(enabled and self._parallel_check.isChecked())
+        # The Tet engine pin and the BL strategy are read once at run
+        # start: changing them mid-run silently did nothing until the next
+        # run (reported as "ftet pinned yet gmsh running").  Lock them with
+        # the rest during runs; on re-enable the strategy lock reapplies.
+        _pin_combo = getattr(self, "_tet_engine_combo", None)
+        if _pin_combo is not None:
+            _pin_combo.setEnabled(enabled)
+        _strategy = getattr(self, "_bl_strategy", None)
+        if _strategy is not None:
+            _strategy.setEnabled(enabled)
+        if enabled:
+            if hasattr(self, "_apply_bl_strategy_lock"):
+                self._apply_bl_strategy_lock()
+        else:
+            for knob in getattr(self, "_advanced_bl_knobs", lambda: [])():
+                try:
+                    knob.setEnabled(False)
+                except Exception:
+                    pass
 
     def set_meshing_state(self, running: bool):
         if running:

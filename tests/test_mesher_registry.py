@@ -87,6 +87,36 @@ def test_engine_pin_selects_strict_key(panel):
     assert panel.get_tet_engine_override() == "gmsh_direct_poly"
 
 
+def test_engine_pin_contract_panel_to_decision(panel):
+    """The exact user path: pin fTetWild in Advanced -> the override feeds
+    a strict single-engine plan (no fallback to widen silently)."""
+    from polyfoammesh.core.tet_source import pinned_polymesh_plan
+
+    idx = panel._tet_engine_combo.findData("ftetwild_poly")
+    assert idx >= 0
+    panel._tet_engine_combo.setCurrentIndex(idx)
+    override = panel.get_tet_engine_override()
+    assert override == "ftetwild_poly"
+    plan = pinned_polymesh_plan(override, True)
+    assert plan.chain() == ["ftetwild_poly"]
+    assert "gmsh" not in plan.chain()
+
+
+def test_run_start_locks_pin_and_strategy(panel):
+    """Mid-run control changes silently did nothing (reported as 'ftet
+    pinned yet gmsh running'): the pin and strategy lock with the run."""
+    panel.set_all_enabled(False)
+    assert not panel._tet_engine_combo.isEnabled()
+    assert not panel._bl_strategy.isEnabled()
+    panel.set_all_enabled(True)
+    assert panel._tet_engine_combo.isEnabled()
+    assert panel._bl_strategy.isEnabled()
+    # Re-enable reapplies the strategy lock (auto keeps knobs locked).
+    assert panel.get_bl_strategy() == "auto"
+    for knob in panel._advanced_bl_knobs():
+        assert not knob.isEnabled()
+
+
 def test_cfmesh_only_groups_follow_the_cta(panel):
     # Polymesh auto: accelerators that cannot act stay hidden.
     panel._on_mesher_changed("auto")
