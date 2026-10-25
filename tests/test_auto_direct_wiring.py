@@ -163,3 +163,17 @@ def test_compare_restore_revalidates():
         "_auto_compare_candidate = None",
     ):
         assert token in src, token
+
+
+def test_auto_mesher_honours_the_panel_pin():
+    """The Advanced-tab pin wins over the geometry policy (strict chain);
+    an unusable pin aborts loudly instead of silently unpinning."""
+    src = _src("_resolve_auto_mesher")
+    for token in (
+        "get_tet_engine_override",
+        "pinned_polymesh_plan",
+        "invalid_tet_pin",
+    ):
+        assert token in src, token
+    run_src = _src("_on_run_meshing")
+    assert "invalid_tet_pin" in run_src

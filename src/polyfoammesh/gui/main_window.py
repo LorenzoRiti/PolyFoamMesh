@@ -2121,11 +2121,11 @@ class MainWindow(QMainWindow):
         """"Polymesh (auto)" mode: pick the tet engine from measured
         geometry features (W18 table-driven policy, deterministic).
 
-        A forced fallback key (set by the auto chain after a failure)
-        wins over a fresh resolution.  Otherwise resolve from preflight:
-        open/non-manifold -> fTetWild, pytetwild absent -> GMSH,
-        default GMSH-first with fTetWild fallback.  cfMesh is NOT part of
-        auto: it is the separate visible CTA now.
+        Precedence: chain fallback key (a restart after a failure) first,
+        then the user's Advanced-tab pin (strict, no fallback), then the
+        debug env hatch, then the geometry policy.  A manual pin is never
+        silently widened: the chain holds that engine alone.
+        cfMesh is NOT part of auto: it is the separate visible CTA now.
         """
         forced = getattr(self, "_auto_forced_key", None)
         if forced:
@@ -2135,8 +2135,44 @@ class MainWindow(QMainWindow):
             )
             return forced
         from polyfoammesh.core.tet_source import (
-            choose_polymesh_engine, preflight_tet_source,
+            choose_polymesh_engine, pinned_polymesh_plan,
+            preflight_tet_source,
         )
+
+        _pin = None
+        try:
+            _pin = self._params.get_tet_engine_override()
+        except Exception:
+            _pin = None
+        if _pin:
+            try:
+                from polyfoammesh.core.tet_source import (
+                    ftetwild_available as _ftet_available,
+                )
+                _plan = pinned_polymesh_plan(_pin, bool(_ftet_available()))
+            except ValueError as exc:
+                self._log.append_log(f"{Tag.ERROR} {exc}")
+                QMessageBox.critical(
+                    self, "Tet engine pin",
+                    f"{exc}\n\nFix the Advanced > Tet engine selection "
+                    "or install the missing package.",
+                )
+                # Fail the run loudly (no silent unpin): encode the abort
+                # as an unknown mesher so dispatch refuses explicitly.
+                return "invalid_tet_pin"
+            self._auto_engine_plan = _plan
+            plan_chain = _plan.chain()
+            self._log.append_log(
+                f"{Tag.CASE} Polymesh auto: engine pinned to "
+                f"{_plan.primary} by user (strict, no fallback)."
+            )
+            self._log_substitution(
+                f"Polymesh auto engine pin -> {_plan.primary} (strict)."
+            )
+            self._auto_engine_chain_cache = plan_chain
+            self._auto_engine_used = [plan_chain[0]]
+            self._auto_engine_results = []
+            return plan_chain[0]
 
         _geom = getattr(self, "_loaded_step_path", None)
         try:
@@ -2260,6 +2296,16 @@ class MainWindow(QMainWindow):
             else:
                 self._auto_restarting = False
             mesher_type = self._resolve_auto_mesher()
+            if mesher_type == "invalid_tet_pin":
+                # Loud abort: the pin references an engine this machine
+                # cannot run (dialog already shown).  Reset the run state
+                # so Cancel/Generate stay coherent, then stop — never run
+                # a different engine behind the user's back.
+                self._set_run_state(False)
+                self._params.set_all_enabled(True)
+                self._progress.setVisible(False)
+                self._ribbon_btns["cancel"].setVisible(False)
+                return
             self._log.append_log(
                 f"{Tag.CASE} Polymesh auto: using {mesher_type}."
             )

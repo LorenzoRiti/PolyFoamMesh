@@ -2701,11 +2701,17 @@ class DualPolyWorker(QObject):
                     # default for the fTetWild path (R1: 39 -> 0 pyramids,
                     # Failed 3 -> 1).  The historical single attempt stays
                     # available with POLYFOAMMESH_BL_QUALITY_POLICY=0 for one
-                    # milestone/rollback.
+                    # milestone/rollback, or per-run with the panel's
+                    # "Standard only" BL strategy (explicit manual choice).
+                    _standard_only = bool(
+                        getattr(getattr(self, "_bl_config", None),
+                                "standard_only", False)
+                    )
                     policy = (
                         BLAttemptPolicy.for_ftetwild()
                         if self._smooth_free_boundary
                         and bl_quality_policy_enabled()
+                        and not _standard_only
                         else BLAttemptPolicy.compatibility()
                     )
                     self.log_line.emit(

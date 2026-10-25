@@ -85,7 +85,62 @@ def test_advanced_controls_exist_with_ranges_units_and_tooltips(panel):
     assert panel._bl_delete_preset_btn is not None
 
 
+def _select_strategy(panel, mode: str) -> None:
+    idx = panel._bl_strategy.findData(mode)
+    assert idx >= 0
+    panel._bl_strategy.setCurrentIndex(idx)
+
+
+def test_strategy_defaults_to_automatic_with_locked_knobs(panel):
+    assert panel.get_bl_strategy() == "auto"
+    for knob in panel._advanced_bl_knobs():
+        assert not knob.isEnabled()
+    cfg = panel.get_bl_config()
+    assert cfg.standard_only is False
+    assert cfg.local_termination == "off"
+    assert cfg.min_base_edge_fraction == pytest.approx(BLConfig().min_base_edge_fraction)
+
+
+def test_manual_strategy_unlocks_and_honours_knobs(panel):
+    _select_strategy(panel, "manual")
+    for knob in panel._advanced_bl_knobs():
+        if knob is panel._bl_height_retry:
+            continue  # follows the local combo (as before the strategy)
+        assert knob.isEnabled()
+    assert not panel._bl_height_retry.isEnabled()  # local mode is off
+    _select_local_mode(panel, "decoupled_vertex")
+    assert panel._bl_height_retry.isEnabled()
+    panel._bl_min_base_edge.setValue(0.7)
+    cfg = panel.get_bl_config()
+    assert cfg.min_base_edge_fraction == pytest.approx(0.7)
+    assert cfg.provenance["min_base_edge_fraction"] == "user"
+
+
+def test_standard_strategy_forces_local_off_and_sets_flag(panel):
+    _select_strategy(panel, "manual")
+    _select_local_mode(panel, "decoupled_vertex")
+    assert panel.get_bl_config().local_termination == "decoupled_vertex"
+    _select_strategy(panel, "standard")
+    cfg = panel.get_bl_config()
+    assert cfg.local_termination == "off"
+    assert cfg.local_height_retry is False
+    assert cfg.standard_only is True
+    for knob in panel._advanced_bl_knobs():
+        assert not knob.isEnabled()
+
+
+def test_auto_strategy_ignores_locked_knobs(panel):
+    # Even a programmatic write (which disabled widgets still accept)
+    # cannot leak into the config in Automatic: defaults win structurally.
+    assert panel.get_bl_strategy() == "auto"
+    panel._bl_edge_cap_pct.setValue(50.0)
+    cfg = panel.get_bl_config()
+    assert cfg.edge_cap_percentile == pytest.approx(0.0)
+    assert cfg.provenance["edge_cap_percentile"] == "default"
+
+
 def test_advanced_values_reach_engine_kwargs_and_legacy_dict(panel):
+    _select_strategy(panel, "manual")
     panel._bl_checkbox.setChecked(True)
     panel._max_cell.setValue(0.1)
     panel._bl_min_base_edge.setValue(0.7)
@@ -132,6 +187,7 @@ def test_defaults_do_not_change_the_pre_w7_engine_call(panel):
 
 def test_provenance_default_then_user_then_preset(panel):
     assert panel.get_bl_config().provenance["edge_cap_percentile"] == "default"
+    _select_strategy(panel, "manual")
     panel._bl_edge_cap_pct.setValue(12.0)
     assert panel.get_bl_config().provenance["edge_cap_percentile"] == "user"
 
@@ -148,6 +204,7 @@ def test_provenance_default_then_user_then_preset(panel):
 
 
 def test_local_height_retry_is_only_enabled_for_vertex_mode(panel):
+    _select_strategy(panel, "manual")
     panel._bl_height_retry.setChecked(True)  # refused while mode is off
     assert panel._bl_height_retry.isChecked() is False
     _select_local_mode(panel, "decoupled")
@@ -214,6 +271,7 @@ def test_engine_really_accepts_every_exposed_key(panel):
 
     panel._bl_checkbox.setChecked(True)
     panel._max_cell.setValue(0.1)
+    _select_strategy(panel, "manual")
     panel._bl_min_base_edge.setValue(0.5)
     panel._bl_edge_cap_pct.setValue(10.0)
     _select_local_mode(panel, "decoupled_vertex")
@@ -244,6 +302,7 @@ def test_engine_really_accepts_every_exposed_key(panel):
 def test_cli_and_gui_build_the_same_engine_kwargs(panel):
     panel._bl_checkbox.setChecked(True)
     panel._max_cell.setValue(0.1)
+    _select_strategy(panel, "manual")
     panel._bl_n_layers.setValue(8)
     panel._bl_thick.setValue(0.002)  # manual fraction mode
     panel._bl_exp.setValue(1.4)
@@ -295,6 +354,7 @@ def test_restore_starts_from_the_last_used_preset(panel, tmp_path):
     assert panel._bl_preset_combo.currentData() == "Startup"
 
     # A full save/restore cycle keeps the config, not just the checkbox.
+    _select_strategy(panel, "manual")
     panel._bl_edge_cap_pct.setValue(17.0)
     s = _Settings()
     panel.save_params(s)
@@ -316,6 +376,7 @@ def test_worker_receives_gui_config_and_writes_the_run_record(panel, tmp_path):
 
     panel._bl_checkbox.setChecked(True)
     panel._max_cell.setValue(0.1)
+    _select_strategy(panel, "manual")
     panel._bl_min_base_edge.setValue(0.55)
     panel._bl_edge_cap_pct.setValue(35.0)
     _select_local_mode(panel, "decoupled_vertex")

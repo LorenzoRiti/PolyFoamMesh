@@ -203,6 +203,21 @@ def test_compare_auto_results():
     assert compare_auto_results(_score(True, 0, 0, skew=2.0), _score(True, 0, 0, skew=None)) == "candidate"
 
 
+def test_pinned_polymesh_plan_is_strict():
+    from polyfoammesh.core.tet_source import pinned_polymesh_plan
+
+    gmsh = pinned_polymesh_plan("gmsh_direct_poly", True)
+    assert gmsh.chain() == ["gmsh_direct_poly"]
+    assert "pin" in gmsh.reason.lower()
+    ftet = pinned_polymesh_plan("ftetwild_poly", True)
+    assert ftet.chain() == ["ftetwild_poly"]
+    # Pinned fTetWild without pytetwild fails loud, never a silent swap.
+    with pytest.raises(ValueError, match="pytetwild"):
+        pinned_polymesh_plan("ftetwild_poly", False)
+    with pytest.raises(ValueError, match="unknown"):
+        pinned_polymesh_plan("cfmesh", True)
+
+
 def test_tet_engine_env_override(monkeypatch):
     import os
 

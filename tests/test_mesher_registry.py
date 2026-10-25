@@ -71,8 +71,32 @@ def test_ui_has_exactly_two_visible_ctas(panel):
     assert any("cfMesh" in t for t in texts)
 
 
-def test_no_manual_engine_combo(panel):
-    assert not hasattr(panel, "_engine_combo")
+def test_engine_pin_defaults_to_automatic(panel):
+    # The W18 "no manual Engine combo" is superseded by user request: the
+    # mesher CTAs stay automatic-only, but Advanced offers a strict pin
+    # (Automatic default, no silent behaviour change).
+    assert panel.get_tet_engine_override() is None
+    assert panel._tet_engine_combo.currentData() is None
+    assert panel._tet_engine_combo.count() == 3
+
+
+def test_engine_pin_selects_strict_key(panel):
+    idx = panel._tet_engine_combo.findData("gmsh_direct_poly")
+    assert idx >= 0
+    panel._tet_engine_combo.setCurrentIndex(idx)
+    assert panel.get_tet_engine_override() == "gmsh_direct_poly"
+
+
+def test_cfmesh_only_groups_follow_the_cta(panel):
+    # Polymesh auto: accelerators that cannot act stay hidden.
+    panel._on_mesher_changed("auto")
+    assert panel._openmp_group.isHidden()
+    assert panel._parallel_group.isHidden()
+    panel._on_mesher_changed("cfmesh")
+    assert not panel._openmp_group.isHidden()
+    assert not panel._parallel_group.isHidden()
+    panel._on_mesher_changed("bl_on_tets")
+    assert panel._parallel_group.isHidden()
 
 
 def test_polymesh_cta_is_auto_and_default(panel):

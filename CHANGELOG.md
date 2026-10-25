@@ -67,6 +67,13 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   sul valido pulito (0 residui → stop). Decisione pura unit-testata
   (`is_weak_auto_result`, `auto_compare_next`, `compare_auto_results`);
   mirror E2E aggiornato con la stessa logica.
+- **Advanced riepilogata (su richiesta utente)**: pin Tet engine
+  Automatico/GMSH/fTetWild (stretto: niente fallback, errore dichiarato;
+  `pinned_polymesh_plan` fail-loud); strategia BL
+  Automatica/Standard/Manual con default misurati bloccati
+  (`standard_only` nel BLConfig, round-trip via mapping); gruppi
+  OpenMP/MPI visibili solo con CTA cfMesh. Slider dettaglio invariato:
+  resta la manopola di prim'ordine.
 - Gate: suite fast in corso; ruff green.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL

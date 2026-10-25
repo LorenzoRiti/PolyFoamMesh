@@ -92,7 +92,8 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   input (watertight, STEP solids, suffix, patches, size, refinement
   zones, pytetwild availability) and picks the tet engine from a
   measured policy (GMSH-first with fTetWild fallback, keep-best across
-  the chain) — there is no manual engine selector anymore. If the first
+  the chain) — there is no manual engine choice among the Mesher
+  buttons (Advanced offers a strict Tet engine pin instead). If the first
   engine fails or its checkMesh is unaccepted, the next one runs
   automatically; a valid-but-weak primary (Mesh OK yet dual residual
   defects, e.g. leftover face pyramids) opens one challenge attempt
@@ -100,7 +101,11 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   incumbent; a failed challenger restores the incumbent). When the
   mesher chain is exhausted, auto retries once
   with a direct boundary layer on the last validated tet mesh
-  (requires BL enabled in the panel, no silent BL). Every attempt,
+  (requires BL enabled in the panel, no silent BL). The tet engine can
+  be pinned in Advanced (Tet engine: Automatic / GMSH / fTetWild):
+  a pin runs that engine alone with no fallback — a failure is a
+  declared error, never a silent swap (fTetWild requires
+  `pip install pytetwild`). Every attempt,
   reason and fallback is logged (`Mesher:`, `Polymesh auto:`, BL
   provenance). Debug hatch: `POLYFOAMMESH_TET_ENGINE=gmsh|ftetwild`
   forces the tet engine for one run (logged as override) — useful to
@@ -231,6 +236,13 @@ Manual control for when Quick Mesh is not enough:
 - **Boundary Layer** (see the dedicated section below): enable it and the
   layers are derived from the flow conditions automatically; patches,
   growth, robust mode and the mesh/BL consistency hint stay available.
+  The 6 advanced knobs are locked to measured defaults behind the
+  **Strategy: Automatic** selector — switch to Manual only if you know
+  which one you need.
+- **Tet engine (Polymesh auto)**: Automatic (geometry policy), or a
+  strict GMSH / fTetWild pin with no fallback.
+- **OpenMP / MPI rows** appear only when the Cartesian cfMesh CTA is
+  selected (they cannot act on the Polymesh path).
 - **Per-face sizing** and **multi-region** options for CHT/FSI cases.
 
 ## Patches
@@ -337,29 +349,21 @@ default, and the log names the mode. In the **Advanced** tab:
   - press **Auto-compute**: the first layer height, layer count and total
     thickness are derived from the flat-plate correlation and shown with the
     Reynolds number.
-- **Advanced controls (poly path)** on the Advanced tab:
-  - **Min base-edge fraction** (default 0.9): faces with a very small
-    boundary edge are still extruded, with a short stack, so the wall is
-    never left bare. 0 disables the filter.
-  - **Terminate the stack by local budget** (default on): at a narrow wall
-    vertex the engine keeps the full-height layers that fit instead of
-    compressing the whole stack into pancakes. Turning it off restores the
-    historical uniform compression.
-  - **Edge-cap percentile** (default 0): 0 uses the smallest incident wall
-    edge for the inversion guard (one sliver can collapse the local
-    stack). Above 0 uses that percentile of all incident wall edges. This
-    is an experimental knob: it has a measured failure mode on some duals.
-  - **Local termination** (default off): `Off` is the standard stack;
-    `Decoupled` retries a failed stack at smaller height scales;
-    `Per-vertex` excludes defective wall vertices iteratively - the path
-    that closes the layer on concave junctions (valve/groove/slot). The
-    worker still retries `Per-vertex` automatically when the standard path
-    fails; selecting it makes the choice explicit.
-  - **Retry a shorter local height before excluding a vertex**: only
-    available with `Per-vertex` termination. Before dropping a defective
-    vertex, one shorter stack is tried; if it validates, the wall keeps its
-    layer.
-  - **Local max rounds**: maximum exclusion rounds per height scale.
+- **Advanced controls (poly path)** on the Advanced tab start with a
+  **Strategy** selector so you never need the 6 knobs below:
+  - **Automatic (recommended)**: the knobs are locked to the measured
+    defaults; the engine runs the standard stack and, on the fTetWild
+    path, retries automatically with the quality attempt when the
+    standard result adds pyramids.
+  - **Standard only**: same defaults, local termination forced off AND
+    the automatic quality retry disabled for this run (faster,
+    possibly more pyramids — for deliberate A/B).
+  - **Manual**: every knob below is yours, exactly as before
+    (min base-edge fraction, terminate-by-budget, edge-cap percentile,
+    local termination mode, local height retry, local max rounds).
+  - **Edge-cap percentile** (default 0) is experimental: it has a
+    measured failure mode on some duals, leave it at 0 unless you are
+    deliberately testing it.
 - **Presets**: save the whole BL configuration under a name with
   **Save preset…**. The list is versioned, survives a restart, and the
   last-used preset is restored when no newer saved configuration exists.

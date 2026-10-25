@@ -186,6 +186,22 @@ def test_engine_kwargs_are_the_exact_engine_contract():
     }
 
 
+def test_standard_only_defaults_off_and_round_trips():
+    c = BLConfig()
+    assert c.standard_only is False
+    data = c.to_mapping()
+    assert data["standard_only"] is False
+    back, warnings = BLConfig.from_mapping_tolerant(
+        {"standardOnly": True, "n_layers": 3}
+    )
+    assert not warnings
+    assert back.standard_only is True
+    # Legacy/malformed values never break loading: fail-soft to default.
+    soft, warnings = BLConfig.from_mapping_tolerant({"standard_only": "maybe"})
+    assert soft.standard_only is False
+    assert any("standard_only" in w for w in warnings)
+
+
 def test_fraction_mode_resolves_against_max_cell():
     c = BLConfig(first_layer_fraction=0.01)
     assert c.first_height_mode == "fraction"

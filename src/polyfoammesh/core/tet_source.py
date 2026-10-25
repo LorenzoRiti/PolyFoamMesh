@@ -489,6 +489,36 @@ def auto_direct_bl_next(
     return last_tet_ok
 
 
+def pinned_polymesh_plan(engine_key: str, ftetwild_available: bool) -> PolymeshEnginePlan:
+    """Strict manual tet-engine pin for Polymesh auto (user choice).
+
+    The pinned engine is the ONLY attempt (no fallback): on failure the
+    error is declared, never silently swapped.  This is the GUI override
+    behind the Advanced "Tet engine" selector; the automatic policy
+    (``choose_polymesh_engine``) is untouched.
+    """
+    key = str(engine_key or "").strip()
+    if key == "gmsh_direct_poly":
+        return PolymeshEnginePlan(
+            primary="gmsh_direct_poly",
+            fallback1=None,
+            fallback2=None,
+            reason="manual pin: GMSH tet engine only (strict, no fallback)",
+        )
+    if key == "ftetwild_poly":
+        if not ftetwild_available:
+            raise ValueError(
+                "manual pin: fTetWild selected but pytetwild is not installed"
+            )
+        return PolymeshEnginePlan(
+            primary="ftetwild_poly",
+            fallback1=None,
+            fallback2=None,
+            reason="manual pin: fTetWild tet engine only (strict, no fallback)",
+        )
+    raise ValueError(f"unknown tet engine pin {engine_key!r}; expected gmsh|ftetwild")
+
+
 def is_weak_auto_result(passed: bool, residual_defects: int | None) -> bool:
     """Weak-but-valid: checkMesh passed yet the dual carried residual
     in-process defects (pyramid/non-ortho/skew counts from

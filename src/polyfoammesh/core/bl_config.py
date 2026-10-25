@@ -65,12 +65,13 @@ _FIELD_ORDER = (
     "enabled", "n_layers", "first_height", "first_layer_fraction",
     "growth_rate", "apply_to_all", "min_base_edge_fraction",
     "terminate_by_budget", "edge_cap_percentile", "local_termination",
-    "local_height_retry", "local_max_rounds", "velocity", "fluid",
+    "local_height_retry", "local_max_rounds", "standard_only", "velocity", "fluid",
     "wall_treatment",
 )
 
 _BOOL_FIELDS = frozenset({
     "enabled", "apply_to_all", "terminate_by_budget", "local_height_retry",
+    "standard_only",
 })
 
 #: Canonical name -> accepted aliases (legacy project, CLI, JSON).
@@ -89,6 +90,7 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "local_termination": ("localTermination",),
     "local_height_retry": ("localHeightRetry",),
     "local_max_rounds": ("localMaxRounds",),
+    "standard_only": ("standardOnly", "bl_standard_only"),
     "velocity": ("bl_velocity",),
     "fluid": ("bl_fluid",),
     "wall_treatment": ("wallTreatment", "bl_wall_treatment"),
@@ -210,6 +212,10 @@ class BLConfig:
     local_termination: str = "off"
     local_height_retry: bool = False
     local_max_rounds: int = 3
+    #: Standard-only policy: skip the worker's automatic quality retry
+    #: (fTetWild path) and run exactly the standard attempt.  Faster and
+    #: fully manual; the measured quality retry is off for this run.
+    standard_only: bool = False
     velocity: float = 10.0
     fluid: str = "air"
     wall_treatment: str = "wall_functions"
@@ -584,6 +590,7 @@ class BLConfig:
             f"localTermination={self.local_termination} "
             f"heightRetry={self.local_height_retry} "
             f"rounds={self.local_max_rounds} "
+            f"standardOnly={self.standard_only} "
             f"wallTreatment={self.wall_treatment}"
         )
 

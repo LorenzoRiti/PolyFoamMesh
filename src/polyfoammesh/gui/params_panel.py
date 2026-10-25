@@ -691,6 +691,42 @@ class ParamsPanel(QWidget):
         )
         adv_layout.addWidget(self._poly_check)
 
+        # Tet engine pin (Polymesh auto): Automatic = the measured geometry
+        # policy (default); GMSH / fTetWild = strict single-engine runs, no
+        # fallback, per-engine optimizations unchanged.  On failure the
+        # error is declared, never silently swapped.
+        engine_group = QGroupBox("Tet engine (Polymesh auto)")
+        engine_form = QFormLayout(engine_group)
+        self._tet_engine_combo = QComboBox()
+        self._tet_engine_combo.addItem(
+            "Automatic (geometry policy, recommended)", None)
+        self._tet_engine_combo.addItem("GMSH", "gmsh_direct_poly")
+        self._tet_engine_combo.addItem("fTetWild", "ftetwild_poly")
+        try:
+            from polyfoammesh.core.tet_source import (
+                ftetwild_available as _ftet_available,
+            )
+            _ftet_ok = bool(_ftet_available())
+        except Exception:
+            _ftet_ok = False
+        if not _ftet_ok:
+            try:
+                _item = self._tet_engine_combo.model().item(2)
+                if _item is not None:
+                    _item.setEnabled(False)
+            except Exception:
+                pass
+        self._tet_engine_combo.setToolTip(
+            "Automatic: the auto picks the tet engine from the geometry "
+            "(measured policy, GMSH-first with fTetWild fallback). "
+            "GMSH / fTetWild: strict pin — that engine runs alone, no "
+            "fallback; a failure is a declared error. "
+            + ("" if _ftet_ok else "fTetWild is unavailable here "
+               "(pip install pytetwild to enable it).")
+        )
+        engine_form.addRow("Tet engine:", self._tet_engine_combo)
+        adv_layout.addWidget(engine_group)
+
         # Cell sizes are derived from the Mesh Fineness slider (single
         # control). They are shown here read-only so the user always sees
         # what sizes the slider set — never edited by hand.
@@ -821,6 +857,7 @@ class ParamsPanel(QWidget):
         self._on_adaptive_sizing_toggled(self._adaptive_sizing_check.isChecked())
 
         openmp_group = QGroupBox("OpenMP Acceleration")
+        self._openmp_group = openmp_group
         openmp_group_layout = QVBoxLayout(openmp_group)
         openmp_row = QHBoxLayout()
         self._openmp_combo = QComboBox()
@@ -854,6 +891,7 @@ class ParamsPanel(QWidget):
         adv_layout.addWidget(openmp_group)
 
         parallel_group = QGroupBox("Parallel Meshing (MPI)")
+        self._parallel_group = parallel_group
         parallel_group_layout = QVBoxLayout(parallel_group)
 
         parallel_row = QHBoxLayout()
@@ -888,6 +926,11 @@ class ParamsPanel(QWidget):
         parallel_row.addWidget(self._parallel_cores)
         parallel_group_layout.addLayout(parallel_row)
         adv_layout.addWidget(parallel_group)
+        # Initial state: the default CTA is Polymesh auto, so the
+        # cfMesh-only groups start hidden (shown by _on_mesher_changed
+        # when cfMesh is picked, including project restore).
+        self._openmp_group.setVisible(False)
+        self._parallel_group.setVisible(False)
 
         adv_layout.addStretch()
         self._adv_tab = adv_tab
@@ -1059,6 +1102,29 @@ class ParamsPanel(QWidget):
         group = QGroupBox("Boundary Layer — advanced (poly path)")
         form = QFormLayout(group)
 
+        self._bl_strategy = QComboBox()
+        self._bl_strategy.addItem(
+            "Automatic (recommended — measured defaults, worker retries)",
+            "auto",
+        )
+        self._bl_strategy.addItem(
+            "Standard only (no automatic quality retry)", "standard",
+        )
+        self._bl_strategy.addItem(
+            "Manual (all knobs below, your responsibility)", "manual",
+        )
+        self._bl_strategy.setToolTip(
+            "Automatic: the 6 knobs below are locked to the measured "
+            "defaults; the engine runs the standard stack and, on the "
+            "fTetWild path, retries automatically with the quality attempt "
+            "when the standard result adds pyramids. Standard only: same "
+            "defaults, local termination forced off AND the automatic "
+            "quality retry disabled for this run (faster, possibly more "
+            "pyramids — for deliberate A/B). Manual: every knob below is "
+            "yours, exactly as before."
+        )
+        form.addRow("Strategy:", self._bl_strategy)
+
         self._bl_min_base_edge = QDoubleSpinBox()
         self._bl_min_base_edge.setRange(0.0, 2.0)
         self._bl_min_base_edge.setDecimals(2)
@@ -1181,12 +1247,16 @@ class ParamsPanel(QWidget):
             self._on_bl_local_term_changed
         )
         self._bl_height_retry.toggled.connect(self._on_bl_height_retry_toggled)
+        self._bl_strategy.currentIndexChanged.connect(
+            self._on_bl_strategy_changed
+        )
 
         # Establish the initial enabled/disabled state WITHOUT marking the
         # default as user provenance.
         self._bl_applying = True
         try:
             self._on_bl_local_term_changed()
+            self._apply_bl_strategy_lock()
         finally:
             self._bl_applying = False
         self._wire_bl_provenance()
@@ -1449,8 +1519,73 @@ class ParamsPanel(QWidget):
             return
         self._mark_bl_user("local_height_retry")
 
+    def get_bl_strategy(self) -> str:
+        """BL advanced strategy: ``auto`` | ``standard`` | ``manual``."""
+        try:
+            data = self._bl_strategy.currentData()
+        except Exception:
+            return "auto"
+        return str(data) if data in ("auto", "standard", "manual") else "auto"
+
+    def _advanced_bl_knobs(self) -> list:
+        return [
+            self._bl_min_base_edge, self._bl_terminate_budget,
+            self._bl_edge_cap_pct, self._bl_local_term,
+            self._bl_height_retry, self._bl_local_rounds,
+        ]
+
+    def _apply_bl_strategy_lock(self) -> None:
+        """Enable/disable knobs for the current strategy (no value reset,
+        no provenance marks — locking is not a user edit)."""
+        mode = self.get_bl_strategy()
+        for knob in self._advanced_bl_knobs():
+            knob.setEnabled(mode == "manual")
+        if mode == "manual":
+            vertex = self._bl_local_term.currentData() == "decoupled_vertex"
+            self._bl_height_retry.setEnabled(vertex)
+
+    def _on_bl_strategy_changed(self, *_args) -> None:
+        mode = self.get_bl_strategy()
+        if mode in ("auto", "standard"):
+            # Entering a managed strategy resets the advanced knobs to the
+            # measured defaults (predictable entry state, declared); Manual
+            # never resets — it keeps whatever is there.
+            defaults = BLConfig()
+            self._bl_applying = True
+            try:
+                self._bl_min_base_edge.setValue(
+                    float(defaults.min_base_edge_fraction))
+                self._bl_terminate_budget.setChecked(
+                    bool(defaults.terminate_by_budget))
+                self._bl_edge_cap_pct.setValue(
+                    float(defaults.edge_cap_percentile))
+                idx = self._bl_local_term.findData("off")
+                if idx >= 0:
+                    self._bl_local_term.setCurrentIndex(idx)
+                self._bl_height_retry.setChecked(False)
+                self._bl_local_rounds.setValue(
+                    int(defaults.local_max_rounds))
+            finally:
+                self._bl_applying = False
+            self._bl_preset_status.setText(
+                "BL strategy "
+                + ("Automatic: advanced knobs locked to measured defaults."
+                   if mode == "auto" else
+                   "Standard only: local termination off, quality retry "
+                   "disabled for this run.")
+            )
+        else:
+            self._bl_preset_status.setText(
+                "BL strategy Manual: every knob below is yours."
+            )
+        self._apply_bl_strategy_lock()
+        self._mark_bl_user("standard_only")
+
     def get_bl_config(self) -> BLConfig:
         """The one validated BL config the GUI hands to the worker."""
+        from dataclasses import replace as _replace
+
+        strategy = self.get_bl_strategy()
         cfg = BLConfig(
             enabled=self._bl_checkbox.isChecked(),
             n_layers=int(self._bl_n_layers.value()),
@@ -1464,6 +1599,7 @@ class ParamsPanel(QWidget):
             local_termination=str(self._bl_local_term.currentData() or "off"),
             local_height_retry=self._bl_height_retry.isChecked(),
             local_max_rounds=int(self._bl_local_rounds.value()),
+            standard_only=(strategy == "standard"),
             velocity=float(self._bl_velocity.value()),
             fluid=(
                 "water" if "Water" in self._bl_fluid.currentText() else "air"
@@ -1475,6 +1611,33 @@ class ParamsPanel(QWidget):
             ),
             provenance=dict(self._bl_provenance),
         )
+        if strategy in ("auto", "standard"):
+            # Managed strategies ignore the locked knobs: measured defaults
+            # win over whatever the widgets hold (they were reset on entry
+            # anyway — this is the belt that makes it structural).
+            defaults = BLConfig()
+            cfg = _replace(
+                cfg,
+                min_base_edge_fraction=defaults.min_base_edge_fraction,
+                terminate_by_budget=defaults.terminate_by_budget,
+                edge_cap_percentile=defaults.edge_cap_percentile,
+                local_termination="off",
+                local_height_retry=False,
+                local_max_rounds=defaults.local_max_rounds,
+            )
+            prov = dict(cfg.provenance)
+            for name in (
+                "min_base_edge_fraction", "terminate_by_budget",
+                "edge_cap_percentile", "local_termination",
+                "local_height_retry", "local_max_rounds",
+            ):
+                prov[name] = "default"
+            # standard_only reflects the strategy choice itself: default in
+            # auto, user-chosen in standard (marked by the strategy slot).
+            prov["standard_only"] = (
+                "default" if strategy == "auto" else "user"
+            )
+            cfg = _replace(cfg, provenance=prov)
         fixed, warnings = cfg.normalized()
         for warning in warnings:
             logger.warning("BL config: %s", warning)
@@ -1517,6 +1680,30 @@ class ParamsPanel(QWidget):
             )
             self._bl_height_retry.setChecked(bool(cfg.local_height_retry))
             self._bl_local_rounds.setValue(int(cfg.local_max_rounds))
+            # Derive the strategy from the config: explicit standard_only
+            # or any non-default advanced knob means the config was tuned
+            # by hand (or by a preset) -> Manual, never silently Automatic.
+            _defaults = BLConfig()
+            if bool(getattr(cfg, "standard_only", False)):
+                _strategy = "standard"
+            elif (
+                cfg.min_base_edge_fraction != _defaults.min_base_edge_fraction
+                or cfg.terminate_by_budget != _defaults.terminate_by_budget
+                or cfg.edge_cap_percentile != _defaults.edge_cap_percentile
+                or cfg.local_termination != "off"
+                or cfg.local_height_retry
+                or cfg.local_max_rounds != _defaults.local_max_rounds
+            ):
+                _strategy = "manual"
+            else:
+                _strategy = "auto"
+            _sidx = self._bl_strategy.findData(_strategy)
+            self._bl_strategy.blockSignals(True)
+            try:
+                self._bl_strategy.setCurrentIndex(_sidx if _sidx >= 0 else 0)
+            finally:
+                self._bl_strategy.blockSignals(False)
+            self._apply_bl_strategy_lock()
             self._bl_velocity.setValue(float(cfg.velocity))
             self._bl_fluid.setCurrentIndex(
                 1 if cfg.fluid == "water" else 0
@@ -2048,6 +2235,18 @@ class ParamsPanel(QWidget):
 
     def get_bl_enabled(self) -> bool:
         return self._bl_checkbox.isChecked()
+
+    def get_tet_engine_override(self) -> str | None:
+        """Manual tet-engine pin (Advanced tab) or None for Automatic.
+
+        Returns the pipeline key (``gmsh_direct_poly`` / ``ftetwild_poly``)
+        or None.  The caller runs it strict: no fallback, declared errors.
+        """
+        try:
+            data = self._tet_engine_combo.currentData()
+        except Exception:
+            return None
+        return str(data) if data else None
 
     def get_bl_params(self) -> dict | None:
         """Backward-compatible dict, derived from the ONE BLConfig.
@@ -2705,6 +2904,16 @@ class ParamsPanel(QWidget):
         else:  # cfmesh
             self._poly_check.setVisible(True)
             self._poly_check.setChecked(False)
+        # OpenMP + MPI are cfMesh-only accelerators: hide them on every
+        # other path (Polymesh needs no WSL/OpenFOAM at all) so the
+        # Advanced tab shows only knobs that can act.
+        _cfmesh_only = key == "cfmesh"
+        for _grp in (
+            getattr(self, "_openmp_group", None),
+            getattr(self, "_parallel_group", None),
+        ):
+            if _grp is not None:
+                _grp.setVisible(_cfmesh_only)
 
     def save_params(self, s):
         # W10: one versioned MeshConfig for the whole mesh/project state.
@@ -2712,6 +2921,7 @@ class ParamsPanel(QWidget):
         # longer written; MeshConfig.from_settings still reads them once.
         s.setValue("params/mesh_config", self.get_mesh_config().to_json())
         s.setValue("params/unit", self._unit_selector.currentText())
+        s.setValue("params/tet_engine_pin", self.get_tet_engine_override() or "")
         # surface_resolution / reuse_cached_mesh are AUTOMATIC now (derived
         # from the slider / always on): nothing to persist.
         s.setValue("ui/expert_mode", self._expert_mode)
@@ -2720,6 +2930,19 @@ class ParamsPanel(QWidget):
         unit = s.value("params/unit", None)
         if unit is not None:
             self._unit_selector.setCurrentText(unit)
+        pin = s.value("params/tet_engine_pin", None)
+        if pin:
+            idx = self._tet_engine_combo.findData(str(pin))
+            if idx >= 0:
+                try:
+                    _item = self._tet_engine_combo.model().item(idx)
+                    _enabled = bool(_item.isEnabled()) if _item is not None else True
+                except Exception:
+                    _enabled = True
+                # Never restore a pin the machine cannot run (e.g. fTetWild
+                # pinned, then pytetwild uninstalled): stay Automatic.
+                if _enabled:
+                    self._tet_engine_combo.setCurrentIndex(idx)
         expert = s.value("ui/expert_mode", None, type=bool)
         if expert is not None:
             self.set_expert_mode(bool(expert))
