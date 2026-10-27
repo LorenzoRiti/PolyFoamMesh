@@ -169,6 +169,22 @@ def test_explicit_key_without_button_is_respected(panel):
     assert panel.get_mesher_type() == "auto"
 
 
+def test_legacy_explicit_key_bypass_is_exposed(panel):
+    """A restored legacy engine (no button) drives the run while the CTA
+    still shows Polymesh: the bypass must be queryable so the run can
+    declare it (the 'ftet pinned yet gmsh running' report)."""
+    assert panel.get_explicit_mesher_key() is None
+    panel.set_mesh_config(MeshConfig(mesher="gmsh_direct_poly"))
+    assert panel.get_explicit_mesher_key() == "gmsh_direct_poly"
+    assert panel.get_mesher_type() == "gmsh_direct_poly"
+    # CTA visual still shows Polymesh: the divergence is real.
+    buttons = {k: b for b, k in panel._mesher_keys}
+    assert buttons["auto"].isChecked()
+    buttons["auto"].click()
+    assert panel.get_explicit_mesher_key() is None
+    assert panel.get_mesher_type() == "auto"
+
+
 def test_project_restore_selects_saved_key(panel):
     class _Settings:
         def __init__(self, mesher):

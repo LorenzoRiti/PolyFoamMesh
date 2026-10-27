@@ -127,8 +127,37 @@ def _load_plugins(app):
             logger.error("Failed to load plugin %s: %s", f.name, e)
 
 
+def _build_id() -> str:
+    """Short self-report of the running code (git SHA + dirty flag).
+
+    Screenshots and logs become self-diagnosing: a report of "pin
+    ignored" is only actionable when we know WHICH code ran, and the
+    frozen exe is routinely older than the source tree.
+    """
+    import subprocess as _sp
+
+    sha = "unknown"
+    dirty = ""
+    try:
+        here = _os.path.dirname(_os.path.abspath(__file__))
+        sha = _sp.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10, cwd=here,
+        ).stdout.strip() or "unknown"
+        if sha != "unknown":
+            _st = _sp.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=10, cwd=here,
+            ).stdout.strip()
+            dirty = "-dirty" if _st else ""
+    except Exception:
+        pass
+    return f"{sha}{dirty}"
+
+
 def main():
     from polyfoammesh import __version__
+    from polyfoammesh._version import build_id
 
     # Every child process (wsl.exe, bash, python.exe, gmsh, checkMesh, ...)
     # must spawn WITHOUT a console window: the frozen GUI has no console,
@@ -235,6 +264,7 @@ def main():
         _sys.exit(0)
 
     logger.info("Starting PolyFoamMesh v%s...", __version__)
+    logger.info("Build: %s (git SHA, -dirty = uncommitted changes present)", build_id())
     logger.info("Python %s, PySide6, PyVista, GMSH, meshio")
     logger.info("Args: %s", _sys.argv[1:])
 

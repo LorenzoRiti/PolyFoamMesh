@@ -72,8 +72,14 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   `pinned_polymesh_plan` fail-loud); strategia BL
   Automatica/Standard/Manual con default misurati bloccati
   (`standard_only` nel BLConfig, round-trip via mapping); gruppi
-  OpenMP/MPI visibili solo con CTA cfMesh. Slider dettaglio invariato:
+  OpenMP/MPI visibili solo con CTA cfMesh; selettori pin+strategia
+  bloccati durante le run. Slider dettaglio invariato:
   resta la manopola di prim'ordine.
+- **Bypass esplicito dichiarato**: un progetto salvato con un engine
+  legacy guidava la run scavalcando CTA+policy+pin con i bottoni
+  ancora su Polymesh (il report "pin ignorato"): ora la run lo
+  dichiara a log con il rimedio (click sul CTA). Build id
+  (git SHA + dirty) nel log di avvio: i report sono auto-diagnostici.
 - Gate: suite fast in corso; ruff green.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL

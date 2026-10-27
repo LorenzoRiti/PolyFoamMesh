@@ -2553,6 +2553,15 @@ class ParamsPanel(QWidget):
                 return key
         return DEFAULT_MESHER_KEY
 
+    def get_explicit_mesher_key(self) -> str | None:
+        """Saved-project mesher override driving the run, if any.
+
+        When set, the CTA visuals (Polymesh checked) do NOT describe the
+        run: the explicit key bypasses the auto policy and the Tet
+        engine pin.  The caller must declare the bypass loudly.
+        """
+        return getattr(self, "_explicit_mesher_key", None) or None
+
     def get_adaptive_sizing_enabled(self) -> bool:
         return getattr(self, "_adaptive_sizing_check", None) is not None and self._adaptive_sizing_check.isChecked()
 

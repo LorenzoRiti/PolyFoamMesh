@@ -107,7 +107,10 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   declared error, never a silent swap (fTetWild requires
   `pip install pytetwild`). The pin is read once at run start and the
   selector locks during runs, so a mid-run change cannot silently miss
-  its run. Every attempt,
+  its run. If a run ignores both the CTA and the pin, read the first
+  log lines: a saved project with a legacy engine drives the run
+  explicitly (declared warning, remedy included — click the Polymesh
+  CTA to return to auto). Every attempt,
   reason and fallback is logged (`Mesher:`, `Polymesh auto:`, BL
   provenance). Debug hatch: `POLYFOAMMESH_TET_ENGINE=gmsh|ftetwild`
   forces the tet engine for one run (logged as override) — useful to

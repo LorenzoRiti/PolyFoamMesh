@@ -177,3 +177,19 @@ def test_auto_mesher_honours_the_panel_pin():
         assert token in src, token
     run_src = _src("_on_run_meshing")
     assert "invalid_tet_pin" in run_src
+
+
+def test_explicit_bypass_is_declared_at_run_start():
+    """A restored explicit key bypasses CTA+policy+pin while the buttons
+    still show Polymesh: the run must say so loudly (with the remedy),
+    never swap silently."""
+    src = _src("_on_run_meshing")
+    assert "get_explicit_mesher_key" in src
+    assert "BYPASSED" in src
+
+
+def test_startup_reports_which_code_runs():
+    """Reports are only actionable with the build id: the GUI prints it
+    at startup next to the version."""
+    init_src = inspect.getsource(mw.MainWindow.__init__)
+    assert "build_id" in init_src

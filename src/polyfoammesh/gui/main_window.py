@@ -189,6 +189,15 @@ class MainWindow(QMainWindow):
         self._scaled_meshes: list[trimesh.Trimesh] | None = None
         self._current_scale: float = 1.0
         octo.log_event("main_window", "init", f"PolyFoamMesh v{APP_VERSION} started")
+        try:
+            from polyfoammesh._version import build_id as _build_id
+            self._log.append_log(
+                f"{Tag.CASE} Build: {APP_VERSION} "
+                f"(code {_build_id()}) — check this line first when a run "
+                "does not match the UI: a stale build explains it."
+            )
+        except Exception:
+            logger.debug("build id line skipped", exc_info=True)
 
         self._setup_ribbon()
         self._setup_ui()
@@ -2277,6 +2286,26 @@ class MainWindow(QMainWindow):
         # W18: tracks whether THIS run started as Polymesh auto (fallback
         # chain must not leak into explicit runs).
         self._auto_run_active = (mesher_type == "auto")
+        # A restored explicit key (saved project with a legacy engine)
+        # bypasses the CTA AND the whole auto machinery (policy, pin,
+        # compare, direct leg) while the buttons still show Polymesh —
+        # the exact "ftet pinned yet gmsh running" report.  Declare it
+        # loudly with the remedy instead of swapping silently.
+        _explicit = None
+        try:
+            _explicit = self._params.get_explicit_mesher_key()
+        except Exception:
+            _explicit = None
+        if _explicit:
+            self._log.append_log(
+                f"{Tag.WARN} Explicit mesher '{_explicit}' (saved project) "
+                "drives this run: Polymesh auto policy and the Tet engine "
+                "pin are BYPASSED. Click the Polymesh CTA to return to "
+                "auto (clears the override)."
+            )
+            self._log_substitution(
+                f"Explicit mesher '{_explicit}' bypasses Polymesh auto."
+            )
         if mesher_type == "auto":
             # W18: fresh user run clears any previous auto chain; a
             # fallback restart (self._auto_restarting) keeps it.

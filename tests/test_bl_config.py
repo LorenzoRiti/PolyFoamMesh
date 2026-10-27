@@ -202,6 +202,15 @@ def test_standard_only_defaults_off_and_round_trips():
     assert any("standard_only" in w for w in warnings)
 
 
+def test_build_id_is_fail_soft_and_informative():
+    from polyfoammesh._version import build_id
+
+    got = build_id()
+    assert isinstance(got, str) and got
+    # Inside the repo it names the commit; outside git it degrades.
+    assert got == "unknown" or len(got) >= 7
+
+
 def test_fraction_mode_resolves_against_max_cell():
     c = BLConfig(first_layer_fraction=0.01)
     assert c.first_height_mode == "fraction"
