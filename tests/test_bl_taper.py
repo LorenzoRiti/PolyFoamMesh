@@ -52,8 +52,99 @@ def _box_dual_case(dest: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def box_case(tmp_path_factory):
-    dest = tmp_path_factory.mktemp("taper_box")
-    return _box_dual_case(dest)
+    return _acquire_healthy_box(tmp_path_factory.mktemp)
+
+
+def _acquire_healthy_box(mktemp, max_attempts: int = 3) -> Path:
+    """Build a box the taper contract can rely on (bounded retries).
+
+    Native fTetWild has measured run variance: a rare box comes out
+    pathological (the dual/BL then diverges for reasons that have
+    nothing to do with taper).  The fixture's job is a HEALTHY box, so
+    validate each candidate with the standard 5-layer build and rebuild
+    (bounded) instead of hoping.  Three failures in a row mean a real,
+    systematic problem — fail loudly with the last error, never skip.
+    """
+    dest = mktemp("taper_box")
+    last: Exception | None = None
+    for i in range(max(1, int(max_attempts))):
+        try:
+            cand = _box_dual_case(dest / f"try{i}")
+        except Exception as exc:  # noqa: BLE001 - unhealthy candidate
+            last = exc
+            continue
+        try:
+            if _box_build_validates(cand, dest / f"probe{i}"):
+                if i:
+                    print(f"taper fixture: box healthy after {i + 1} builds")
+                return cand
+        except Exception as exc:  # noqa: BLE001 - probe broke, not the box
+            last = exc
+            continue
+        last = RuntimeError("standard 5-layer build refused the box")
+    pytest.fail(
+        "taper fixture: 3 native boxes in a row failed the standard "
+        f"5-layer validation — systematic, not flake ({last})"
+    )
+
+
+def _box_build_validates(candidate: Path, probe_dest: Path) -> bool:
+    """True when the standard (taper-off) 5-layer build validates.
+
+    Runs on a COPY: the candidate stays pristine for the tests.  Engine
+    exceptions propagate (a crashing engine is a loud bug, never an
+    "unhealthy box"); only a clean refusal means rebuild.
+    """
+    if probe_dest.exists():
+        shutil.rmtree(probe_dest)
+    shutil.copytree(candidate, probe_dest)
+    res = PolyBoundaryLayerEngine(
+        probe_dest, log=lambda m: None).run(
+        n_layers=5, first_height=0.01, growth_rate=1.2)
+    return bool(res.success)
+
+
+def _stub_factory(tmp_path):
+    import types
+
+    def _mktemp(basename):
+        path = tmp_path / basename
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    return types.SimpleNamespace(mktemp=_mktemp)
+
+
+def test_acquire_rebuilds_until_healthy(tmp_path, monkeypatch):
+    import test_bl_taper as taper_mod
+
+    calls: list = []
+    monkeypatch.setattr(
+        taper_mod, "_box_dual_case",
+        lambda dest: calls.append(dest) or dest,
+    )
+    monkeypatch.setattr(
+        taper_mod, "_box_build_validates",
+        lambda cand, probe: len(calls) >= 3,
+    )
+    got = taper_mod._acquire_healthy_box(
+        _stub_factory(tmp_path).mktemp, max_attempts=5)
+    assert got == calls[-1]
+    assert len(calls) == 3
+
+
+def test_acquire_fails_loud_after_exhaustion(tmp_path, monkeypatch):
+    from _pytest.outcomes import Failed
+
+    import test_bl_taper as taper_mod
+
+    monkeypatch.setattr(
+        taper_mod, "_box_dual_case", lambda dest: dest)
+    monkeypatch.setattr(
+        taper_mod, "_box_build_validates", lambda cand, probe: False)
+    with pytest.raises(Failed, match="systematic, not flake"):
+        taper_mod._acquire_healthy_box(
+            _stub_factory(tmp_path).mktemp, max_attempts=2)
 
 
 def _fresh_copy(box_case: Path, tmp_path: Path) -> Path:

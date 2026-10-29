@@ -85,6 +85,18 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   demo venturi one-click dal menu Tools (STL bundled + BL on);
   criterio di closure stack ≤0.5× nominato (`stack_closure` in
   `bl_fidelity`, display/log only, engine invariato).
+- **Igiene audit (verificata, non fidata)**: warning `urllib3/charset`
+  zittito alla radice bloccando il plugin pytest `langsmith` inutilizzato
+  (era lui a importare `requests` prima dei filtri; env globale intatta);
+  `.gitignore` per `__tracked_surface.stl`, `APRI_TOKEN_ZENODO.cmd`
+  (verificato: nessun secret), `build_gate_error.log`. Crash gmsh
+  0xc0000008 NON riprodotto qui (`import gmsh` ok, test dedicato verde):
+  nessun cambio. 69 commit ahead di `origin/main` confermati: push solo
+  su tuo ordine.
+- **Flake taper reso deterministico**: `test_taper_off_by_default` falliva
+  2 volte su hook per varianza nativa di fTetWild (nessun seed disponibile).
+  Il fixture ora garantisce un box sano (health-gate + max 3 rebuild,
+  fail forte se sistematico); il contratto off==on resta invariato.
 - Gate: suite fast in corso; ruff green.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL

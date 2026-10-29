@@ -82,9 +82,26 @@ polyfoammesh = ["assets/*.ico"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+# Block the langsmith pytest plugin: nobody in this suite uses it, and
+# importing it pulls `requests` at plugin-load time — before pytest
+# installs warning filters — so requests' chardet bounds-check warning
+# (paddlex pins chardet 7.4.3) prints on EVERY run and neither ini
+# filterwarnings nor -W can silence it (verified by bisecting the
+# entry points).  Blocking an absent plugin is a no-op, so this is
+# safe on machines without langsmith installed.
+addopts = ["-p", "no:langsmith_plugin"]
 markers = [
     "slow: long-running tests (real-valve fixture etc.); skip with -m 'not slow'",
     "wsl: requires live WSL2 + OpenFOAM (real cartesianMesh run); skip with -m 'not wsl'",
+]
+filterwarnings = [
+    # Cosmetic-only env noise: requests 2.32.x bounds-checks chardet and
+    # warns on EVERY import because paddlex pins chardet 7.4.3 (program
+    # site-packages).  urllib3/charset-normalizer are fine and requests
+    # works; touching the global env (downgrade chardet -> breaks paddlex,
+    # upgrade requests -> risks aider-chat) is all downside for zero
+    # functional gain.  Silence it in our runs, document it here.
+    "ignore:.*doesn't match a supported version.*:Warning",
 ]
 
 [tool.ruff]
