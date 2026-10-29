@@ -80,6 +80,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   ancora su Polymesh (il report "pin ignorato"): ora la run lo
   dichiara a log con il rimedio (click sul CTA). Build id
   (git SHA + dirty) nel log di avvio: i report sono auto-diagnostici.
+- **Quick win AeroBench (citati)**: readout pre-run live (Re, y+ medio
+  atteso, closure ultimo layer vs cella di superficie) nel tab Mesh;
+  demo venturi one-click dal menu Tools (STL bundled + BL on);
+  criterio di closure stack ≤0.5× nominato (`stack_closure` in
+  `bl_fidelity`, display/log only, engine invariato).
 - Gate: suite fast in corso; ruff green.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL

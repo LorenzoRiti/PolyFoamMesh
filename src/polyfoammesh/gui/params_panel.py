@@ -756,6 +756,23 @@ class ParamsPanel(QWidget):
         self._cell_est_label.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
         mesh_form.addRow(self._cell_est_label)
 
+        # Pre-run flow readout (AeroBench-inspired, cited): Re, expected
+        # y+ from the current first layer, and the BL stack closure
+        # against the surface cell — facts from the current inputs,
+        # updated live.  The y+ is a body AVERAGE (flat-plate/pipe
+        # correlation); the real local y+ varies 3-10x over the body.
+        self._flow_hint = QLabel("Flow: load a geometry for Re/y+.")
+        self._flow_hint.setWordWrap(True)
+        self._flow_hint.setStyleSheet(metric_label(COLOR_TEXT_DIM, FS_METRIC))
+        self._flow_hint.setToolTip(
+            "Reynolds from the current velocity/fluid/length; expected y+ "
+            "is the body average from your first-layer height "
+            "(local values vary 3-10x); the last-layer ratio tells "
+            "whether the stack blends into the core mesh (target ≤0.5x "
+            "the surface cell, AeroBench rule, cited)."
+        )
+        mesh_form.addRow(self._flow_hint)
+
         self._prev_cell_params["max_cell"] = self._max_cell.value()
         self._prev_cell_params["min_cell"] = self._min_cell.value()
         self._max_cell.valueChanged.connect(self._on_max_cell_changed)
@@ -1062,6 +1079,50 @@ class ParamsPanel(QWidget):
             return
         self._on_bl_auto_compute()
 
+    def _refresh_flow_hint(self) -> None:
+        """Live pre-run flow readout: Re, expected y+, stack closure.
+
+        All three are exact arithmetic on the current inputs (no hidden
+        model): Re = U·L/nu, y+ from the flat-plate/pipe correlation at
+        the cell centroid, last-layer ratio vs the surface cell.  The
+        y+ is a body AVERAGE — never a per-face promise.
+        """
+        if not hasattr(self, "_flow_hint"):
+            return
+        if not getattr(self, "_suggest_meshes", None):
+            self._flow_hint.setText("Flow: load a geometry for Re/y+.")
+            return
+        try:
+            from polyfoammesh.commercial.bl_engine import BLEngine
+            from polyfoammesh.core.bl_fidelity import stack_closure
+
+            length, kind = self._bl_flow_length_and_type()
+            velocity = float(self._bl_velocity.value())
+            nu = float(self._FLUID_NU.get(self._bl_fluid.currentText(), 1.5e-5))
+            if length <= 0 or velocity <= 0 or nu <= 0:
+                raise ValueError("non-positive flow input")
+            re_num = velocity * length / nu
+            parts = [f"Re={re_num:.3g} ({kind}, L={length:.3g} m)"]
+            if self._bl_checkbox.isChecked():
+                h1 = float(self._bl_first_layer())
+                n = int(self._bl_n_layers.value())
+                r = float(self._bl_exp.value())
+                yplus = BLEngine.yplus_from_height(h1 / 2.0, velocity, nu, length)
+                parts.append(f"first layer → y+≈{yplus:.3g} avg (local 0.3–3×)")
+                max_cell = max(float(self._max_cell.value()), 1e-12)
+                clo = stack_closure(h1, n, r, max_cell)
+                if clo["available"]:
+                    ratio = clo["ratio"]
+                    verdict = "blends" if clo["blends"] else "overshoots"
+                    parts.append(
+                        f"last layer {ratio:.2f}× max cell "
+                        f"(target ≤{clo['target_ratio']:.2g}×, {verdict})"
+                    )
+            self._flow_hint.setText("Flow: " + " · ".join(parts) + ".")
+        except Exception as exc:  # noqa: BLE001 - hint must never block input
+            logger.debug("flow hint unavailable: %s", exc)
+            self._flow_hint.setText("Flow: load a geometry for Re/y+.")
+
     def _refresh_bl_hint(self) -> None:
         """Show the REQUESTED BL stack — facts only.
 
@@ -1093,6 +1154,7 @@ class ParamsPanel(QWidget):
                 "the effective first-layer thickness are reported in the "
                 "log after the build."
             )
+        self._refresh_flow_hint()
 
     # ------------------------------------------------------------------
     # W7: advanced BL controls, one validated config, presets
@@ -2360,6 +2422,7 @@ class ParamsPanel(QWidget):
                     f"Geometric estimate: ~{nominal:,} cells "
                     f"(range {lo:,}-{hi:,})"
                 )
+        self._refresh_flow_hint()
 
     _DETAIL_INDEX = {v: k for k, v in _DETAIL_MAP.items()}
 

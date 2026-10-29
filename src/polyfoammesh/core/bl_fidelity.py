@@ -93,6 +93,47 @@ def height_cap_stats(
     }
 
 
+#: AeroBench-inspired mesh-continuity target (cited, aerobench/meshing):
+#: the outermost BL layer should be about HALF the local surface cell so
+#: the stack blends into the core mesh instead of jumping.  Display and
+#: log criterion only — the engine is untouched.
+STACK_CLOSURE_TARGET_RATIO = 0.5
+
+
+def stack_closure(
+    first_height: float, n_layers: int, growth_rate: float,
+    surface_cell_size: float,
+    target_ratio: float = STACK_CLOSURE_TARGET_RATIO,
+) -> dict[str, Any]:
+    """Blend check for a requested BL stack against the surface cell.
+
+    ``final = h1 * r^(n-1)``; ``ratio = final / surface``.  ``blends``
+    when the ratio is at or below the target.  Never raises: without a
+    positive surface cell the check is ``available=False``.
+    """
+    h1 = float(first_height or 0.0)
+    n = max(int(n_layers or 0), 1)
+    r = max(float(growth_rate or 1.0), 1.0)
+    surf = float(surface_cell_size or 0.0)
+    final = h1 * (r ** (n - 1)) if h1 > 0 else 0.0
+    total = h1 * n if abs(r - 1.0) < 1e-12 else (
+        h1 * (r ** n - 1.0) / (r - 1.0) if h1 > 0 else 0.0
+    )
+    if surf <= 0.0 or h1 <= 0.0:
+        return {
+            "available": False, "final_layer": final,
+            "total_thickness": total, "ratio": None,
+            "target_ratio": float(target_ratio), "blends": False,
+        }
+    ratio = final / surf
+    return {
+        "available": True, "final_layer": final,
+        "total_thickness": total, "ratio": ratio,
+        "target_ratio": float(target_ratio),
+        "blends": bool(ratio <= float(target_ratio)),
+    }
+
+
 def cap_reason(stats: dict[str, Any]) -> str:
     """One short reason code for the report/log."""
     support = int(stats.get("support_bound", 0))

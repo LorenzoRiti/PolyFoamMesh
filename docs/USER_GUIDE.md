@@ -248,6 +248,12 @@ Manual control for when Quick Mesh is not enough:
   strict GMSH / fTetWild pin with no fallback.
 - **OpenMP / MPI rows** appear only when the Cartesian cfMesh CTA is
   selected (they cannot act on the Polymesh path).
+- **Flow readout** under Cell Sizes: live Re, expected y+ average from
+  your first layer, and the last-layer closure vs the surface cell —
+  exact arithmetic on the current inputs (y+ is a body average; local
+  values vary 3–10×, declared).
+- **Venturi demo**: Tools menu → one click loads the bundled venturi
+  with BL on (detail stays on your slider).
 - **Per-face sizing** and **multi-region** options for CHT/FSI cases.
 
 ## Patches
@@ -369,6 +375,10 @@ default, and the log names the mode. In the **Advanced** tab:
   - **Edge-cap percentile** (default 0) is experimental: it has a
     measured failure mode on some duals, leave it at 0 unless you are
     deliberately testing it.
+  - **Stack closure target** (display only): the outermost layer should
+    be ≤0.5× the surface cell so the stack blends into the core mesh
+    (AeroBench rule, cited) — shown live in the flow readout; the engine
+    is untouched, you tune nLayers/growth by hand.
 - **Presets**: save the whole BL configuration under a name with
   **Save preset…**. The list is versioned, survives a restart, and the
   last-used preset is restored when no newer saved configuration exists.

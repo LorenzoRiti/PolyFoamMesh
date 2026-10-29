@@ -325,6 +325,7 @@ class MainWindow(QMainWindow):
         # Geometry...", which read as a second, competing way to start a
         # real project rather than what it actually is: a demo/sample.
         tm.addAction("Load Sample Cylinder (demo geometry)", self._on_test_cylinder)
+        tm.addAction("Load Venturi Demo (Polymesh auto + BL)", self._on_load_venturi_demo)
         tm.addSeparator()
         tm.addAction("Clean Up Old Case Directories...", self._on_cleanup_cases)
         tm.addSeparator()
@@ -1452,6 +1453,38 @@ class MainWindow(QMainWindow):
         with self._busy():
             cyl = create_test_cylinder(radius=1.0, height=2.0)
             self._load_geometry(cyl.val())
+
+    def _on_load_venturi_demo(self):
+        """One-click venturi demo (AeroBench-style): the bundled STL plus
+        BL on, so the full auto chain (tet -> dual -> checkMesh -> rescue
+        legs) can run without any setup.  Detail stays on the user's
+        slider (medium by default, the measured recipe); only BL is
+        switched on because the direct leg needs it."""
+        from pathlib import Path as _Path
+
+        demo = (
+            _Path(__file__).resolve().parents[3]
+            / "benchmarks" / "geometries" / "venturi.stl"
+        )
+        if not demo.is_file():
+            self._log.append_log(
+                f"{Tag.ERROR} Venturi demo missing: {demo} "
+                "(available in a source checkout, not in this install)."
+            )
+            QMessageBox.warning(
+                self, "Venturi Demo",
+                f"Demo geometry not found:\n{demo}\n\n"
+                "Load benchmarks/geometries/venturi.stl from a source "
+                "checkout instead.",
+            )
+            return
+        self._params.set_bl_enabled(True)
+        self._load_geometry_from_path(str(demo))
+        self._log.append_log(
+            f"{Tag.CASE} Venturi demo ready: Polymesh auto + BL on. "
+            "Press Generate Mesh — expected (headless E2E): AUTO VALID "
+            "via the direct-BL leg in a few minutes."
+        )
 
     def _on_cleanup_cases(self):
         from PySide6.QtWidgets import QInputDialog, QMessageBox

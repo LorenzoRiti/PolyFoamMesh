@@ -139,6 +139,29 @@ def test_auto_strategy_ignores_locked_knobs(panel):
     assert cfg.provenance["edge_cap_percentile"] == "default"
 
 
+def test_flow_hint_needs_geometry(panel):
+    assert "load a geometry" in panel._flow_hint.text()
+
+
+def test_flow_hint_shows_re_yplus_and_closure(panel):
+    panel._bl_flow_length_and_type = lambda: (0.4, "flat_plate")
+    panel._suggest_meshes = [object()]
+    panel._bl_velocity.setValue(10.0)
+    panel._bl_checkbox.setChecked(True)
+    panel._refresh_flow_hint()
+    text = panel._flow_hint.text()
+    # Re = 10 * 0.4 / 1.5e-5 = 266666.67.
+    assert "Re=2.67e+05" in text
+    assert "y+" in text
+    assert "max cell" in text
+    # BL off: Re stays, y+ and closure go away.
+    panel._bl_checkbox.setChecked(False)
+    panel._refresh_flow_hint()
+    text = panel._flow_hint.text()
+    assert "Re=" in text
+    assert "y+" not in text
+
+
 def test_advanced_values_reach_engine_kwargs_and_legacy_dict(panel):
     _select_strategy(panel, "manual")
     panel._bl_checkbox.setChecked(True)

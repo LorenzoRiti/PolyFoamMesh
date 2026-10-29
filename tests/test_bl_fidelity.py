@@ -80,6 +80,34 @@ def test_height_cap_counts_support_edge_and_fade():
     assert "support=" in cap_reason(stats)
 
 
+def test_stack_closure_blends_at_half_surface_cell():
+    # AeroBench rule (cited): the outermost layer should be ~0.5x the
+    # surface cell so the stack blends into the core mesh.  h1=1mm,
+    # r=1.2, n=5 -> final = 1mm * 1.2^4 = 2.07mm; surface 8mm -> blends.
+    from polyfoammesh.core.bl_fidelity import stack_closure
+
+    got = stack_closure(0.001, 5, 1.2, 0.008)
+    assert got["final_layer"] == pytest.approx(0.001 * 1.2 ** 4)
+    assert got["ratio"] == pytest.approx(0.001 * 1.2 ** 4 / 0.008)
+    assert got["blends"] is True
+    assert got["target_ratio"] == pytest.approx(0.5)
+
+
+def test_stack_closure_flags_overshoot():
+    from polyfoammesh.core.bl_fidelity import stack_closure
+
+    # Same stack against a 2mm surface cell: final 2.07mm > cell.
+    got = stack_closure(0.001, 5, 1.2, 0.002)
+    assert got["blends"] is False
+    assert got["ratio"] == pytest.approx(0.001 * 1.2 ** 4 / 0.002)
+    # Uniform growth (r=1): final == first.
+    flat = stack_closure(0.001, 5, 1.0, 0.008)
+    assert flat["final_layer"] == pytest.approx(0.001)
+    assert flat["blends"] is True
+    # No surface cell to compare against: unavailable, never "blends".
+    assert stack_closure(0.001, 5, 1.2, 0.0)["available"] is False
+
+
 def test_effective_h1_uses_wall_face_centres_and_first_prism(monkeypatch):
     import polyfoammesh.core.bl_poly as bp
 

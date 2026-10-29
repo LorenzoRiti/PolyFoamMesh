@@ -193,3 +193,18 @@ def test_startup_reports_which_code_runs():
     at startup next to the version."""
     init_src = inspect.getsource(mw.MainWindow.__init__)
     assert "build_id" in init_src
+
+
+def test_venturi_demo_action_is_wired():
+    """One-click demo: Tools menu offers it, and it loads the bundled
+    STL through the tested file path with BL switched on."""
+    setup_src = inspect.getsource(mw.MainWindow._setup_menu)
+    assert "Venturi" in setup_src
+    assert "_on_load_venturi_demo" in setup_src
+    action_src = inspect.getsource(mw.MainWindow._on_load_venturi_demo)
+    for token in (
+        "venturi.stl",
+        "_load_geometry_from_path",
+        "set_bl_enabled",
+    ):
+        assert token in action_src, token
