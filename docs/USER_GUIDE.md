@@ -252,8 +252,7 @@ Manual control for when Quick Mesh is not enough:
   your first layer, and the last-layer closure vs the surface cell —
   exact arithmetic on the current inputs (y+ is a body average; local
   values vary 3–10×, declared).
-- **Venturi demo**: Tools menu → one click loads the bundled venturi
-  with BL on (detail stays on your slider).
+- **Venturi demo**: Tools menu → one click loads the demo case (cylinder + BL) and logs the guided steps.
 - **Per-face sizing** and **multi-region** options for CHT/FSI cases.
 
 ## Patches

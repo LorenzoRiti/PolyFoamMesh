@@ -82,7 +82,8 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   (git SHA + dirty) nel log di avvio: i report sono auto-diagnostici.
 - **Quick win AeroBench (citati)**: readout pre-run live (Re, y+ medio
   atteso, closure ultimo layer vs cella di superficie) nel tab Mesh;
-  demo venturi one-click dal menu Tools (STL bundled + BL on);
+  demo one-click dal menu Tools (cilindro sintetico + BL on, nessuna
+  geometria riservata in distribuzione);
   criterio di closure stack ≤0.5× nominato (`stack_closure` in
   `bl_fidelity`, display/log only, engine invariato).
 - **Igiene audit (verificata, non fidata)**: warning `urllib3/charset`
