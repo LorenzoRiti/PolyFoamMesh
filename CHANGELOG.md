@@ -7,6 +7,8 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-04
+
 ### W18 follow-up: direct-BL 5L misurato + auto indurito (2026-10-24) - PARTIAL
 
 - **Direct-BL 5L su R1, Trovato il perché e misurato**: i tet grezzi
@@ -98,7 +100,7 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   2 volte su hook per varianza nativa di fTetWild (nessun seed disponibile).
   Il fixture ora garantisce un box sano (health-gate + max 3 rebuild,
   fail forte se sistematico); il contratto off==on resta invariato.
-- Gate: suite fast in corso; ruff green.
+- Gate: suite 1790 passed, 2 skipped, 23 deselected, 1 xfailed; ruff green; commit locale.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL
 - **UI**: due CTA visibili — `Polymesh` (auto, default) e `cfMesh`
