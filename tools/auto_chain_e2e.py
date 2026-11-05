@@ -48,9 +48,32 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
             print(f"[auto] {tag}: tet FAILED ({r.get('failure_reason')})", flush=True)
             return {"engine": engine, "direct": direct, "ok": False,
                     "stage": "tet", "detail": r.get("failure_reason")}
+        # 3D-element gate: parity with the GUI (a surface-only MSH is a
+        # tet-stage failure, not a conversion failure).
+        try:
+            from polyfoammesh.core.tet_source import _has_volume_elements
+            has_3d = bool(_has_volume_elements(wd_tag / "e2e.msh"))
+        except Exception:
+            has_3d = True
+        if not has_3d:
+            print(f"[auto] {tag}: tet produced NO 3D elements "
+                  f"(surface-only) -> tet failure", flush=True)
+            return {"engine": engine, "direct": direct, "ok": False,
+                    "stage": "tet",
+                    "detail": "MSH has no 3D elements (surface-only)"}
         if not direct:
             case_dir = wd_tag / "case"
-            convert_case(wd_tag / "e2e.msh", case_dir)
+            try:
+                convert_case(wd_tag / "e2e.msh", case_dir)
+            except Exception as exc:  # noqa: BLE001 - parity with the GUI
+                # A convert failure is engine-dependent: the chain advances
+                # to the next engine (GUI: _advance_auto_chain).
+                print(f"[auto] {tag}: CONVERT FAILED "
+                      f"({type(exc).__name__}: {str(exc)[:120]})", flush=True)
+                return {"engine": engine, "direct": direct, "ok": False,
+                        "stage": "convert",
+                        "detail": f"{type(exc).__name__}: {str(exc)[:200]}",
+                        "tet_engine": engine}
             d = run_dual(case_dir)
             if not d.get("success"):
                 print(f"[auto] {tag}: dual INVALID ({d.get('errors')})", flush=True)

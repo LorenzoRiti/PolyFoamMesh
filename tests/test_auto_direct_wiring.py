@@ -165,6 +165,81 @@ def test_compare_restore_revalidates():
         assert token in src, token
 
 
+def test_one_place_advances_the_auto_chain():
+    """Dual/checkMesh/convert fallbacks all go through the single
+    advance helper — no duplicated restart bookkeeping can drift."""
+    helper = _src("_advance_auto_chain")
+    for token in (
+        "_auto_engine_used",
+        "_auto_forced_key",
+        "_auto_restarting = True",
+        "_auto_engine_remaining",
+        "_on_run_meshing",
+    ):
+        assert token in helper, token
+    for name in ("_maybe_auto_dual_fallback", "_maybe_auto_checkmesh_fallback"):
+        src = _src(name)
+        assert "_advance_auto_chain" in src, name
+        assert "_auto_forced_key = target" not in src, name
+
+
+def test_convert_failure_advances_the_chain():
+    """A gmshToFoam failure on an auto run must not dead-end in a dialog:
+    the next engine (or the incumbent candidate) takes over, declared."""
+    src = _src("_continue_gmsh_direct")
+    assert "_advance_auto_chain" in src
+    assert "_restore_auto_compare_candidate" in src
+    assert "Conversion Failed" in src
+
+
+def test_volume_result_has_a_3d_element_gate():
+    """A surface-only MSH must be treated as a tet failure (chain
+    advance), never cached and accepted only to die at gmshToFoam."""
+    src = _src("_on_gmsh_volume_result")
+    for token in ("_has_volume_elements", "_on_gmsh_volume_failed"):
+        assert token in src, token
+    assert src.index("_has_volume_elements") < src.index("_store_tet_mesh_cache")
+
+
+def test_auto_fix_budget_resets_on_a_fresh_user_run():
+    """The auto-fix counter used to live for the whole session, so after
+    two retries every later user run was denied one."""
+    src = _src("_on_run_meshing")
+    assert "_quality_fix_attempts = 0" in src
+    assert "_auto_restarting" in src
+
+
+def test_compare_candidate_requires_a_real_dict():
+    """Restoring/matching must act only on a recorded candidate, never on
+    an arbitrary truthy attribute (test stubs, unset state)."""
+    for name in ("_restore_auto_compare_candidate", "_maybe_auto_compare_resolve"):
+        src = _src(name)
+        assert "isinstance(cand, dict)" in src, name
+
+
+def test_claim_unique_dir_never_reuses_a_directory(tmp_path):
+    """Two runs starting in the same second must not share a case dir."""
+    first = mw.claim_unique_dir(tmp_path, "gmsh_direct_20260101_120000")
+    second = mw.claim_unique_dir(tmp_path, "gmsh_direct_20260101_120000")
+    third = mw.claim_unique_dir(tmp_path, "gmsh_direct_20260101_120000")
+    assert first != second != third != first
+    assert second.name.endswith("_2")
+    assert third.name.endswith("_3")
+    for path in (first, second, third):
+        assert path.is_dir()
+
+
+def test_every_timestamped_case_dir_is_claimed_atomically():
+    """Every timestamped case dir goes through claim_unique_dir, never a
+    bare mkdir(exist_ok=True) on a second-resolution name."""
+    text = inspect.getsource(mw)
+    for stem in ("gmsh_direct_", "case_", "autopoly_", "native_poly_"):
+        assert f'claim_unique_dir(root, f"{stem}{{ts}}")' in text, stem
+    # The only place allowed to create a dir with exist_ok=True is the
+    # helper itself (and the per-run subdirs under an already-claimed dir).
+    assert text.count('self._case_dir.mkdir(parents=True, exist_ok=True)') == 0
+
+
 def test_auto_mesher_honours_the_panel_pin():
     """The Advanced-tab pin wins over the geometry policy (strict chain);
     an unusable pin aborts loudly instead of silently unpinning."""

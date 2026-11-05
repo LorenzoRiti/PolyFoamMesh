@@ -116,6 +116,28 @@ def test_selected_patch_is_what_bl_poly_actually_extrudes(case_dir, tmp_path):
     assert "inlet" not in used
 
 
+def test_stale_patch_names_refuse_instead_of_extruding_everywhere(tmp_path):
+    """A requested patch that does not exist in THIS mesh (stale rename,
+    different import) used to fall back to every boundary patch: prisms
+    on inlets/outlets, the exact silent all-patch BL the chain forbids."""
+    patches = [
+        {"name": "wall", "type": "wall", "nFaces": 2, "startFace": 2},
+        {"name": "inlet", "type": "patch", "nFaces": 2, "startFace": 4},
+    ]
+    engine = PolyBoundaryLayerEngine(tmp_path / "case")
+    selected, used = engine._select_faces(
+        faces=[0] * 6, owner=None, patches=patches, n_int=2,
+        patch_names=["renamed_wall"], apply_to_all=False,
+    )
+    assert selected == [] and used == []
+    # No names at all keeps the historical all-boundary default.
+    selected_all, _used = engine._select_faces(
+        faces=[0] * 6, owner=None, patches=patches, n_int=2,
+        patch_names=None, apply_to_all=False,
+    )
+    assert selected_all == [0, 1, 2, 3]
+
+
 def test_all_open_patches_skip_the_bl_everywhere(case_dir, no_name_detection):
     """The regression this file exists for.
 

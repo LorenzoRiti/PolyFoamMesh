@@ -151,6 +151,28 @@ def _space_free_cases_root() -> Path:
     return Path(tempfile.gettempdir()) / "cfmesh_cases"
 
 
+def claim_unique_dir(root: Path, stem: str, limit: int = 1000) -> Path:
+    """Atomically create and return a fresh directory (never reuses one).
+
+    Case directories used to be named ``gmsh_direct_<YYYYmmdd_HHMMSS>``
+    and created with ``exist_ok=True``: two runs starting in the same
+    second (a tet failure can restart the chain in well under a second)
+    silently shared one directory, so the second run read the first
+    run's leftovers.  ``mkdir(exist_ok=False)`` makes the claim atomic —
+    whoever loses gets ``_2``, ``_3``… and the race is impossible.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    for n in range(max(1, int(limit))):
+        candidate = root / (stem if n == 0 else f"{stem}_{n + 1}")
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"cannot claim a unique dir {stem!r} under {root}")
+
+
 def _free_disk_gb(path: str | Path) -> float:
     """Free disk space in GB on the volume hosting ``path`` (best-effort)."""
     try:
@@ -1584,8 +1606,7 @@ class MainWindow(QMainWindow):
         self._status.showMessage("native-poly: cut-cell + dual ...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = self._resolve_case_root()
-        self._case_dir = root / f"native_poly_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
+        self._case_dir = claim_unique_dir(root, f"native_poly_{ts}")
         self._params.set_case_dir(str(self._case_dir))
 
         detail = self._params.get_detail_level()
@@ -2288,6 +2309,12 @@ class MainWindow(QMainWindow):
         self._poly_fallback_active = False
         self._low_ram_gmsh_threads = False
         self._auto_tet_plan = None
+        if not getattr(self, "_auto_restarting", False):
+            # A fresh user run gets a fresh auto-fix budget.  The counter
+            # used to live for the whole session: after two auto-fix
+            # retries, every later user run (even on another geometry)
+            # was denied one with "max iterations (2) reached".
+            self._quality_fix_attempts = 0
         my_id = self._run_id
         logger.info("Starting meshing run #%d.", my_id)
 
@@ -2494,9 +2521,10 @@ class MainWindow(QMainWindow):
             self._log.append_log(f"{Tag.ERROR} Cannot create case directory: no writable path found")
             self._params.set_all_enabled(True)
             return
-        self._case_dir = root / f"case_{ts}"
         try:
-            self._case_dir.mkdir(parents=True, exist_ok=True)
+            # Atomic claim (see claim_unique_dir): a second run in the same
+            # second must not inherit the previous run's case directory.
+            self._case_dir = claim_unique_dir(root, f"case_{ts}")
         except OSError as exc:
             QMessageBox.critical(
                 self, "Cannot Write Case Directory",
@@ -3285,8 +3313,9 @@ class MainWindow(QMainWindow):
         self._status.showMessage("GMSH: volume mesh...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = self._resolve_case_root()
-        self._case_dir = root / f"gmsh_direct_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
+        # Atomic, never-reused case dir (see claim_unique_dir: a fast
+        # chain restart used to share the previous run's directory).
+        self._case_dir = claim_unique_dir(root, f"gmsh_direct_{ts}")
         (self._case_dir / "system").mkdir(parents=True, exist_ok=True)
         (self._case_dir / "constant").mkdir(parents=True, exist_ok=True)
         # Single shared writer (core.case_setup.write_control_dict) — no
@@ -3768,6 +3797,27 @@ class MainWindow(QMainWindow):
                 "The tetrahedral mesh will still be clean; check the final poly "
                 "checkMesh report carefully before trusting it for a solver run."
             )
+        # 3D-element gate (the CLI already had it, the GUI did not): a
+        # surface-only MSH (solid-less STEP, or a tet stage that produced
+        # no volume) would "succeed" here, be cached, and then die at
+        # gmshToFoam with no fallback left.  Treat it as a tet-stage
+        # failure so the existing chain (engine fallback / coarser detail)
+        # takes over — fail-open on an unreadable file, exactly like the
+        # CLI helper, so an exotic-but-good mesh is never rejected.
+        try:
+            from polyfoammesh.core.tet_source import _has_volume_elements
+            _has_3d = bool(_has_volume_elements(msh_path_result))
+        except Exception:
+            logger.debug("3D-element gate unavailable", exc_info=True)
+            _has_3d = True
+        if not _has_3d:
+            _msg = (
+                "volume mesh has no 3D elements (surface-only MSH): the "
+                "tet stage could not build a volume on this input"
+            )
+            self._log.append_log(f"{Tag.ERROR} {label} {_msg}")
+            self._on_gmsh_volume_failed(_msg)
+            return
         # Cache the successful .msh under the fingerprint of the attempt that
         # produced it (fail-soft: a cache problem must never block the run).
         try:
@@ -4013,7 +4063,16 @@ class MainWindow(QMainWindow):
                 return ("error", f"{e}\n\n{tb}")
 
         def fail(msg: str):
+            # A convert failure is engine-dependent (a broken surface or a
+            # solid-less tessellation dies here): let the auto chain try
+            # the next engine instead of dead-ending in a dialog.  The
+            # incumbent weak-valid candidate, if any, beats it outright.
             self._log.append_log(f"[ERROR] MSH conversion: {msg}")
+            _short = str(msg).splitlines()[0][:120]
+            if self._restore_auto_compare_candidate(f"convert failed ({_short})"):
+                return
+            if self._advance_auto_chain(f"convert failed ({_short})"):
+                return
             self._progress.setVisible(False)
             self._params.set_all_enabled(True)
             QMessageBox.critical(self, "Conversion Failed", f"MSH to OpenFOAM failed:\n{msg}")
@@ -4116,8 +4175,7 @@ class MainWindow(QMainWindow):
         self._status.showMessage("autopoly: polyhedral mesh...")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         root = self._resolve_case_root()
-        self._case_dir = root / f"autopoly_{ts}"
-        self._case_dir.mkdir(parents=True, exist_ok=True)
+        self._case_dir = claim_unique_dir(root, f"autopoly_{ts}")
         self._params.set_case_dir(str(self._case_dir))
 
         detail = self._params.get_detail_level()
@@ -4688,6 +4746,36 @@ class MainWindow(QMainWindow):
             on_failed=on_failed,
         )
 
+    def _advance_auto_chain(self, reason: str) -> bool:
+        """Restart the current auto run with the next unused engine.
+
+        ONE place owns the restart bookkeeping (used key, forced key,
+        restarting flag, declared logs).  Callers decide WHEN the chain
+        must advance; nothing here invents a target and nothing loops
+        (the chain is finite and ``_auto_engine_used`` is monotonic).
+        Returns True when a restart was launched — the caller must
+        return immediately (the new run owns the workflow).
+        """
+        if not getattr(self, "_auto_run_active", False):
+            return False
+        remaining = self._auto_engine_remaining()
+        if not remaining:
+            return False
+        target = remaining[0]
+        self._auto_engine_used.append(target)
+        self._auto_forced_key = target
+        self._auto_restarting = True
+        _short = " ".join(str(reason).split())[:160]
+        self._log.append_log(
+            f"{Tag.CASE} Polymesh auto fallback: {_short} -> {target} "
+            f"(chain: {self._auto_engine_chain()})."
+        )
+        self._log_substitution(
+            f"Polymesh auto fallback ({_short}) -> {target}."
+        )
+        self._on_run_meshing()
+        return True
+
     def _maybe_auto_checkmesh_fallback(self, report, payload) -> bool:
         """W18: restart an auto run with the next chain engine on FAIL.
 
@@ -4718,20 +4806,9 @@ class MainWindow(QMainWindow):
                 "chain stops (accepted residual is final)."
             )
             return False
-        target = remaining[0]
-        self._auto_engine_used.append(target)
-        self._auto_forced_key = target
-        self._auto_restarting = True
-        self._log.append_log(
-            f"{Tag.CASE} Polymesh auto fallback: checkMesh "
-            f"{getattr(report, 'status', 'FAIL')} -> {target} "
-            f"(chain: {self._auto_engine_chain()})."
+        return self._advance_auto_chain(
+            f"checkMesh {getattr(report, 'status', 'FAIL')}"
         )
-        self._log_substitution(
-            f"Polymesh auto checkMesh fallback -> {target}."
-        )
-        self._on_run_meshing()
-        return True
 
     def _on_checkmesh_finished(self, report):
         # Stale guard: checkMesh was launched during a specific meshing
@@ -5321,24 +5398,7 @@ class MainWindow(QMainWindow):
         # failure — restore it instead of burning the next chain engine.
         if self._restore_auto_compare_candidate(f"dual fallback pre-empted ({msg})"):
             return True
-        if not getattr(self, "_auto_run_active", False):
-            return False
-        remaining = self._auto_engine_remaining()
-        if not remaining:
-            return False
-        target = remaining[0]
-        self._auto_engine_used.append(target)
-        self._auto_forced_key = target
-        self._auto_restarting = True
-        self._log.append_log(
-            f"{Tag.CASE} Polymesh auto fallback: dual invalid ({msg}) -> "
-            f"{target} (chain: {self._auto_engine_chain()})."
-        )
-        self._log_substitution(
-            f"Polymesh auto dual fallback -> {target}."
-        )
-        self._on_run_meshing()
-        return True
+        return self._advance_auto_chain(f"dual invalid ({msg})")
 
     def _maybe_auto_direct_bl(self, msg: str) -> bool:
         """W18 direct leg: after the mesher chain is exhausted, rebuild
@@ -5472,7 +5532,12 @@ class MainWindow(QMainWindow):
         no mesh.  Re-runs checkMesh on the restored case so the shown
         verdict always matches the shown mesh.  One-shot per run."""
         cand = getattr(self, "_auto_compare_candidate", None)
-        if not getattr(self, "_auto_run_active", False) or not cand:
+        # A real candidate is a non-empty dict.  Anything else (unset,
+        # None, a test stub attribute) is "no candidate": never act on
+        # state that was not explicitly recorded.
+        if not isinstance(cand, dict) or not cand:
+            return False
+        if not getattr(self, "_auto_run_active", False):
             return False
         self._auto_compare_candidate = None
         from pathlib import Path as _Path
@@ -5509,7 +5574,9 @@ class MainWindow(QMainWindow):
         from polyfoammesh.core.tet_source import compare_auto_results
 
         cand = getattr(self, "_auto_compare_candidate", None)
-        if not getattr(self, "_auto_run_active", False) or not cand:
+        if not isinstance(cand, dict) or not cand:
+            return False
+        if not getattr(self, "_auto_run_active", False):
             return False
         challenger = self._auto_compare_score_now(report)
         winner = compare_auto_results(cand["score"], challenger)

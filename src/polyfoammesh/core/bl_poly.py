@@ -1842,7 +1842,21 @@ class PolyBoundaryLayerEngine:
                     "closes the band with terminator strips"
                 )
         if not sel:
-            res.errors.append("no selected faces")
+            _requested = [n for n in (patch_names or []) if n]
+            _known = {p["name"] for p in patches}
+            _missing = [n for n in _requested if n not in _known]
+            if _requested and _missing:
+                # Declared refusal, not a silent all-patch extrusion: the
+                # named patches do not exist in THIS mesh (stale rename,
+                # different import).  Extruding everywhere would put
+                # prisms on inlets/outlets.
+                res.errors.append(
+                    "no selected faces: requested patch(es) not found "
+                    f"({', '.join(_missing[:5])}) - refusing to extrude "
+                    "every boundary patch"
+                )
+            else:
+                res.errors.append("no selected faces")
             return res
         res.n_wall_faces = len(sel)
         res.wall_patches = used_patches
@@ -2772,9 +2786,18 @@ class PolyBoundaryLayerEngine:
             selected = set(range(n_bnd))
         else:
             names = {p["name"] for p in patches}
-            wanted = {n for n in (patch_names or []) if n in names}
+            requested = [n for n in (patch_names or []) if n]
+            wanted = {n for n in requested if n in names}
+            if requested and not wanted:
+                # The caller asked for SPECIFIC patches and none of them
+                # exist (stale rename, import with different names).  The
+                # historical fallback extruded EVERY boundary patch —
+                # including inlets and outlets — which is exactly the
+                # silent all-patch BL the chain forbids.  Refuse instead;
+                # ``run`` reports the missing names.
+                return [], []
             if not wanted:
-                # nothing matched: fall back to every patch (safe default)
+                # No names requested at all: historical all-boundary default.
                 selected = set(range(n_bnd))
             else:
                 selected = {

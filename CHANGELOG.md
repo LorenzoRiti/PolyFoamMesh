@@ -100,6 +100,36 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   2 volte su hook per varianza nativa di fTetWild (nessun seed disponibile).
   Il fixture ora garantisce un box sano (health-gate + max 3 rebuild,
   fail forte se sistematico); il contratto off==on resta invariato.
+- **Auto chain chiusa sui buchi trovati in audit** (verificati nel codice):
+  1. **Gate 3D sul MSH in GUI**: il CLI validava già gli elementi 3D, la
+     GUI no — una mesh solo-superficie veniva accettata, messa in cache e
+     moriva al convert senza fallback. Ora è un fallimento del tet stage
+     e la catena avanza (fail-open su file illeggibile, come il CLI).
+  2. **Convert fallito non è più un vicolo cieco**: `gmshToFoam` che
+     fallisce in auto fa avanzare la catena (o ripristina l'incumbent
+     weak-valid se esiste); il dialog resta l'ultima risorsa.
+  3. **Un solo punto avanza la catena** (`_advance_auto_chain`): dual e
+     checkMesh non duplicano piu' il bookkeeping (used key, forced key,
+     restart flag, log dichiarati).
+  4. **Budget auto-fix per run, non per sessione**: dopo due retry ogni
+     run successiva era negata per sempre ("max iterations (2) reached");
+     ora un run utente fresco riparte da zero (i restart interni no).
+  5. **Case dir unica per costruzione** (`claim_unique_dir`): timestamp al
+     secondo + `exist_ok=True` faceva condividere la directory fra due run
+     nello stesso secondo (un restart della catena su tet fallito avviene
+     in meno di un secondo): la seconda leggeva i resti della prima. Ora
+     `mkdir(exist_ok=False)` atomico con suffisso `_2`, `_3`… — vale per
+     gmsh_direct, cfMesh (`case_`), autopoly e native_poly.
+  Test: 7 nuovi (gate prima della cache, punto unico, dialog ultima
+  risorsa, reset del counter, unicita' atomica delle case dir).
+- **BL: niente piu' estrusione "ovunque" su nomi patch stantii**: se il
+  chiamante chiede patch specifiche e NESSUNA esiste in questa mesh
+  (rename dopo il meshing, import diverso), `_select_faces` estrudeva
+  ogni patch di bordo — inlet/outlet compresi: la sostituzione silenziosa
+  che la catena BL vieta. Ora rifiuta con un errore che nomina le patch
+  mancanti; `patch_names` assente mantiene il default storico. Il
+  candidato compare-leg viene ripristinato solo se e' un dict registrato
+  davvero (mai su attributi arbitrari).
 - Gate: suite 1790 passed, 2 skipped, 23 deselected, 1 xfailed; ruff green; commit locale.
 
 ### Polymesh auto + cfMesh visibili (W18) - 2026-10-24 - PARTIAL
