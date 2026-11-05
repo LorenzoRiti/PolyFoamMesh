@@ -229,6 +229,17 @@ def test_claim_unique_dir_never_reuses_a_directory(tmp_path):
         assert path.is_dir()
 
 
+def test_claim_unique_dir_never_raises_on_exhaustion(tmp_path):
+    """The last resort is a random suffix, not a crash: a run must never
+    die because the numeric names are exhausted."""
+    for n in range(3):
+        (tmp_path / ("case_1" if n == 0 else f"case_1_{n + 1}")).mkdir()
+    got = mw.claim_unique_dir(tmp_path, "case_1", limit=3)
+    assert got.is_dir()
+    assert got.name.startswith("case_1_")
+    assert got.name != "case_1_2" and got.name != "case_1_3"
+
+
 def test_every_timestamped_case_dir_is_claimed_atomically():
     """Every timestamped case dir goes through claim_unique_dir, never a
     bare mkdir(exist_ok=True) on a second-resolution name."""

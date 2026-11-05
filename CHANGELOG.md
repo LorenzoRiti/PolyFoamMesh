@@ -122,6 +122,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
      gmsh_direct, cfMesh (`case_`), autopoly e native_poly.
   Test: 7 nuovi (gate prima della cache, punto unico, dialog ultima
   risorsa, reset del counter, unicita' atomica delle case dir).
+- **E2E misurata su HEAD 2.4.0** (`tools/auto_chain_e2e.py`, mirror della
+  catena GUI): cylinder AUTO VALID in 18.5 s al primario (Mesh OK, 0
+  difetti dual); venturi AUTO VALID in 270.9 s via gamba direct-BL
+  (gmsh Failed NO 48.2 / skew 3.08 -> fTetWild Failed NO 44.4 / skew 1.78
+  -> direct-BL Mesh OK NO 71.8 / skew 3.26).
 - **BL: niente piu' estrusione "ovunque" su nomi patch stantii**: se il
   chiamante chiede patch specifiche e NESSUNA esiste in questa mesh
   (rename dopo il meshing, import diverso), `_select_faces` estrudeva

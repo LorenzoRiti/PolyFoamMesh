@@ -160,7 +160,14 @@ def claim_unique_dir(root: Path, stem: str, limit: int = 1000) -> Path:
     silently shared one directory, so the second run read the first
     run's leftovers.  ``mkdir(exist_ok=False)`` makes the claim atomic —
     whoever loses gets ``_2``, ``_3``… and the race is impossible.
+
+    The numeric suffixes are for readability; after ``limit`` collisions
+    the last resort is a random suffix, so this function NEVER raises
+    ``FileExistsError`` on a healthy disk (a run must not die because
+    someone started a thousand meshes in the same second).
     """
+    import uuid
+
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     for n in range(max(1, int(limit))):
@@ -170,7 +177,9 @@ def claim_unique_dir(root: Path, stem: str, limit: int = 1000) -> Path:
             return candidate
         except FileExistsError:
             continue
-    raise FileExistsError(f"cannot claim a unique dir {stem!r} under {root}")
+    candidate = root / f"{stem}_{uuid.uuid4().hex[:8]}"
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
 
 
 def _free_disk_gb(path: str | Path) -> float:
