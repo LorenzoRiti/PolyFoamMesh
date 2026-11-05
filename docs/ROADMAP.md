@@ -1,21 +1,30 @@
 # PolyFoamMesh Roadmap
 
-Where the project stands after 2.3.0 and where it goes next. This
+Where the project stands after 2.4.0 and where it goes next. This
 document is the planning reference: every item lists the *evidence* that
 motivated it and the *acceptance gate* that closes it, in the same
 measure-first style used so far (profile → fix → keep-best → corpus
 zero-diff → release).
 
-Current state (2.3.0): the poly pipeline produces polyhedral meshes with
-working boundary layers on real production geometry, hangs are detected
-and retried, the pipeline is 24-43 % faster with byte-identical output,
-Linux is supported and verified on WSL Ubuntu, and the fast suite is
-green on Windows and Linux (1,516 tests). See
+Current state (2.4.0, cut locally — release pending the user's GUI
+validation and PARTIAL sign-off): Polymesh auto picks the tet engine from
+measured geometry features (GMSH-first with fTetWild fallback), never
+silently swaps one for the other, and the chain is closed end to end —
+3D-element gate before the cache, convert failures advance the chain,
+weak-but-valid meshes get one keep-best challenger, and an exhausted
+chain ends in a single direct-BL attempt on the last validated tet mesh.
+Advanced carries a strict per-engine pin and a BL strategy selector.
+Ambient evidence is in the log: build id (git SHA), Re/y+/stack-closure
+readout before the run, and every substitution declared. Fast suite:
+1,798 tests green on Windows (+ release gate); E2E headless
+`tools/auto_chain_e2e.py`: cylinder AUTO VALID in 18.5 s, venturi AUTO
+VALID via the direct-BL leg. See
 [CHANGELOG.md](../CHANGELOG.md) and
 [residual_risks.md](residual_risks.md) for the details and the accepted
-limitations.
+limitations (R1 verdict: PARTIAL by the per-defect reading, max skew 2.9
+declared; corpus quality 3/15; Linux installer not built here).
 
-## Next release (2.4)
+## Next release (2.5)
 
 ### Engineering
 
