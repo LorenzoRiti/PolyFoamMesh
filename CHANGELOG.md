@@ -7,6 +7,14 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Dual: when a few defects (<= 8) remain, the dual is rebuilt once from the
+  same tets with boundary feature angle 20 deg and the better mesh is kept.
+  Faceted walls (20-40 deg STL creases) keep their crease vertices, so wall
+  faces stay flat.  Real production chain on the corpus: checkMesh Mesh OK
+  with BL 12 -> 14 of 26 (pipe_constriction, venturi on GMSH), none worse.
+- Dual mixed tet+prism path: internal faces written upper-triangular and
+  unused points removed (checkMesh errors on that path).
+
 ### Changed (velocità)
 - **fTetWild su STEP legge le superfici già caricate**: prima passava dal
   mesher di superficie GMSH, la fase lenta e fragile (DN1000: oltre 6 minuti

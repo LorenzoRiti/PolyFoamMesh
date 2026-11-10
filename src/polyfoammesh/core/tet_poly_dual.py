@@ -199,6 +199,8 @@ class TetPolyDualConverter:
         shift_boundary_skew: bool = True,
         merge_concave_cells: bool = False,
         split_concave_cells: bool = False,
+        fallback_feature_angle: float = 0.0,
+        fallback_max_defects: int = 8,
         merge_rounds: int = 2,
         watchdog=None,
     ):
@@ -486,6 +488,16 @@ class TetPolyDualConverter:
         # edges and relax interior vertices at the wall pyramids that are
         # left (see poly_cell_split).  Keep-best, wall untouched.
         self._split_concave_cells = bool(split_concave_cells)
+        # Keep-best second pass: when the dual still has defects, rebuild it
+        # once from the same primal with this boundary feature angle and keep
+        # the result with fewer defects (0 = off).  Faceted walls with 20-40
+        # deg creases need the lower angle (crease vertices stay, faces stay
+        # flat); smooth CAD keeps the default (measured, corpus 2026-11-11).
+        self._fallback_feature_angle = float(fallback_feature_angle)
+        # Only worth a second build when a few defects are left: every fix
+        # measured came from 1-3 defects, 25-30 never cleared (dirty CAD)
+        # and only cost time.
+        self._fallback_max_defects = int(fallback_max_defects)
         self._merge_rounds = max(1, int(merge_rounds))
         self._last_dissolve_fallbacks = 0
         if self._dissolve_stars > 0.0 and not self._collapse:
@@ -543,6 +555,50 @@ class TetPolyDualConverter:
     # ------------------------------------------------------------------
 
     def run(self) -> DualPolyResult:
+        fb = self._fallback_feature_angle
+        if fb <= 0.0 or abs(fb - self._boundary_feature_angle) < 1e-9:
+            return self._run_once()
+        poly_dir = self._case_dir / "constant" / "polyMesh"
+        primal = {f.name: f.read_bytes() for f in poly_dir.iterdir()
+                  if f.is_file()} if poly_dir.is_dir() else {}
+        first = self._run_once()
+        if (not first.success or first.residual_defects <= 0 or not primal
+                or first.residual_defects > self._fallback_max_defects):
+            return first
+        out1 = {f.name: f.read_bytes() for f in poly_dir.iterdir() if f.is_file()}
+        self._log(
+            f"[poly] {first.residual_defects} defect(s) left at feature angle "
+            f"{self._boundary_feature_angle:.0f} deg - retrying at {fb:.0f} deg"
+        )
+
+        def _restore(files):
+            for f in poly_dir.iterdir():
+                if f.is_file() and f.name not in files:
+                    f.unlink()
+            for name, data in files.items():
+                (poly_dir / name).write_bytes(data)
+
+        _restore(primal)
+        angle0 = self._boundary_feature_angle
+        self._boundary_feature_angle = fb
+        try:
+            second = self._run_once()
+        finally:
+            self._boundary_feature_angle = angle0
+        if second.success and second.residual_defects < first.residual_defects:
+            self._log(
+                f"[poly] kept {fb:.0f} deg: defects "
+                f"{first.residual_defects} -> {second.residual_defects}"
+            )
+            second.stage_times["total"] = round(
+                first.stage_times.get("total", 0.0)
+                + second.stage_times.get("total", 0.0), 2)
+            return second
+        _restore(out1)
+        self._log(f"[poly] kept {angle0:.0f} deg ({fb:.0f} deg was not better)")
+        return first
+
+    def _run_once(self) -> DualPolyResult:
         t_start = time.monotonic()
         res = DualPolyResult()
         try:
@@ -1646,10 +1702,13 @@ class TetPolyDualConverter:
                 bnd_faces[pi].append([int(x) for x in faces_c[fi]])
                 bnd_own[pi].append(int(owner_c[fi]))
 
-        # ---- assemble internal-first, then boundary per patch
-        faces = int_faces
-        owner_out = int_own
-        neigh_out = int_nb
+        # ---- assemble internal-first (upper-triangular), then boundary
+        io = np.array(int_own, dtype=np.int64)
+        inb = np.array(int_nb, dtype=np.int64)
+        order = np.lexsort((inb, io))
+        faces = [int_faces[i] for i in order]
+        owner_out = io[order].tolist()
+        neigh_out = inb[order].tolist()
         n_int = len(faces)
         new_patches: list[dict] = []
         start = n_int
@@ -1665,8 +1724,17 @@ class TetPolyDualConverter:
             })
             start += k
 
+        # drop points no face uses (prism vertices replaced by the core)
+        pts_arr = np.array(pts_list, dtype=np.float64)
+        used = np.zeros(len(pts_arr), dtype=bool)
+        for f in faces:
+            used[f] = True
+        if not used.all():
+            renum = np.cumsum(used) - 1
+            pts_arr = pts_arr[used]
+            faces = [[int(renum[x]) for x in f] for f in faces]
         return SimpleNamespace(
-            points=np.array(pts_list, dtype=np.float64),
+            points=pts_arr,
             faces=faces,
             owner=np.array(owner_out, dtype=np.int64),
             neigh=np.array(neigh_out, dtype=np.int64),

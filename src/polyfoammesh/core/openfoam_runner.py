@@ -1897,6 +1897,7 @@ def production_dual_kwargs(ftetwild_path: bool) -> dict:
         # Cells wrapping a concave feature edge: split in two along the edge,
         # then relax interior vertices (2026-11-10, wall untouched).
         split_concave_cells=True,
+        fallback_feature_angle=20.0,
     )
 
 
