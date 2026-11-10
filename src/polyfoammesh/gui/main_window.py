@@ -101,6 +101,8 @@ logger = logging.getLogger(__name__)
 
 # fTetWild input written from the in-memory (already scaled) patch meshes.
 _FTW_PATCH_STL_NAME = "surface.patches.ascii.stl"
+# Auto: past this, a GMSH tet run is stopped and fTetWild takes over.
+_AUTO_GMSH_BUDGET_S = 120.0
 
 
 def _is_wall_patch(name: str) -> bool:
@@ -2275,6 +2277,30 @@ class MainWindow(QMainWindow):
         """Attempt order of the current auto run (for logs/tests)."""
         return list(getattr(self, "_auto_engine_chain_cache", []))
 
+    def _auto_gmsh_budget_s(self) -> float:
+        """Wall-clock budget for a GMSH tet run inside Auto (0 = none).
+
+        Only when Auto has fTetWild still to try: a user who picked GMSH
+        explicitly keeps the full per-attempt limits.  Measured 2026-11-10:
+        GMSH meshes the 12-geometry corpus in 0.1-5 s when it succeeds, but
+        on the DN1000 valve it spent 6+ minutes in surface retries before
+        failing, while fTetWild from the loaded patches needs 30 s.
+        ``POLYFOAMMESH_AUTO_GMSH_BUDGET_S`` overrides (0 disables).
+        """
+        if getattr(self, "_current_mesher_type", "") != "gmsh_direct_poly":
+            return 0.0
+        plan = getattr(self, "_auto_tet_plan", None)
+        has_ftet = bool(plan is not None and getattr(plan, "fallback", None) == "ftetwild")
+        if getattr(self, "_auto_run_active", False):
+            has_ftet = has_ftet or "ftetwild_poly" in self._auto_engine_remaining()
+        if not has_ftet:
+            return 0.0
+        raw = os.environ.get("POLYFOAMMESH_AUTO_GMSH_BUDGET_S", "").strip()
+        try:
+            return max(0.0, float(raw)) if raw else _AUTO_GMSH_BUDGET_S
+        except ValueError:
+            return _AUTO_GMSH_BUDGET_S
+
     def _auto_engine_remaining(self) -> list:
         """Fallback keys not attempted yet in the current auto run."""
         used = set(getattr(self, "_auto_engine_used", []))
@@ -3780,13 +3806,20 @@ class MainWindow(QMainWindow):
                 feature_angle=_feature_angle,
             )
         else:
+            _gmsh_budget = self._auto_gmsh_budget_s()
             w = GmshVolumeWorker(step_path, msh_path, detail, n_layers, bl_thickness, bl_expansion,
                                  refinement_zones=refinement_zones,
                                  max_cell_size=max_cell, min_cell_size=min_cell,
                                  max_cells_target=max_cells_target,
                                  surface_resolution=surface_resolution,
                                  bl_wall_size_floor=bl_wall_size_floor,
-                                 scale=self._params.get_scale_factor())
+                                 scale=self._params.get_scale_factor(),
+                                 wall_budget_s=_gmsh_budget)
+            if _gmsh_budget:
+                self._log.append_log(
+                    f"[tet:gmsh] Auto: GMSH has {int(_gmsh_budget)}s, then "
+                    "fTetWild takes over."
+                )
         self._gmsh_worker = w
         self._gmsh_vol_ctx = {
             "step_path": step_path, "msh_path": msh_path, "detail": detail,

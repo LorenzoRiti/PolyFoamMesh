@@ -14,6 +14,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   patch tessellati in memoria, con i nomi: la stessa valvola fa il tet in
   30 s (tessellazione 1,2 s, export 2,5 s, fTetWild 26 s, 104k tet). La
   superficie GMSH resta solo se ci sono zone di raffinamento.
+- **Auto non aspetta GMSH per minuti**: se fTetWild è ancora da provare, GMSH
+  ha 120 s in totale (tutti i tentativi), poi viene fermato e parte fTetWild
+  dai patch caricati. Sul corpus GMSH riesce in 0,1-5 s; sulla DN1000 restava
+  6+ minuti nei tentativi prima di fallire. `POLYFOAMMESH_AUTO_GMSH_BUDGET_S`
+  cambia il limite (0 lo toglie); GMSH scelto a mano non ha limite nuovo.
 
 ### Fixed
 - **Scala applicata due volte** nel ripiego fTetWild su STL a patch: le mesh

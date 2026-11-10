@@ -4161,8 +4161,14 @@ class GmshVolumeWorker(QObject):
                  surface_resolution: str = "medium",
                  bl_wall_size_floor: float = 0.0,
                  scale: float = 1.0,
+                 wall_budget_s: float = 0.0,
                  parent=None):
         super().__init__(parent)
+        # Total wall-clock budget for ALL attempts (0 = only the per-attempt
+        # limits).  Auto sets it when a fallback engine exists: past the
+        # budget GMSH is stopped and the chain moves on instead of sitting
+        # through normal -> robust -> manual retries for many minutes.
+        self._wall_budget_s = float(wall_budget_s or 0.0)
         # Solution-derived target-size lattice (core.solution_adaptive). Passed
         # to the subprocess by env var like refinement_zones — the CLI already
         # takes ten positional args and an eleventh would be unreadable.
@@ -4196,6 +4202,12 @@ class GmshVolumeWorker(QObject):
         proc = self._proc_holder.get("proc")
         if proc is not None and proc.poll() is None:
             _kill_pid_tree(proc.pid)
+
+    def _budget_message(self) -> str:
+        return (
+            f"GMSH exceeded the Auto time budget ({int(self._wall_budget_s)}s) "
+            "- stopped so the next engine can run"
+        )
 
     _PCT_RE = re.compile(r"(?:Progress|Done)\s*[:=]?\s*(\d{1,3})\s*%", re.I)
     _ANY_PCT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -4319,9 +4331,16 @@ class GmshVolumeWorker(QObject):
             stall_holder: dict = {}
             signature_detector = GmshSignatureStallDetector()
             self._attempt_start = time.monotonic()
+            attempt_timeout = self.VOLUME_TIMEOUT_S
+            if self._wall_budget_s > 0.0:
+                left = self._wall_budget_s - (time.perf_counter() - t_gmsh0)
+                if left <= 1.0:
+                    self.failed.emit(self._budget_message())
+                    return
+                attempt_timeout = min(attempt_timeout, left)
             try:
                 returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(
-                    cmd, run_cwd, self.VOLUME_TIMEOUT_S, env=attempt_env,
+                    cmd, run_cwd, attempt_timeout, env=attempt_env,
                     on_line=self._on_stream_line,
                     proc_holder=self._proc_holder,
                     stall_s=attempt_stall_s,
@@ -4339,7 +4358,10 @@ class GmshVolumeWorker(QObject):
 
             if timed_out:
                 # Hard ceiling: the GUI must not be held for another attempt.
-                self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
+                if attempt_timeout < self.VOLUME_TIMEOUT_S:
+                    self.failed.emit(self._budget_message())
+                else:
+                    self.failed.emit(f"GMSH volume exceeded {self.VOLUME_TIMEOUT_S}s")
                 return
 
             if stall_holder.get("stalled"):
