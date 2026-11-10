@@ -952,6 +952,10 @@ class TetPolyDualConverter:
                 pts, rrep = relax_boundary_pyramids(
                     M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
                     _score, log=self._log,
+                    incremental=lambda p, _M=M: IncrementalDefectScore(
+                        p, _M.faces, _M.owner, _M.neigh, _M.n_int, _M.n_cells,
+                        boundary_skew=self._count_boundary_skew,
+                    ),
                 )
                 M.points = pts
                 best_defects = int(rrep["defects_after"])
@@ -4718,3 +4722,197 @@ if __name__ == "__main__":
         return cleared
 
 
+
+
+# ---------------------------------------------------------------------------
+# incremental defect score (vertex moves) - same criteria as _detect_defects
+# ---------------------------------------------------------------------------
+
+def _subset_face_extent(points, faces, idx, cf, sv, eps):
+    """`_face_extent` on an arbitrary face subset (rows follow ``idx``)."""
+    hat = sv / (np.linalg.norm(sv, axis=1) + eps)[:, None]
+    out = np.zeros(len(idx), dtype=np.float64)
+    sizes = np.fromiter((len(faces[i]) for i in idx), dtype=np.int64,
+                        count=len(idx))
+    for k in np.unique(sizes):
+        rows = np.nonzero(sizes == k)[0]
+        v = np.array([faces[idx[r]] for r in rows], dtype=np.int64)
+        rel = points[v] - cf[rows][:, None, :]
+        out[rows] = np.abs(
+            (rel * hat[rows][:, None, :]).sum(axis=2)).max(axis=1)
+    return out
+
+
+class _Overlay:
+    """Read-only view: ``base`` with rows ``idx`` replaced by ``rows``."""
+
+    def __init__(self, base, idx, rows):
+        o = np.argsort(idx)
+        self.base = base
+        self.idx = np.asarray(idx)[o]
+        self.rows = rows[o]
+
+    def __getitem__(self, key):
+        key = np.asarray(key)
+        out = self.base[key].copy()
+        if len(self.idx):
+            p = np.minimum(np.searchsorted(self.idx, key), len(self.idx) - 1)
+            hit = self.idx[p] == key
+            out[hit] = self.rows[p[hit]]
+        return out
+
+
+class IncrementalDefectScore:
+    """Defect total of a dual mesh, updated locally when vertices move.
+
+    Moving a vertex set V changes the geometry of the faces touching V, the
+    centres of their cells, and the checks of every face of those cells -
+    nothing else.  ``trial(pts, V)`` evaluates exactly that neighbourhood
+    with the formulas of :func:`_detect_defects` (boundary skew included
+    when asked) and ``accept()`` commits the last trial.  On a 1M-face dual
+    one trial costs milliseconds instead of a full re-detection (~0.15 s,
+    measured DN1000: 945 full re-detections = 146 s of a 188 s dual).
+    """
+
+    def __init__(self, points, faces, owner, neigh, n_int, n_cells,
+                 boundary_skew=False, non_ortho_limit_deg=70.0,
+                 skew_limit=4.0):
+        self.faces = faces
+        self.owner = np.asarray(owner)
+        self.neigh = np.asarray(neigh)
+        self.n_int = int(n_int)
+        self.n_cells = int(n_cells)
+        self.bskew = bool(boundary_skew)
+        self.cos_lim = float(np.cos(np.deg2rad(non_ortho_limit_deg)))
+        self.skew_limit = float(skew_limit)
+        self.points = np.asarray(points, dtype=np.float64)
+        self.sf, self.cf = _face_geometry(self.points, faces)
+        self.ctr, self.vol = _cell_centres(
+            self.sf, self.cf, self.owner, self.neigh, self.n_int,
+            self.n_cells)
+        n_f = len(faces)
+        lens = np.fromiter((len(f) for f in faces), dtype=np.int64, count=n_f)
+        flat = np.fromiter((v for f in faces for v in f), dtype=np.int64,
+                           count=int(lens.sum()))
+        fid = np.repeat(np.arange(n_f), lens)
+        o = np.argsort(flat, kind="stable")
+        self._vf_v, self._vf_f = flat[o], fid[o]
+        cells = np.concatenate([self.owner, self.neigh])
+        cfid = np.concatenate([np.arange(n_f), np.arange(self.n_int)])
+        o = np.argsort(cells, kind="stable")
+        self._cf_c, self._cf_f = cells[o], cfid[o]
+        self.flags = self._flags(np.arange(n_f), self.sf, self.cf, self.ctr,
+                                 self.points)
+        self.total = int(self.flags.sum())
+        self._trial = None
+
+    @staticmethod
+    def _gather(keys, vals, want):
+        lo = np.searchsorted(keys, want, side="left")
+        hi = np.searchsorted(keys, want, side="right")
+        parts = [vals[a:b] for a, b in zip(lo, hi)]
+        if not parts:
+            return np.zeros(0, dtype=np.int64)
+        return np.unique(np.concatenate(parts))
+
+    def _flags(self, idx, sf, cf, ctr, pts):
+        """Defect count per face of ``idx`` (pyramids, non-ortho, skew)."""
+        own = self.owner[idx]
+        out = np.zeros(len(idx), dtype=np.int64)
+        s, c = sf[idx], cf[idx]
+        out += (s * (c - ctr[own])).sum(axis=1) <= 0.0
+        it = idx < self.n_int
+        if it.any():
+            ii = idx[it]
+            si, ci = s[it], c[it]
+            co, cn = ctr[own[it]], ctr[self.neigh[ii]]
+            cnt = (-(si * (ci - cn)).sum(axis=1) <= 0.0).astype(np.int64)
+            d = cn - co
+            dn = np.linalg.norm(d, axis=1)
+            sn = np.linalg.norm(si, axis=1)
+            cos = (d * si).sum(axis=1) / np.maximum(dn * sn, 1e-300)
+            cnt += cos < self.cos_lim
+            cpf = ci - co
+            denom = (si * d).sum(axis=1)
+            scale = (si * cpf).sum(axis=1) / np.where(
+                np.abs(denom) > 0, denom, 1e-300)
+            sv = cpf - scale[:, None] * d
+            fd = np.maximum(0.2 * dn, _subset_face_extent(
+                pts, self.faces, ii, ci, sv, 1e-300))
+            cnt += (np.linalg.norm(sv, axis=1) / np.maximum(fd, 1e-300)
+                    > self.skew_limit)
+            out[it] += cnt
+        bt = ~it
+        if self.bskew and bt.any():
+            bi = idx[bt]
+            rvs = 1e-150
+            b_cpf = c[bt] - ctr[own[bt]]
+            b_fa = s[bt]
+            b_n = b_fa / (np.linalg.norm(b_fa, axis=1) + rvs)[:, None]
+            b_d = b_n * (b_n * b_cpf).sum(axis=1)[:, None]
+            b_sv = b_cpf - ((b_fa * b_cpf).sum(axis=1)
+                            / ((b_fa * b_d).sum(axis=1) + rvs))[:, None] * b_d
+            b_fd = np.maximum(
+                0.4 * np.linalg.norm(b_d, axis=1) + rvs,
+                _subset_face_extent(pts, self.faces, bi, c[bt], b_sv, rvs))
+            out[bt] += np.linalg.norm(b_sv, axis=1) / b_fd > self.skew_limit
+        return out
+
+    def trial(self, pts, moved):
+        """``(total, min_volume)`` for ``pts`` (differs only on ``moved``)."""
+        moved = np.unique(np.asarray(moved, dtype=np.int64))
+        f1 = self._gather(self._vf_v, self._vf_f, moved)
+        sf1, cf1 = _face_geometry(pts, [self.faces[i] for i in f1])
+        c1 = np.unique(np.concatenate(
+            [self.owner[f1], self.neigh[f1[f1 < self.n_int]]]))
+        f2 = self._gather(self._cf_c, self._cf_f, c1)
+        sf2, cf2 = self.sf[f2].copy(), self.cf[f2].copy()
+        if len(f1):
+            pos = np.minimum(np.searchsorted(f1, f2), len(f1) - 1)
+            on1 = f1[pos] == f2
+            sf2[on1] = sf1[pos[on1]]
+            cf2[on1] = cf1[pos[on1]]
+        loc = np.full(self.n_cells, len(c1), dtype=np.int64)
+        loc[c1] = np.arange(len(c1))
+        intm = f2 < self.n_int
+        order = np.concatenate([np.nonzero(intm)[0], np.nonzero(~intm)[0]])
+        g = f2[order]
+        n_i = int(intm.sum())
+        ctr_l, vol_l = _cell_centres(
+            sf2[order], cf2[order], loc[self.owner[g]],
+            loc[self.neigh[g[:n_i]]], n_i, len(c1) + 1)
+        ctr_l, vol_l = ctr_l[:len(c1)], vol_l[:len(c1)]
+        new = self._flags(f2, _Overlay(self.sf, f2, sf2),
+                          _Overlay(self.cf, f2, cf2),
+                          _Overlay(self.ctr, c1, ctr_l), pts)
+        total = self.total - int(self.flags[f2].sum()) + int(new.sum())
+        keep = np.ones(self.n_cells, dtype=bool)
+        keep[c1] = False
+        vmin = min(float(vol_l.min()) if len(c1) else np.inf,
+                   float(self.vol[keep].min()) if keep.any() else np.inf)
+        self._trial = (pts, f1, sf1, cf1, c1, ctr_l, vol_l, f2, new, total)
+        return total, vmin
+
+    def face_pv(self, fi, cell):
+        """Pyramid value of face ``fi`` seen from ``cell`` in the last trial
+        (or the committed state when there is none)."""
+        if self._trial is None:
+            return float(self.sf[fi] @ (self.cf[fi] - self.ctr[cell]))
+        _p, f1, sf1, cf1, c1, ctr_l, _v, _f2, _n, _t = self._trial
+        k = np.searchsorted(f1, fi)
+        s, c = ((sf1[k], cf1[k]) if k < len(f1) and f1[k] == fi
+                else (self.sf[fi], self.cf[fi]))
+        j = np.searchsorted(c1, cell)
+        ct = ctr_l[j] if j < len(c1) and c1[j] == cell else self.ctr[cell]
+        return float(s @ (c - ct))
+
+    def accept(self):
+        pts, f1, sf1, cf1, c1, ctr_l, vol_l, f2, new, total = self._trial
+        self.points = pts
+        self.sf[f1] = sf1
+        self.cf[f1] = cf1
+        self.ctr[c1] = ctr_l
+        self.vol[c1] = vol_l
+        self.flags[f2] = new
+        self.total = total
+        self._trial = None

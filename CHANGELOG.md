@@ -7,6 +7,16 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Velocità (profilo DN1000, stessa mesh): dual 188 s -> 46 s.  Il
+  rilassamento delle piramidi di parete ricalcolava l'intera mesh per ogni
+  mossa candidata (945 volte); ora valuta solo l'intorno dei vertici mossi
+  (`IncrementalDefectScore`, stessi criteri, verificato esatto).  Stesso
+  risultato (13 -> 6 difetti).
+- Velocità BL: il riflusso armonico del nucleo (500 iterazioni di Jacobi per
+  ogni tentativo) usa una matrice sparsa CSR: 9.3 s -> 0.95 s per tentativo
+  sulla DN1000, differenza 3e-14 relativa.  DN1000 catena di produzione
+  (dual + BL): 83 s.
+
 - Dual: when a few defects (<= 8) remain, the dual is rebuilt once from the
   same tets with boundary feature angle 20 deg and the better mesh is kept.
   Faceted walls (20-40 deg STL creases) keep their crease vertices, so wall

@@ -397,6 +397,14 @@ def split_concave_boundary_cells(
     return faces, owner, neigh, n_int, n_cells, patches, report
 
 
+def _face_area_vector(points, face):
+    """Area vector of one polygon (centre-point decomposition)."""
+    p = points[list(face)]
+    c0 = p.mean(axis=0)
+    a = p - c0
+    return 0.5 * np.cross(a, np.roll(a, -1, axis=0)).sum(axis=0)
+
+
 def relax_boundary_pyramids(
     points: np.ndarray,
     faces: list,
@@ -408,6 +416,7 @@ def relax_boundary_pyramids(
     max_rounds: int = 3,
     max_seconds: float = 120.0,
     log: Callable[[str], None] | None = None,
+    incremental: Callable | None = None,
 ):
     """Clear wall-face pyramid failures by moving INTERIOR vertices only.
 
@@ -422,6 +431,12 @@ def relax_boundary_pyramids(
     Keep-best on the caller's defect score (same contract as
     :func:`split_concave_boundary_cells`).  Returns ``(points, report)``;
     ``points`` is the input array when nothing was accepted.
+
+    ``incremental`` (optional): factory ``(points) -> scorer`` with
+    ``trial(pts, moved) -> (total, vmin)``, ``face_pv(fi, cell)`` and
+    ``accept()``, counting the same defects as ``score``.  Each candidate
+    move is then evaluated on its own neighbourhood instead of the whole
+    mesh (DN1000: 945 full re-detections were 146 s of a 188 s dual).
     """
     say = log or (lambda _m: None)
     t_start = time.monotonic()
@@ -449,6 +464,24 @@ def relax_boundary_pyramids(
     best, _vmin, bad, sf, cf, ctr, vol = evaluate(points)
     report = {"defects_before": int(best), "cleared": 0, "stuck": 0}
     pts = points
+    inc = incremental(points) if incremental is not None else None
+    if inc is not None:
+        # live views: accept() updates these arrays in place
+        sf, cf, ctr, vol = inc.sf, inc.cf, inc.ctr, inc.vol
+
+    def try_move(cand, moved):
+        """(total, vmin, pv(fi, c) or None, full-state or None)"""
+        if inc is not None:
+            tot, vmin = inc.trial(cand, moved)
+            return tot, vmin, None
+        tot, vmin, _b, sf1, cf1, ctr1, vol1 = evaluate(cand)
+        return tot, vmin, (sf1, cf1, ctr1, vol1)
+
+    def pv_of(full, fi, c):
+        if full is None:
+            return inc.face_pv(fi, c)
+        sf1, cf1, ctr1, _v = full
+        return float(sf1[fi] @ (cf1[fi] - ctr1[c]))
     for _round in range(max_rounds):
         progressed = False
         for fi in [int(f) for f in bad]:
@@ -488,10 +521,13 @@ def relax_boundary_pyramids(
                 for t in (0.05, 0.1, 0.2, 0.35):
                     cand = pts.copy()
                     cand[inner] -= direction * (t * size)
-                    tot, vmin, bad1, sf1, cf1, ctr1, vol1 = evaluate(cand)
+                    tot, vmin, full = try_move(cand, inner)
                     if vmin > 0.0 and tot < best:
                         pts, best = cand, tot
-                        sf, cf, ctr, vol = sf1, cf1, ctr1, vol1
+                        if full is None:
+                            inc.accept()
+                        else:
+                            sf, cf, ctr, vol = full
                         done = True
                         break
                 if done:
@@ -507,27 +543,37 @@ def relax_boundary_pyramids(
                 w[list(ring)] = 0.5
                 w[list(core)] = 1.0
                 w[on_wall] = 0.0
-                state = (pts, best, sf, cf, ctr, vol)
-                cur_pv = float(sf[fi] @ (cf[fi] - ctr[c]))
+                moved = np.nonzero(w)[0]
+                state = (pts, best, (sf, cf, ctr, vol) if inc is None else None)
+                cur_pv = float(sf[fi] @ (cf[fi] - ctr[c])) if inc is None                     else inc.face_pv(fi, c)
                 for _step in range(10):
-                    s_pts, s_tot, s_sf = state[0], state[1], state[2]
-                    nn = s_sf[fi] / max(float(np.linalg.norm(s_sf[fi])), 1e-300)
+                    s_pts, s_tot = state[0], state[1]
+                    s_sf = _face_area_vector(s_pts, faces[fi])
+                    nn = s_sf / max(float(np.linalg.norm(s_sf)), 1e-300)
                     stepped = False
                     for t in (0.08, 0.04, 0.02):
                         cand = s_pts - np.outer(w, nn) * (t * size)
-                        tot, vmin, bad1, sf1, cf1, ctr1, vol1 = evaluate(cand)
-                        pv1 = float(sf1[fi] @ (cf1[fi] - ctr1[c]))
+                        tot, vmin, full = try_move(cand, moved)
+                        pv1 = pv_of(full, fi, c)
                         if vmin > 0.0 and tot <= s_tot and pv1 > cur_pv:
-                            state = (cand, tot, sf1, cf1, ctr1, vol1)
+                            if full is None:
+                                inc.accept()
+                            state = (cand, tot, full)
                             cur_pv = pv1
                             stepped = True
                             break
                     if not stepped:
                         break
                     if state[1] < best:
-                        pts, best, sf, cf, ctr, vol = state
+                        pts, best = state[0], state[1]
+                        if state[2] is not None:
+                            sf, cf, ctr, vol = state[2]
                         done = True
                         break
+                if not done and inc is not None and state[0] is not pts:
+                    # climb accepted steps that did not pay off: roll back
+                    inc = incremental(pts)
+                    sf, cf, ctr, vol = inc.sf, inc.cf, inc.ctr, inc.vol
             if done:
                 report["cleared"] += 1
                 progressed = True
@@ -536,6 +582,9 @@ def relax_boundary_pyramids(
         if not progressed or time.monotonic() - t_start > max_seconds:
             break
         best, _vmin, bad, sf, cf, ctr, vol = evaluate(pts)
+        if inc is not None:
+            inc = incremental(pts)
+            sf, cf, ctr, vol = inc.sf, inc.cf, inc.ctr, inc.vol
         if not len(bad):
             break
     report["defects_after"] = int(best)
