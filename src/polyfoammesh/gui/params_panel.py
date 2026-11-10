@@ -725,6 +725,12 @@ class ParamsPanel(QWidget):
                "(pip install pytetwild to enable it).")
         )
         engine_form.addRow("Tet engine:", self._tet_engine_combo)
+        # A USER click on the pin is an explicit choice: it outranks a
+        # saved project's legacy mesher key, which used to keep forcing
+        # GMSH while the CTA still showed "Polymesh" (the exact "fTetWild
+        # selected yet gmsh meshing" report).  Restore (setCurrentIndex)
+        # does NOT fire `activated`, so a pinned project stays pinned.
+        self._tet_engine_combo.activated.connect(self._on_tet_engine_activated)
         adv_layout.addWidget(engine_group)
 
         # Cell sizes are derived from the Mesh Fineness slider (single
@@ -2309,6 +2315,18 @@ class ParamsPanel(QWidget):
         except Exception:
             return None
         return str(data) if data else None
+
+    def _on_tet_engine_activated(self, _index: int) -> None:
+        """User click on the engine pin: clear any saved-project mesher
+        override and say so (then click Polymesh/CTA is unnecessary — auto
+        runs with the pin at the next Generate)."""
+        override = self.get_tet_engine_override()
+        if getattr(self, "_explicit_mesher_key", None):
+            self._explicit_mesher_key = None
+            self.suggestion_completed.emit(
+                f"[tet] engine pin '{override or 'auto'}': saved-project "
+                "mesher override cleared (the pin now drives the auto runs)"
+            )
 
     def get_bl_params(self) -> dict | None:
         """Backward-compatible dict, derived from the ONE BLConfig.

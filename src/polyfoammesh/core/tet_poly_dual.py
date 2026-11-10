@@ -198,6 +198,7 @@ class TetPolyDualConverter:
         split_boundary_defects: bool = False,
         shift_boundary_skew: bool = True,
         merge_concave_cells: bool = False,
+        split_concave_cells: bool = False,
         merge_rounds: int = 2,
         watchdog=None,
     ):
@@ -481,6 +482,10 @@ class TetPolyDualConverter:
         # Opt-in dual-only concave-cell merge (P1). Default off: the output
         # is byte-identical to a converter built without it.
         self._merge_concave_cells = bool(merge_concave_cells)
+        # Opt-in (2026-11-10): split the L-shaped cells on concave feature
+        # edges and relax interior vertices at the wall pyramids that are
+        # left (see poly_cell_split).  Keep-best, wall untouched.
+        self._split_concave_cells = bool(split_concave_cells)
         self._merge_rounds = max(1, int(merge_rounds))
         self._last_dissolve_fallbacks = 0
         if self._dissolve_stars > 0.0 and not self._collapse:
@@ -839,6 +844,80 @@ class TetPolyDualConverter:
                     f"{counts['pyramid']}/{counts['non_ortho']}/"
                     f"{counts['skew']} [{time.monotonic() - t:.1f}s]"
                 )
+
+        # Concave-edge cell split + interior relaxation (opt-in).  The wall
+        # pyramids that survive the passes above belong to cells wrapping a
+        # concave feature edge; they need a topology change, not a move of
+        # the wall.  Both steps are keep-best against the same detector.
+        if self._split_concave_cells and best_defects and best_defects > 0:
+            self._check_cancel()
+            t = time.monotonic()
+            from polyfoammesh.core.poly_cell_split import (
+                relax_boundary_pyramids,
+                split_concave_boundary_cells,
+            )
+
+            last_counts: dict = {}
+
+            def _score(pts, fcs, own, nb, ni, nc):
+                sf_, cf_ = _face_geometry(pts, fcs)
+                ctr_, vol_ = _cell_centres(sf_, cf_, own, nb, ni, nc)
+                _, cnt = self._detector(pts, fcs, sf_, cf_, ctr_, own, nb, ni, nc)
+                last_counts.clear()
+                last_counts.update(cnt)
+                pv_ = (sf_[ni:] * (cf_[ni:] - ctr_[own[ni:]])).sum(axis=1)
+                # a wall face too far to the side of its cell centre
+                # (boundary skewness) is the same L-shaped cell seen from
+                # the other criterion: same repair
+                wrong = pv_ <= 0.0
+                if self._count_boundary_skew:
+                    wrong |= _boundary_face_skewness(
+                        pts, fcs, sf_, cf_, ctr_, own, ni,
+                    ) > 4.0
+                return (
+                    cnt["pyramid"] + cnt["non_ortho"] + cnt["skew"],
+                    float(vol_.min()), np.where(wrong)[0] + ni,
+                    sf_, cf_, ctr_, vol_,
+                )
+
+            before = int(best_defects)
+            n_split = 0
+            for _pass in range(2):
+                self._check_cancel()
+                start = int(best_defects)
+                (fcs, own, nb, ni, nc, pat, srep) = split_concave_boundary_cells(
+                    M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
+                    M.patches, _score, log=self._log,
+                )
+                if srep["splits"]:
+                    M.faces, M.owner, M.neigh = fcs, own, nb
+                    M.n_int, M.n_cells, M.patches = ni, nc, pat
+                    n_split += int(srep["splits"])
+                pts, rrep = relax_boundary_pyramids(
+                    M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
+                    _score, log=self._log,
+                )
+                M.points = pts
+                best_defects = int(rrep["defects_after"])
+                if best_defects == 0 or best_defects == start:
+                    break
+            if best_defects < before:
+                total, *_rest = _score(
+                    M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
+                )
+                M.sf, M.cf = _rest[2], _rest[3]
+                best_defects = int(total)
+                best_counts = dict(last_counts)
+                res.residual_defects = int(total)
+                res.defect_breakdown = dict(last_counts)
+                res.n_internal_faces = M.n_int
+                res.n_boundary_faces = len(M.faces) - M.n_int
+                self._log(
+                    f"[poly 7/9] concave-edge repair: {n_split} cell(s) split, "
+                    f"defects {before} -> {total} "
+                    f"[{time.monotonic() - t:.1f}s]"
+                )
+            res.stage_times["concave_split"] = round(time.monotonic() - t, 2)
 
         # Optional non-planar-face fix (default "none": output unchanged —
         # the only effect when the flag is off is that `planarity_report`
@@ -3860,22 +3939,9 @@ def _detect_defects(
         #   svHat = sv/(mag(sv) + ROOTVSMALL)
         #   fd = 0.4*|d| + ROOTVSMALL, then max with each vertex projection
         #   skew = |sv| / fd
-        _RVS = 1e-150
-        b_cpf = cf[n_int:] - ctr[owner[n_int:]]
-        b_fa = sf[n_int:]
-        b_n = b_fa / (np.linalg.norm(b_fa, axis=1) + _RVS)[:, None]
-        b_d = b_n * (b_n * b_cpf).sum(axis=1)[:, None]
-        b_sv = b_cpf - (
-            (b_fa * b_cpf).sum(axis=1)
-            / ((b_fa * b_d).sum(axis=1) + _RVS)
-        )[:, None] * b_d
-        b_svm = np.linalg.norm(b_sv, axis=1)
-        b_fd = np.maximum(
-            0.4 * np.linalg.norm(b_d, axis=1) + _RVS,
-            _face_extent(points, faces, cf, b_sv, len(faces), lo=n_int,
-                         eps=_RVS),
-        )
-        m_bsk = b_svm / b_fd > skew_limit
+        m_bsk = _boundary_face_skewness(
+            points, faces, sf, cf, ctr, owner, n_int,
+        ) > skew_limit
         n_bsk = int(m_bsk.sum())
         bad[owner[n_int:][m_bsk]] = True
 
@@ -3883,6 +3949,26 @@ def _detect_defects(
     if boundary_skew:
         counts["skew_boundary"] = n_bsk
     return bad, counts
+
+
+def _boundary_face_skewness(points, faces, sf, cf, ctr, owner, n_int):
+    """checkMesh skewness of every boundary face (OpenFOAM replica)."""
+    _RVS = 1e-150
+    b_cpf = cf[n_int:] - ctr[owner[n_int:]]
+    b_fa = sf[n_int:]
+    b_n = b_fa / (np.linalg.norm(b_fa, axis=1) + _RVS)[:, None]
+    b_d = b_n * (b_n * b_cpf).sum(axis=1)[:, None]
+    b_sv = b_cpf - (
+        (b_fa * b_cpf).sum(axis=1)
+        / ((b_fa * b_d).sum(axis=1) + _RVS)
+    )[:, None] * b_d
+    b_svm = np.linalg.norm(b_sv, axis=1)
+    b_fd = np.maximum(
+        0.4 * np.linalg.norm(b_d, axis=1) + _RVS,
+        _face_extent(points, faces, cf, b_sv, len(faces), lo=n_int,
+                     eps=_RVS),
+    )
+    return b_svm / b_fd
 
 
 def _boundary_star_areas(P) -> np.ndarray:

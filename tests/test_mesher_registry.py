@@ -102,6 +102,31 @@ def test_engine_pin_contract_panel_to_decision(panel):
     assert "gmsh" not in plan.chain()
 
 
+def test_user_pin_click_clears_the_saved_project_override(panel):
+    """The reported case: project saved with an explicit legacy key keeps
+    forcing GMSH while the user pin fTetWild was ignored.  A user click on
+    the pin must win (override cleared, declared); a programmatic
+    setCurrentIndex (project restore) must NOT."""
+    panel.set_mesh_config(MeshConfig(mesher="gmsh_direct_poly"))
+    assert panel.get_explicit_mesher_key() == "gmsh_direct_poly"
+    assert panel.get_mesher_type() == "gmsh_direct_poly"
+
+    lines: list[str] = []
+    panel.suggestion_completed.connect(lines.append)
+    pin_idx = panel._tet_engine_combo.findData("ftetwild_poly")
+    panel._tet_engine_combo.setCurrentIndex(pin_idx)  # UI changes it
+    panel._tet_engine_combo.activated.emit(pin_idx)  # and reports user input
+    assert panel.get_explicit_mesher_key() is None
+    assert panel.get_tet_engine_override() == "ftetwild_poly"
+    assert panel.get_mesher_type() == "auto"  # CTA click no longer needed
+    assert any("[tet] engine pin" in l for l in lines)
+
+    # A restore-style programmatic change does not clear the override.
+    panel.set_mesh_config(MeshConfig(mesher="gmsh_direct_poly"))
+    panel._tet_engine_combo.setCurrentIndex(panel._tet_engine_combo.findData("ftetwild_poly"))
+    assert panel.get_explicit_mesher_key() == "gmsh_direct_poly"
+
+
 def test_run_start_locks_pin_and_strategy(panel):
     """Mid-run control changes silently did nothing (reported as 'ftet
     pinned yet gmsh running'): the pin and strategy lock with the run."""

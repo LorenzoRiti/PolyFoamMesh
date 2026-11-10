@@ -647,21 +647,30 @@ def _fingerprint(settings: TetSourceSettings, geometry: Path) -> str:
 def _default_gmsh_runner(
     settings: TetSourceSettings, geometry: Path, msh_path: Path,
 ) -> tuple[str, list[str], dict, dict]:
-    from polyfoammesh.core.gmsh_wrapper import generate_volume_mesh
+    from polyfoammesh.core.gmsh_wrapper import generate_volume_mesh, gmsh_shutdown
 
     t0 = time.perf_counter()
-    path, names = generate_volume_mesh(
-        geometry, msh_path, detail=settings.detail,
-        user_lc=settings.max_cell or None,
-        n_layers=settings.n_layers,
-        bl_thickness=settings.bl_thickness,
-        bl_expansion=settings.bl_expansion,
-        refinement_zones=list(settings.refinement_zones) or None,
-        min_cell_size=settings.min_cell or None,
-        max_cells_override=settings.max_cells_target or None,
-        surface_resolution=settings.surface_resolution,
-        scale=settings.scale,
-    )
+    try:
+        path, names = generate_volume_mesh(
+            geometry, msh_path, detail=settings.detail,
+            user_lc=settings.max_cell or None,
+            n_layers=settings.n_layers,
+            bl_thickness=settings.bl_thickness,
+            bl_expansion=settings.bl_expansion,
+            refinement_zones=list(settings.refinement_zones) or None,
+            min_cell_size=settings.min_cell or None,
+            max_cells_override=settings.max_cells_target or None,
+            surface_resolution=settings.surface_resolution,
+            scale=settings.scale,
+        )
+    except BaseException:
+        # A failed GMSH run leaves the in-process session unusable:
+        # gmsh.clear() does not recover it and every later STL comes back
+        # with "no surfaces" (measured 2026-11-10: one bad STL turned the
+        # next 8 good geometries into silent fTetWild fallbacks).  Close
+        # the session so the next call starts from a clean one.
+        gmsh_shutdown()
+        raise
     return str(path), list(names), {}, {
         "total": round(time.perf_counter() - t0, 3),
     }

@@ -220,7 +220,12 @@ def test_bl_partial_patch_terminators():
     # count derives from the INPUT mesh (wall faces x layers), never a
     # hardcoded number (the dual boundary may collapse in the future)
     assert r.wall_patches == ["wall"]
-    assert r.n_prism_cells == 2 * n_wall_before
+    # 2026-11-10: on this 8-cell cube some stacks are squeezed to the 1e-5
+    # floor (face side 0.4: aspect ratio 40,000, a checkMesh failure on a
+    # real mesh).  The pancake guard leaves those faces bare, so the count
+    # is whole stacks on a SUBSET of the wall faces, never more.
+    assert r.n_prism_cells % 2 == 0
+    assert 0 < r.n_prism_cells <= 2 * n_wall_before
     n_term = r.stats["n_terminator_faces"]
     assert n_term > 0
 
@@ -234,9 +239,16 @@ def test_bl_partial_patch_terminators():
     assert np.all(after[2][:n_int_after] < after[3])
     names_after = {p["name"]: p for p in after[4]}
     names_before = {p["name"]: p for p in patches2}
-    assert names_after["wall"]["nFaces"] == names_before["wall"]["nFaces"]
-    assert names_after["inlet"]["nFaces"] == \
-        names_before["inlet"]["nFaces"] + n_term
+    # Terminators around a wall face the pancake guard left bare stay in the
+    # wall patch, the ones at the wall/inlet border go to the inlet: no patch
+    # shrinks and together they grow by exactly the terminator faces.
+    assert names_after["wall"]["nFaces"] >= names_before["wall"]["nFaces"]
+    assert names_after["inlet"]["nFaces"] >= names_before["inlet"]["nFaces"]
+    assert (
+        names_after["wall"]["nFaces"] + names_after["inlet"]["nFaces"]
+        == names_before["wall"]["nFaces"] + names_before["inlet"]["nFaces"]
+        + n_term
+    )
     # patches tile the boundary exactly (startFace sequential from n_int)
     assert after[4][0]["startFace"] == n_int_after
     s = n_int_after

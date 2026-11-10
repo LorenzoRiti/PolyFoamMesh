@@ -1375,6 +1375,65 @@ def _limit_wall_height_gradient(hw, wall_verts, edges, upper, floor_h,
     return out
 
 
+def _close_bare_pinches(faces, n_int: int, bnd, nf: dict) -> int:
+    """Leave bare the layered wall faces around a pinch vertex.
+
+    Around a boundary vertex the faces form a cycle.  When the bare faces
+    (unselected, or selected with 0 layers) form two or more separate arcs
+    of that cycle, the terminator strips of each arc share the extruded
+    column above the vertex: every edge of the column gets 4 boundary
+    faces and checkMesh reports the boundary multiply connected (measured
+    2026-11-10: slot1 10 edges, concave_bracket 15, whole BL rejected).
+    Dropping the layered faces at that vertex merges the arcs.  Iterated
+    to a fixpoint; ``nf`` is edited in place.  Returns the faces bared.
+    """
+    pos = {fi: bi for bi, fi in enumerate(bnd)}
+    if all(nf.get(bi, 0) > 0 for bi in range(len(bnd))) and len(bnd) == len(faces) - n_int:
+        return 0
+    at: dict = {}
+    for fi in range(n_int, len(faces)):
+        f = faces[fi]
+        m = len(f)
+        for i in range(m):
+            at.setdefault(int(f[i]), []).append(
+                (fi, int(f[i - 1]), int(f[(i + 1) % m])))
+    bared = 0
+    todo = set(at)
+    while todo:
+        nxt: set = set()
+        for v in todo:
+            inc = at[v]
+            lay = [fi for fi, _, _ in inc if nf.get(pos.get(fi, -1), 0) > 0]
+            if not lay or len(lay) == len(inc):
+                continue
+            # bare faces joined through the edges they share at v
+            by_edge: dict = {}
+            parent: dict = {}
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            for fi, a, b in inc:
+                if nf.get(pos.get(fi, -1), 0) > 0:
+                    continue
+                parent.setdefault(fi, fi)
+                for w in (a, b):
+                    other = by_edge.setdefault(w, fi)
+                    if other != fi:
+                        parent[find(fi)] = find(other)
+            if len({find(x) for x in parent}) < 2:
+                continue
+            for fi in lay:
+                nf[pos[fi]] = 0
+                bared += 1
+                nxt.update(int(w) for w in faces[fi])
+        todo = nxt
+    return bared
+
+
 def _boundary_manifold_defects(faces, n_int: int) -> int:
     """Count boundary edges NOT shared by exactly two boundary faces.
 
@@ -3914,6 +3973,7 @@ class PolyBoundaryLayerEngine:
                limit_height_gradient: bool = True,
                thin_bnd=frozenset(),
                cover_thin: bool = True,
+               max_first_layer_aspect: float = 700.0,
                consume: bool = False,
                consume_excluded=None) -> dict:
         """Build the new mesh arrays. Raises on degenerate input.
@@ -4164,8 +4224,16 @@ class PolyBoundaryLayerEngine:
                     nf[bi] = 0
                     continue
                 nf[bi] = n_layers
-                for v in faces[fi]:
-                    nv[v] = n_layers
+            n_pinch = _close_bare_pinches(faces, n_int, bnd, nf)
+            if n_pinch:
+                self._log(
+                    f"[bl] {n_pinch} wall faces left bare around pinch "
+                    "vertices (two bare zones touching at one vertex)"
+                )
+            for bi, fi in enumerate(bnd):
+                if nf[bi] > 0:
+                    for v in faces[fi]:
+                        nv[v] = n_layers
             if not any(nf[bi] > 0 for bi in range(n_wf)):
                 raise ValueError("zero_concave dropped every selected face")
             floor_h = 1e-3 * h1 if h1 > 0 else 0.0
@@ -4271,6 +4339,39 @@ class PolyBoundaryLayerEngine:
                     (min(cum[nv[w] - 1], max_h[w]) if nv[w] > 0 else 0.0))
                 for w in wall_verts
             }
+        # Pancake guard (2026-11-10).  Where the inversion budget squeezes a
+        # stack, the first prism can end up thinner than 1/1000 of its base:
+        # checkMesh then fails the whole mesh on "high aspect ratio cells"
+        # (measured: slot1, 7 cells at 1112 on an otherwise clean mesh).
+        # Such a face is left bare instead - a missing prism on a handful of
+        # faces is a coverage loss, a failed checkMesh is an unusable mesh.
+        if zero_concave and max_first_layer_aspect > 0.0:
+            first_frac = float(cum[0] / cum[n_layers - 1])
+            flat = []
+            for bi, fi in enumerate(bnd):
+                if nf[bi] == 0:
+                    continue
+                f = faces[fi]
+                h_first = first_frac * sum(hw[v] for v in f) / len(f)
+                side = float(np.linalg.norm(_newell(pts, f))) ** 0.5
+                if h_first <= 0.0 or side > max_first_layer_aspect * h_first:
+                    flat.append(bi)
+            if flat and len(flat) < sum(1 for bi in range(n_wf) if nf[bi] > 0):
+                for bi in flat:
+                    nf[bi] = 0
+                _close_bare_pinches(faces, n_int, bnd, nf)
+                kept = set()
+                for bi, fi in enumerate(bnd):
+                    if nf[bi] > 0:
+                        kept.update(faces[fi])
+                for w in wall_verts:
+                    if w not in kept:
+                        nv[w] = 0
+                        hw[w] = 0.0
+                self._log(
+                    f"[bl] {len(flat)} wall faces left bare: their first "
+                    f"prism would be flatter than 1:{max_first_layer_aspect:g}"
+                )
         # Shell volume given up under the unselected (dropped / non-BL)
         # boundary faces: their shared wall vertices are moved to the last
         # layer so the cells stay closed, but no prism replaces the wedge

@@ -27,6 +27,17 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   (0,6% della cella). Con BL e checkMesh reali: `Mesh OK` 5 -> 7 su 22,
   nessuna regressione. Benchmark ed E2E usano la stessa funzione della GUI.
 
+- **Celle a L sugli spigoli concavi** (`poly_cell_split`, attivo in
+  produzione): le piramidi di bordo residue del dual stanno tutte su celle con
+  due facce di parete attorno a uno spigolo concavo. La cella viene tagliata in
+  due lungo lo spigolo (nessun punto mosso, parete intatta), poi si rilassano i
+  soli vertici interni. Keep-best sul rilevatore in-process.
+
+### Fixed (BL)
+- **BL rifiutato sui casi concavi**: due zone scoperte che si toccavano in un
+  solo vertice lasciavano spigoli di bordo con 4 facce e la validazione
+  scartava l'intero strato (`_close_bare_pinches`).
+
 ### Added
 - `tools/compare_mesher_bl.py`: confronto GMSH / fTetWild / snappy contando
   solo `Mesh OK` con BL reale; i fallback non sono accreditati.
@@ -140,6 +151,15 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
      gmsh_direct, cfMesh (`case_`), autopoly e native_poly.
   Test: 7 nuovi (gate prima della cache, punto unico, dialog ultima
   risorsa, reset del counter, unicita' atomica delle case dir).
+- **Il pin ha la meglio sullo stato stantio del progetto** (caso
+  segnalato oggi): un progetto salvato con la chiave legacy
+  `gmsh_direct_poly`
+  costringeva GMSH per sempre anche con il pin fTetWild su Advanced
+  (i CTA mostravano "Polymesh"). Un click utente sul selettore
+  Tet engine ora cancella l'override del progetto e lo dichiara a log
+  (`[tet] engine pin 'ftetwild_poly': saved-project mesher override
+  cleared`); il restore programmatico NON lo cancella. Dopo il click il
+  run parte in auto col pin — niente CTA da risettare.
 - **E2E misurata su HEAD 2.4.0** (`tools/auto_chain_e2e.py`, mirror della
   catena GUI): cylinder AUTO VALID in 18.5 s al primario (Mesh OK, 0
   difetti dual); venturi AUTO VALID in 270.9 s via gamba direct-BL

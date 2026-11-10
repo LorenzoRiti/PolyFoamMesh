@@ -1894,6 +1894,9 @@ def production_dual_kwargs(ftetwild_path: bool) -> dict:
         # The tangential skew shift is non-monotonic on these duals
         # (measured: clears a few skew faces, creates pyramids).
         shift_boundary_skew=False,
+        # Cells wrapping a concave feature edge: split in two along the edge,
+        # then relax interior vertices (2026-11-10, wall untouched).
+        split_concave_cells=True,
     )
 
 

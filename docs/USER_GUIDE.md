@@ -107,7 +107,10 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   declared error, never a silent swap (fTetWild requires
   `pip install pytetwild`). The pin is read once at run start and the
   selector locks during runs, so a mid-run change cannot silently miss
-  its run. If a run ignores both the CTA and the pin, read the first
+  its run. Clicking the pin also clears a saved project's legacy mesher
+  key (the project override cannot out-vote an explicit pin; the log
+  says when this clearing happens). If a run ignores both the CTA and
+  the pin, read the first
   log lines: a saved project with a legacy engine drives the run
   explicitly (declared warning, remedy included — click the Polymesh
   CTA to return to auto). Every attempt,
