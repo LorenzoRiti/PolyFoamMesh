@@ -300,7 +300,12 @@ def _compactness_step(
     movable = (~boundary) & (wsum > 0.0)
     direction[movable] = accum[movable] / wsum[movable, None]
     dnorm = np.linalg.norm(direction, axis=1, keepdims=True)
-    unit = np.divide(direction, np.maximum(dnorm, 1e-300), where=dnorm > 1e-300)
+    # out= is required: without it, zero-norm rows hold uninitialised memory
+    # and a balanced node would move by garbage instead of staying put.
+    unit = np.divide(
+        direction, np.maximum(dnorm, 1e-300),
+        out=np.zeros_like(direction), where=dnorm > 1e-300,
+    )
     out[movable] = (
         points[movable] + step * local_scale[movable, None] * unit[movable]
     )
@@ -445,7 +450,12 @@ def _axis_balance_step(
     movable = (~boundary) & (wsum > 0.0)
     direction[movable] = accum[movable] / wsum[movable, None]
     dnorm = np.linalg.norm(direction, axis=1, keepdims=True)
-    unit = np.divide(direction, np.maximum(dnorm, 1e-300), where=dnorm > 1e-300)
+    # out= is required: without it, zero-norm rows hold uninitialised memory
+    # and a balanced node would move by garbage instead of staying put.
+    unit = np.divide(
+        direction, np.maximum(dnorm, 1e-300),
+        out=np.zeros_like(direction), where=dnorm > 1e-300,
+    )
     out[movable] = (
         points[movable] + step * local_scale[movable, None] * unit[movable]
     )

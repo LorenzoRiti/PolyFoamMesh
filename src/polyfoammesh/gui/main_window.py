@@ -2379,6 +2379,7 @@ class MainWindow(QMainWindow):
                 self._auto_compare_candidate = None
                 self._last_dual_residual = 0
                 self._last_dual_breakdown = {}
+                self._last_bl_prisms = 0
             else:
                 self._auto_restarting = False
             mesher_type = self._resolve_auto_mesher()
@@ -4940,6 +4941,7 @@ class MainWindow(QMainWindow):
                 return
             if self._maybe_auto_compare(report, payload):
                 return
+            self._log_mesh_outcome(report)
             self._launch_decomposepar()
             self._viewer.show_mesh(self._case_dir)
         else:
@@ -5203,6 +5205,7 @@ class MainWindow(QMainWindow):
         # misattributed to this attempt in a compare resolution).
         self._last_dual_residual = 0
         self._last_dual_breakdown = {}
+        self._last_bl_prisms = 0
         if not self._case_dir:
             return
         poly_points = self._case_dir / "constant" / "polyMesh" / "points"
@@ -5269,6 +5272,7 @@ class MainWindow(QMainWindow):
             self._viewer.show_mesh(self._case_dir)
             self._launch_checkmesh()
             return
+        self._last_bl_prisms = int(getattr(result, "n_prism_cells", 0) or 0)
         self._log.append_log(
             f"[bl-tets] {result.n_prism_cells:,} prisms on "
             f"{result.n_wall_faces:,} wall faces; coverage "
@@ -5469,7 +5473,25 @@ class MainWindow(QMainWindow):
             "residual": int(getattr(self, "_last_dual_residual", 0) or 0),
             "skew": getattr(report, "max_skewness", None),
             "non_ortho": getattr(report, "max_non_ortho", None),
+            "has_bl": int(getattr(self, "_last_bl_prisms", 0) or 0) > 0,
         }
+
+    def _log_mesh_outcome(self, report) -> None:
+        """Declare what the finished run delivered, BL included."""
+        from polyfoammesh.core.tet_source import classify_mesh_outcome
+
+        prisms = int(getattr(self, "_last_bl_prisms", 0) or 0)
+        outcome = classify_mesh_outcome(
+            bool(getattr(report, "passed", False)),
+            bool(getattr(self, "_poly_was_converted", False)),
+            bool(self._params.get_bl_params()),
+            prisms,
+        )
+        self._log.append_log(
+            f"{Tag.QUALITY} Outcome: {outcome} "
+            f"(engine {getattr(self, '_current_mesher_type', '')}, "
+            f"{prisms:,} prisms)."
+        )
 
     def _maybe_auto_compare(self, report, payload) -> bool:
         """W18 compare-leg (option A): a weak-but-valid primary gets one
@@ -5485,9 +5507,14 @@ class MainWindow(QMainWindow):
             return False
         if not getattr(self, "_poly_was_converted", False):
             return False
+        bl_missing = (
+            bool(self._params.get_bl_params())
+            and int(getattr(self, "_last_bl_prisms", 0) or 0) <= 0
+        )
         weak = is_weak_auto_result(
             bool(getattr(report, "passed", False)),
             int(getattr(self, "_last_dual_residual", 0) or 0),
+            bl_missing,
         )
         target = auto_compare_next(
             True,
@@ -5504,7 +5531,8 @@ class MainWindow(QMainWindow):
                 self._log.append_log(
                     f"{Tag.CASE} Polymesh auto compare: weak-valid mesh "
                     f"({int(getattr(self, '_last_dual_residual', 0) or 0)} dual "
-                    "residual defects) but no unused engine left — keeping it "
+                    f"residual defects, BL missing={bl_missing}) "
+                    "but no unused engine left — keeping it "
                     "(declared, single-engine chain)."
                 )
             return False
@@ -5513,6 +5541,7 @@ class MainWindow(QMainWindow):
             "case_dir": str(getattr(self, "_case_dir", "")),
             "score": self._auto_compare_score_now(report),
             "residual": int(getattr(self, "_last_dual_residual", 0) or 0),
+            "bl_prisms": int(getattr(self, "_last_bl_prisms", 0) or 0),
             "breakdown": dict(getattr(self, "_last_dual_breakdown", {}) or {}),
             "poly_converted": True,
             "bl_done": bool(getattr(self, "_bl_on_tets_done", False)),
@@ -5526,7 +5555,8 @@ class MainWindow(QMainWindow):
         self._auto_restarting = True
         self._log.append_log(
             f"{Tag.CASE} Polymesh auto compare: primary valid but weak "
-            f"({self._auto_compare_candidate['residual']} dual residual defects) "
+            f"({self._auto_compare_candidate['residual']} dual residual defects, "
+            f"BL missing={bl_missing}) "
             f"-> challenging with {target} (keep-best, one attempt)."
         )
         self._log_substitution(
@@ -5560,6 +5590,7 @@ class MainWindow(QMainWindow):
         self._poly_converter_name = cand.get("converter", "")
         self._auto_forced_key = cand["engine"]
         self._last_dual_residual = int(cand.get("residual", 0) or 0)
+        self._last_bl_prisms = int(cand.get("bl_prisms", 0) or 0)
         try:
             self._last_dual_breakdown = dict(cand.get("breakdown", {}) or {})
         except (TypeError, ValueError):
@@ -5674,6 +5705,7 @@ class MainWindow(QMainWindow):
         # strong-valid.  Overwritten by every dual run, including the
         # challenger's — the candidate's score is snapshotted separately.
         self._last_dual_residual = int(getattr(result, "residual_defects", 0) or 0)
+        self._last_bl_prisms = int(getattr(result, "bl_prism_cells", 0) or 0)
         try:
             self._last_dual_breakdown = dict(getattr(result, "defect_breakdown", {}) or {})
         except (TypeError, ValueError):

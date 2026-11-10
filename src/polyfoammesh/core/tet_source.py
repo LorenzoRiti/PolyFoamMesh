@@ -519,15 +519,47 @@ def pinned_polymesh_plan(engine_key: str, ftetwild_available: bool) -> PolymeshE
     raise ValueError(f"unknown tet engine pin {engine_key!r}; expected gmsh|ftetwild")
 
 
-def is_weak_auto_result(passed: bool, residual_defects: int | None) -> bool:
+def is_weak_auto_result(
+    passed: bool,
+    residual_defects: int | None,
+    bl_missing: bool = False,
+) -> bool:
     """Weak-but-valid: checkMesh passed yet the dual carried residual
     in-process defects (pyramid/non-ortho/skew counts from
-    ``DualPolyResult``).  A clean dual has zero; anything above is
-    measured evidence the tet stage was poor and the other engine
-    deserves one attempt (keep-best, never a regression).  A failed
-    checkMesh is NOT weak — it takes the existing fallback path.
+    ``DualPolyResult``), or the requested boundary layer was not built.
+    A clean dual has zero; anything above is measured evidence the tet
+    stage was poor and the other engine deserves one attempt (keep-best,
+    never a regression).  A failed checkMesh is NOT weak — it takes the
+    existing fallback path.
     """
-    return bool(passed) and int(residual_defects or 0) > 0
+    return bool(passed) and (int(residual_defects or 0) > 0 or bool(bl_missing))
+
+
+def classify_mesh_outcome(
+    passed: bool,
+    poly_converted: bool,
+    bl_requested: bool,
+    bl_prisms: int | None,
+) -> str:
+    """Name what a finished run really delivered (pure, tested).
+
+    A checkMesh PASS alone does not say the product goal was met: the
+    labels keep polyhedra-with-layers apart from a poly mesh whose BL was
+    skipped and from the tet+prism direct leg.
+
+    ``POLY_BL``: polyhedra with prisms.  ``POLY``: polyhedra, BL not
+    requested.  ``POLY_NO_BL``: polyhedra, requested BL missing.
+    ``TET_BL``: tets with prisms.  ``TET``: tets without prisms.
+    ``FAILED``: checkMesh did not pass.
+    """
+    if not passed:
+        return "FAILED"
+    has_bl = int(bl_prisms or 0) > 0
+    if poly_converted:
+        if has_bl:
+            return "POLY_BL"
+        return "POLY_NO_BL" if bl_requested else "POLY"
+    return "TET_BL" if has_bl else "TET"
 
 
 def auto_compare_next(
@@ -555,16 +587,19 @@ def auto_compare_score(
     residual_defects: int | None,
     max_skewness: float | None,
     max_non_ortho: float | None,
+    has_bl: bool = False,
 ) -> tuple:
     """Total order for keep-best (higher wins).
 
-    checkMesh verdict first, then failed checks, then dual residual
-    defects, then skewness, then non-orthogonality.  Unparsed metrics
-    (None) sort as worst — an unknown quality never beats a measured one.
+    checkMesh verdict first, then presence of the boundary layer, then
+    failed checks, dual residual defects, skewness and non-orthogonality.
+    Unparsed metrics (None) sort as worst — an unknown quality never
+    beats a measured one.
     """
     big = float("inf")
     return (
         1 if passed else 0,
+        1 if has_bl else 0,
         -(int(failed_checks) if failed_checks is not None else 10**9),
         -(int(residual_defects) if residual_defects is not None else 10**9),
         -float(max_skewness) if max_skewness is not None else -big,
@@ -576,7 +611,7 @@ def compare_auto_results(candidate: dict, challenger: dict) -> str:
     """Pick the better auto mesh: ``"candidate"`` or ``"challenger"``.
 
     Both are score dicts with keys ``passed``, ``failed_checks``,
-    ``residual``, ``skew``, ``non_ortho``.  Ties keep the candidate
+    ``residual``, ``skew``, ``non_ortho`` and optional ``has_bl``.  Ties keep the candidate
     (the incumbent — no churn without strict improvement).
     """
     def _score(r: dict) -> tuple:
@@ -586,6 +621,7 @@ def compare_auto_results(candidate: dict, challenger: dict) -> str:
             r.get("residual"),
             r.get("skew"),
             r.get("non_ortho"),
+            bool(r.get("has_bl")),
         )
 
     if _score(challenger) > _score(candidate):
@@ -594,18 +630,6 @@ def compare_auto_results(candidate: dict, challenger: dict) -> str:
 
 
 def _fingerprint(settings: TetSourceSettings, geometry: Path) -> str:
-    payload = {
-        "settings": settings.to_mapping(),
-        "geometry": str(geometry.resolve()),
-    }
-    try:
-        st = geometry.stat()
-        payload["size"], payload["mtime_ns"] = st.st_size, st.st_mtime_ns
-    except OSError:
-        payload["size"] = payload["mtime_ns"] = None
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     payload = {
         "settings": settings.to_mapping(),
         "geometry": str(geometry.resolve()),

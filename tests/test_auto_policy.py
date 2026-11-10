@@ -20,6 +20,7 @@ from polyfoammesh.core.tet_source import (  # noqa: E402
     auto_compare_next,
     choose_polymesh_engine,
     choose_tet_source,
+    classify_mesh_outcome,
     compare_auto_results,
     is_weak_auto_result,
     preflight_tet_source,
@@ -173,6 +174,28 @@ def test_is_weak_auto_result():
     assert is_weak_auto_result(True, 5) is True
     assert is_weak_auto_result(False, 5) is False
     assert is_weak_auto_result(False, 0) is False
+    # A clean mesh missing the requested BL is weak; a FAIL still is not.
+    assert is_weak_auto_result(True, 0, True) is True
+    assert is_weak_auto_result(False, 0, True) is False
+
+
+def test_classify_mesh_outcome():
+    assert classify_mesh_outcome(True, True, True, 100) == "POLY_BL"
+    assert classify_mesh_outcome(True, True, True, 0) == "POLY_NO_BL"
+    assert classify_mesh_outcome(True, True, False, None) == "POLY"
+    assert classify_mesh_outcome(True, False, True, 100) == "TET_BL"
+    assert classify_mesh_outcome(True, False, False, 0) == "TET"
+    assert classify_mesh_outcome(False, True, True, 100) == "FAILED"
+
+
+def test_compare_prefers_bl_among_passing_meshes():
+    with_bl = {**_score(True, 0, 5, skew=3.0), "has_bl": True}
+    no_bl = {**_score(True, 0, 0, skew=1.0), "has_bl": False}
+    assert compare_auto_results(no_bl, with_bl) == "challenger"
+    assert compare_auto_results(with_bl, no_bl) == "candidate"
+    # The BL never rescues a mesh that fails checkMesh.
+    failed_bl = {**_score(False, 1, 0), "has_bl": True}
+    assert compare_auto_results(no_bl, failed_bl) == "candidate"
 
 
 def test_auto_compare_next():

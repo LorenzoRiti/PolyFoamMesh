@@ -141,13 +141,25 @@ def run_dual(case: Path) -> dict:
     }
 
 
-def run_bl(case: Path) -> dict:
+def reference_first_height(geom: Path) -> float:
+    """h1 at the GUI default fraction of max cell, sized on this geometry."""
+    sys.path.insert(0, str(ROOT))
+    import benchmarks.run_benchmarks as rb
+
+    _, ctx = rb._prepare_geometry(geom, pipeline="auto", require_watertight=False)
+    if ctx is None:
+        raise ValueError(f"no reference size for {geom.name}")
+    return 0.01 * float(ctx["max_cell"])
+
+
+def run_bl(case: Path, first_height: float = 0.00126, n_layers: int = 5) -> dict:
+    """Default h1 is the R1 value: other geometries must pass their own."""
     from polyfoammesh.core.bl_config import BLConfig
     from polyfoammesh.core.bl_poly import PolyBoundaryLayerEngine
 
     t0 = time.monotonic()
     cfg, _warnings = BLConfig.from_mapping_tolerant({
-        "nLayers": 5, "thicknessRatio": 1.2, "firstLayerThickness": 0.00126,
+        "nLayers": n_layers, "thicknessRatio": 1.2, "firstLayerThickness": first_height,
         "applyToAll": False, "minBaseEdgeFraction": 0.9,
         "terminateByBudget": True,
     }, max_cell=None)

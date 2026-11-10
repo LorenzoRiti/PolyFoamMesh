@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from w18_auto_table import (  # noqa: E402
     convert_case,
+    reference_first_height,
     run_bl,
     run_checkmesh,
     run_dual,
@@ -80,6 +81,12 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
                 return {"engine": engine, "direct": direct, "ok": False,
                         "stage": "dual", "detail": str(d.get("errors"))[:200],
                         "tet_engine": engine}
+            # BL on the dual, as the GUI worker does before checkMesh.  The
+            # GUI's BL retries are not mirrored here: a failure means no BL.
+            b = run_bl(case_dir, first_height=reference_first_height(geom))
+            prisms =int(b.get("prisms") or 0) if b.get("success") else 0
+            print(f"[auto] {tag}: dual BL prisms={prisms} "
+                  f"cov={b.get('coverage')}", flush=True)
             c = run_checkmesh(case_dir)
             print(f"[auto] {tag}: dual checkMesh={c.get('verdict')} "
                   f"NO={c.get('nomax')} skew={c.get('skewmax')}", flush=True)
@@ -88,24 +95,29 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
                         "stage": "checkmesh",
                         "detail": f"{c.get('verdict')} NO={c.get('nomax')} skew={c.get('skewmax')}",
                         "case": str(case_dir), "tet_engine": engine}
-            from polyfoammesh.core.tet_source import is_weak_auto_result
-            score = {"passed": True,
+            from polyfoammesh.core.tet_source import (
+                classify_mesh_outcome,
+                is_weak_auto_result,
+            )
+            score ={"passed": True,
                      "failed_checks": c.get("failed_checks") or 0,
                      "residual": int(d.get("defects") or 0),
                      "skew": c.get("skewmax"),
-                     "non_ortho": c.get("nomax")}
-            weak = is_weak_auto_result(True, score["residual"])
+                     "non_ortho": c.get("nomax"),
+                     "has_bl": prisms > 0}
+            weak = is_weak_auto_result(True, score["residual"], prisms <= 0)
             print(f"[auto] {tag}: VALID ({c.get('verdict')}, "
                   f"dual defects={score['residual']}"
                   f"{', WEAK' if weak else ''})", flush=True)
             return {"engine": engine, "direct": direct, "ok": True,
                     "stage": "checkmesh", "detail": c.get("verdict"),
-                    "case": str(case_dir), "weak": weak, "score": score}
+                    "case": str(case_dir), "weak": weak, "score": score,
+                    "outcome": classify_mesh_outcome(True, True, True, prisms)}
         case_dir = wd_tag / "case_direct"
         if case_dir.exists():
             shutil.rmtree(case_dir)
         convert_case(wd_tag / "e2e.msh", case_dir)
-        b = run_bl(case_dir)
+        b = run_bl(case_dir, first_height=reference_first_height(geom))
         if not b.get("success"):
             print(f"[auto] {tag}: direct BL FAILED ({b.get('errors')})", flush=True)
             return {"engine": engine, "direct": True, "ok": False,
@@ -118,7 +130,8 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
         return {"engine": engine, "direct": True, "ok": accepted(c),
                 "stage": "checkmesh",
                 "detail": f"{c.get('verdict')} NO={c.get('nomax')} skew={c.get('skewmax')} cov={b.get('coverage')}",
-                "case": str(case_dir), "tet_engine": engine}
+                "case": str(case_dir), "tet_engine": engine,
+                "outcome": "TET_BL" if accepted(c) else "FAILED"}
     except Exception as exc:  # noqa: BLE001 - one attempt must not kill the chain
         print(f"[auto] {tag}: EXCEPTION {type(exc).__name__}: {exc}", flush=True)
         return {"engine": engine, "direct": direct, "ok": False,
@@ -181,7 +194,10 @@ def main() -> int:
             if result["ok"]:
                 out["winner"] = result
     out["seconds"] = round(time.monotonic() - t0, 1)
-    out["verdict"] = "AUTO VALID" if out.get("winner") else "AUTO FAILED (chain exhausted)"
+    out["verdict"] = (
+        f"AUTO VALID {out['winner'].get('outcome', '')}".strip()
+        if out.get("winner") else "AUTO FAILED (chain exhausted)"
+    )
     (wd / "auto_result.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
     print(f"[auto] {case}: {out['verdict']} in {out['seconds']}s", flush=True)
     for attempt_rec in out["attempts"]:
