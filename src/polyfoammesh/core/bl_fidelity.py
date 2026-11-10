@@ -176,6 +176,7 @@ def effective_h1_stats(
     wall_centres = built.get("wall_face_centres")
     if wall_centres is None:
         wall_centres = cf[np.asarray(wall_faces, dtype=np.int64)]
+    wall_areas = built.get("wall_face_areas")
     off = built.get("prism_off") or {}
     nf = built.get("prism_nf") or {}
     start = int(built.get("prism_start", 0))
@@ -184,9 +185,14 @@ def effective_h1_stats(
         if int(nf.get(bi, 0)) <= 0:
             continue
         cell = start + int(off[bi])
-        vals.append(
-            2.0 * float(np.linalg.norm(centres[cell] - wall_centres[bi]))
-        )
+        d = centres[cell] - wall_centres[bi]
+        if wall_areas is not None and bi < len(wall_areas):
+            # wall-normal component only (see boundary_layer_report)
+            nv = wall_areas[bi]
+            nv = nv / max(float(np.linalg.norm(nv)), 1e-300)
+            vals.append(2.0 * abs(float(d @ nv)))
+        else:
+            vals.append(2.0 * float(np.linalg.norm(d)))
     arr = np.asarray(vals, dtype=np.float64) if vals else np.zeros(0)
     request = float(requested_h1 or 0.0)
     ratio = (

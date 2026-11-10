@@ -7,6 +7,12 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Report BL: lo spessore del primo strato (e lo y+ stimato) si misura lungo
+  la normale di parete e solo sulle celle sottili.  Prima contava lo
+  spostamento laterale del baricentro e celle del dual non stratificate
+  (DN1000: "3.01 mm, y+ 87" per strati di 0.44 mm; box_obstacle GMSH:
+  "82 mm" per 0.938 mm).  Ora coincide con lo strato costruito.
+
 - Velocità dual (2): filtro locale prima del punteggio globale nel taglio
   delle celle concave e ripristino senza ricalcolo nel rilassamento.  DN1000
   dual 46 s -> 30 s (stesso risultato).  Catena di produzione sul corpus:

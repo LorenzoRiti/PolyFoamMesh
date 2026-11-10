@@ -2120,19 +2120,38 @@ def boundary_layer_report(
         if not wall_accum:
             return {}
         wall_rows = np.asarray(wall_accum, dtype=np.int64)
-        layered = layered_mask[owner[wall_rows]]
-        n_wall = int(wall_rows.size)
-        n_layered = int(layered.sum())
-
-        _sf, cf = _face_geometry(points, faces)
+        sf_all, cf = _face_geometry(points, faces)
         centres, _vols = _cell_centroids(
             points, faces, owner, neighbour, n_internal, n_cells,
         )
-        dist = np.linalg.norm(
-            centres[owner[wall_rows]] - cf[wall_rows], axis=1,
+        # A first-layer prism is THIN over its wall face.  The shape mask
+        # alone also takes ordinary dual cells at the wall (a polyhedron
+        # with two big parallel faces looks prism-like): box_obstacle/GMSH
+        # reported 92 % layered with an 82 mm "first layer" while the engine
+        # built 59 % at 0.94 mm.  h1 statistics use height < 0.5*sqrt(area).
+        _a = np.linalg.norm(sf_all[wall_rows], axis=1)
+        _nn = sf_all[wall_rows] / np.maximum(_a, 1e-300)[:, None]
+        _h = 2.0 * np.abs(
+            ((centres[owner[wall_rows]] - cf[wall_rows]) * _nn).sum(axis=1))
+        layered = layered_mask[owner[wall_rows]]
+        # thin first-layer cells: used for the h1 statistic only (coverage
+        # keeps the shape mask the release gate was calibrated on)
+        thin_layer = layered & (_h < 0.5 * np.sqrt(_a))
+        n_wall = int(wall_rows.size)
+        n_layered = int(layered.sum())
+
+        # Wall-NORMAL distance (2026-11-11): the full centre-to-centre
+        # distance also counts the sideways offset of the prism centroid on
+        # large / curved polyhedral wall faces (DN1000: reported 3.01 mm =
+        # "y+ 87, 4x the request" while the layers are 0.44 mm thick along
+        # the wall normal).  y is a wall distance, so measure it as one.
+        _n = sf_all[wall_rows]
+        _n = _n / np.maximum(np.linalg.norm(_n, axis=1), 1e-300)[:, None]
+        dist = np.abs(
+            ((centres[owner[wall_rows]] - cf[wall_rows]) * _n).sum(axis=1)
         )
-        h1_all = np.where(layered, 2.0 * dist, np.nan)
-        h1 = h1_all[layered]
+        h1_all = np.where(thin_layer, 2.0 * dist, np.nan)
+        h1 = 2.0 * dist[thin_layer]
         h1_median = float(np.median(h1)) if h1.size else None
         h1_p10 = float(np.percentile(h1, 10)) if h1.size else None
         h1_ratio = (

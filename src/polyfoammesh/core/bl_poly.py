@@ -4734,11 +4734,12 @@ class PolyBoundaryLayerEngine:
         # index against ``new_faces`` measures a different face (this was a
         # real 3.6x error in the first W10.1 instrumentation).
         if bnd:
-            _, wall_face_centres = _face_geometry(
+            wall_face_areas, wall_face_centres = _face_geometry(
                 pts, [faces[fi] for fi in bnd],
             )
         else:
             wall_face_centres = np.zeros((0, 3), dtype=np.float64)
+            wall_face_areas = np.zeros((0, 3), dtype=np.float64)
 
         return {
             "points": new_points,
@@ -4770,6 +4771,7 @@ class PolyBoundaryLayerEngine:
             "prism_nf": dict(nf),
             "wall_faces": list(bnd),
             "wall_face_centres": wall_face_centres,
+            "wall_face_areas": wall_face_areas,
             "n_pts_old": n_pts,
         }
 
