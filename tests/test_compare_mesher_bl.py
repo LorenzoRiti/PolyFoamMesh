@@ -23,7 +23,23 @@ def test_snappy_layers_are_face_weighted_and_use_last_table():
     first = _TABLE.format(rows="wall  10  9.0  0.1  99.0")
     last = _TABLE.format(rows="wall  300  4.0  0.01  80.0\nbody  100  0.0  0  0.0")
     parsed = cmp.parse_snappy_layers(first + last)
-    assert parsed == {"faces": 400, "avg_layers": 3.0, "thickness_pct": 60.0}
+    assert parsed == {"faces": 400, "target_layers": None,
+                      "avg_layers": 3.0, "thickness_pct": 60.0}
+
+
+def test_snappy_v2512_table_with_target_column():
+    # Verbatim layout of a real OpenFOAM v2512 log (cylinder probe).
+    log = (
+        "patch   faces        layers        overall thickness\n"
+        "                 target   mesh     [m]       [%]\n"
+        "-----   -----    -----    ----     ---       ---\n"
+        "surface 4504     8        5.06     0.00319   71.5    \n"
+        "\n"
+        "Layer mesh : cells:36778  faces:114511  points:41094\n"
+    )
+    assert cmp.parse_snappy_layers(log) == {
+        "faces": 4504, "target_layers": 8, "avg_layers": 5.06, "thickness_pct": 71.5,
+    }
 
 
 def test_snappy_without_table_is_unknown_but_zero_layers_is_no_bl():

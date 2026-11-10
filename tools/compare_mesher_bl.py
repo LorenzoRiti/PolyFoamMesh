@@ -37,7 +37,11 @@ EXCLUDED = {"non_watertight"}
 BL_LAYERS = 5
 TET_KEY = {"gmsh": "gmsh_direct_poly", "ftetwild": "ftetwild_poly"}
 
-_LAYER_ROW = re.compile(r"^\s*(\S+)\s+(\d+)\s+([\d.]+)\s+([\d.eE+-]+)\s+([\d.]+)\s*$")
+# patch faces [target] layers thickness[m] thickness[%]: OpenFOAM v2512 adds the
+# integer "target" column; older logs do not have it.
+_LAYER_ROW = re.compile(
+    r"^\s*(\S+)\s+(\d+)\s+(?:(\d+)\s+)?([\d.]+)\s+([\d.eE+-]+)\s+([\d.]+)\s*$"
+)
 
 
 def parse_snappy_layers(log: str) -> dict | None:
@@ -53,16 +57,19 @@ def parse_snappy_layers(log: str) -> dict | None:
     for line in log[head:].splitlines()[1:]:
         match = _LAYER_ROW.match(line)
         if match:
-            rows.append((int(match[2]), float(match[3]), float(match[5])))
+            target = int(match[3]) if match[3] else None
+            rows.append((int(match[2]), target, float(match[4]), float(match[6])))
         elif rows:
             break
     faces = sum(row[0] for row in rows)
     if not faces:
         return None
+    targets = {row[1] for row in rows if row[1] is not None}
     return {
         "faces": faces,
-        "avg_layers": round(sum(f * n for f, n, _ in rows) / faces, 3),
-        "thickness_pct": round(sum(f * p for f, _, p in rows) / faces, 1),
+        "target_layers": max(targets) if targets else None,
+        "avg_layers": round(sum(f * n for f, _, n, _ in rows) / faces, 3),
+        "thickness_pct": round(sum(f * p for f, _, _, p in rows) / faces, 1),
     }
 
 
@@ -121,11 +128,18 @@ def _run_poly(engine: str, geom: Path, wd: Path, max_cell: float, min_cell: floa
     )
     row["effective_source"] = res.effective_source
     row["fallback_used"] = res.effective_source != engine
+    # Why the requested engine failed when a fallback took over.
+    row["tet_attempts"] = [
+        {"source": a.source, "success": a.success, "error": (a.error or "")[:300],
+         "seconds": round(a.wall_seconds, 1)}
+        for a in res.attempts
+    ]
     if not res.success:
         raise RuntimeError(f"tet: {res.failure_reason}")
     case = wd / "case"
     convert_case(msh, case)
-    row["dual"] = run_dual(case)
+    # GUI parity: the dual options follow the REQUESTED mesher.
+    row["dual"] = run_dual(case, ftetwild_path=engine == "ftetwild")
     if not row["dual"]["success"]:
         raise RuntimeError(f"dual: {row['dual']['errors']}")
     row["bl"] = run_bl(case, first_height=0.01 * max_cell, n_layers=BL_LAYERS)
@@ -201,7 +215,10 @@ def main(argv: list[str] | None = None) -> int:
     sys.path[:0] = [str(ROOT), str(ROOT / "src"), str(ROOT / "tools")]
     args.workdir.mkdir(parents=True, exist_ok=True)
     results = args.workdir / "compare_results.json"
-    rows: list[dict] = json.loads(results.read_text(encoding="utf-8")) if results.is_file() else []
+    # utf-8-sig: a results file edited from Windows PowerShell carries a BOM.
+    rows: list[dict] = (
+        json.loads(results.read_text(encoding="utf-8-sig")) if results.is_file() else []
+    )
     # Only an interruption is re-run: a failed mesh is a measured result.
     done = {(r["case"], r["engine"]) for r in rows}
     for case, engine in plan:

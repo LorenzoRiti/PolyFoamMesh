@@ -75,7 +75,8 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
                         "stage": "convert",
                         "detail": f"{type(exc).__name__}: {str(exc)[:200]}",
                         "tet_engine": engine}
-            d = run_dual(case_dir)
+            # GUI parity: the dual options follow the requested mesher.
+            d = run_dual(case_dir, ftetwild_path=engine == "ftetwild_poly")
             if not d.get("success"):
                 print(f"[auto] {tag}: dual INVALID ({d.get('errors')})", flush=True)
                 return {"engine": engine, "direct": direct, "ok": False,

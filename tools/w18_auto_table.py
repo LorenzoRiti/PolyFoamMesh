@@ -118,17 +118,23 @@ def convert_case(msh: Path, case: Path):
     )
 
 
-def run_dual(case: Path) -> dict:
+def run_dual(case: Path, ftetwild_path: bool | None = None) -> dict:
+    """Dual conversion.  With ``ftetwild_path`` set, the GUI's exact options.
+
+    ``None`` keeps the historical W18 options (free-boundary smoothing on,
+    no boundary split), which the product does NOT use: only for
+    reproducing old W18 numbers.
+    """
     from polyfoammesh.core.tet_poly_dual import TetPolyDualConverter
 
     t0 = time.monotonic()
-    res = TetPolyDualConverter(
-        case, log=lambda m: None,
-        collapse_smooth_edges=True,
-        boundary_feature_angle=40.0,
-        collapse_volume_tolerance=0.10,
-        smooth_free_boundary=True,
-    ).run()
+    if ftetwild_path is None:
+        kwargs = dict(collapse_smooth_edges=True, boundary_feature_angle=40.0,
+                      collapse_volume_tolerance=0.10, smooth_free_boundary=True)
+    else:
+        from polyfoammesh.core.openfoam_runner import production_dual_kwargs
+        kwargs = production_dual_kwargs(ftetwild_path=ftetwild_path)
+    res = TetPolyDualConverter(case, log=lambda m: None, **kwargs).run()
     return {
         "success": bool(res.success),
         "n_cells": int(res.n_cells_after),
@@ -166,10 +172,14 @@ def run_bl(case: Path, first_height: float = 0.00126, n_layers: int = 5) -> dict
     kw = cfg.engine_kwargs(None)
     r = PolyBoundaryLayerEngine(case, log=lambda m: None).run(**kw)
     brep = r.bl_report if isinstance(getattr(r, "bl_report", None), dict) else {}
+    stats = r.stats if isinstance(getattr(r, "stats", None), dict) else {}
     return {
         "success": bool(r.success),
         "prisms": int(getattr(r, "n_prism_cells", getattr(r, "bl_prism_cells", 0))),
-        "coverage": brep.get("coverage"),
+        # The engine publishes coverage in stats; bl_report is the older place.
+        "coverage": brep.get("coverage", stats.get("wall_face_coverage_pct")),
+        "median_layers": stats.get("median_layers_per_face"),
+        "h1_ratio": stats.get("h1_ratio"),
         "seconds": round(time.monotonic() - t0, 1),
         "errors": list(getattr(r, "errors", [])),
     }

@@ -1862,6 +1862,41 @@ class PolyDualWorker(QObject):
         self.failed.emit(f"polyDualMesh returned {returncode}")
 
 
+def production_dual_kwargs(ftetwild_path: bool) -> dict:
+    """TetPolyDualConverter options the GUI uses: the one source of truth.
+
+    Benchmarks and E2E tools must call this instead of copying the options,
+    or they measure a dual the product never builds.
+
+    ``ftetwild_path`` is kept for callers but no longer changes the result
+    (2026-11-10): on the same 28 tet meshes the boundary split cut the
+    residual defects of the GMSH path from 1313 to 389 at unchanged surface
+    fidelity (mean offset 0.59% vs 0.62% of max cell; the surface stays
+    pinned).  One option set also removes the mismatch when a GMSH request
+    falls back to an fTetWild mesh.  See notes/compare_mesher_bl_reasoning.md.
+    """
+    del ftetwild_path
+    return dict(
+        collapse_smooth_edges=True,
+        boundary_feature_angle=40.0,
+        collapse_volume_tolerance=0.10,
+        # Free-boundary smoothing is OFF (2026-10-19 and 2026-11-10): a
+        # free boundary moves the wall ~3% of the cell (pinned ~0.6%),
+        # more than the first BL cell.
+        smooth_free_boundary=False,
+        # Count checkMesh's BOUNDARY-face skewness exactly (OpenFOAM
+        # boundaryFaceSkewness replica) so the smoother and the reported
+        # residual see the warped feature polygons real checkMesh flags.
+        count_boundary_skew=True,
+        # Defect-driven split of boundary polygons that clears the
+        # boundary pyramid/skew defects.
+        split_boundary_defects=True,
+        # The tangential skew shift is non-monotonic on these duals
+        # (measured: clears a few skew faces, creates pyramids).
+        shift_boundary_skew=False,
+    )
+
+
 def count_polymesh_prism_cells(case_dir: Path | str) -> int:
     """Number of prism-shaped cells in ``constant/polyMesh`` (best-effort).
 
@@ -2491,30 +2526,7 @@ class DualPolyWorker(QObject):
                 watchdog=dual_watchdog,
                 log=self.log_line.emit,
                 cancel=lambda: self._cancelled,
-                collapse_smooth_edges=True,
-                boundary_feature_angle=40.0,
-                collapse_volume_tolerance=0.10,
-                # Free-boundary smoothing is OFF even on the fTetWild path
-                # (2026-10-19 measured comparison on the medium reference,
-                # same tet mesh): free boundary -> surface 0.62 mm mean and
-                # 1/4/1 defects; PINNED -> 0.30 mm mean and 0/1/0 defects.
-                # The surface snap now fixes the tet-side surface, so
-                # relaxing the dual boundary only adds offset and skew.
-                smooth_free_boundary=False,
-                # fTetWild path only (same flag as the free-boundary
-                # smoothing): count checkMesh's BOUNDARY-face skewness
-                # exactly (OpenFOAM boundaryFaceSkewness replica) so the
-                # smoother and the reported residual see the warped feature
-                # polygons real checkMesh flags. Legacy detector otherwise.
-                count_boundary_skew=self._smooth_free_boundary,
-                # ... and the defect-driven nudge of boundary-adjacent
-                # centre vertices that clears those boundary pyramid/skew
-                # defects (interior points only; the surface is untouched).
-                split_boundary_defects=self._smooth_free_boundary,
-                # The tangential skew shift is non-monotonic on these duals
-                # (measured: clears a few skew faces, creates pyramids);
-                # keep only the split + the batched pyramid clearance.
-                shift_boundary_skew=not self._smooth_free_boundary,
+                **production_dual_kwargs(ftetwild_path=self._smooth_free_boundary),
             )
             t_dual0 = time.perf_counter()
             result = _run_with_profile(

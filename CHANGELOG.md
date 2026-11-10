@@ -20,6 +20,13 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   params invalidi = 422, `/batch` fuori dall'event loop, nessun `api_data/`
   creato all'import. L'API usa ancora il workflow legacy, non la catena Auto.
 
+### Changed
+- **Dual poly, un solo set di opzioni** (`production_dual_kwargs`): anche il
+  percorso GMSH usa lo split delle piramidi di bordo a superficie bloccata.
+  Stessi 28 tet: difetti residui 1313 -> 389, scostamento parete invariato
+  (0,6% della cella). Con BL e checkMesh reali: `Mesh OK` 5 -> 7 su 22,
+  nessuna regressione. Benchmark ed E2E usano la stessa funzione della GUI.
+
 ### Added
 - `tools/compare_mesher_bl.py`: confronto GMSH / fTetWild / snappy contando
   solo `Mesh OK` con BL reale; i fallback non sono accreditati.

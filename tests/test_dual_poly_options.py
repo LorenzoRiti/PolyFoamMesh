@@ -82,6 +82,43 @@ def test_dual_poly_worker_passes_best_options(tmp_path):
     assert captured.get("cancel") is not None
 
 
+@pytest.mark.parametrize("ftet", [False, True])
+def test_worker_dual_options_are_the_shared_production_set(tmp_path, ftet):
+    """Benchmarks reuse production_dual_kwargs: if the worker drifted from
+    it, every measurement would describe a dual the GUI never builds."""
+    from polyfoammesh.core.openfoam_runner import production_dual_kwargs
+
+    case = tmp_path / "case"
+    poly = case / "constant" / "polyMesh"
+    poly.mkdir(parents=True)
+    (poly / "points").write_text("dummy", encoding="utf-8")
+    captured: dict = {}
+
+    class _RecordingConverter:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def run(self):
+            return _Result()
+
+    worker = DualPolyWorker(case, smooth_free_boundary=ftet)
+    worker.log_line.connect(lambda m: None)
+    with mock.patch(
+        "polyfoammesh.core.tet_poly_dual.TetPolyDualConverter",
+        _RecordingConverter,
+    ):
+        worker.run()
+
+    expected = production_dual_kwargs(ftetwild_path=ftet)
+    assert {k: captured[k] for k in expected} == expected
+    # Both paths split boundary pyramid defects on a pinned surface
+    # (measured 2026-11-10: GMSH path 1313 -> 389 residual defects).
+    assert expected["split_boundary_defects"] is True
+    assert expected["shift_boundary_skew"] is False
+    assert expected["smooth_free_boundary"] is False
+    assert expected == production_dual_kwargs(ftetwild_path=not ftet)
+
+
 class _BLResult:
     success = True
     errors: list[str] = []
