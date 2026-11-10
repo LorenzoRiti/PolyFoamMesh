@@ -7,6 +7,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Velocità dual (2): filtro locale prima del punteggio globale nel taglio
+  delle celle concave e ripristino senza ricalcolo nel rilassamento.  DN1000
+  dual 46 s -> 30 s (stesso risultato).  Catena di produzione sul corpus:
+  806 s -> 391 s, Mesh OK invariato (14/26).
+
 - Velocità (profilo DN1000, stessa mesh): dual 188 s -> 46 s.  Il
   rilassamento delle piramidi di parete ricalcolava l'intera mesh per ogni
   mossa candidata (945 volte); ora valuta solo l'intorno dei vertici mossi

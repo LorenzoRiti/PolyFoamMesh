@@ -361,6 +361,24 @@ def split_concave_boundary_cells(
                     report["open_cut"] = report.get("open_cut", 0) + 1
                     continue
 
+                # cheap local filter before the full-mesh score (DN1000:
+                # 125 full scores = 29 s): the cut must leave the two halves
+                # with fewer wrong pyramids than the parent had, and both
+                # with positive volume.  The full score still decides.
+                par_faces = [int(i) for i in np.where(owner == c)[0]] + [
+                    int(i) for i in np.where(neigh == c)[0]]
+                bad_par, _vp = _local_pyramids(
+                    points, faces, owner, neigh, n_int, [c], par_faces)
+                bad_new, v_new = _local_pyramids(
+                    points, new_faces, new_owner, new_neigh, ni,
+                    [c, new_cell], touched)
+                # only pyramid-driven cuts are filtered: a parent with no
+                # wrong pyramid is here for boundary skew, which this local
+                # check does not see - the full score decides those
+                if v_new <= 0.0 or (bad_par > 0 and bad_new >= bad_par):
+                    report["filtered"] = report.get("filtered", 0) + 1
+                    continue
+
                 t2, vmin = score(
                     points, new_faces, new_owner, new_neigh, ni, n_cells + 1,
                 )[:2]
@@ -395,6 +413,36 @@ def split_concave_boundary_cells(
         )
     report["defects_after"] = int(total)
     return faces, owner, neigh, n_int, n_cells, patches, report
+
+
+def _local_pyramids(points, faces, owner, neigh, n_int, cells, face_ids):
+    """(wrong pyramids, min volume) of ``cells`` from their own faces.
+
+    Same centre-point decomposition and cell-centre formula as the full
+    detector, restricted to the listed faces (all faces of ``cells``).
+    """
+    from polyfoammesh.core.tet_poly_dual import _cell_centres, _face_geometry
+
+    ids = sorted(set(int(f) for f in face_ids))
+    sf, cf = _face_geometry(points, [faces[f] for f in ids])
+    loc = {int(cc): k for k, cc in enumerate(cells)}
+    dummy = len(cells)
+    is_int = np.array([f < n_int for f in ids])
+    order = np.concatenate([np.nonzero(is_int)[0], np.nonzero(~is_int)[0]])
+    g = [ids[k] for k in order]
+    n_i = int(is_int.sum())
+    own = np.array([loc.get(int(owner[f]), dummy) for f in g], dtype=np.int64)
+    nb = np.array([loc.get(int(neigh[f]), dummy) for f in g[:n_i]],
+                  dtype=np.int64)
+    sfo, cfo = sf[order], cf[order]
+    ctr, vol = _cell_centres(sfo, cfo, own, nb, n_i, dummy + 1)
+    bad = 0
+    m = own < dummy
+    bad += int(((sfo[m] * (cfo[m] - ctr[own[m]])).sum(axis=1) <= 0.0).sum())
+    mn = nb < dummy
+    bad += int(((-(sfo[:n_i][mn] * (cfo[:n_i][mn] - ctr[nb[mn]]))).sum(axis=1)
+                <= 0.0).sum())
+    return bad, float(vol[:dummy].min())
 
 
 def _face_area_vector(points, face):
@@ -544,6 +592,7 @@ def relax_boundary_pyramids(
                 w[list(core)] = 1.0
                 w[on_wall] = 0.0
                 moved = np.nonzero(w)[0]
+                snap = inc.snapshot() if inc is not None else None
                 state = (pts, best, (sf, cf, ctr, vol) if inc is None else None)
                 cur_pv = float(sf[fi] @ (cf[fi] - ctr[c])) if inc is None                     else inc.face_pv(fi, c)
                 for _step in range(10):
@@ -572,8 +621,8 @@ def relax_boundary_pyramids(
                         break
                 if not done and inc is not None and state[0] is not pts:
                     # climb accepted steps that did not pay off: roll back
-                    inc = incremental(pts)
-                    sf, cf, ctr, vol = inc.sf, inc.cf, inc.ctr, inc.vol
+                    # (in place: sf/cf/ctr/vol stay live views)
+                    inc.restore(snap)
             if done:
                 report["cleared"] += 1
                 progressed = True

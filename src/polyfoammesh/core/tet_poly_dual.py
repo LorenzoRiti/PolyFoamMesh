@@ -4906,6 +4906,20 @@ class IncrementalDefectScore:
         ct = ctr_l[j] if j < len(c1) and c1[j] == cell else self.ctr[cell]
         return float(s @ (c - ct))
 
+    def snapshot(self):
+        """Copy of the committed state (cheap: arrays, no re-detection)."""
+        return (self.points, self.sf.copy(), self.cf.copy(), self.ctr.copy(),
+                self.vol.copy(), self.flags.copy(), self.total)
+
+    def restore(self, snap):
+        (self.points, sf, cf, ctr, vol, flags, self.total) = snap
+        self.sf[:] = sf
+        self.cf[:] = cf
+        self.ctr[:] = ctr
+        self.vol[:] = vol
+        self.flags[:] = flags
+        self._trial = None
+
     def accept(self):
         pts, f1, sf1, cf1, c1, ctr_l, vol_l, f2, new, total = self._trial
         self.points = pts
