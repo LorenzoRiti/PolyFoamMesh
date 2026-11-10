@@ -7,6 +7,23 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Fixed
+- **Auto non dichiara più valido un poly senza BL**: esito classificato
+  (`POLY_BL`, `POLY_NO_BL`, `TET_BL`...) e loggato; BL mancante rende il
+  risultato "debole" e apre il confronto; il keep-best preferisce chi ha BL.
+- **E2E Auto**: applica il BL sul dual prima di checkMesh, con h1 = 1% della
+  cella massima della geometria (prima 1,26 mm fissi, tarati su un solo caso).
+- **Smoother poly**: `np.divide(where=)` senza `out` lasciava memoria non
+  inizializzata sui nodi a direzione nulla.
+- **API REST (sperimentale)**: job non più bloccati in RUNNING, `file_id`
+  validato, upload con limite (413), chiave opzionale `POLYFOAMMESH_API_KEY`,
+  params invalidi = 422, `/batch` fuori dall'event loop, nessun `api_data/`
+  creato all'import. L'API usa ancora il workflow legacy, non la catena Auto.
+
+### Added
+- `tools/compare_mesher_bl.py`: confronto GMSH / fTetWild / snappy contando
+  solo `Mesh OK` con BL reale; i fallback non sono accreditati.
+
 ## [2.4.0] - 2026-11-04
 
 ### W18 follow-up: direct-BL 5L misurato + auto indurito (2026-10-24) - PARTIAL
@@ -52,13 +69,7 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   della GUI): venturi AUTO VALID (gmsh dual Failed 63.1/4.2 ->
   ftet dual Failed 46.9/2.5 -> direct Mesh OK 73.0/3.2, 316 s);
   cylinder AUTO VALID al primary (Mesh OK 41.9/1.4 in 19 s,
-  keep-best: la catena si ferma al primo valido)**:
-  a catena mesher esaurita, un solo retry con BL diretto sul tet
-  dell'ultimo engine valido (richiede BL attivo nel pannello; skip
-  del dual via flag; keep-best: i tentativi precedenti erano tutti
-  invalidi). Decisione unit-testata (`auto_direct_bl_next`); log
-  completo inclusi i casi di skip (BL spento, nessun tet valido,
-  gamba già tentata).
+  keep-best: la catena si ferma al primo valido).
 - **Compare-leg in auto (opzione A, keep-best)**: un primario valido ma
   debole (checkMesh PASS con difetti residui del dual >0, es. le 5 pyr
   di venturi-gmsh) apre UN tentativo con l'altro engine; vince il
