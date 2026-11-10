@@ -222,7 +222,7 @@ def test_ftetwild_surface_fallback_exports_patch_stl_once():
         '"Impossible to mesh periodic surface"',
         "export_multisolid_ascii_stl",
         "_ftw_stl_fallback_done = True",
-        "surface.patches.ascii.stl",
+        "_FTW_PATCH_STL_NAME",
         "_start_gmsh_volume_worker",
     ):
         assert token in src, token

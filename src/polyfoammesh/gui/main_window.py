@@ -99,6 +99,9 @@ from polyfoammesh.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
 
+# fTetWild input written from the in-memory (already scaled) patch meshes.
+_FTW_PATCH_STL_NAME = "surface.patches.ascii.stl"
+
 
 def _is_wall_patch(name: str) -> bool:
     """W11: one shared wall classifier for zero-config BL.
@@ -3495,6 +3498,53 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"[cache] cleared {removed} cached tet mesh(es).")
         self._status.showMessage(f"Mesh cache cleared ({removed} entries)", 4000)
 
+    def _ftetwild_input_path(self, step_path, msh_path, refinement_zones):
+        """What fTetWild should read: the CAD file or the patches in memory.
+
+        A STEP input used to go through GMSH's surface mesher first, which
+        is the slow and fragile stage (measured 2026-11-10 on the DN1000
+        valve: 6+ minutes of edge splitting, then "Impossible to mesh
+        periodic surface").  The GUI already holds the tessellated patches
+        (the ones on screen, already scaled), and fTetWild is built to take
+        a triangle soup: the same valve meshes in 30 s from them.  GMSH's
+        surface stage is kept only when refinement zones need its sizing.
+        """
+        if Path(str(step_path)).suffix.lower() not in (".step", ".stp"):
+            return step_path
+        meshes = list(getattr(self, "_meshes", None) or [])
+        if not meshes:
+            return step_path
+        if refinement_zones:
+            self._log.append_log(
+                "[tet:ftetwild] Refinement zones set: the surface goes through "
+                "GMSH sizing first (slower). Remove the zones to mesh the "
+                "loaded patches directly."
+            )
+            return step_path
+        try:
+            from polyfoammesh.core.stl_writer import export_multisolid_ascii_stl
+
+            t0 = time.perf_counter()
+            stl_path = Path(msh_path).parent / _FTW_PATCH_STL_NAME
+            export_multisolid_ascii_stl(meshes, stl_path)
+            n_tri = sum(len(m.faces) for m in meshes)
+            self._log.append_log(
+                f"[tet:ftetwild] Surface: {len(meshes)} loaded patches "
+                f"({n_tri:,} triangles) passed to fTetWild directly - GMSH "
+                f"surface stage skipped [{time.perf_counter() - t0:.1f}s]"
+            )
+            # the patch STL is already scaled; never send it through the
+            # GMSH surface fallback again
+            self._ftw_stl_fallback_done = True
+            return str(stl_path)
+        except Exception as exc:  # noqa: BLE001 - CAD route still works
+            logger.warning("patch STL export failed, using the CAD: %s", exc)
+            self._log.append_log(
+                f"{Tag.WARN} [tet:ftetwild] could not export the loaded "
+                f"patches ({exc}); meshing the CAD surface with GMSH instead."
+            )
+            return step_path
+
     def _start_gmsh_volume_worker(self, step_path: str, my_id: int):
         from polyfoammesh.core.openfoam_runner import FtetWildVolumeWorker, GmshVolumeWorker
         logger.info(
@@ -3683,6 +3733,9 @@ class MainWindow(QMainWindow):
             # different tet mesher. Only GMSH-specific inputs don't apply —
             # say so explicitly rather than silently dropping them (the
             # no-silent-substitution rule).
+            step_path = self._ftetwild_input_path(
+                step_path, msh_path, refinement_zones,
+            )
             if refinement_zones:
                 self._log.append_log(
                     "[tet:ftetwild] Refinement zones: carried into the GMSH "
@@ -3715,7 +3768,13 @@ class MainWindow(QMainWindow):
                 eps_frac=self._params.get_ftetwild_eps_frac(),
                 simplify=self._params.get_ftetwild_simplify(),
                 adaptive=self._params.get_ftetwild_adaptive(),
-                scale=self._params.get_scale_factor(),
+                # The in-memory patch STL is written from self._meshes, which
+                # are ALREADY scaled: scaling it again would double the unit
+                # conversion (mm part -> 1e-6 instead of 1e-3).
+                scale=(
+                    1.0 if Path(step_path).name == _FTW_PATCH_STL_NAME
+                    else self._params.get_scale_factor()
+                ),
                 refinement_zones=refinement_zones,
                 surface_resolution=surface_resolution,
                 feature_angle=_feature_angle,
@@ -3869,7 +3928,7 @@ class MainWindow(QMainWindow):
                     export_multisolid_ascii_stl,
                 )
 
-                stl_path = self._case_dir / "surface.patches.ascii.stl"
+                stl_path = self._case_dir / _FTW_PATCH_STL_NAME
                 export_multisolid_ascii_stl(list(self._meshes), stl_path)
                 _stl_mb = stl_path.stat().st_size / (1024 * 1024)
                 self._log.append_log(

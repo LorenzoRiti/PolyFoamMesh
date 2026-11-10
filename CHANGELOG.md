@@ -7,7 +7,17 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Changed (velocità)
+- **fTetWild su STEP legge le superfici già caricate**: prima passava dal
+  mesher di superficie GMSH, la fase lenta e fragile (DN1000: oltre 6 minuti
+  poi "Impossible to mesh periodic surface"). Ora la GUI passa a fTetWild i
+  patch tessellati in memoria, con i nomi: la stessa valvola fa il tet in
+  30 s (tessellazione 1,2 s, export 2,5 s, fTetWild 26 s, 104k tet). La
+  superficie GMSH resta solo se ci sono zone di raffinamento.
+
 ### Fixed
+- **Scala applicata due volte** nel ripiego fTetWild su STL a patch: le mesh
+  in memoria sono già scalate, il worker ora riceve scala 1.
 - **Auto non dichiara più valido un poly senza BL**: esito classificato
   (`POLY_BL`, `POLY_NO_BL`, `TET_BL`...) e loggato; BL mancante rende il
   risultato "debole" e apre il confronto; il keep-best preferisce chi ha BL.
