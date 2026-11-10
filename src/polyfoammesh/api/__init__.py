@@ -6,7 +6,11 @@ submission, status polling, and result download.
 
 Usage (dev server)::
 
-    uvicorn polyfoammesh.api.server:app --host 0.0.0.0 --port 8000
+    uvicorn polyfoammesh.api.server:app --host 127.0.0.1 --port 8000
+
+Before exposing it beyond localhost, set ``POLYFOAMMESH_API_KEY``: requests
+must then send it as ``X-API-Key``.  ``POLYFOAMMESH_API_MAX_UPLOAD`` caps the
+upload size in bytes (default 2 GiB).
 
 Usage (production)::
 

@@ -14,9 +14,11 @@ All endpoints return JSON. File uploads use multipart/form-data.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
-
+import os
+import re
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -24,6 +26,11 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+#: Server-generated ids are 12 hex chars; anything else never reaches a path.
+_ID_RE = re.compile(r"[0-9a-f]{12}")
+_UPLOAD_CHUNK = 1024 * 1024
+_DEFAULT_MAX_UPLOAD = 2 * 1024 ** 3
 
 try:
     from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
@@ -110,6 +117,54 @@ def create_app(data_dir: str | None = None) -> Any:
     # In-memory job store
     _jobs: dict[str, dict[str, Any]] = {}
 
+    api_key = os.environ.get("POLYFOAMMESH_API_KEY", "")
+    max_upload = int(os.environ.get("POLYFOAMMESH_API_MAX_UPLOAD", _DEFAULT_MAX_UPLOAD))
+
+    @app.middleware("http")
+    async def require_api_key(request, call_next):
+        """Enforce X-API-Key when POLYFOAMMESH_API_KEY is set (/health stays open)."""
+        if api_key and request.url.path != "/health":
+            given = request.headers.get("x-api-key", "")
+            if not hmac.compare_digest(given.encode(), api_key.encode()):
+                return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+        return await call_next(request)
+
+    def _save_job(job: dict[str, Any]) -> None:
+        path = _jobs_dir / f"{job['job_id']}.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(job, indent=2, default=str), encoding="utf-8")
+        tmp.replace(path)
+
+    def _load_job(job_id: str) -> dict[str, Any]:
+        """Return a job from memory or disk, or raise 404."""
+        if not _ID_RE.fullmatch(job_id):
+            raise HTTPException(404, f"Job {job_id} not found")
+        job = _jobs.get(job_id)
+        if job is not None:
+            return job
+        job_file = _jobs_dir / f"{job_id}.json"
+        if not job_file.exists():
+            raise HTTPException(404, f"Job {job_id} not found")
+        job = json.loads(job_file.read_text(encoding="utf-8"))
+        # Not in memory yet unfinished on disk: the process running it died.
+        if job.get("status") in (JobStatus.PENDING, JobStatus.RUNNING):
+            job["status"] = JobStatus.FAILED
+            job["error"] = "Server restarted while the job was running"
+            job["completed_at"] = datetime.now().isoformat()
+            _save_job(job)
+        _jobs[job_id] = job
+        return job
+
+    def _execute_job(job_id: str, geo_path: Path, params: MeshParams) -> None:
+        """Background task: run the job and publish its final state."""
+        job = _jobs[job_id]
+        report = _run_mesh_job(job_id, geo_path, params, _results_dir)
+        job["status"] = JobStatus.COMPLETED if report.get("success") else JobStatus.FAILED
+        job["cell_count"] = int(report.get("cell_count") or 0)
+        job["error"] = str(report.get("error") or "; ".join(report.get("errors") or []))
+        job["completed_at"] = datetime.now().isoformat()
+        _save_job(job)
+
     # ------------------------------------------------------------------
     # Endpoints
     # ------------------------------------------------------------------
@@ -138,27 +193,38 @@ def create_app(data_dir: str | None = None) -> Any:
         file_id = uuid.uuid4().hex[:12]
         dest = _uploads_dir / f"{file_id}{ext}"
 
-        content = await file.read()
-        dest.write_bytes(content)
+        # Stream to a temp name so a rejected upload never stays visible.
+        part = dest.with_name(dest.name + ".part")
+        size = 0
+        try:
+            with open(part, "wb") as fh:
+                while chunk := await file.read(_UPLOAD_CHUNK):
+                    size += len(chunk)
+                    if size > max_upload:
+                        raise HTTPException(413, f"File larger than {max_upload} bytes")
+                    fh.write(chunk)
+            part.replace(dest)
+        finally:
+            part.unlink(missing_ok=True)
 
         octo.log_event("api", "geometry_upload", {
             "file_id": file_id,
             "name": file.filename,
-            "size_bytes": len(content),
+            "size_bytes": size,
         })
 
         return {
             "file_id": file_id,
             "filename": file.filename,
-            "size_bytes": len(content),
+            "size_bytes": size,
             "url": f"/uploads/{file_id}{ext}",
         }
 
     @app.post("/mesh", response_model=JobResponse)
     async def create_mesh_job(
+        background_tasks: BackgroundTasks,
         file_id: str = Form(...),
         params: str = Form("{}"),
-        background_tasks: BackgroundTasks = None,
     ):
         """Submit a meshing job.
 
@@ -169,48 +235,31 @@ def create_app(data_dir: str | None = None) -> Any:
         Returns:
             A ``JobResponse`` with the job ID for status polling.
         """
-        # Resolve file
-        uploads = list(_uploads_dir.glob(f"{file_id}.*"))
+        # Validate before globbing: file_id must never act as a path/pattern.
+        uploads = (
+            [p for p in _uploads_dir.glob(f"{file_id}.*") if not p.name.endswith(".part")]
+            if _ID_RE.fullmatch(file_id) else []
+        )
         if not uploads:
             raise HTTPException(404, f"File {file_id} not found. Upload first via POST /upload")
 
         geo_path = uploads[0]
-        parsed_params = MeshParams(**json.loads(params)) if isinstance(params, str) else params
+        parsed_params = _parse_params(params)
 
         job_id = uuid.uuid4().hex[:12]
         job = {
             "job_id": job_id,
-            "status": JobStatus.PENDING,
+            "status": JobStatus.RUNNING,
             "geometry": str(geo_path),
-            "params": parsed_params.model_dump() if hasattr(parsed_params, 'model_dump') else str(parsed_params),
+            "params": parsed_params.model_dump(),
             "created_at": datetime.now().isoformat(),
             "completed_at": "",
             "cell_count": 0,
             "error": "",
         }
         _jobs[job_id] = job
-
-        # Save job manifest
-        (_jobs_dir / f"{job_id}.json").write_text(json.dumps(job, indent=2, default=str))
-
-        # Submit background task if available
-        if background_tasks is not None:
-            background_tasks.add_task(_run_mesh_job, job_id, geo_path, parsed_params, _results_dir)
-            job["status"] = JobStatus.RUNNING
-        else:
-            # Synchronous execution
-            try:
-                result = _run_mesh_job_sync(geo_path, parsed_params)
-                job["status"] = JobStatus.COMPLETED if result["success"] else JobStatus.FAILED
-                job["cell_count"] = result.get("cell_count", 0)
-                job["completed_at"] = datetime.now().isoformat()
-            except Exception as exc:
-                job["status"] = JobStatus.FAILED
-                job["error"] = str(exc)
-                job["completed_at"] = datetime.now().isoformat()
-
-        _jobs[job_id] = job
-        (_jobs_dir / f"{job_id}.json").write_text(json.dumps(job, indent=2, default=str))
+        _save_job(job)
+        background_tasks.add_task(_execute_job, job_id, geo_path, parsed_params)
 
         return JobResponse(
             job_id=job_id,
@@ -225,15 +274,7 @@ def create_app(data_dir: str | None = None) -> Any:
     @app.get("/jobs/{job_id}", response_model=JobResponse)
     async def get_job_status(job_id: str):
         """Poll the status of a submitted job."""
-        job = _jobs.get(job_id)
-        if job is None:
-            # Try loading from disk
-            job_file = _jobs_dir / f"{job_id}.json"
-            if job_file.exists():
-                job = json.loads(job_file.read_text())
-                _jobs[job_id] = job
-            else:
-                raise HTTPException(404, f"Job {job_id} not found")
+        job = _load_job(job_id)
 
         return JobResponse(
             job_id=job["job_id"],
@@ -248,9 +289,7 @@ def create_app(data_dir: str | None = None) -> Any:
     @app.get("/results/{job_id}")
     async def get_job_result(job_id: str):
         """Download the result archive or JSON report for a job."""
-        job = _jobs.get(job_id)
-        if job is None:
-            raise HTTPException(404, f"Job {job_id} not found")
+        job = _load_job(job_id)
         if job["status"] != JobStatus.COMPLETED:
             raise HTTPException(400, f"Job {job_id} is {job['status']}, not completed")
 
@@ -283,13 +322,14 @@ def create_app(data_dir: str | None = None) -> Any:
         ]
 
     @app.post("/batch", response_model=dict[str, Any])
-    async def batch_mesh(params: str = Form("{}")):
+    def batch_mesh(params: str = Form("{}")):
         """Batch mesh all uploaded geometry files.
 
         Processes every file in the uploads directory with the same
-        parameters. Returns a batch report.
+        parameters. Returns a batch report.  Plain ``def``: FastAPI runs it
+        in a worker thread, so long meshing does not block the event loop.
         """
-        parsed_params = MeshParams(**json.loads(params))
+        parsed_params = _parse_params(params)
         geo_files = list(_uploads_dir.glob("*.step")) + list(_uploads_dir.glob("*.stp")) + list(_uploads_dir.glob("*.stl"))
 
         if not geo_files:
@@ -320,6 +360,14 @@ def create_app(data_dir: str | None = None) -> Any:
     return app
 
 
+def _parse_params(params: str) -> MeshParams:
+    """Parse the ``params`` form field; bad input is the client's error."""
+    try:
+        return MeshParams(**json.loads(params))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, f"Invalid params: {exc}") from exc
+
+
 def _run_mesh_job_sync(geo_path: Path, params: MeshParams) -> dict[str, Any]:
     """Run a meshing job synchronously and return results."""
     from polyfoammesh.commercial.watertight import WatertightWorkflow
@@ -348,9 +396,8 @@ def _run_mesh_job_sync(geo_path: Path, params: MeshParams) -> dict[str, Any]:
 def _run_mesh_job(
     job_id: str, geo_path: Path, params: MeshParams,
     results_dir: Path,
-) -> None:
-    """Background task: run meshing and persist results."""
-    import json
+) -> dict[str, Any]:
+    """Run meshing, persist the report and return it."""
     from polyfoammesh.commercial.watertight import WatertightWorkflow
 
     try:
@@ -378,9 +425,17 @@ def _run_mesh_job(
     result_path = results_dir / f"{job_id}_result.json"
     result_path.write_text(json.dumps(report, indent=2, default=str))
     logger.info("Background job %s completed: success=%s", job_id, report.get("success"))
+    return report
 
 
 # ---------------------------------------------------------------------------
-# Module-level app for uvicorn
+# Module-level app for uvicorn, built on first access so that importing this
+# module never creates ./api_data as a side effect.
 # ---------------------------------------------------------------------------
-app = create_app() if _HAS_FASTAPI else None
+def __getattr__(name: str) -> Any:
+    if name == "app":
+        if not _HAS_FASTAPI:
+            return None
+        globals()["app"] = create_app()
+        return globals()["app"]
+    raise AttributeError(name)

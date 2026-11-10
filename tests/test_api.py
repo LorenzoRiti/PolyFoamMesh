@@ -1,149 +1,135 @@
-"""Tests for the REST API server."""
+"""HTTP tests of the REST API (real FastAPI, fake mesher: no meshing runs)."""
 from __future__ import annotations
 
-import sys
-import types
-from pathlib import Path
+import importlib
+import json
+from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from _test_helpers import _stub_pkg
+import pytest
 
-# --- Mock fastapi + pydantic ---
-class _SimpleModel:
-    def __init__(self, **kw):
-        for k, v in kw.items():
-            setattr(self, k, v)
-        if not kw:
-            self.max_cell = 0.05
-            self.min_cell = 0.01
-            self.detail = "medium"
-            self.bl_enabled = False
-            self.bl_n_layers = 3
-            self.bl_thickness_ratio = 0.005
-            self.bl_expansion_ratio = 1.2
-            self.n_cores = 1
-            self.fault_tolerant = False
-    def model_dump(self):
-        return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+pytest.importorskip("fastapi")
+pytest.importorskip("httpx")
+pytest.importorskip("multipart")
 
-class _MockApp:
-    def get(self, *a, **kw): return lambda f: f
-    def post(self, *a, **kw): return lambda f: f
+from fastapi.testclient import TestClient  # noqa: E402
 
-fastapi_mod = types.ModuleType("fastapi")
-fastapi_mod.FastAPI = lambda **kw: _MockApp()
-fastapi_mod.UploadFile = type('_UF', (), {})
-fastapi_mod.File = lambda default=None: None
-fastapi_mod.Form = lambda default=None: None
-fastapi_mod.HTTPException = type('_HE', (Exception,), {'__init__': lambda self, *a: None})
-fastapi_mod.BackgroundTasks = type('_BGT', (), {'add_task': lambda self, *a, **kw: None})
-fastapi_mod.responses = types.ModuleType("fastapi.responses")
-fastapi_mod.responses.FileResponse = lambda path, filename: {"path": path, "filename": filename}
-fastapi_mod.responses.JSONResponse = lambda content: content
-sys.modules["fastapi"] = fastapi_mod
-sys.modules["fastapi.responses"] = fastapi_mod.responses
-
-pydantic_mod = types.ModuleType("pydantic")
-pydantic_mod.BaseModel = _SimpleModel
-pydantic_mod.Field = lambda default=None, **kw: default
-sys.modules["pydantic"] = pydantic_mod
-
-# Stub heavy packages (saved and restored so later test modules can still
-# import the real polyfoammesh.gui package instead of an empty stub)
-_saved_gui = sys.modules.get("polyfoammesh.gui")
-_stub_pkg("polyfoammesh.gui")
-
-# Load server module directly
-src = Path(__file__).resolve().parents[1] / "src" / "polyfoammesh" / "api" / "server.py"
-code = src.read_text(encoding="utf-8")
-_mod = types.ModuleType("polyfoammesh.api.server")
-_mod.__file__ = str(src)
-_mod.__package__ = "polyfoammesh.api"
-sys.modules["polyfoammesh.api.server"] = _mod
-try:
-    exec(compile(code, str(src), "exec"), _mod.__dict__)
-finally:
-    if _saved_gui is not None:
-        sys.modules["polyfoammesh.gui"] = _saved_gui
-    else:
-        sys.modules.pop("polyfoammesh.gui", None)
-
-def _get(name):
-    return getattr(_mod, name)
+from polyfoammesh.api import server  # noqa: E402
 
 
-def test_job_status_enum():
-    JobStatus = _get("JobStatus")
-    assert JobStatus.PENDING.value == "pending"
-    assert JobStatus.COMPLETED.value == "completed"
+class _FakeWorkflow:
+    success = True
+
+    def set_geometry(self, path):
+        pass
+
+    def set_cell_sizes(self, max_cell, min_cell):
+        pass
+
+    def set_boundary_layers(self, **kw):
+        pass
+
+    def run(self):
+        return SimpleNamespace(
+            success=self.success,
+            cell_count=123 if self.success else 0,
+            wall_time_seconds=0.1,
+            steps_completed=["mesh"],
+            errors=[] if self.success else ["boom"],
+        )
 
 
-def test_mesh_params_defaults():
-    MeshParams = _get("MeshParams")
-    p = MeshParams()
-    assert p.max_cell == 0.05
-    assert p.min_cell == 0.01
-    assert not p.bl_enabled
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.delenv("POLYFOAMMESH_API_KEY", raising=False)
+    monkeypatch.delenv("POLYFOAMMESH_API_MAX_UPLOAD", raising=False)
+    # Patch the module the server's lazy import resolves (sys.modules), not
+    # the package attribute: other tests may swap sys.modules entries.
+    module = importlib.import_module("polyfoammesh.commercial.watertight")
+    monkeypatch.setattr(module, "WatertightWorkflow", _FakeWorkflow)
+    return TestClient(server.create_app(data_dir=str(tmp_path)))
 
 
-def test_mesh_params_custom():
-    MeshParams = _get("MeshParams")
-    p = MeshParams(max_cell=0.02, min_cell=0.005, bl_enabled=True, n_cores=8)
-    assert p.max_cell == 0.02
-    assert p.bl_enabled
-    assert p.n_cores == 8
+def _upload(client, name="part.stl", body=b"solid x"):
+    return client.post("/upload", files={"file": (name, body)})
 
 
-def test_health_response():
-    HealthResponse = _get("HealthResponse")
-    r = HealthResponse(status="ok", version="2.0.1")
-    assert r.status == "ok"
+def _submit(client):
+    file_id = _upload(client).json()["file_id"]
+    return client.post("/mesh", data={"file_id": file_id}).json()
 
 
-def test_job_response_defaults():
-    JobResponse = _get("JobResponse")
-    JobStatus = _get("JobStatus")
-    r = JobResponse(job_id="test", status=JobStatus.PENDING)
-    assert r.job_id == "test"
-    assert r.cell_count == 0
+def test_job_reaches_completed_and_result_is_downloadable(client):
+    job = _submit(client)
+    status = client.get(f"/jobs/{job['job_id']}").json()
+    assert status["status"] == "completed"
+    assert status["cell_count"] == 123
+    result = client.get(f"/results/{job['job_id']}")
+    assert result.status_code == 200
+    assert result.json()["success"] is True
 
 
-def test_job_response_completed():
-    JobResponse = _get("JobResponse")
-    JobStatus = _get("JobStatus")
-    r = JobResponse(job_id="abc", status=JobStatus.COMPLETED, cell_count=5000)
-    assert r.cell_count == 5000
+def test_failed_mesh_reports_failed_with_error(client, monkeypatch):
+    monkeypatch.setattr(_FakeWorkflow, "success", False)
+    status = client.get(f"/jobs/{_submit(client)['job_id']}").json()
+    assert status["status"] == "failed"
+    assert status["error"] == "boom"
 
 
-def test_create_app(tmp_path):
-    create_app = _get("create_app")
-    app = create_app(data_dir=str(tmp_path))
-    assert app is not None
+@pytest.mark.parametrize("file_id", ["../../secret", "*", "abc", "0123456789a?"])
+def test_malformed_file_id_is_never_globbed(client, tmp_path, file_id):
+    (tmp_path / "secret.txt").write_text("x")
+    resp = client.post("/mesh", data={"file_id": file_id})
+    assert resp.status_code == 404
 
 
-def test_create_app_default_dir():
-    create_app = _get("create_app")
-    app = create_app()
-    assert app is not None
+def test_invalid_params_is_client_error(client):
+    file_id = _upload(client).json()["file_id"]
+    for bad in ("{not json", "[1]", json.dumps({"max_cell": "big"})):
+        resp = client.post("/mesh", data={"file_id": file_id, "params": bad})
+        assert resp.status_code == 422, bad
 
 
-def test_mesh_params_model_dump():
-    MeshParams = _get("MeshParams")
-    p = MeshParams(max_cell=0.05, min_cell=0.01)
-    d = p.model_dump()
-    assert d["max_cell"] == 0.05
+def test_unsupported_extension_rejected(client):
+    assert _upload(client, name="part.exe").status_code == 400
 
 
-if __name__ == "__main__":
-    import tempfile
-    test_job_status_enum()
-    test_mesh_params_defaults()
-    test_mesh_params_custom()
-    test_health_response()
-    test_job_response_defaults()
-    test_job_response_completed()
-    with tempfile.TemporaryDirectory() as _td:
-        test_create_app(Path(_td))
-    test_create_app_default_dir()
-    test_mesh_params_model_dump()
-    print("ALL PASS")
+def test_upload_limit_leaves_no_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("POLYFOAMMESH_API_KEY", raising=False)
+    monkeypatch.setenv("POLYFOAMMESH_API_MAX_UPLOAD", "4")
+    client = TestClient(server.create_app(data_dir=str(tmp_path)))
+    assert _upload(client, body=b"12345").status_code == 413
+    assert not list((tmp_path / "uploads").iterdir())
+
+
+def test_api_key_enforced_when_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("POLYFOAMMESH_API_KEY", "test-key")
+    client = TestClient(server.create_app(data_dir=str(tmp_path)))
+    assert client.get("/health").status_code == 200
+    assert client.get("/jobs").status_code == 401
+    wrong = client.get("/jobs", headers={"X-API-Key": "nope"})
+    assert wrong.status_code == 401
+    assert client.get("/jobs", headers={"X-API-Key": "test-key"}).status_code == 200
+
+
+def test_finished_job_survives_restart(client, tmp_path):
+    job_id = _submit(client)["job_id"]
+    fresh = TestClient(server.create_app(data_dir=str(tmp_path)))
+    assert fresh.get(f"/jobs/{job_id}").json()["status"] == "completed"
+    assert fresh.get(f"/results/{job_id}").status_code == 200
+
+
+def test_job_interrupted_by_restart_is_failed_not_running(tmp_path, monkeypatch):
+    monkeypatch.delenv("POLYFOAMMESH_API_KEY", raising=False)
+    client = TestClient(server.create_app(data_dir=str(tmp_path)))
+    job_id = "0123456789ab"
+    (tmp_path / "jobs" / f"{job_id}.json").write_text(
+        json.dumps({"job_id": job_id, "status": "running"}), encoding="utf-8"
+    )
+    status = client.get(f"/jobs/{job_id}").json()
+    assert status["status"] == "failed"
+    assert "restarted" in status["error"]
+
+
+def test_import_does_not_build_the_app():
+    # Building it would create ./api_data just by importing the module.
+    assert "app" not in vars(server)

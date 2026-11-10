@@ -49,6 +49,10 @@ test = [
     # qtbot fixture used by tests/test_feature_detector.py (and pytest-qt's
     # QApplication singleton for the GUI tests)
     "pytest-qt>=4.4",
+    # Real HTTP tests of the REST API (tests/test_api.py).
+    "fastapi>=0.110.0",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
 ]
 docs = [
     "sphinx>=7.0",
@@ -59,6 +63,8 @@ docs = [
 api = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
+    # Required by FastAPI for the File/Form endpoints.
+    "python-multipart>=0.0.9",
     "requests>=2.31.0",
 ]
 # Experimental alternative tet mesher (issue #12): the "Polymesh
