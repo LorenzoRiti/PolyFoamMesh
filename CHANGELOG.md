@@ -151,6 +151,16 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
      gmsh_direct, cfMesh (`case_`), autopoly e native_poly.
   Test: 7 nuovi (gate prima della cache, punto unico, dialog ultima
   risorsa, reset del counter, unicita' atomica delle case dir).
+- **fTetWild surface fallback (caso DN1000 misurato)**: la fase
+  superficie GMSH muora da sola su CAD ostile (edge-splitting per ~6 min
+  poi `Impossible to mesh periodic surface 65`) — il tet engine non
+  arriva MAI a partire. Fallback dichiarato one-shot per run: esporta
+  le patch discrete già in memoria in ASCII multi-solid
+  (`export_multisolid_ascii_stl`, nomi patch preservati a qualunque
+  dimensione — binary li perde) e rilancia fTetWild direttamente su
+  quello (il suo input di natura). Trigger: solo messaggi della classe
+  superficie, solo col motore fTetWild, dichiarato a log con la
+  dimensione dell'STL e la line `[SUBSTITUTED]`.
 - **Il pin ha la meglio sullo stato stantio del progetto** (caso
   segnalato oggi): un progetto salvato con la chiave legacy
   `gmsh_direct_poly`

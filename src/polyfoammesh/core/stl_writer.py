@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "heal_mesh", "write_binary_stl", "write_ascii_stl",
     "export_multisolid_stl", "export_surface_file",
-    "estimate_stl_size",
+    "estimate_stl_size", "export_multisolid_ascii_stl",
 ]
 
 
@@ -131,6 +131,35 @@ def export_multisolid_stl(meshes: list[trimesh.Trimesh], output_path: Path | str
     est_size = estimate_stl_size(meshes)
     if est_size > 10_000_000:
         return write_binary_stl(patches, output_path)
+    return write_ascii_stl(patches, output_path)
+
+
+def export_multisolid_ascii_stl(
+    meshes: list[trimesh.Trimesh], output_path: Path | str,
+) -> Path:
+    """Multi-solid ASCII STL with patch names ALWAYS preserved.
+
+    ``export_multisolid_stl`` auto-selects binary above a 10 MB estimate,
+    which loses the per-patch ``solid NAME`` blocks that fTetWild's
+    ``load_surface_solids`` recovers.  The fTetWild surface fallback
+    therefore needs ASCII regardless of size: its whole point is running
+    on the discrete patches WITHOUT a lossy name-flattening rewrite.
+    Same cleaning path as the auto variant (heal + contained-coplanar
+    drop) so the exported surface is mesh-clean, not just re-serialised.
+    """
+    from polyfoammesh.core.native_mesher import _drop_contained_coplanar
+
+    patches: dict[str, trimesh.Trimesh] = {}
+    for mesh in meshes:
+        mesh = heal_mesh(mesh)
+        cleaned, _keep = _drop_contained_coplanar(mesh, None)
+        mesh = cleaned
+        name = mesh.metadata.get("name", "patch")
+        if name in patches:
+            existing = patches[name]
+            patches[name] = existing + mesh
+        else:
+            patches[name] = mesh
     return write_ascii_stl(patches, output_path)
 
 

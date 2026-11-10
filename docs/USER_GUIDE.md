@@ -105,7 +105,12 @@ Load STEP or STL (`Ctrl+O`, recent files, or drag & drop). The app:
   be pinned in Advanced (Tet engine: Automatic / GMSH / fTetWild):
   a pin runs that engine alone with no fallback — a failure is a
   declared error, never a silent swap (fTetWild requires
-  `pip install pytetwild`). The pin is read once at run start and the
+  `pip install pytetwild`). fTetWild has one declared rescue for hostile
+  CAD: when the GMSH surface stage itself cannot be built (e.g.
+  "Impossible to mesh periodic surface ..."), the run exports the
+  discrete patch meshes already loaded as an ASCII multi-solid STL
+  (patch names preserved) and retries fTetWild directly on that, once,
+  with the substitution logged. The pin is read once at run start and the
   selector locks during runs, so a mid-run change cannot silently miss
   its run. Clicking the pin also clears a saved project's legacy mesher
   key (the project override cannot out-vote an explicit pin; the log

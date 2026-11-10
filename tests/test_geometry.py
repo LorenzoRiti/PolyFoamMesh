@@ -107,6 +107,33 @@ def test_stl_multisolid_export(tmp_path):
     print("PASS: test_stl_multisolid_export")
 
 
+def test_fallback_ascii_export_preserves_patch_names_for_ftetwild(tmp_path):
+    """The fTetWild surface fallback MUST keep per-patch names: binary
+    STL loses ``solid NAME`` blocks, and ``load_surface_solids`` can only
+    recover names from ASCII — this is exactly why
+    ``export_multisolid_ascii_stl`` exists alongside the auto-switching
+    variant (which goes binary above a 10 MB estimate and would flatten
+    the patches to one)."""
+    import trimesh
+
+    from polyfoammesh.core.ftetwild_wrapper import load_surface_solids
+    from polyfoammesh.core.stl_writer import export_multisolid_ascii_stl
+
+    def _patch(name: str) -> trimesh.Trimesh:
+        box = trimesh.creation.box(bounds=((-0.1, -0.1, 0), (0.1, 0.1, 0.02)))
+        mesh = box.subdivide().subdivide()  # ~3k faces, fast
+        mesh.metadata["name"] = name
+        return mesh
+
+    out = tmp_path / "fallback.stl"
+    export_multisolid_ascii_stl([_patch("wall"), _patch("inlet")], out)
+    tris, names = load_surface_solids(out)
+    assert set(names) == {"wall", "inlet"}, f"names lost: {set(names)}"
+    assert len(tris) > 0
+    content = out.read_text(encoding="ascii", errors="replace")
+    assert "facet normal" in content  # ASCII, name-bearing
+
+
 def test_surface_file_export(tmp_path):
     cyl = create_test_cylinder()
     shape = cyl.val()

@@ -2318,6 +2318,7 @@ class MainWindow(QMainWindow):
         self._poly_fallback_active = False
         self._low_ram_gmsh_threads = False
         self._auto_tet_plan = None
+        self._ftw_stl_fallback_done = False
         if not getattr(self, "_auto_restarting", False):
             # A fresh user run gets a fresh auto-fix budget.  The counter
             # used to live for the whole session: after two auto-fix
@@ -3848,6 +3849,47 @@ class MainWindow(QMainWindow):
         my_id = ctx["my_id"]
         if my_id != self._run_id:
             return
+        # fTetWild surface fallback (ONE attempt per run): GMSH's surface
+        # stage dies outright on hostile-CAD classes it cannot repair —
+        # measured on the user's DN1000 valve (6.2 min of edge-splitting
+        # loops, then "Impossible to mesh periodic surface 65").  fTetWild
+        # has been designed for exactly these inputs: feed it the
+        # discrete patch meshes ALREADY in memory (run_volume accepts an
+        # STL directly and skips the GMSH surface stage), declared here.
+        if (
+            getattr(self, "_current_mesher_type", "") == "ftetwild_poly"
+            and ("Impossible to mesh periodic surface" in msg
+                 or "GMSH surface meshing failed" in msg)
+            and not getattr(self, "_ftw_stl_fallback_done", False)
+            and self._case_dir is not None
+        ):
+            self._ftw_stl_fallback_done = True
+            try:
+                from polyfoammesh.core.stl_writer import (
+                    export_multisolid_ascii_stl,
+                )
+
+                stl_path = self._case_dir / "surface.patches.ascii.stl"
+                export_multisolid_ascii_stl(list(self._meshes), stl_path)
+                _stl_mb = stl_path.stat().st_size / (1024 * 1024)
+                self._log.append_log(
+                    f"{Tag.CASE} [tet:ftetwild] GMSH surface stage failed "
+                    f"({str(msg).splitlines()[0][:90]}) -> falling back to "
+                    f"the discrete patch meshes already in memory "
+                    f"({_stl_mb:.1f} MB ASCII STL, patch names preserved) "
+                    "and re-running fTetWild on it directly (one attempt)."
+                )
+                self._log_substitution(
+                    "fTetWild surface fallback: GMSH stage -> "
+                    "discrete patch STL (one attempt)."
+                )
+                self._start_gmsh_volume_worker(str(stl_path), my_id)
+                return
+            except Exception as _exc:
+                logger.error("fTetWild STL fallback failed: %s", _exc)
+                self._log.append_log(
+                    f"{Tag.ERROR} fTetWild STL fallback failed: {_exc}"
+                )
         _plan = ctx.get("auto_tet_plan")
         if _plan is not None and _plan.fallback and not ctx.get("auto_switched"):
             _target = (

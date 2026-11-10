@@ -207,6 +207,28 @@ def test_auto_fix_budget_resets_on_a_fresh_user_run():
     src = _src("_on_run_meshing")
     assert "_quality_fix_attempts = 0" in src
     assert "_auto_restarting" in src
+    # The fTetWild discrete-surface fallback is one-shot per RUN (reset).
+    assert "_ftw_stl_fallback_done = False" in src
+
+
+def test_ftetwild_surface_fallback_exports_patch_stl_once():
+    """Measured on the user's DN1000: the GMSH surface stage alone fails
+    on hostile CAD (periodic surface) after minutes of edge-splitting
+    loops — the tet engine never even starts.  One declared attempt per
+    run re-feeds fTetWild the discrete patch meshes already in memory
+    (run_volume accepts an STL input directly)."""
+    src = _src("_on_gmsh_volume_failed")
+    for token in (
+        '"Impossible to mesh periodic surface"',
+        "export_multisolid_ascii_stl",
+        "_ftw_stl_fallback_done = True",
+        "surface.patches.ascii.stl",
+        "_start_gmsh_volume_worker",
+    ):
+        assert token in src, token
+    assert "surface fallback" in src
+    reset_src = _src("_on_run_meshing")
+    assert "_ftw_stl_fallback_done = True" not in reset_src
 
 
 def test_compare_candidate_requires_a_real_dict():
