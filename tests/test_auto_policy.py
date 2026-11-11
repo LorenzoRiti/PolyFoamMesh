@@ -321,14 +321,17 @@ def test_has_volume_elements_msh4(tmp_path):
     surf_only = tmp_path / "s.msh"
     surf_only.write_text(
         "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$Entities\n0 0 0 0\n"
-        "$EndEntities\n$Elements\n1 5\n2 0 2 5\n1 2 3 4 5 6\n$EndElements\n",
+        "$EndEntities\n$Elements\n1 5 1 5\n2 0 2 5\n"
+        "1 1 2 3\n2 2 3 4\n3 3 4 5\n4 4 5 6\n5 5 6 1\n$EndElements\n",
         encoding="ascii",
     )
     assert _has_volume_elements(surf_only) is False
     vol = tmp_path / "v.msh"
     vol.write_text(
         "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$Entities\n0 0 0 0\n"
-        "$EndEntities\n$Elements\n1 6\n2 0 2 5\n1 2 3 4 5 6\n3 0 4 1\n1 2 3 4\n$EndElements\n",
+        "$EndEntities\n$Elements\n2 6 1 6\n2 0 2 5\n"
+        "1 1 2 3\n2 2 3 4\n3 3 4 5\n4 4 5 6\n5 5 6 1\n"
+        "3 0 4 1\n6 1 2 3 4\n$EndElements\n",
         encoding="ascii",
     )
     assert _has_volume_elements(vol) is True

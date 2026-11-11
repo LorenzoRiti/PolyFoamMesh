@@ -831,6 +831,14 @@ def build_graded_refinement_boxes(
 
 #: above this bulk estimate the run is flagged before it starts
 _HUGE_CELL_ESTIMATE = 5_000_000
+#: from here on the load log shows an indicative run time
+_TIME_HINT_MIN_CELLS = 150_000
+#: tet + dual seconds per ESTIMATED (vol / max_cell^3) cell on the fTetWild
+#: path.  Measured 2026-11-11: final.step 173k est -> 452 s fTetWild + 263 s
+#: dual = 4.1 ms; DN1000 ~12k est -> 59 s = 4.9 ms; FUSO ~1.0M est ->
+#: > 1500 s.  (tets ~ 8.5 x the estimate, fTetWild ~270 s and dual ~120-155 s
+#: per million tets.)
+_SECONDS_PER_ESTIMATED_CELL = 4.5e-3
 
 
 def thin_domain_warnings(volume: float, area: float, bbox, est_cells: int,
@@ -863,6 +871,19 @@ def thin_domain_warnings(volume: float, area: float, bbox, est_cells: int,
             f"[suggest] WARNING: ~{est_cells / 1e6:.0f} million cells at the "
             "suggested size - this cannot be fast.  Check the geometry "
             "(thin shell? wrong units?) or set a larger max cell."
+        )
+    elif est_cells >= _TIME_HINT_MIN_CELLS and volume > 0.0:
+        minutes = est_cells * _SECONDS_PER_ESTIMATED_CELL / 60.0
+        target = max(_TIME_HINT_MIN_CELLS // 2, 1)
+        s_target = (volume / target) ** (1.0 / 3.0)
+        out.append(
+            f"[suggest] indicative run time: ~{minutes:.0f} min "
+            f"(tet + polyhedral conversion on the fTetWild path, ~"
+            f"{_SECONDS_PER_ESTIMATED_CELL * 1e3:.1f} s per 1000 estimated "
+            f"cells; the boundary layer comes on top, and GMSH is usually "
+            f"faster when it succeeds).  A max cell of "
+            f"~{s_target * 1e3:.3g} mm gives ~{target:,} cells "
+            f"(~{target * _SECONDS_PER_ESTIMATED_CELL / 60.0:.0f} min)."
         )
     return out
 

@@ -676,8 +676,56 @@ def _snap_boundary_to_surface(V, T, surface, min_dist: float = 0.0):
     return V, n_snip, max_move
 
 
+#: Largest tetrahedron-count growth the adaptive sizing field may ask for
+#: relative to a uniform mesh at the max cell.  Measured 2026-11-11, DN1000
+#: valve (71 mm cell): adaptive field = 6.7M tets / 51 min against 73k tets /
+#: 19 s uniform (90x).  ``FTETWILD_ADAPTIVE_BUDGET`` overrides, 0 = no cap.
+_ADAPTIVE_GROWTH_BUDGET = 5.0
+
+
+def _cap_field_growth(vals, max_cell: float, spacing: float, v_fluid: float,
+                      budget: float):
+    """Scale the refined targets up until the tet growth fits ``budget``.
+
+    ``vals`` are per-grid-point target edges (``max_cell`` where unrefined).
+    The estimate is volume / edge^3 summed over the refined grid points
+    (half of each cube is assumed inside the fluid) against the uniform
+    count ``v_fluid / max_cell^3``.  All refined targets are multiplied by
+    one common factor ``m >= 1`` (clamped to ``max_cell``) - the grading
+    between thin and open regions is kept, only its depth is limited -
+    found by bisection (the growth falls monotonically with ``m``).
+    Returns ``(vals, m, growth_before, growth_after)``.
+    """
+    import numpy as _np
+
+    refined = vals < float(max_cell) * 0.999
+    inv0 = 1.0 / float(max_cell) ** 3
+    if not refined.any() or budget is None or budget <= 1.0 or v_fluid <= 0:
+        return vals, 1.0, 1.0, 1.0
+
+    def growth(v):
+        extra = (
+            (1.0 / _np.maximum(v[refined], 1e-12) ** 3) - inv0
+        ).sum() * float(spacing) ** 3 * 0.5
+        return 1.0 + extra / (float(v_fluid) * inv0)
+
+    g0 = growth(vals)
+    if g0 <= budget:
+        return vals, 1.0, g0, g0
+    lo, hi = 1.0, float(max_cell) / float(vals[refined].min())
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if growth(_np.minimum(float(max_cell), vals * mid)) > budget:
+            lo = mid
+        else:
+            hi = mid
+    out = _np.minimum(float(max_cell), vals * hi)
+    return out, hi, g0, growth(out)
+
+
 def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
-                        cells_across: int = 8, n_samples: int = 3000):
+                        cells_across: int = 8, n_samples: int = 3000,
+                        growth_budget: float | None = None):
     """cfMesh-like LOCAL sizing field for fTetWild (user request 2026-10-19:
     'recognise the geometry and refine where needed in the curvatures').
 
@@ -766,6 +814,25 @@ def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
             cdist, cidx = ctree.query(grid_pts, k=1, workers=-1)
             ckeep = cdist <= 2.0 * spacing
             vals[ckeep] = _np.minimum(vals[ckeep], c_tgt[cidx[ckeep]])
+        # Cap the tet growth (see _ADAPTIVE_GROWTH_BUDGET)
+        _budget = _ADAPTIVE_GROWTH_BUDGET if growth_budget is None else growth_budget
+        _env = os.environ.get("FTETWILD_ADAPTIVE_BUDGET", "").strip()
+        if _env:
+            try:
+                _budget = float(_env)
+            except ValueError:
+                pass
+        _vf = 0.0
+        try:
+            _vf = abs(float(surf.volume))
+        except Exception:  # noqa: BLE001 - open surface
+            _vf = 0.0
+        _bbox_v = float(_np.prod(ext))
+        if not _np.isfinite(_vf) or _vf < 1e-3 * _bbox_v:
+            _vf = 0.5 * _bbox_v          # open / degenerate surface
+        vals, _m, _g0, _g1 = _cap_field_growth(
+            vals, float(max_cell), spacing, _vf, _budget,
+        )
         # cubes -> 6 tets each (standard decomposition)
         nx, ny, nz = int(n[0]), int(n[1]), int(n[2])
         def _nid(i, j, k):
@@ -798,6 +865,9 @@ def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
             "max": float(vals.max()),
             "n_refined": int((vals < float(max_cell) * 0.999).sum()),
             "n_points": int(len(grid_pts)),
+            "growth_before": float(_g0),
+            "growth_after": float(_g1),
+            "growth_scale": float(_m),
         }
         return grid, stats
     except Exception:  # noqa: BLE001 - never break the tet stage
@@ -1519,6 +1589,14 @@ def run_volume(
                     "refined)",
                     flush=True,
                 )
+                if _fs.get("growth_scale", 1.0) > 1.0001:
+                    print(
+                        f"[tet:ftetwild] adaptive sizing would multiply the "
+                        f"tet count by ~{_fs['growth_before']:.0f}x; capped "
+                        f"to ~{_fs['growth_after']:.1f}x (targets scaled "
+                        f"x{_fs['growth_scale']:.2f}, grading kept)",
+                        flush=True,
+                    )
         except Exception as _exc:  # noqa: BLE001 - never break the tet stage
             print(
                 f"[tet:ftetwild] adaptive sizing unavailable ({_exc}); "

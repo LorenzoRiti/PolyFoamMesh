@@ -19,4 +19,17 @@ def test_sheet_metal_part_is_flagged():
 
 def test_ordinary_fluid_domain_is_quiet():
     # final.step: 3 m pipe, 253 mm bore, 0.122 m3, 2.48 m2
-    assert thin_domain_warnings(0.1218, 2.48, (3.0, 0.2533, 0.2533), 173_483) == []
+    out = thin_domain_warnings(0.1218, 2.48, (3.0, 0.2533, 0.2533), 173_483)
+    assert not any("WARNING" in m for m in out)      # only the time hint
+
+
+def test_large_but_sane_domain_gets_an_indicative_time():
+    # final.step: 3 m pipe, 173k estimated cells, measured ~12 min tet + dual
+    out = thin_domain_warnings(0.1218, 2.48, (3.0, 0.2533, 0.2533), 173_483)
+    assert len(out) == 1 and "indicative run time" in out[0]
+    assert "~13 min" in out[0] or "~12 min" in out[0]
+    assert "max cell" in out[0]
+
+
+def test_small_domain_has_no_time_hint():
+    assert thin_domain_warnings(0.1218, 2.48, (3.0, 0.2533, 0.2533), 20_000) == []

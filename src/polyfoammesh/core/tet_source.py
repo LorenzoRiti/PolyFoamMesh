@@ -422,16 +422,25 @@ def choose_polymesh_engine(
     )
 
 
-def _has_volume_elements(msh: Path, _scan_lines: int = 200_000) -> bool:
+def _has_volume_elements(msh: Path, _scan_lines: int = 40_000_000) -> bool:
     """True when a GMSH MSH file contains at least one 3D element.
 
     A surface-only mesh (e.g. from a solid-less STEP: GMSH meshes the
-    2D shells and stops) is NOT a valid tet stage — without this check
+    2D shells and stops) is NOT a valid tet stage - without this check
     the auto chain would "succeed" on 2D output and die later at convert
-    with no fallback.  Supports MSH 2.2 ($Elements id/type lines, type
-    4/5/6/7/11 = tet/hex/prism/pyramid/tet10) and MSH 4.x (block header
-    ``entityDim==3`` with nonzero count).  Unknown formats fail OPEN
-    (treated as valid) so an exotic-but-good mesh is never rejected.
+    with no fallback.
+
+    Only the ``$Elements`` section is read (2026-11-11): the old scan looked
+    at every numeric line, so a ``$PhysicalNames`` row such as
+    ``2 4 "surface_4"`` (or a node whose x is exactly 4) read as "element
+    type 4 = tet" and EVERY surface-only mesh with four or more surfaces
+    passed (Venturi / Parte4 STEPs: 0 cells, no fallback).
+
+    MSH 2.x: rows ``id type ntags ...``, type 4/5/6/7/11 = tet/hex/prism/
+    pyramid/tet10.  MSH 4.x: blocks ``entityDim entityTag type count`` followed
+    by ``count`` rows; a block with entityDim 3 and count > 0 is volume.
+    Unknown or binary formats fail OPEN (treated as valid) so an
+    exotic-but-good mesh is never rejected.
     """
     try:
         with open(msh, encoding="utf-8", errors="replace") as fh:
@@ -440,31 +449,49 @@ def _has_volume_elements(msh: Path, _scan_lines: int = 200_000) -> bool:
                 header += fh.readline()
             if "$MeshFormat" not in header:
                 return True
-            m = re.search(r"\$MeshFormat\n(\d+)\.", header)
-            major = int(m.group(1)) if m else 0
+            m = re.search(r"\$MeshFormat\s+(\d+)\.\d+\s+(\d+)", header)
+            if not m or m.group(2) != "0":
+                return True            # unknown version or binary file
+            major = int(m.group(1))
+            if major not in (2, 4):
+                return True
+            n = 0
+            for line in fh:                       # find $Elements
+                n += 1
+                if n > _scan_lines:
+                    return True
+                if line.startswith("$Elements"):
+                    break
+            else:
+                return False                      # no element section at all
+            first = fh.readline().split()         # 2.x: count / 4.x: 4 numbers
             if major == 2:
-                for i, line in enumerate(fh):
-                    if i > _scan_lines:
-                        break
-                    s = line.strip()
-                    if not s or not s[0].isdigit():
-                        continue
-                    parts = s.split()
+                for line in fh:
+                    n += 1
+                    if n > _scan_lines:
+                        return True
+                    if line.startswith("$EndElements"):
+                        return False
+                    parts = line.split(None, 2)
                     if len(parts) >= 2 and parts[1] in ("4", "5", "6", "7", "11"):
                         return True
                 return False
-            if major == 4:
-                for i, line in enumerate(fh):
-                    if i > _scan_lines:
-                        break
-                    s = line.strip()
-                    parts = s.split()
-                    if (len(parts) == 4 and parts[0] == "3"
-                            and parts[3].isdigit() and int(parts[3]) > 0):
+            # 4.x: skip the rows of each block, read only the block headers
+            n_blocks = int(first[0]) if first else 0
+            for _ in range(n_blocks):
+                parts = fh.readline().split()
+                if len(parts) < 4:
+                    return True
+                dim, count = int(parts[0]), int(parts[3])
+                if dim == 3 and count > 0:
+                    return True
+                for _skip in range(count):
+                    fh.readline()
+                    n += 1
+                    if n > _scan_lines:
                         return True
-                return False
-            return True
-    except OSError:
+            return False
+    except (OSError, ValueError):
         return True
 
 

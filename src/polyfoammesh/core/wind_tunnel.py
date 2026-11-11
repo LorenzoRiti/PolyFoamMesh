@@ -254,3 +254,78 @@ def tunnel_patches(obj_meshes, tunnel: TunnelBox, face_cells: int = 8):
         w.metadata["name"] = m.metadata.get("name", "wall")
         out.append(w)
     return out
+
+
+# --------------------------------------------------------------------------
+# cell budget
+# --------------------------------------------------------------------------
+
+#: levels of the two refinement boxes (see :func:`refinement_boxes`)
+_NEAR_LEVEL, _WAKE_LEVEL = 3, 2
+#: cells across the object's thinnest extent below which we warn
+_MIN_CELLS_ACROSS_OBJECT = 10
+
+
+def _box_volume(b: dict) -> float:
+    return float(np.prod([b[f"{a}max"] - b[f"{a}min"] for a in _AXES]))
+
+
+def estimate_cells(tunnel: TunnelBox, boxes: list[dict], base: float,
+                   obj_volume: float = 0.0) -> float:
+    """Hex-equivalent cell count (volume / cell^3) for a base cell size.
+
+    Far field at ``base``, the object box at ``base / 2**(level-1)`` and the
+    wake box likewise.  The two boxes may overlap near the trailing edge, so
+    this is a slight over-estimate, which is the safe side for a budget.
+    The same measure as the load-time "bulk estimate" of the GUI (tets are
+    ~8.5x this number).
+    """
+    v_t = float(np.prod(np.asarray(tunnel.hi) - np.asarray(tunnel.lo)))
+    v_boxes = sum(_box_volume(b) for b in boxes)
+    cells = max(v_t - v_boxes - obj_volume, 0.0) / base ** 3
+    for b in boxes:
+        cells += _box_volume(b) / (base / 2 ** (b["level"] - 1)) ** 3
+    return cells
+
+
+def suggest_base_cell(obj_lo, obj_hi, tunnel: TunnelBox, obj_volume: float = 0.0,
+                      target_cells: int = 100_000) -> dict:
+    """Base (far-field) cell size that meets a cell budget.
+
+    Bisection on :func:`estimate_cells` (monotone in the cell size).  The
+    object surface then gets ``base / 2**(NEAR_LEVEL - 1)``; if that leaves
+    fewer than ``_MIN_CELLS_ACROSS_OBJECT`` cells across the object's
+    thinnest extent the result carries a warning: the budget is too small
+    for the object, raise it rather than trust the result.
+    """
+    if target_cells < 1000:
+        raise ValueError("target_cells must be >= 1000")
+    ext = np.asarray(obj_hi, dtype=float) - np.asarray(obj_lo, dtype=float)
+
+    def cells(base: float) -> float:
+        boxes = refinement_boxes(obj_lo, obj_hi, tunnel, base)
+        return estimate_cells(tunnel, boxes, base, obj_volume)
+
+    lo, hi = 1e-9, float(max(np.asarray(tunnel.hi) - np.asarray(tunnel.lo)))
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if cells(mid) > target_cells:
+            lo = mid
+        else:
+            hi = mid
+    base = hi
+    surface = base / 2 ** (_NEAR_LEVEL - 1)
+    across = float(ext.min()) / surface
+    out = {
+        "base_cell": base, "surface_cell": surface,
+        "estimated_cells": cells(base), "cells_across_object": across,
+        "warning": "",
+    }
+    if across < _MIN_CELLS_ACROSS_OBJECT:
+        out["warning"] = (
+            f"with a budget of {target_cells:,} cells the object's thinnest "
+            f"side gets only {across:.1f} cells (surface cell "
+            f"{surface * 1e3:.3g} mm): raise the budget or accept a coarse "
+            "object surface."
+        )
+    return out

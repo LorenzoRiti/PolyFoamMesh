@@ -116,3 +116,29 @@ def test_gui_has_the_wind_tunnel_action():
     src = inspect.getsource(mw.MainWindow)
     assert "Create Wind Tunnel around Object..." in src
     assert "def _on_wind_tunnel" in src
+
+
+def test_budget_sets_the_base_cell_and_is_met():
+    from polyfoammesh.core.wind_tunnel import estimate_cells, suggest_base_cell
+
+    t = compute_tunnel(CAR_LO, CAR_HI, TunnelSpec(on_ground=True))
+    r = suggest_base_cell(CAR_LO, CAR_HI, t, obj_volume=5.0, target_cells=400_000)
+    assert r["estimated_cells"] == pytest.approx(400_000, rel=0.02)
+    assert r["surface_cell"] == pytest.approx(r["base_cell"] / 4)
+    boxes = refinement_boxes(CAR_LO, CAR_HI, t, r["base_cell"])
+    assert estimate_cells(t, boxes, r["base_cell"], 5.0) == pytest.approx(
+        r["estimated_cells"])
+    # a bigger budget gives finer cells
+    r2 = suggest_base_cell(CAR_LO, CAR_HI, t, 5.0, target_cells=1_600_000)
+    assert r2["base_cell"] < r["base_cell"]
+
+
+def test_small_budget_for_a_thin_object_warns():
+    from polyfoammesh.core.wind_tunnel import suggest_base_cell
+
+    lo, hi = (0.0, 0.0, 0.0), (0.1, 0.1, 0.024)          # NACA-like
+    t = compute_tunnel(lo, hi, TunnelSpec())
+    r = suggest_base_cell(lo, hi, t, 1.6e-4, target_cells=50_000)
+    assert r["cells_across_object"] < 10 and "budget" in r["warning"]
+    with pytest.raises(ValueError):
+        suggest_base_cell(lo, hi, t, 0.0, target_cells=10)

@@ -7,6 +7,25 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- **Velocita' fTetWild (causa principale della lentezza in GUI)**: il campo di
+  dimensioni adattivo, acceso di default, poteva gonfiare la mesh di decine di
+  volte.  DN1000: 6.7 milioni di tetraedri e 51 minuti con il campo, 73 mila e
+  19 s senza.  Ora la crescita e' limitata a ~5x la mesh uniforme (i rapporti
+  tra zone fini e larghe restano; `FTETWILD_ADAPTIVE_BUDGET` la cambia, 0 la
+  toglie).  DN1000 con la configurazione GUI: 154 mila tet in 38 s.
+- **Gate dei volumi 3D nel file .msh**: leggeva ogni riga numerica, quindi un
+  nome fisico come `2 4 "surface_4"` contava come tetraedro e ogni STEP senza
+  solido con 4 o piu' superfici sembrava avere un volume: niente passaggio a
+  fTetWild, dual su mesh vuota (Venturi DN200, Parte4).  Ora legge solo la
+  sezione `$Elements` (MSH 2.x e 4.x).
+- Avviso al caricamento con tempo indicativo (~4.5 s ogni 1000 celle stimate,
+  misurato su tre pezzi) e cella che porta a ~75 mila celle, da 150 mila
+  celle stimate in su.
+- Galleria del vento: la cella di base si calcola da un budget di celle
+  (default 100 mila; cella di superficie = base/4; avvisa se l'oggetto ha meno
+  di 10 celle nello spessore); la finestra mostra le dimensioni dell'oggetto
+  lungo gli assi scelti.
+
 - Dual: la riparazione delle celle concave ha un tempo massimo (120 s in
   totale) e segnala il battito al watchdog invece di spostare la barra di
   avanzamento indietro.  Su final.step (1.69M tet) il watchdog abortiva

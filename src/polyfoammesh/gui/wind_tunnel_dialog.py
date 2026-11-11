@@ -109,8 +109,11 @@ class WindTunnelDialog(QDialog):
             return
         ext = [t.hi[i] - t.lo[i] for i in range(3)]
         u = f" {self._unit}" if self._unit else ""
-        txt = (f"Tunnel {ext[0]:.4g} x {ext[1]:.4g} x {ext[2]:.4g}{u}, "
-               f"frontal blockage {100 * t.blockage:.2f} %.")
+        txt = (f"Object: L {t.L:.4g} (along the flow) x H {t.H:.4g} "
+               f"(vertical) x W {t.W:.4g}{u}.  Tunnel {ext[0]:.4g} x "
+               f"{ext[1]:.4g} x {ext[2]:.4g}{u}, frontal blockage "
+               f"{100 * t.blockage:.2f} %.  If H looks like the wrong side "
+               "(a wing's span, a car's width) change the vertical axis.")
         if t.widened:
             txt += " Sides and top were widened to respect the blockage limit."
         self._summary.setText(txt)
