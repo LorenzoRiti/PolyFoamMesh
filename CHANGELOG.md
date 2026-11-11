@@ -7,6 +7,15 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Strato limite, ripiego "chiusura concava" sul percorso GMSH: almeno 6 giri di
+  esclusione invece di 3 (su PRENDI QUESTA ne servivano 5: con 3 nessuno strato
+  dopo ~340 s di tentativi, con 6 strato al 97-99 % in 150-330 s).  La pulizia
+  delle piramidi di parete dopo lo strato, prima solo su fTetWild, ora gira su
+  tutti i percorsi (protetta: scrive solo se le piramidi calano).  Corpus
+  (26 run, catena di produzione): Mesh OK 17 -> 18, nessun caso peggiore,
+  419 -> 469 s.  Sui due tubi reali lo strato ora c'e', ma il verdetto
+  oscilla di 1-3 facce da una generazione di tet all'altra.
+
 - **Taglia suggerita per tubi e condotti**: il suggerimento guardava solo lo
   spessore locale e dava 70 mm a un tubo da 255 mm di diametro (3,6 celle nel
   diametro): quasi tutti i vertici finivano sulla parete e il dual produceva

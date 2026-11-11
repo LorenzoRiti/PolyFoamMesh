@@ -2854,9 +2854,15 @@ class DualPolyWorker(QObject):
                             "[poly] BL standard path failed — retrying with "
                             "concave closure (decoupled_vertex)..."
                         )
-                        retry = _run_bl(
-                            {**kw, "local_termination": "decoupled_vertex"}
-                        )
+                        # At least 6 exclusion rounds (default 3): on PRENDI
+                        # QUESTA the closure needed 5 rounds at scale 0.2
+                        # (6 rounds: 98.8 % wall coverage, real checkMesh
+                        # Mesh OK; 3 rounds: no BL at all, 2026-11-11).
+                        retry = _run_bl({
+                            **kw, "local_termination": "decoupled_vertex",
+                            "local_max_rounds": max(
+                                int(kw.get("local_max_rounds", 3) or 3), 6),
+                        })
                         if retry is not None and retry.success:
                             bres = retry
                 # Last resort: halve the first-layer height. The per-vertex
@@ -2903,12 +2909,15 @@ class DualPolyWorker(QObject):
                         f"(thinner stack validates where the full one did "
                         f"not; no silent fallback)"
                     )
-                if self._smooth_free_boundary:
+                _post_bl_clear = True       # every mesher path (2026-11-11)
+                if _post_bl_clear:
                     # Post-BL separation of the build from the checkMesh
                     # gate: clear the boundary pyramids the terminator bands
                     # added at the thin features (batched, volume-guarded,
                     # write only when something was cleared).  The surface
                     # move is perpendicular to the wall (~0.1-0.6 mm).
+                    # It used to run on the fTetWild path only; the same
+                    # bands appear on GMSH meshes (gmshprova: 3 pyramids).
                     try:
                         from polyfoammesh.core.bl_poly import (
                             clear_boundary_pyramids_case,
