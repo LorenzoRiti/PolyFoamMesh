@@ -7,6 +7,10 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Strato limite: quando i difetti smettono di calare tra un'altezza e la
+  successiva, le altezze più sottili vengono saltate.  Corpus 471 -> 419 s,
+  verdetti invariati.
+
 - Strato limite validato sui criteri che fanno fallire checkMesh (piramidi
   con la decomposizione di OpenFOAM, non-ortogonalità > 90, skew > 4 anche
   di parete): lo strato non può più aggiungere difetti e la terminazione

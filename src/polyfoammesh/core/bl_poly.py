@@ -2127,6 +2127,9 @@ class PolyBoundaryLayerEngine:
             else:
                 cover_passes = (False, True)
             for cover_thin in cover_passes:
+                # stagnation guard (2026-11-11): a thinner layer only helps
+                # if the defect count is still falling
+                _last_count: int | None = None
                 for scale, clamp in (
                     (1.0, 0.5), (0.6, 0.35), (0.35, 0.2),
                     (0.2, 0.1), (0.1, 0.05),
@@ -2223,6 +2226,21 @@ class PolyBoundaryLayerEngine:
                         f"[bl] validation failed at scale={scale} clamp={clamp}: "
                         f"{msg}"
                     )
+                    _m = re.match(
+                        r"(\d+) (?:faces violate|checkMesh defects)", msg)
+                    if _m:
+                        _cnt = int(_m.group(1))
+                        if _last_count is not None and _cnt >= _last_count:
+                            self._log(
+                                f"[bl] defects not falling ({_last_count} -> "
+                                f"{_cnt}): thinner layers skipped"
+                            )
+                            res.warnings.append(
+                                f"height ladder stopped at scale={scale}: "
+                                f"defects {_last_count} -> {_cnt}"
+                            )
+                            break
+                        _last_count = _cnt
 
                     # Early stop: a fallback attempt only helps if it eventually
                     # reaches ZERO not-closed cells.  The winding solve is now
