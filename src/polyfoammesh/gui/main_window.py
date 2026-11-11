@@ -1070,8 +1070,15 @@ class MainWindow(QMainWindow):
             heartbeat_timeout_s=600.0,
         )
 
-    def _apply_loaded_meshes(self, source: str) -> None:
-        """Apply newly loaded unscaled meshes to the UI (GUI thread only)."""
+    def _apply_loaded_meshes(self, source: str, check_watertight: bool = True) -> None:
+        """Apply newly loaded unscaled meshes to the UI (GUI thread only).
+
+        ``check_watertight=False`` is for surfaces the program built itself
+        (the wind tunnel: closed by construction).  Auto-repair on them is
+        harmful - measured on NACA 0024: the healer's duplicated hole fill
+        made the set look open and PyMeshFix turned the tunnel into a
+        3274-face shell of negative volume.
+        """
         self._rebuild_scaled_meshes()
         names = [m.metadata.get("name", "?") for m in self._meshes]
         logger.info("%s solids: %s", source, names)
@@ -1090,7 +1097,13 @@ class MainWindow(QMainWindow):
         # actionable again until the user confirms sizes (or presses
         # Generate Mesh, which confirms them implicitly).
         self._refresh_workflow(geometry_loaded=True, sizing_ready=False)
-        self._start_watertight_check(self._unscaled_meshes)
+        if check_watertight:
+            self._start_watertight_check(self._unscaled_meshes)
+        else:
+            self._log.append_log(
+                f"{Tag.GEOM} {source}: closed by construction - watertight "
+                "check and auto-repair skipped.")
+            self._refresh_workflow(watertight=True)
 
     def _prepare_surface_with_features(self) -> str:
         """Return the surface file for cfMesh.
@@ -1499,6 +1512,7 @@ class MainWindow(QMainWindow):
         from polyfoammesh.core.stl_writer import export_multisolid_ascii_stl
         from polyfoammesh.core.wind_tunnel import (
             compute_tunnel,
+            open_edge_count,
             refinement_boxes,
             tunnel_patches,
         )
@@ -1547,10 +1561,16 @@ class MainWindow(QMainWindow):
             return
         self._log.append_log(f"{Tag.GEOM} {tunnel.summary()}")
         self._log.append_log(f"{Tag.GEOM} wind tunnel saved: {out}")
+        n_open = open_edge_count(obj)
+        if n_open:
+            self._log.append_log(
+                f"{Tag.WARN} the object surface has {n_open} open edges: the "
+                "tet mesher may fill it instead of carving it out of the "
+                "fluid. Close the object (CAD or Geometry repair) first.")
         self._original_shape = None
         self._unscaled_meshes = patches
         self._loaded_step_path = str(out)
-        self._apply_loaded_meshes("Wind tunnel")
+        self._apply_loaded_meshes("Wind tunnel", check_watertight=False)
         # refinement boxes are in metres
         t_m = compute_tunnel(lo * scale, hi * scale, spec)
         base = self._refinement_box_base_size()

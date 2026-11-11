@@ -142,3 +142,28 @@ def test_small_budget_for_a_thin_object_warns():
     assert r["cells_across_object"] < 10 and "budget" in r["warning"]
     with pytest.raises(ValueError):
         suggest_base_cell(lo, hi, t, 0.0, target_cells=10)
+
+
+def test_open_edge_count_sees_gaps_not_duplicates():
+    from polyfoammesh.core.wind_tunnel import open_edge_count
+
+    box = trimesh.creation.box(extents=(1, 1, 1))
+    assert open_edge_count([box]) == 0
+    gap = trimesh.Trimesh(box.vertices, box.faces[1:], process=False)   # 1 tri missing
+    assert open_edge_count([gap]) == 3
+    # a duplicated (filled twice) triangle makes edges 3-fold, not open
+    dup = trimesh.Trimesh(box.vertices, np.vstack([box.faces, box.faces[:1]]),
+                          process=False)
+    assert open_edge_count([dup]) == 0
+
+
+def test_tunnel_skips_the_auto_repair_it_would_be_destroyed_by():
+    import inspect
+
+    pytest.importorskip("PySide6")
+    from polyfoammesh.gui import main_window as mw
+
+    src = inspect.getsource(mw.MainWindow._on_wind_tunnel)
+    assert 'check_watertight=False' in src and "open_edge_count(obj)" in src
+    assert "check_watertight" in inspect.signature(
+        mw.MainWindow._apply_loaded_meshes).parameters

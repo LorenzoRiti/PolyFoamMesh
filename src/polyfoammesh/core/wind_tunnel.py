@@ -329,3 +329,22 @@ def suggest_base_cell(obj_lo, obj_hi, tunnel: TunnelBox, obj_volume: float = 0.0
             "object surface."
         )
     return out
+
+
+def open_edge_count(meshes) -> int:
+    """Edges used by exactly ONE triangle once the patches are merged.
+
+    0 means no gaps in the surface (an edge shared by 3+ triangles - e.g.
+    a hole the healer filled twice - is tolerated: the winding-number
+    inside/outside test of the tet mesher does not need it manifold).  A
+    positive count on the OBJECT means fTetWild may fill it instead of
+    carving it out of the fluid.
+    """
+    import trimesh
+    import trimesh.grouping as grouping
+
+    if not meshes:
+        return 0
+    c = trimesh.util.concatenate(list(meshes))
+    c.merge_vertices()
+    return int(len(grouping.group_rows(c.edges_sorted, require_count=1)))

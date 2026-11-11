@@ -7,6 +7,13 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Galleria del vento: dopo la creazione non parte piu' il controllo di tenuta
+  con auto-riparazione.  Sul NACA 0024 il guaritore duplicava il riempimento
+  di un buco, la superficie risultava non-manifold e PyMeshFix trasformava la
+  galleria in un guscio da 3274 facce con volume negativo (mesh da 653 tet).
+  Avvisa invece se l'oggetto ha spigoli aperti (fTetWild lo riempirebbe).
+  Verificato sul NACA: 102 mila celle, oggetto presente, strato limite 83 %.
+
 - **Velocita' fTetWild (causa principale della lentezza in GUI)**: il campo di
   dimensioni adattivo, acceso di default, poteva gonfiare la mesh di decine di
   volte.  DN1000: 6.7 milioni di tetraedri e 51 minuti con il campo, 73 mila e
