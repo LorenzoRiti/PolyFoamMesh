@@ -1130,9 +1130,14 @@ def test_min_base_face_fraction_excludes_crafted_tiny_face():
     _craft_tiny_corner_face(case)
 
     logs: list[str] = []
+    # Since 2026-11-11 the validator also applies checkMesh's skew and
+    # non-orthogonality tests: on this crafted corner the full stack adds
+    # skew faces, so the global ladder refuses it and - as production does
+    # after a failed standard attempt - the local termination drops only
+    # the offending stacks.
     res = PolyBoundaryLayerEngine(case, log=logs.append).run(
         n_layers=2, first_height=1e-3, growth_rate=1.2, apply_to_all=True,
-        min_base_face_fraction=0.2,
+        min_base_face_fraction=0.2, local_termination="decoupled_vertex",
     )
     assert res.success, (res.errors, res.warnings)
     assert res.n_excluded_small_faces >= 1

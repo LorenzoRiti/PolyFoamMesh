@@ -7,6 +7,13 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Strato limite validato sui criteri che fanno fallire checkMesh (piramidi
+  con la decomposizione di OpenFOAM, non-ortogonalità > 90, skew > 4 anche
+  di parete): lo strato non può più aggiungere difetti e la terminazione
+  locale toglie solo le pile responsabili.  Catena di produzione sul
+  corpus: Mesh OK con BL 14 -> 17 su 26, nessun caso peggiore; DN1000 non
+  ha più facce storte dovute allo strato.
+
 - Report BL: lo spessore del primo strato (e lo y+ stimato) si misura lungo
   la normale di parete e solo sulle celle sottili.  Prima contava lo
   spostamento laterale del baricentro e celle del dual non stratificate

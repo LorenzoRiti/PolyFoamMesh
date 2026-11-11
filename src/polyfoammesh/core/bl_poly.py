@@ -883,6 +883,29 @@ def clear_boundary_pyramids_case(case_dir, log=None, max_rounds: int = 3) -> int
     return total
 
 
+def _checkmesh_bad_cells(points, faces, owner, neigh, n_int, n_cells):
+    """(bad-cell mask, total) under the tests that make checkMesh FAIL:
+    face pyramids, non-orthogonality errors (> 90 deg; 70-90 is only the
+    "severely non-orthogonal" warning, measured: a box BL at 79 deg max is
+    "Mesh OK") and skewness > 4 (internal and boundary) - the OpenFOAM
+    replica the dual converter uses (centre-point decomposition centres)."""
+    from polyfoammesh.core.tet_poly_dual import (
+        _cell_centres,
+        _detect_defects,
+        _face_geometry as _of_face_geometry,
+    )
+
+    pts = np.asarray(points, dtype=np.float64)
+    own = np.asarray(owner, dtype=np.int64)
+    nb = np.asarray(neigh, dtype=np.int64)[:n_int]
+    sf, cf = _of_face_geometry(pts, faces)
+    ctr, _vol = _cell_centres(sf, cf, own, nb, n_int, n_cells)
+    bad, cnt = _detect_defects(pts, faces, sf, cf, ctr, own, nb, n_int,
+                               n_cells, non_ortho_limit_deg=90.0,
+                               boundary_skew=True)
+    return bad, int(cnt["pyramid"] + cnt["non_ortho"] + cnt["skew"])
+
+
 def _pyramid_violations(points, faces, owner, neigh, n_int, n_cells,
                         return_idx=False):
     """Number of faces whose normal points INTO one of its cells (checkMesh's
@@ -1831,6 +1854,13 @@ class PolyBoundaryLayerEngine:
             points, faces, owner, neighbour, n_int, n_cells, return_idx=True,
         )
         pyr_before = int(len(pyr_idx))
+        # checkMesh replica of the INPUT (2026-11-11): the layer may not add
+        # to it, and the local exclusion drops the stacks around cells it
+        # makes bad.  The exact-centroid pyramid count above disagrees with
+        # checkMesh's decomposition, and skew/non-ortho were not checked at
+        # all (cube_duct/GMSH: validator 0, checkMesh 1 pyramid + 10 skew).
+        self._of_bad_before, self._of_before = _checkmesh_bad_cells(
+            points, faces, owner, neighbour, n_int, n_cells)
         # the wall faces whose input cells already violate the pyramid
         # criterion (concave feature spots) are flagged  -  the consistency
         # fixpoint then flattens their connected region to ONE layer
@@ -2462,6 +2492,19 @@ class PolyBoundaryLayerEngine:
         core_bad = np.flatnonzero(bad_owner & (own2 < prism_start)
                                   & face_has_new)
         core_cells = {int(c) for c in own2[core_bad]}
+        # checkMesh replica: prisms it flags, and original cells it flags
+        # that were clean in the input (skew / non-ortho / pyramids at the
+        # stack tops)
+        bad_before = getattr(self, "_of_bad_before", None)
+        if bad_before is not None:
+            of_bad, _tot = _checkmesh_bad_cells(pts2, faces2, own2, nb2,
+                                                n_int2, n_cells2)
+            for c in np.flatnonzero(of_bad):
+                c = int(c)
+                if c >= prism_start:
+                    _exclude(cell_to_bi.get(c))
+                elif c < len(bad_before) and not bad_before[c]:
+                    core_cells.add(c)
         for b, oc in owner_shared.items():
             if oc in core_cells:
                 excluded_positions.add(b)
@@ -4891,6 +4934,18 @@ class PolyBoundaryLayerEngine:
         # after the original cells (id >= n_cells - n_prisms), so the check
         # only looks at internal faces crossing the prism/core boundary  - 
         # the outermost prism layer vs the core.
+        of_before = getattr(self, "_of_before", None)
+        if of_before is not None:
+            _bad, of_after = _checkmesh_bad_cells(pts, faces, owner, neigh,
+                                                  n_int, n_cells)
+            built["checkmesh_defects_after"] = of_after
+            tol = int(getattr(self, "_pyr_tolerance", 0))
+            if of_after > of_before + tol:
+                return False, (
+                    f"{of_after} checkMesh defects (pyramids/non-ortho>90/"
+                    f"skew; input had {of_before}, tolerance {tol})"
+                )
+
         if max_core_volume_ratio > 0.0:
             n_prisms = int(built.get("n_prism_cells", 0))
             orig = n_cells - n_prisms
