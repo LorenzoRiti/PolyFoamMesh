@@ -2136,9 +2136,10 @@ class ParamsPanel(QWidget):
         try:
             from polyfoammesh.core.geometry import (
                 analyze_local_thickness,
-                compute_curvature_sizing,
                 compute_bbox_full,
+                compute_curvature_sizing,
                 suggest_cell_sizes,
+                thin_domain_warnings,
             )
             dx, dy, dz = compute_bbox_full(self._suggest_meshes)
             analysis = analyze_local_thickness(self._suggest_meshes)
@@ -2174,6 +2175,9 @@ class ParamsPanel(QWidget):
                 f"{s_max * 1e3:.4g} mm, min cell {s_min * 1e3:.4g} mm, "
                 f"bulk estimate ~{est_cells:,} cells"
             )
+            area = float(sum(float(m.area) for m in self._suggest_meshes))
+            for ln in thin_domain_warnings(vol, area, (dx, dy, dz), est_cells):
+                lines.append(ln)
             for ln in lines:
                 self.suggestion_completed.emit(ln)
         except Exception:

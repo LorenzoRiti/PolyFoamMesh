@@ -7,6 +7,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Avviso al caricamento quando il volume è un guscio sottile o la stima di
+  celle supera 5 milioni (Vaysa_lame_001.stp: 102 m2 di lamiera da 6 mm
+  caricati come fluido -> ~53 milioni di celle, GMSH sembrava bloccato).
+  Il log dice in chiaro il motivo e cosa fare prima di lanciare la mesh.
+
 - Strato limite: quando i difetti smettono di calare tra un'altezza e la
   successiva, le altezze più sottili vengono saltate.  Corpus 471 -> 419 s,
   verdetti invariati.

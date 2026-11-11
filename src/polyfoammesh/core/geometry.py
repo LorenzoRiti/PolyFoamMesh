@@ -829,6 +829,44 @@ def build_graded_refinement_boxes(
         return []
 
 
+#: above this bulk estimate the run is flagged before it starts
+_HUGE_CELL_ESTIMATE = 5_000_000
+
+
+def thin_domain_warnings(volume: float, area: float, bbox, est_cells: int,
+                         ) -> list[str]:
+    """Plain-language warnings for a domain no mesher can do quickly.
+
+    A fluid region is bulky: its mean thickness 2V/A is a sizeable part of
+    its box.  A sheet-metal part loaded as the "fluid" (measured: 102 m2 of
+    6 mm plate, 0.31 m3 in a 7 x 10 x 2.5 m box) has 2V/A of a few mm, so a
+    3-cells-through-the-thickness mesh needs tens of millions of cells and
+    GMSH looks frozen for minutes.  Flag it, with the numbers, before the
+    run - it is a setup problem, not a mesher problem.
+    """
+    out: list[str] = []
+    dims = sorted(float(d) for d in bbox)
+    if volume > 0.0 and area > 0.0 and dims and dims[0] > 0.0:
+        t_mean = 2.0 * volume / area
+        if t_mean < dims[0] / 40.0:
+            out.append(
+                f"[suggest] WARNING: this volume is a THIN SHELL - mean "
+                f"thickness {t_mean * 1e3:.3g} mm over {area:.3g} m2 of "
+                f"surface ({volume:.3g} m3 in a {dims[2]:.3g} x {dims[1]:.3g}"
+                f" x {dims[0]:.3g} m box).  If these are the solid parts "
+                "(sheet metal, blades), load the FLUID region around them "
+                "instead: meshing the sheet itself needs millions of cells "
+                "and will look frozen."
+            )
+    if est_cells > _HUGE_CELL_ESTIMATE:
+        out.append(
+            f"[suggest] WARNING: ~{est_cells / 1e6:.0f} million cells at the "
+            "suggested size - this cannot be fast.  Check the geometry "
+            "(thin shell? wrong units?) or set a larger max cell."
+        )
+    return out
+
+
 def suggest_cell_sizes(
     meshes: list[trimesh.Trimesh] | None = None,
     detail: str = "medium",
