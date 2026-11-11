@@ -199,11 +199,11 @@ def compute_bbox_full(meshes: list[trimesh.Trimesh]) -> tuple[float, float, floa
 # respect both the small features and the overall domain scale.
 
 _DETAIL_PRESETS = {
-    "very_coarse": {"max_mult": 0.6,  "min_div": 2.0, "samples": 256,  "p_max": "p50", "p_min": "p10", "cells_per_curvature": 4,  "min_thick_cells": 3},
-    "coarse":      {"max_mult": 0.4,  "min_div": 3.0, "samples": 384,  "p_max": "p50", "p_min": "p5",  "cells_per_curvature": 6,  "min_thick_cells": 5},
-    "medium":      {"max_mult": 0.3,  "min_div": 4.0, "samples": 768,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 10, "min_thick_cells": 8},
-    "fine":        {"max_mult": 0.18, "min_div": 6.0, "samples": 1536, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 16, "min_thick_cells": 12},
-    "very_fine":   {"max_mult": 0.05, "min_div": 12.0,"samples": 4096, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 32, "min_thick_cells": 30},
+    "very_coarse": {"max_mult": 0.6,  "min_div": 2.0, "samples": 256,  "p_max": "p50", "p_min": "p10", "cells_per_curvature": 4,  "min_thick_cells": 3, "min_cells_across": 6},
+    "coarse":      {"max_mult": 0.4,  "min_div": 3.0, "samples": 384,  "p_max": "p50", "p_min": "p5",  "cells_per_curvature": 6,  "min_thick_cells": 5, "min_cells_across": 9},
+    "medium":      {"max_mult": 0.3,  "min_div": 4.0, "samples": 768,  "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 10, "min_thick_cells": 8, "min_cells_across": 12},
+    "fine":        {"max_mult": 0.18, "min_div": 6.0, "samples": 1536, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 16, "min_thick_cells": 12, "min_cells_across": 18},
+    "very_fine":   {"max_mult": 0.05, "min_div": 12.0,"samples": 4096, "p_max": "p50", "p_min": "p1",  "cells_per_curvature": 32, "min_thick_cells": 30, "min_cells_across": 28},
 }
 
 
@@ -943,6 +943,15 @@ def suggest_cell_sizes(
     )
     if curvature_cell is not None:
         s_max = min(s_max, curvature_cell)
+
+    # Cells across the cross-section (2026-11-11).  The thickness percentile
+    # alone gave a 3 m x 255 mm Venturi pipe 70 mm cells (3.6 across the
+    # diameter): almost every vertex then sits ON the wall, the polyhedral
+    # cells are all thin wall cells and checkMesh finds ~30 face pyramids
+    # (PRENDI QUESTA: 29 pyramids at 70 mm, 0 at 20 mm for +24 s).  The
+    # median bbox dimension is the cross-section of a duct / tube.
+    _dims = sorted(float(d) for d in analysis["bbox"])
+    s_max = min(s_max, _dims[1] / float(preset.get("min_cells_across", 12)))
 
     # Clamp s_max: never larger than bbox/8 (so a single long domain
     # doesn't blow up the cell count). The percentile-based ratio above

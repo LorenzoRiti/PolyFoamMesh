@@ -7,6 +7,16 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- **Taglia suggerita per tubi e condotti**: il suggerimento guardava solo lo
+  spessore locale e dava 70 mm a un tubo da 255 mm di diametro (3,6 celle nel
+  diametro): quasi tutti i vertici finivano sulla parete e il dual produceva
+  30 piramidi.  Ora impone un minimo di celle nella sezione (6/9/12/18/28 per i
+  cinque livelli di dettaglio).  Sui file reali cambiano solo i quattro tubi
+  (70,3 -> 17,6 mm, circa 22 mila celle stimate); gli altri restano uguali.
+  Misurato: Venturi DN200 e Parte4 passano con strato limite; PRENDI QUESTA e
+  gmshprova passano checkMesh ma senza strato limite (i tentativi di strato
+  falliscono per 1-3 difetti), prima avevano lo strato e 29-32 piramidi.
+
 - Galleria del vento: dopo la creazione non parte piu' il controllo di tenuta
   con auto-riparazione.  Sul NACA 0024 il guaritore duplicava il riempimento
   di un buco, la superficie risultava non-manifold e PyMeshFix trasformava la

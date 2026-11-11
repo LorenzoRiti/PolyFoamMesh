@@ -306,3 +306,20 @@ def test_suggest_cell_sizes_survives_spinbox_rounding():
         assert result.valid, f"detail={detail}: {result.message}"
     print("PASS: suggest_cell_sizes stays spinbox-rounding-safe across detail levels")
 
+
+
+def test_duct_gets_enough_cells_across_the_cross_section():
+    """A 3 m x 255 mm tube (Venturi/PRENDI QUESTA) used to get 70 mm cells,
+    3.6 across the diameter: every vertex on the wall, ~30 face pyramids.
+    The cross-section floor must keep at least ~10 cells across at medium
+    (octree snapping may round the size up slightly), and finer detail
+    levels must not get coarser cells."""
+    import trimesh
+
+    tube = trimesh.creation.cylinder(radius=0.1275, height=3.0, sections=48)
+    tube.metadata["name"] = "wall"
+    medium, _ = suggest_cell_sizes([tube], detail="medium")
+    assert medium <= 0.255 / 10.0
+    coarse, _ = suggest_cell_sizes([tube], detail="coarse")
+    fine, _ = suggest_cell_sizes([tube], detail="fine")
+    assert fine <= medium <= coarse
