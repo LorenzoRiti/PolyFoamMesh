@@ -938,20 +938,37 @@ class TetPolyDualConverter:
 
             before = int(best_defects)
             n_split = 0
+            # Total time for this repair (keep-best, so stopping early only
+            # leaves defects).  Must stay well under the dual watchdog's
+            # 300 s no-progress abort, which kills the whole conversion.
+            _rep_budget = 120.0
+            _rep_t0 = time.monotonic()
+
+            def _left() -> float:
+                return max(1.0, _rep_budget - (time.monotonic() - _rep_t0))
+
             for _pass in range(2):
                 self._check_cancel()
+                if time.monotonic() - _rep_t0 > _rep_budget:
+                    self._log("[poly 7/9] concave-edge repair: time budget "
+                              "used - keeping the best mesh so far")
+                    break
                 start = int(best_defects)
                 (fcs, own, nb, ni, nc, pat, srep) = split_concave_boundary_cells(
                     M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
                     M.patches, _score, log=self._log,
+                    max_seconds=0.5 * _left(),
                 )
+                if self._watchdog is not None:
+                    # keep-alive without moving the progress bar backwards
+                    self._watchdog.beat("concave repair")
                 if srep["splits"]:
                     M.faces, M.owner, M.neigh = fcs, own, nb
                     M.n_int, M.n_cells, M.patches = ni, nc, pat
                     n_split += int(srep["splits"])
                 pts, rrep = relax_boundary_pyramids(
                     M.points, M.faces, M.owner, M.neigh, M.n_int, M.n_cells,
-                    _score, log=self._log,
+                    _score, log=self._log, max_seconds=_left(),
                     incremental=lambda p, _M=M: IncrementalDefectScore(
                         p, _M.faces, _M.owner, _M.neigh, _M.n_int, _M.n_cells,
                         boundary_skew=self._count_boundary_skew,

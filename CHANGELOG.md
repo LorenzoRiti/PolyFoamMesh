@@ -7,6 +7,18 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- Dual: la riparazione delle celle concave ha un tempo massimo (120 s in
+  totale) e segnala il battito al watchdog invece di spostare la barra di
+  avanzamento indietro.  Su final.step (1.69M tet) il watchdog abortiva
+  l'intera conversione dopo 436 s senza progresso; ora la riparazione si ferma
+  e tiene la mesh migliore (keep-best: si fermano solo i miglioramenti).
+- Galleria del vento virtuale (Tools > Create Wind Tunnel around Object...):
+  il CAD caricato diventa l'oggetto e il fluido e' la scatola attorno.
+  Criteri modificabili: a monte 3 L, a valle 8 L, ai lati 4 D, sopra 5 H,
+  ostruzione frontale massima 3 % (la scatola si allarga da sola e lo dice),
+  suolo opzionale.  Patch inlet/outlet/farfield/ground + oggetto con i nomi
+  originali; box di raffinamento attorno all'oggetto e nella scia.
+
 - Avviso al caricamento quando il volume è un guscio sottile o la stima di
   celle supera 5 milioni (Vaysa_lame_001.stp: 102 m2 di lamiera da 6 mm
   caricati come fluido -> ~53 milioni di celle, GMSH sembrava bloccato).

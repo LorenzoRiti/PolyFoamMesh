@@ -234,6 +234,7 @@ def split_concave_boundary_cells(
     max_rounds: int = 3,
     max_splits: int = 400,
     log: Callable[[str], None] | None = None,
+    max_seconds: float = 0.0,
 ):
     """Split concave-edge cells whose wall face fails the pyramid test.
 
@@ -258,10 +259,21 @@ def split_concave_boundary_cells(
               "refused": 0, "no_path": 0}
     refused: set[tuple[int, ...]] = set()
 
+    t_start = time.monotonic()
+
+    def _out_of_time() -> bool:
+        # keep-best: stopping early only leaves defects, never adds any
+        # (final.step, 2M faces: the loop ran 7+ minutes and the dual
+        # watchdog aborted the whole conversion - 2026-11-11)
+        if max_seconds > 0.0 and time.monotonic() - t_start > max_seconds:
+            report["timed_out"] = True
+            return True
+        return False
+
     for _round in range(max_rounds):
         accepted_round = 0
         for fa_face in [list(faces[int(f)]) for f in bad]:
-            if report["splits"] >= max_splits:
+            if report["splits"] >= max_splits or _out_of_time():
                 break
             # the face list shifts by one at every accepted split
             fa = next(
@@ -395,7 +407,7 @@ def split_concave_boundary_cells(
             if not done:
                 report["refused"] += 1
                 refused.add(tuple(fa_face))
-        if not accepted_round:
+        if not accepted_round or _out_of_time():
             break
         total, _vol, bad = score(points, faces, owner, neigh, n_int, n_cells)[:3]
         if not len(bad):

@@ -356,6 +356,8 @@ class MainWindow(QMainWindow):
         tm = self.menuBar().addMenu("&Tools")
         tm.addAction("Launch ParaView", self._on_launch_paraview)
         tm.addSeparator()
+        tm.addAction("Create Wind Tunnel around Object...", self._on_wind_tunnel)
+        tm.addSeparator()
         # A synthetic geometry generator for trying the app without a real
         # CAD file — it used to sit in the File menu right next to "Load
         # Geometry...", which read as a second, competing way to start a
@@ -1482,6 +1484,82 @@ class MainWindow(QMainWindow):
         self._params.set_bbox(dx, dy, dz)
         logger.info("Re-scaled by %.6f (unit: %s), domain: %.4f\u00d7%.4f\u00d7%.4f", new_scale, unit, dx, dy, dz)
         self._log.append_log(f"{Tag.SCALE} Re-scaled \u00d7{new_scale:.6f} (CAD unit: {unit})")
+
+    def _on_wind_tunnel(self):
+        """External aerodynamics: the loaded geometry becomes the object and
+        the fluid is a box around it (core.wind_tunnel criteria, editable).
+
+        Built on the loaded surface patches in CAD units and saved as a
+        multi-solid STL next to the original file, which then becomes the
+        geometry to mesh: Auto, BL and checkMesh run unchanged.  Two
+        refinement boxes (object, near wake) are added to the list.
+        """
+        import trimesh
+
+        from polyfoammesh.core.stl_writer import export_multisolid_ascii_stl
+        from polyfoammesh.core.wind_tunnel import (
+            compute_tunnel,
+            refinement_boxes,
+            tunnel_patches,
+        )
+        from polyfoammesh.gui.wind_tunnel_dialog import WindTunnelDialog
+
+        obj = list(getattr(self, "_unscaled_meshes", None) or [])
+        if not obj:
+            QMessageBox.information(
+                self, "Wind tunnel", "Load the object geometry first.")
+            return
+        names = {str(m.metadata.get("name", "")) for m in obj}
+        if {"inlet", "outlet", "farfield"} & names:
+            QMessageBox.information(
+                self, "Wind tunnel",
+                "This geometry already has inlet/outlet/farfield patches: "
+                "load the object alone to build a tunnel around it.")
+            return
+        lo, hi = trimesh.util.concatenate(obj).bounds
+        scale = float(self._params.get_scale_factor() or 1.0)
+        dlg = WindTunnelDialog(lo, hi,
+                               unit_label="m" if abs(scale - 1.0) < 1e-12
+                               else "CAD units", parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        spec = dlg.spec()
+        try:
+            tunnel = compute_tunnel(lo, hi, spec)
+            patches = tunnel_patches(obj, tunnel)
+            src = getattr(self, "_loaded_step_path", None)
+            out = None
+            if src:
+                cand = Path(src).with_name(Path(src).stem + "_windtunnel.stl")
+                try:
+                    out = export_multisolid_ascii_stl(patches, cand)
+                except OSError:
+                    out = None
+            if out is None:
+                import tempfile
+                out = export_multisolid_ascii_stl(
+                    patches, Path(tempfile.mkdtemp(prefix="pfm_tunnel_"))
+                    / "windtunnel.stl")
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            logger.exception("wind tunnel failed")
+            QMessageBox.critical(
+                self, "Wind tunnel", "Could not build it: " + str(exc))
+            return
+        self._log.append_log(f"{Tag.GEOM} {tunnel.summary()}")
+        self._log.append_log(f"{Tag.GEOM} wind tunnel saved: {out}")
+        self._original_shape = None
+        self._unscaled_meshes = patches
+        self._loaded_step_path = str(out)
+        self._apply_loaded_meshes("Wind tunnel")
+        # refinement boxes are in metres
+        t_m = compute_tunnel(lo * scale, hi * scale, spec)
+        base = self._refinement_box_base_size()
+        for box in refinement_boxes(lo * scale, hi * scale, t_m, base):
+            self._params.add_refinement_box(box)
+        self._refresh_box_viewer()
+        self._log.append_log(
+            f"{Tag.GEOM} refinement: object box (level 3) and wake box "
+            "(level 2) added - edit them in the Refinement list")
 
     def _on_test_cylinder(self):
         logger.info("Creating test cylinder...")
