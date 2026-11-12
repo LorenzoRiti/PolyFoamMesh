@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 #: Cache format version — bump when the canonical input schema changes so
 #: stale fingerprints are not silently reused.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 #: Inputs that affect the TET MESH ONLY, in canonical (hashed) form.
 #:

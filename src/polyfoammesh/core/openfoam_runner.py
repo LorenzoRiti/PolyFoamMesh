@@ -4652,7 +4652,7 @@ class FtetWildVolumeWorker(QObject):
             "fTetWild",
             stall_s=self.STALL_S,
             timeout_s=self.VOLUME_TIMEOUT_S,
-            heartbeat_s=60.0,
+            heartbeat_s=30.0,
             policy="abort",
             on_event=lambda action: self.log_line.emit(
                 f"[watchdog] {action.message()}"
@@ -4662,7 +4662,8 @@ class FtetWildVolumeWorker(QObject):
                 self.log_line.emit(
                     "[tet:ftetwild] ... still running "
                     f"({int(snap['elapsed_s'])}s elapsed, no progress for "
-                    f"{int(snap['no_progress_s'])}s)"
+                    f"{int(snap['no_progress_s'])}s) - fTetWild prints "
+                    "nothing while it works; this is normal"
                 ),
             ),
             on_progress=lambda fraction, stage, eta: (

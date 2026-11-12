@@ -725,7 +725,9 @@ def _cap_field_growth(vals, max_cell: float, spacing: float, v_fluid: float,
 
 def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
                         cells_across: int = 8, n_samples: int = 3000,
-                        growth_budget: float | None = None):
+                        growth_budget: float | None = None,
+                        zones: list | None = None,
+                        thickness: bool = True):
     """cfMesh-like LOCAL sizing field for fTetWild (user request 2026-10-19:
     'recognise the geometry and refine where needed in the curvatures').
 
@@ -808,8 +810,9 @@ def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
         dist, idx = tree.query(grid_pts, k=1, workers=-1)
         keep = dist <= 2.0 * spacing
         vals = _np.full(len(grid_pts), float(max_cell), dtype=_np.float64)
-        vals[keep] = tgt[idx[keep]]
-        if c_pts is not None and len(c_pts):
+        if thickness:
+            vals[keep] = tgt[idx[keep]]
+        if thickness and c_pts is not None and len(c_pts):
             ctree = cKDTree(c_pts)
             cdist, cidx = ctree.query(grid_pts, k=1, workers=-1)
             ckeep = cdist <= 2.0 * spacing
@@ -833,6 +836,23 @@ def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
         vals, _m, _g0, _g1 = _cap_field_growth(
             vals, float(max_cell), spacing, _vf, _budget,
         )
+        # User refinement boxes: applied AFTER the growth cap (an explicit
+        # request outranks the automatic field; the tunnel sizing already
+        # budgets its boxes).  Grid points within half a spacing of a box
+        # take its cell size so the interpolation reaches the box faces.
+        n_zone_pts = 0
+        for _z in zones or []:
+            try:
+                _cs = float(_z["cell_size"])
+                _in = _np.ones(len(grid_pts), dtype=bool)
+                for _i, _a in enumerate("xyz"):
+                    _in &= grid_pts[:, _i] >= float(_z[f"{_a}min"]) - 0.5 * spacing
+                    _in &= grid_pts[:, _i] <= float(_z[f"{_a}max"]) + 0.5 * spacing
+            except (KeyError, TypeError, ValueError):
+                continue
+            if _cs > 0 and _in.any():
+                vals[_in] = _np.minimum(vals[_in], _cs)
+                n_zone_pts += int(_in.sum())
         # cubes -> 6 tets each (standard decomposition)
         nx, ny, nz = int(n[0]), int(n[1]), int(n[2])
         def _nid(i, j, k):
@@ -868,6 +888,7 @@ def _build_sizing_field(surf, max_cell: float, min_cell: float | None,
             "growth_before": float(_g0),
             "growth_after": float(_g1),
             "growth_scale": float(_m),
+            "zone_points": int(n_zone_pts),
         }
         return grid, stats
     except Exception:  # noqa: BLE001 - never break the tet stage
@@ -1406,9 +1427,9 @@ def run_volume(
         src_tris, raw_names = load_surface_solids(stl_source)
         if refinement_zones:
             print(
-                "[tet:ftetwild] refinement zones were requested but the STL "
-                "input skips GMSH surface sizing; zones cannot be carried "
-                "without re-meshing the discrete surface - ignored, declared.",
+                "[tet:ftetwild] STL input: refinement boxes are applied "
+                "through the volume sizing field (coarse: one grid point "
+                "per max cell), not by re-meshing the surface.",
                 flush=True,
             )
     else:
@@ -1571,7 +1592,9 @@ def run_volume(
     # sizing field from the validated ray-cast passage-thickness sampler so
     # thin passages get finer cells while the bulk stays at the target.
     sizing_field = None
-    if adaptive and epsilon_abs:
+    _box_zones = [z for z in (refinement_zones or [])
+                  if isinstance(z, dict) and "cell_size" in z and "xmin" in z]
+    if (adaptive or _box_zones) and epsilon_abs:
         try:
             import pyvista as _pv3
             _field_surf = _pv3.read(
@@ -1579,6 +1602,7 @@ def run_volume(
             ).triangulate()
             sizing_field, _fs = _build_sizing_field(
                 _field_surf, target_edge, None, cells_across=8,
+                zones=_box_zones, thickness=bool(adaptive),
             )
             if sizing_field is not None:
                 print(

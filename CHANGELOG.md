@@ -7,6 +7,8 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- fTetWild su input STL (galleria del vento): i box di raffinamento erano ignorati; ora entrano nel campo di taglie del volume, dopo il limite di crescita.  Misurato sul NACA: celle 102k -> 186k, tempo 4,7 -> 11,7 min.  Versione della cache mesh 3 (le mesh fatte con le zone ignorate non vengono riusate).
+- Avviso all'avvio della run: stadi, durata prevista (calibrata sulle misure) e avviso che il tet resta muto per minuti; heartbeat di fTetWild ogni 30 s con "e' normale".
 - Galleria del vento: taglia massima/minima impostate dal budget di 100k celle (prima restava la taglia del solo oggetto, 5,3 mm, ~4,8M celle stimate); motore tet fTetWild per primo con GMSH di ripiego (GMSH sulla galleria STL stallava 2x300 s o andava in segfault, fTetWild 42 s); un mesher salvato nel progetto viene azzerato alla creazione della galleria.
 - Vista CAD "Surface with Edges": solo spigoli vivi (>30 gradi) e bordi aperti, non ogni triangolo.
 - Strato limite, ripiego "chiusura concava" sul percorso GMSH: almeno 6 giri di

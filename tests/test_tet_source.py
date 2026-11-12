@@ -234,4 +234,4 @@ def test_ftw_settings_are_in_the_cache_key():
         changed
     )
     assert "ftw_eps_frac" in mesh_cache.CANONICAL_KEYS
-    assert mesh_cache.CACHE_VERSION == 2
+    assert mesh_cache.CACHE_VERSION == 3

@@ -2618,6 +2618,19 @@ class MainWindow(QMainWindow):
             f"{'ON' if poly_on else 'OFF'} | adaptive sizing: "
             f"{'ON' if adaptive_on else 'OFF (manual Max/Min Cell Size)'}"
         )
+        try:
+            from polyfoammesh.core.run_forecast import forecast_text
+            _est = None
+            _ge = getattr(self._params, "_geometry_estimate", None)                 or self._params._geometry_cell_estimate()
+            if _ge:
+                _est = int(_ge[1])
+            self._log.append_log(f"{Tag.CASE} " + forecast_text(
+                _est, engine=str(mesher_type),
+                boundary_layer=bool(self._params.get_bl_enabled())
+                if hasattr(self._params, "get_bl_enabled") else False,
+                has_boxes=bool(self._gmsh_refinement_zones())))
+        except Exception:  # noqa: BLE001 - the forecast must never block a run
+            logger.debug("run forecast unavailable", exc_info=True)
         if mesher_type == "gmsh_direct" and poly_on is False:
             self._log.append_log(
                 f"{Tag.WARN} Tetrahedral (FEM) selected: this run will "
