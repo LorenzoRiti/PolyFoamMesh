@@ -167,3 +167,10 @@ def test_tunnel_skips_the_auto_repair_it_would_be_destroyed_by():
     assert 'check_watertight=False' in src and "open_edge_count(obj)" in src
     assert "check_watertight" in inspect.signature(
         mw.MainWindow._apply_loaded_meshes).parameters
+
+
+def test_tunnel_engine_plan_prefers_ftetwild():
+    from polyfoammesh.core.tet_source import tunnel_engine_plan
+    plan = tunnel_engine_plan(True)
+    assert plan.chain() == ["ftetwild_poly", "gmsh_direct_poly"]
+    assert tunnel_engine_plan(False) is None

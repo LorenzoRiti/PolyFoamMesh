@@ -546,6 +546,25 @@ def pinned_polymesh_plan(engine_key: str, ftetwild_available: bool) -> PolymeshE
     raise ValueError(f"unknown tet engine pin {engine_key!r}; expected gmsh|ftetwild")
 
 
+def tunnel_engine_plan(ftetwild_available: bool) -> PolymeshEnginePlan | None:
+    """Engine plan for a virtual wind tunnel built by the app.
+
+    The tunnel is an STL-based multi-solid surface: GMSH has to remesh a
+    discrete surface, which stalled or failed on it (measured 2026-11-12:
+    two 300 s stalls, a segfault at 22M tets), while fTetWild meshes it in
+    ~40 s.  fTetWild goes first; GMSH stays as the fallback.  None when
+    pytetwild is missing (the normal policy then applies).
+    """
+    if not ftetwild_available:
+        return None
+    return PolymeshEnginePlan(
+        primary="ftetwild_poly",
+        fallback1="gmsh_direct_poly",
+        fallback2=None,
+        reason="wind tunnel (STL multi-solid): fTetWild first, GMSH fallback",
+    )
+
+
 def is_weak_auto_result(
     passed: bool,
     residual_defects: int | None,

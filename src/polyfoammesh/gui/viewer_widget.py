@@ -1682,6 +1682,21 @@ class ViewerWidget(QWidget):
         pd.cell_data["color"] = colors_arr
         return pd
 
+    def _add_feature_edges(self, pd, color, angle: float = 30.0):
+        """Overlay only the silhouette/feature edges of a CAD surface
+        (sharp creases + open boundaries), not every triangle edge."""
+        try:
+            edges = pd.extract_feature_edges(
+                feature_angle=angle, boundary_edges=True,
+                non_manifold_edges=True, feature_edges=True,
+                manifold_edges=False)
+            if edges.n_cells:
+                self._plotter.add_mesh(
+                    edges, color=color, line_width=1.5, pickable=False,
+                    render_lines_as_tubes=False)
+        except Exception:
+            pass
+
     def _display_cad(self):
         if self._plotter is None or not self._cad_meshes:
             return
@@ -1697,14 +1712,11 @@ class ViewerWidget(QWidget):
                 kwargs = dict(scalars="color", rgb=True, smooth_shading=True)
                 if mode == "Wireframe":
                     kwargs.update(style="wireframe", line_width=1.0)
-                elif mode == "Surface with Edges":
-                    kwargs.update(
-                        style="surface", show_edges=True,
-                        edge_color=ec, line_width=1.0,
-                    )
                 else:
                     kwargs.update(style="surface")
                 self._plotter.add_mesh(combined, **kwargs)
+                if mode == "Surface with Edges":
+                    self._add_feature_edges(combined, ec)
             self._plotter.view_isometric()
             self._plotter.render()
             return
@@ -1716,15 +1728,12 @@ class ViewerWidget(QWidget):
             kwargs = dict(scalars="color", rgb=True, label=name, smooth_shading=True)
             if mode == "Wireframe":
                 kwargs.update(style="wireframe", line_width=1.0)
-            elif mode == "Surface with Edges":
-                kwargs.update(
-                    style="surface", show_edges=True,
-                    edge_color=ec, line_width=1.0,
-                )
             else:
                 kwargs.update(style="surface")
             actor = self._plotter.add_mesh(pd, **kwargs)
             self._pvdata_to_name[actor.GetAddressAsString("")] = name
+            if mode == "Surface with Edges":
+                self._add_feature_edges(pd, ec)
         self._plotter.view_isometric()
         self._plotter.render()
 

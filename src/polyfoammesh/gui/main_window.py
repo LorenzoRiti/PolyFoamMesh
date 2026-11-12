@@ -1561,6 +1561,14 @@ class MainWindow(QMainWindow):
             return
         self._log.append_log(f"{Tag.GEOM} {tunnel.summary()}")
         self._log.append_log(f"{Tag.GEOM} wind tunnel saved: {out}")
+        _stale = self._params.get_explicit_mesher_key()
+        if _stale:
+            # A new tunnel geometry must not inherit a saved project's
+            # legacy mesher (it bypasses auto policy and the fTetWild leg).
+            self._params._explicit_mesher_key = None
+            self._log.append_log(
+                f"{Tag.GEOM} saved-project mesher '{_stale}' cleared for the "
+                "tunnel: Polymesh auto drives this run")
         n_open = open_edge_count(obj)
         if n_open:
             self._log.append_log(
@@ -1570,10 +1578,28 @@ class MainWindow(QMainWindow):
         self._original_shape = None
         self._unscaled_meshes = patches
         self._loaded_step_path = str(out)
+        self._tunnel_stl_path = str(out)
         self._apply_loaded_meshes("Wind tunnel", check_watertight=False)
         # refinement boxes are in metres
         t_m = compute_tunnel(lo * scale, hi * scale, spec)
+        from polyfoammesh.core.wind_tunnel import suggest_base_cell
         base = self._refinement_box_base_size()
+        try:
+            vol = abs(float(trimesh.util.concatenate(obj).volume)) * scale ** 3
+            sug = suggest_base_cell(lo * scale, hi * scale, t_m, vol,
+                                    target_cells=100_000)
+            base = float(sug["base_cell"])
+            self._params._max_cell.setValue(base)
+            self._params._min_cell.setValue(float(sug["surface_cell"]))
+            self._log.append_log(
+                f"{Tag.GEOM} tunnel sizing: far-field cell {base * 1e3:.3g} mm, "
+                f"object surface {sug['surface_cell'] * 1e3:.3g} mm, "
+                f"~{sug['estimated_cells']:,.0f} cells for a 100,000 budget "
+                "(edit Max/Min cell to change it)")
+            if sug.get("warning"):
+                self._log.append_log(f"{Tag.WARN} {sug['warning']}")
+        except Exception:  # noqa: BLE001 - keep the generic base size
+            logger.exception("tunnel base cell suggestion failed")
         for box in refinement_boxes(lo * scale, hi * scale, t_m, base):
             self._params.add_refinement_box(box)
         self._refresh_box_viewer()
@@ -2338,6 +2364,24 @@ class MainWindow(QMainWindow):
             return plan_chain[0]
 
         _geom = getattr(self, "_loaded_step_path", None)
+        _tun = getattr(self, "_tunnel_stl_path", None)
+        if _tun and _geom and str(_geom) == str(_tun):
+            from polyfoammesh.core.tet_source import (
+                ftetwild_available as _ftw_ok,
+                tunnel_engine_plan,
+            )
+            _plan = tunnel_engine_plan(bool(_ftw_ok()))
+            if _plan is not None:
+                self._auto_engine_plan = _plan
+                plan_chain = _plan.chain()
+                self._log.append_log(
+                    f"{Tag.CASE} Polymesh auto: primary={_plan.primary} "
+                    f"fallbacks={[f for f in (_plan.fallback1, _plan.fallback2) if f]} "
+                    f"({_plan.reason})")
+                self._auto_engine_chain_cache = plan_chain
+                self._auto_engine_used = [plan_chain[0]]
+                self._auto_engine_results = []
+                return plan_chain[0]
         try:
             _pre = preflight_tet_source(
                 _geom or "",
