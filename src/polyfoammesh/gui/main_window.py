@@ -2306,6 +2306,21 @@ class MainWindow(QMainWindow):
         self._auto_compare_done = False
         self._auto_compare_candidate = None
 
+    def _log_tet_surface_fallback_plan(self) -> None:
+        """One declared line: what happens if the GMSH surface stage dies.
+
+        On hostile-CAD classes (measured on the user's DN1000: the surface
+        stage is the only place minutes are lost before the recovery) the
+        fallback — discrete patch STL -> fTetWild, one attempt — is declared
+        HERE so the log explains the plan before the run, not only when the
+        fallback fires.
+        """
+        self._log.append_log(
+            f"{Tag.CASE} [tet:ftetwild] plan: surface stage first; if it "
+            "dies on hostile CAD, the run re-enters fTetWild on the "
+            "discrete patch STL (one attempt, declared in advance)."
+        )
+
     def _resolve_auto_mesher(self) -> str:
         """"Polymesh (auto)" mode: pick the tet engine from measured
         geometry features (W18 table-driven policy, deterministic).
@@ -2355,6 +2370,8 @@ class MainWindow(QMainWindow):
                 f"{Tag.CASE} Polymesh auto: engine pinned to "
                 f"{_plan.primary} by user (strict, no fallback)."
             )
+            if _plan.primary == "ftetwild_poly":
+                self._log_tet_surface_fallback_plan()
             self._log_substitution(
                 f"Polymesh auto engine pin -> {_plan.primary} (strict)."
             )
@@ -2378,6 +2395,8 @@ class MainWindow(QMainWindow):
                     f"{Tag.CASE} Polymesh auto: primary={_plan.primary} "
                     f"fallbacks={[f for f in (_plan.fallback1, _plan.fallback2) if f]} "
                     f"({_plan.reason})")
+                if _plan.primary == "ftetwild_poly":
+                    self._log_tet_surface_fallback_plan()
                 self._auto_engine_chain_cache = plan_chain
                 self._auto_engine_used = [plan_chain[0]]
                 self._auto_engine_results = []
@@ -2410,6 +2429,8 @@ class MainWindow(QMainWindow):
                 f"solids={_pre.solid_count} "
                 f"pytetwild={_pre.fTetWild_available}]"
             )
+            if _plan.primary == "ftetwild_poly":
+                self._log_tet_surface_fallback_plan()
         self._auto_engine_chain_cache = plan_chain
         self._auto_engine_used = [plan_chain[0]]
         self._auto_engine_results = []

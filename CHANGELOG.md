@@ -7,6 +7,12 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- **Log esplicativo della catena tet**: all'avvio di una run Polymesh
+  con motore fTetWild la GUI dichiara in anticipo il piano ("surface
+  stage first; if it dies on hostile CAD -> fTetWild on the discrete
+  patch STL, one attempt") invece di mostrarlo solo quando scatta;
+  le righe `FAIL subdivide_tets` di fTetWild (riprovazioni interne,
+  normali anche nei run riusciti) sono annotate una volta a log.
 - **Anti-loop GMSH dichiarato e log esplicativo** (misurato su DN1000 "dn1000
   aperta.stp"): il volume GMSH poteva girare per ore stampando migliaia di
   volte lo stesso avviso "Partitioning face 4 ... changing tolerance to X"

@@ -523,6 +523,17 @@ contrast is checked automatically in CI-style tests.
 
 ## Troubleshooting
 
+- **A long `[tet:gmsh]` run repeating `Partitioning face N ... same
+  partition`**: that is GMSH's non-converging 2D partitioning loop (a real
+  case ground through 500k+ attempts for hours). The app breaks it
+  automatically: after 2000 identical warnings the process is killed, the
+  log shows ONE named explanation (face + tolerance range), and the chain
+  moves on (robust -> manual -> fTetWild on the discrete patch STL). The
+  repeated warnings no longer flood the live log - one summary per 500.
+- **`FAIL subdivide_tets` lines in the fTetWild log**: these are the tet
+  engine's internal retries; they also appear in successful runs - not an
+  error. The app prints this explanation once, the first time the lines
+  appear.
 - **Boundary layer skipped or capped**: read the `[bl]` lines in the log. If
   it says `capped`, the mesh is too fine for the requested stack; if it says
   `rejected`, the engine refused to write a useless single-layer shell and

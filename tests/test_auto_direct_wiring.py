@@ -287,6 +287,18 @@ def test_auto_mesher_honours_the_panel_pin():
     assert "invalid_tet_pin" in run_src
 
 
+def test_tet_surface_fallback_plan_is_declared_at_start():
+    """The hostile-CAD surface fallback is declared BEFORE it fires, in all
+    three plan branches (pin, tunnel, geometry preflight)."""
+    plan = _src("_log_tet_surface_fallback_plan")
+    assert "discrete patch STL" in plan
+    assert "one attempt" in plan
+    resolver = _src("_resolve_auto_mesher")
+    assert resolver.count("_log_tet_surface_fallback_plan") >= 3, (
+        "each ftetwild_poly primary branch must declare the fallback plan"
+    )
+
+
 def test_explicit_bypass_is_declared_at_run_start():
     """A restored explicit key bypasses CTA+policy+pin while the buttons
     still show Polymesh: the run must say so loudly (with the remedy),

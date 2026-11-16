@@ -10,6 +10,9 @@ tet mesh (BL always enabled here, mirroring a user who turned BL on).
 First strong-valid wins; a weak-valid winner is compared, never blind.
 
 Usage: python tools/auto_chain_e2e.py venturi [--workdir DIR]
+       python tools/auto_chain_e2e.py <case> <OUT_DIR> [--geom PATH]
+(--geom runs the same chain on an arbitrary geometry file, e.g. the
+ real DN1000 patch STL produced by the GUI fallback.)
 """
 from __future__ import annotations
 
@@ -140,12 +143,29 @@ def attempt(engine: str, tag: str, wd: Path, geom: Path, direct: bool = False) -
                 "detail": f"{type(exc).__name__}: {str(exc)[:300]}"}
 
 
+def _parse_args(argv: list[str]) -> tuple[str, Path, Path]:
+    """Resolve (case, workdir, geometry) from argv.
+
+    ``--geom PATH`` runs the same chain on an arbitrary geometry file,
+    e.g. the real DN1000 patch STL produced by the GUI fallback; without
+    it the geometry is the corpus file ``GEO/{case}.stl``.
+    """
+    args = list(argv)
+    geom_override: Path | None = None
+    if "--geom" in args:
+        i = args.index("--geom")
+        geom_override = Path(args[i + 1])
+        del args[i:i + 2]
+    case = args[0] if args else "venturi"
+    wd = Path(args[1]) if len(args) > 1 else Path(f"C:/polyfoammesh_auto_{case}")
+    geom = geom_override if geom_override is not None else GEO / f"{case}.stl"
+    return case, wd, geom
+
+
 def main() -> int:
     from polyfoammesh.core.tet_source import choose_polymesh_engine, preflight_tet_source
 
-    case = sys.argv[1] if len(sys.argv) > 1 else "venturi"
-    wd = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(f"C:/polyfoammesh_auto_{case}")
-    geom = GEO / f"{case}.stl"
+    case, wd, geom = _parse_args(sys.argv[1:])
     assert geom.is_file(), geom
     out: dict = {"case": case, "attempts": []}
     t0 = time.monotonic()

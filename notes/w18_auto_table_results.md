@@ -24,6 +24,7 @@ in tabella — BL è stage separato, coperto da W13/lane).
 | R1 (Parte4.stl 18/05, direct-BL 5L, tet condizionati) | tet diretto, BL ok (353055 prismi), checkMesh **Mesh OK** (NO 71.2, skew 2.9, 0 pyr, 0 fail), coverage **100%** (74089 wall faces) — con local_termination decoupled: stesso esito | **CRITERIO R1 RAGGIUNTO sotto lettura-per-difetti** (0 pyr / 0 skew-fail / 0 Failed / 100% cov); max-skew 2.89 dichiarato | auto NON include direct-BL (opt-in W13); ammissione = decisione con questi numeri |
 | cylinder | Mesh OK (25538 poli, 0 pyr, NO 42.52) | Mesh OK (25476 poli, 0 pyr, NO 42.95) | gmsh primary → Mesh OK, stop | AUTO VINCE/PAREGGIA (primary ok) |
 | cube_duct | Mesh OK (11569 poli, NO 49.59) | Mesh OK (11580 poli, NO 41.24) | gmsh primary → Mesh OK, stop | AUTO VINCE/PAREGGIA (primary ok) |
+| DN1000 reale (STL di ripiego, 2026-11-16) | n/a (superficie GMSH muore: "periodic surface 65", 370-390 s) | fTet al primo anello: tet -> dual -> BL **29640 prismi cov 100%** -> checkMesh **Mesh OK** (NO 65.5, skew 2.78, 0 difetti) | **AUTO VALID POLY_BL in 66,6 s** (`tools/auto_chain_e2e.py --geom`, mirror GUI) | AUTO VINCE (casa utente reale) |
 
 Note misurate:
 - Dirty_cad/gmsh: il driver ha registrato la mesh di fallback come

@@ -4733,6 +4733,34 @@ class GmshVolumeWorker(QObject):
             )
 
 
+class FtetWildLineAnnotator:
+    """Explains the tet engine's internal retry lines once, in the live log.
+
+    pytetwild prints raw ``FAIL subdivide_tets`` lines while it works (its
+    own sliver-tet subdivision, retried internally); measured on real runs
+    they ALSO appear in successful runs, so a raw forward reads as an error
+    to the user. The first occurrence triggers exactly ONE explanatory note;
+    later occurrences pass through untouched — full fidelity, no spam.
+    """
+
+    _RETRY_RE = re.compile(r"^FAIL\s+subdivide_tets\b", re.IGNORECASE)
+    NOTE = (
+        "[tet:ftetwild] note: 'FAIL subdivide_tets' lines are the tet "
+        "engine's internal retries (a sliver subdivision it redoes); they "
+        "also appear in successful runs - they are not an error"
+    )
+
+    def __init__(self) -> None:
+        self.notified = False
+
+    def feed(self, line: str) -> str | None:
+        """Return the explanatory note exactly once, else None."""
+        if self.notified or not self._RETRY_RE.search(line or ""):
+            return None
+        self.notified = True
+        return self.NOTE
+
+
 class FtetWildVolumeWorker(QObject):
     """Runs the experimental fTetWild tet stage (issue #12) in a subprocess.
 
@@ -4875,6 +4903,8 @@ class FtetWildVolumeWorker(QObject):
             f"progress line, {self.VOLUME_TIMEOUT_S}s hard ceiling"
         )
 
+        annotator = FtetWildLineAnnotator()
+
         def _on_line(line: str) -> None:
             changed = detector.feed(line)
             if changed and detector.fraction is not None:
@@ -4882,6 +4912,9 @@ class FtetWildVolumeWorker(QObject):
                     detector.fraction, detector.evidence(),
                 )
             self.log_line.emit(f"[tet:ftetwild] {line}")
+            note = annotator.feed(line)
+            if note is not None:
+                self.log_line.emit(note)
 
         try:
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(

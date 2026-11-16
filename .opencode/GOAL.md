@@ -1734,3 +1734,40 @@ venturi AUTO VALID (gmsh dual Failed 63.1/4.2 -> ftet dual Failed
 Taper uniforme incluso ma non decisivo (i fallimenti totali osservati
 restano topologici/difettivi); per-face mappato, non implementato.
 Ammissione direct: default ON (nessun flag), fallback unico, log completo. E2E auto_chain venturi+cylinder verdi (Mesh OK, keep-best verificato). Log tet neutri ([tet:gmsh]/[tet:ftetwild]/[tet], convert [convert]); test di contratto test_log_tags.py; direct resta [bl-tets] + framing auto.
+
+## 2026-11-16 - DN1000 chiuso misurato: breaker anti-loop, A/B opt_iter, E2E reale 66,6 s
+
+Il caso utente che bloccava tutto (dn1000 aperta.stp: volume GMSH in
+loop di partizione >500k tentativi, stall-watchdog muto perche'
+l'output continuava) e' chiuso con numeri:
+
+- **Circuit breaker** (`ca272e0`, `PartitionLoopBreaker`): a 2000
+  ripetizioni dello stesso avviso "Partitioning face N ... same
+  partition" il watchdog uccide il processo; catena normale -> robust ->
+  manuale -> ripiego fTetWild/STL con fallimento nominato (faccia +
+  intervallo tolleranze).  Log GUI: 1 riassunto ogni 500 righe
+  ripetute, spam consumato.  Test: test_gmsh_watchdog.py 37 verdi
+  (unita' + wiring subprocess reale).
+- **A/B `opt_iter`** (stessa STL, max-cell 71,2 mm, eps 15%): 15/3/4/6
+  -> tet 29,3/25,3/26,2/25,4 s, celle 98k-104k equivalenti.  Su
+  DN1000 very_coarse il knob NON vale l'esposizione in GUI; default 15
+  resta.  Il motivo della velocita': decimazione bordata
+  (49.484 -> 6.240 tri, errore <=18,8 mm) + tetto al campo adattivo.
+- **E2E catena auto sulla geometria reale** (STL di ripiego, mirror
+  GUI via `tools/auto_chain_e2e.py --geom`): ftetwild_poly al primo
+  anello -> tet fTetWild -> convert -> dual -> BL **29.640 prismi,
+  coverage 100%** -> checkMesh **Mesh OK** (non-ortho 65,5 < 70,
+  skew 2,78, difetti dual 0): **AUTO VALID POLY_BL in 66,6 s**.
+  Nessun anello successivo necessario (valid forte).
+- **Log esplicativo**: piano fallback dichiarato ALL'AVVIO nei tre
+  rami auto (pin/tunnel/preflight: "surface stage first; if it dies
+  on hostile CAD -> fTetWild on the discrete patch STL, one attempt");
+  righe "FAIL subdivide_tets" di fTetWild annotate una volta come
+  riprovazioni interne normali (test dedicati).
+- Guida utente: troubleshooting nuovo (loop di partizione =
+  auto-interruzione dichiarata; FAIL subdivide_tets = normale).
+- Criteri del goal toccati: fallback chain completa (5), progress/ETA
+  e log esplicativi (5), nessun default cambiato senza misure (4),
+  suite verde (8).  Aperto per l'utente: run GUI di conferma e firma
+  PARTIAL (R1 per-difetti).  Release 2.4.0 frozen/installer da
+  ricompilare se l'utente usa l'exe.
