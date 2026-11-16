@@ -3723,6 +3723,22 @@ GMSH_SPLIT_ROUNDS_THRESHOLD = 8
 GMSH_SIGNATURE_2D_ELAPSED_S = 30.0
 GMSH_INVALID_GROWTH_WINDOW = 3
 
+# Partition-loop circuit breaker (measured live on DN1000 'dn1000 aperta.stp'):
+# the volume attempt printed "Partitioning face 4 with 2 triangles that all
+# have the same partition - changing tolerance to X" thousands of times while
+# the "Level NNN" partition counter climbed past 500k attempts. The no-output
+# watchdog is structurally mute here: the loop KEEPS emitting lines, so "no
+# output for Ns" is never true. This breaker reads the content instead and
+# declares the run non-convergent once the identical warning has repeated
+# GMSH_PARTITION_FIRE_THRESHOLD times; the watchdog then kills the process and
+# the normal -> robust -> manual chain (finally the fTetWild/STL fallback)
+# takes over with a named failure. Healthy runs never repeat that warning
+# more than a handful of times, so the threshold is far above the noise.
+# The live GUI log stays explicative: the spam is consumed by gui_line and
+# replaced with ONE summary per GMSH_PARTITION_SUMMARY_EVERY forwarded lines.
+GMSH_PARTITION_FIRE_THRESHOLD = 2000
+GMSH_PARTITION_SUMMARY_EVERY = 500
+
 
 class GmshSignatureStallDetector:
     """Stateful, content-aware runaway detector for the GMSH volume stream.
@@ -3820,6 +3836,167 @@ class GmshSignatureStallDetector:
             f"round(s) in {self._elapsed_2d():.0f}s of 2D meshing "
             f"(gate={gate})"
         )
+
+
+class PartitionLoopBreaker:
+    """Circuit breaker for GMSH's non-converging 2D partitioning loop.
+
+    One instance per meshing attempt. :meth:`feed` is called for every
+    streamed line and counts the "Partitioning face N with K triangles that
+    all have the same partition - changing tolerance to X" warning; past
+    ``fire_after`` repetitions it fires exactly once, and the watchdog kills
+    the process so the retry chain can move on with a named failure instead
+    of sitting in the loop for hours (measured: Level counter past 500k
+    partition attempts, tolerances cycling 1.03..100.758, no .msh written).
+
+    The live GUI log is filtered by :meth:`gui_line`: spam lines return
+    ``None`` (consumed) and a one-line summary is substituted every
+    ``summary_every`` forwarded spam lines, so the log explains the loop
+    instead of flooding it. Full output is still captured in the subprocess
+    stdout/stderr buffers by _stream_subprocess.
+
+    Pure parser: it never touches a process. Thread-safe: ``feed`` runs on
+    the stream-reader thread, ``fired``/``evidence`` are polled by the
+    watchdog thread, ``gui_line`` runs on the worker thread.
+    """
+
+    _SPAM_RE = re.compile(
+        r"Partitioning\s+face\s+(\d+)\s+with\s+\d+\s+triangles\s+that\s+all"
+        r"\s+have\s+the\s+same\s+partition",
+        re.IGNORECASE,
+    )
+    _TOL_RE = re.compile(
+        r"changing\s+tolerance\s+to\s+([0-9.eE+-]+)", re.IGNORECASE
+    )
+
+    def __init__(self, fire_after: int = GMSH_PARTITION_FIRE_THRESHOLD,
+                 summary_every: int = GMSH_PARTITION_SUMMARY_EVERY):
+        self._fire_after = int(fire_after)
+        self._summary_every = int(summary_every)
+        self._count = 0
+        self._forwarded = 0
+        self._per_face: dict[int, int] = {}
+        self._tol_min: float | None = None
+        self._tol_max: float | None = None
+        self._fired = False
+        self._evidence = ""
+        self._lock = threading.Lock()
+
+    @property
+    def fired(self) -> bool:
+        return self._fired
+
+    @property
+    def evidence(self) -> str:
+        return self._evidence
+
+    @property
+    def count(self) -> int:
+        """Total spam lines seen so far (fed lines, not forwarded ones)."""
+        return self._count
+
+    def feed(self, line: str) -> bool:
+        """Count one streamed line; return True exactly once, at the fire."""
+        if self._fired or not line:
+            return self._fired
+        m = self._SPAM_RE.search(line)
+        if not m:
+            return False
+        with self._lock:
+            if self._fired:
+                return True
+            self._count += 1
+            try:
+                face = int(m.group(1))
+            except (ValueError, IndexError):
+                face = -1
+            self._per_face[face] = self._per_face.get(face, 0) + 1
+            t = self._TOL_RE.search(line)
+            if t:
+                try:
+                    tol = float(t.group(1))
+                except ValueError:
+                    tol = None
+                if tol is not None:
+                    if self._tol_min is None or tol < self._tol_min:
+                        self._tol_min = tol
+                    if self._tol_max is None or tol > self._tol_max:
+                        self._tol_max = tol
+            if self._count >= self._fire_after:
+                self._fire()
+        return self._fired
+
+    def gui_line(self, line: str) -> str | None:
+        """Live-log filter for one streamed line.
+
+        Non-spam lines pass through unchanged (the watchdog and stall
+        messages must always reach the log). A spam line is consumed —
+        ``None`` — except at every ``summary_every``-th forwarded spam line,
+        where a single summary is returned instead. Once fired the spam
+        stays silent: the watchdog's own message explains the kill.
+        """
+        if not self._SPAM_RE.search(line):
+            return line
+        with self._lock:
+            if self._fired:
+                return None
+            self._forwarded += 1
+            if self._forwarded % self._summary_every == 0:
+                return (
+                    f"[partition loop] {self._text()}; further identical "
+                    "warnings are suppressed from the live log, full output "
+                    "stays in the run log"
+                )
+            return None
+
+    def _text(self) -> str:
+        faces = sorted(self._per_face.items(), key=lambda kv: kv[1],
+                       reverse=True)
+        top = ", ".join(f"face {f} x{c}" for f, c in faces[:3])
+        tol = ""
+        if self._tol_min is not None and self._tol_max is not None:
+            tol = f", tolerance {self._tol_min:g}..{self._tol_max:g}"
+        return (
+            f"{self._count} identical 'Partitioning face ... same partition' "
+            f"warnings so far ({top}{tol}) - non-convergent 2D partitioning"
+        )
+
+    def _fire(self) -> None:
+        self._fired = True
+        self._evidence = f"partition loop: {self._text()}"
+
+
+class _CompositeSignatureDetector:
+    """Feed-through multiplexer for the stream content detectors.
+
+    ``_stream_subprocess`` accepts a single signature detector, but
+    GmshVolumeWorker runs two independent content rules: the invalid-element
+    signature detector (Phase B) and the partition-loop circuit breaker.
+    This wrapper fans :meth:`feed` out to every child and reports
+    ``fired``/``evidence`` for the first child that fired. Thread-safe: each
+    child guards its own state.
+    """
+
+    def __init__(self, children):
+        self.children = tuple(children)
+        self._lock = threading.Lock()
+
+    def feed(self, line: str) -> None:
+        for child in self.children:
+            child.feed(line)
+
+    @property
+    def fired(self) -> bool:
+        with self._lock:
+            return any(child.fired for child in self.children)
+
+    @property
+    def evidence(self) -> str:
+        with self._lock:
+            for child in self.children:
+                if child.fired:
+                    return getattr(child, "evidence", "")
+        return ""
 
 
 def _stream_subprocess(cmd, run_cwd, timeout_s, on_line, env=None,
@@ -4246,7 +4423,19 @@ class GmshVolumeWorker(QObject):
 
         No ETA is invented: it is emitted only when the wrapper prints a real
         percentage (same rule as MeshWorker._emit_eta).
+
+        The partition-loop breaker filters the live log here (see
+        PartitionLoopBreaker.gui_line): repeated 'Partitioning face ...'
+        warnings are consumed and replaced with a periodic summary, so a
+        non-converging partition loop reads as an explanation instead of a
+        flood. Full output stays in the captured stdout/stderr buffers.
         """
+        breaker = getattr(self, "_partition_breaker", None)
+        if breaker is not None:
+            out = breaker.gui_line(line)
+            if out is None:
+                return
+            line = out
         self.log_line.emit(f"[tet:gmsh] {line}")
         match = self._PCT_RE.search(line) or self._ANY_PCT_RE.search(line)
         if not match:
@@ -4358,7 +4547,16 @@ class GmshVolumeWorker(QObject):
                 attempt_stall_s = robust_stall_s
             self._proc_holder.clear()
             stall_holder: dict = {}
-            signature_detector = GmshSignatureStallDetector()
+            # Two independent content rules share the one detector slot of
+            # _stream_subprocess: the invalid-element signature detector
+            # (Phase B) and the partition-loop circuit breaker. The breaker
+            # is also stashed for _on_stream_line's live-log spam filter; a
+            # fresh instance per attempt keeps the counters reset.
+            self._partition_breaker = PartitionLoopBreaker()
+            signature_detector = _CompositeSignatureDetector([
+                GmshSignatureStallDetector(),
+                self._partition_breaker,
+            ])
             self._attempt_start = time.monotonic()
             attempt_timeout = self.VOLUME_TIMEOUT_S
             if self._wall_budget_s > 0.0:

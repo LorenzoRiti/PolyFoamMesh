@@ -7,6 +7,17 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- **Anti-loop GMSH dichiarato e log esplicativo** (misurato su DN1000 "dn1000
+  aperta.stp"): il volume GMSH poteva girare per ore stampando migliaia di
+  volte lo stesso avviso "Partitioning face 4 ... changing tolerance to X"
+  (contatore Level oltre 500 mila tentativi) mentre il watchdog di stall
+  restava muto, perché l'output continuava ad arrivare.  Ora un circuit
+  breaker conta le ripetizioni: a 2000 uccide il processo e la catena
+  normale -> robust -> manuale (e infine il ripiego fTetWild/STL) riparte con
+  un fallimento nominato (faccia e intervallo di tolleranze).  Al log GUI le
+  righe ripetute sono consumate e sostituite da UN riassunto ogni 500, quindi
+  il log spiega il loop invece di allagarlo; l'output completo resta nel file
+  di log della run.
 - fTetWild su input STL (galleria del vento): i box di raffinamento erano ignorati; ora entrano nel campo di taglie del volume, dopo il limite di crescita.  Misurato sul NACA: celle 102k -> 186k, tempo 4,7 -> 11,7 min.  Versione della cache mesh 3 (le mesh fatte con le zone ignorate non vengono riusate).
 - Avviso all'avvio della run: stadi, durata prevista (calibrata sulle misure) e avviso che il tet resta muto per minuti; heartbeat di fTetWild ogni 30 s con "e' normale".
 - Galleria del vento: taglia massima/minima impostate dal budget di 100k celle (prima restava la taglia del solo oggetto, 5,3 mm, ~4,8M celle stimate); motore tet fTetWild per primo con GMSH di ripiego (GMSH sulla galleria STL stallava 2x300 s o andava in segfault, fTetWild 42 s); un mesher salvato nel progetto viene azzerato alla creazione della galleria.

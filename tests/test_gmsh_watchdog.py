@@ -231,7 +231,8 @@ def _fake_stream_factory(outcomes):
     def fake_stream(cmd, run_cwd, timeout_s, on_line, env=None, heartbeat_s=10,
                     proc_holder=None, stall_s=None, stall_holder=None,
                     signature_detector=None):
-        calls.append({"env": dict(env or {}), "stall_s": stall_s})
+        calls.append({"env": dict(env or {}), "stall_s": stall_s,
+                      "detector": signature_detector})
         outcome = queue.pop(0)
         if outcome == "stall":
             if stall_holder is not None:
@@ -576,3 +577,206 @@ def test_explicit_size_request_never_uses_manual_fallback(monkeypatch):
     # The pre-Phase-D honest failure text is preserved when no fallback exists.
     assert "stalled twice" in failed[0].lower()
     assert "robust" in failed[0].lower()
+
+
+# --- Phase F: partition-loop circuit breaker -------------------------------- #
+#
+# Measured live on DN1000 ('dn1000 aperta.stp'): the volume attempt printed
+# "Partitioning face 4 with 2 triangles that all have the same partition -
+# changing tolerance to X" thousands of times while the Level partition
+# counter climbed past 500k attempts, and the no-output watchdog stayed mute
+# (output KEEPS arriving). The breaker counts the identical warning and fires;
+# the live log shows one summary per N lines instead of the flood.
+
+_SPAM_LINE = (
+    "Warning : Partitioning face 4 with 2 triangles that all have the same "
+    "partition - changing tolerance to 2.72995"
+)
+
+
+def test_partition_breaker_fires_at_threshold_and_reports_evidence():
+    b = ofr.PartitionLoopBreaker(fire_after=3, summary_every=2)
+    assert b.feed("Info    : Meshing volume 1 (Delaunay)") is False
+    assert b.feed(_SPAM_LINE) is False
+    assert b.feed(_SPAM_LINE.replace("2.72995", "67.505")) is False
+    assert b.count == 2
+    assert b.feed(_SPAM_LINE.replace("2.72995", "1.03")) is True
+
+    assert b.fired is True
+    assert b.count == 3
+    assert "partition loop:" in b.evidence
+    assert "face 4 x3" in b.evidence
+    assert "tolerance 1.03..67.505" in b.evidence
+    assert "non-convergent 2D partitioning" in b.evidence
+    # Fires once and stays fired: further spam does not re-arm it.
+    assert b.feed(_SPAM_LINE) is True
+    assert b.count == 3
+
+
+def test_partition_breaker_healthy_log_never_fires():
+    b = ofr.PartitionLoopBreaker()
+    for line in (
+        "Info    : Meshing curve 1 (Line)",
+        "Info    : [ 20%] Meshing surface 3 (Cone, MeshAdapt)",
+        "Warning : 2 elements remain invalid in surface 3",
+        "Info    : Done meshing 2D (0.4 s)",
+        "Warning : Tolerance too large - aborting partitioning",
+        "",
+    ):
+        assert b.feed(line) is False
+    assert b.fired is False and b.count == 0
+
+
+def test_partition_breaker_gui_line_consumes_spam_and_summarizes():
+    b = ofr.PartitionLoopBreaker(fire_after=100, summary_every=3)
+    # Non-spam lines always pass through untouched.
+    assert b.gui_line("Info    : meshing volume") == "Info    : meshing volume"
+    for _ in range(6):
+        b.feed(_SPAM_LINE)
+    # The first two forwarded spam lines are consumed...
+    assert b.gui_line(_SPAM_LINE) is None
+    assert b.gui_line(_SPAM_LINE) is None
+    # ...the third is replaced by ONE summary of ALL spam seen so far.
+    summary = b.gui_line(_SPAM_LINE)
+    assert summary is not None
+    assert "[partition loop]" in summary
+    assert "6 identical" in summary
+    assert "face 4 x6" in summary
+    assert b.gui_line(_SPAM_LINE) is None
+    # After firing, spam stays silent (the watchdog message explains the kill)
+    # while non-spam lines still reach the log.
+    for _ in range(95):
+        b.feed(_SPAM_LINE)
+    assert b.fired is True
+    assert b.gui_line(_SPAM_LINE) is None
+    assert b.gui_line("watchdog fired: non-convergence") == (
+        "watchdog fired: non-convergence"
+    )
+
+
+def test_partition_breaker_counts_tolerance_range_across_faces():
+    b = ofr.PartitionLoopBreaker(fire_after=4)
+    for tol in ("100.758", "1.03", "45.3367", "14.1368"):
+        b.feed(_SPAM_LINE.replace("2.72995", tol))
+    b.feed(_SPAM_LINE.replace("face 4", "face 7"))
+    assert b.fired is True
+    assert "face 4 x4" in b.evidence
+    assert "tolerance 1.03..100.758" in b.evidence
+
+
+def test_composite_detector_fans_out_and_reports_first_evidence():
+    det = ofr.GmshSignatureStallDetector()
+    breaker = ofr.PartitionLoopBreaker(fire_after=3)
+    comp = ofr._CompositeSignatureDetector([det, breaker])
+    comp.feed("Info    : all fine")
+    assert comp.fired is False and comp.evidence == ""
+    for _ in range(3):
+        comp.feed(_SPAM_LINE)
+    assert comp.fired is True
+    assert "partition loop:" in comp.evidence
+    # The other child is unaffected and still receives its lines.
+    assert det.fired is False
+    assert det.feed("Warning : 364 elements remain invalid in surface 3") is True
+    assert "364 elements" in comp.evidence
+
+
+# Real child that streams the partition-loop spam then stays alive, so the
+# breaker's kill wiring is exercised end-to-end (not just the parser).
+_PARTITION_CHILD = (
+    "import sys, time\n"
+    "sys.stdout.write('Info    : Meshing volume 1 (Delaunay)\\n')\n"
+    "sys.stdout.flush()\n"
+    "for i in range(2100):\n"
+    "    sys.stdout.write('Warning : Partitioning face 4 with 2 triangles '\n"
+    "                     'that all have the same partition - changing '\n"
+    "                     'tolerance to %d\\n' % (i % 97 + 1))\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(60)\n"
+)
+
+
+def test_partition_breaker_kills_runaway_via_stream_subprocess(monkeypatch):
+    killed: list[int] = []
+    real_kill = ofr._kill_pid_tree
+
+    def _record_kill(pid):
+        killed.append(pid)
+        real_kill(pid)
+
+    monkeypatch.setattr(ofr, "_kill_pid_tree", _record_kill)
+
+    breaker = ofr.PartitionLoopBreaker()
+    stall: dict = {}
+    cmd = [sys.executable, "-c", _PARTITION_CHILD]
+    t0 = time.monotonic()
+    _rc, _out, _err, timed_out = ofr._stream_subprocess(
+        cmd, run_cwd=str(Path.cwd()), timeout_s=30,
+        on_line=lambda _l: None, heartbeat_s=5.0, stall_s=None,
+        stall_holder=stall, signature_detector=breaker,
+    )
+    elapsed = time.monotonic() - t0
+
+    assert breaker.fired, "breaker never fired on the streamed spam"
+    assert breaker.count >= ofr.GMSH_PARTITION_FIRE_THRESHOLD
+    assert killed, "process tree was never killed on breaker fire"
+    assert not timed_out
+    assert elapsed < 20.0, f"kill was not prompt ({elapsed:.1f}s)"
+    # The watchdog routes the fire through the same stall channel the retry
+    # chain reads: named, with the breaker's evidence.
+    assert stall.get("stalled") is True
+    assert stall.get("signature") is True
+    assert "partition loop" in str(stall.get("evidence", ""))
+
+
+def test_volume_worker_wires_partition_breaker_into_stream(monkeypatch):
+    """run() passes a composite detector holding the live breaker instance."""
+    fake_stream, calls = _fake_stream_factory(["ok"])
+    monkeypatch.setattr(ofr, "_stream_subprocess", fake_stream)
+
+    worker = ofr.GmshVolumeWorker(
+        step_path="geom.step", msh_path=Path("out.msh"), detail="medium",
+    )
+    finished: list = []
+    failed: list[str] = []
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.run()
+
+    assert finished and not failed
+    det = calls[0]["detector"]
+    assert isinstance(det, ofr._CompositeSignatureDetector)
+    children = det.children
+    assert len(children) == 2
+    assert isinstance(children[0], ofr.GmshSignatureStallDetector)
+    assert isinstance(children[1], ofr.PartitionLoopBreaker)
+    # The same breaker instance _on_stream_line consults for the live filter.
+    assert children[1] is worker._partition_breaker
+
+
+def test_volume_worker_live_log_consumes_partition_spam():
+    """_on_stream_line replaces the spam flood with periodic summaries."""
+    worker = ofr.GmshVolumeWorker(
+        step_path="geom.step", msh_path=Path("out.msh"), detail="medium",
+    )
+    logs: list[str] = []
+    worker.log_line.connect(logs.append)
+    breaker = ofr.PartitionLoopBreaker(summary_every=4)
+    worker._partition_breaker = breaker
+    # Mirror the real pump order: _stream_subprocess feeds every line to the
+    # detector first, then forwards it to on_line.
+    for _ in range(6):
+        breaker.feed(_SPAM_LINE)
+        worker._on_stream_line(_SPAM_LINE)
+    # 6 spam arrivals (count=6) -> ONE summary at the 4th forward, 5 consumed.
+    assert len(logs) == 1
+    assert logs[0].startswith("[tet:gmsh] [partition loop]")
+    assert "4 identical" in logs[0]
+    assert "face 4 x4" in logs[0]
+    # Non-spam lines still reach the log untouched, with the [tet:gmsh] tag.
+    worker._on_stream_line("Info    : meshing volume")
+    assert logs[-1] == "[tet:gmsh] Info    : meshing volume"
+    # Progress parsing is unaffected: a % on a non-spam line still emits.
+    events: list[tuple] = []
+    worker.progress.connect(lambda name, pct: events.append((name, pct)))
+    worker._on_stream_line("Info    : [ 50%] Meshing volume")
+    assert events and events[0] == ("gmsh", 50.0)
