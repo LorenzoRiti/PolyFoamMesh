@@ -1764,6 +1764,30 @@ Measured on a real blade geometry (1.5M cells, 89 unnamed patches):
   acceptance action in the GUI.  R1+cube+sample were not re-run across every
   source in this pass; the R1 numbers above are the release truth.
 
+## 2026-11-16 — DN1000 chiuso: breaker anti-loop + E2E reale; nota worker superficie
+
+- **Loop di partizione GMSH**: chiuso da `PartitionLoopBreaker`
+  (`ca272e0`). Il vuoto strutturale ("output continuo = stall-watchdog
+  muto") non esiste più: a 2000 ripetizioni dello stesso avviso il
+  processo viene ucciso e la catena avanza con fallimento nominato.
+- **DN1000 reale**: catena auto VALIDA (E2E mirror GUI, STL di ripiego
+  con patch nominati): tet fTetWild -> dual -> BL 100% -> checkMesh
+  Mesh OK (NO 65,5, skew 2,78, 0 difetti) in 66,6 s. La conferma in
+  GUI resta all'utente.
+- **`opt_iter` su DN1000**: knob scartato con numeri (±4 s, celle
+  equivalenti; default 15 resta). **Regime FINE chiuso (A/B R1/
+  Parte4, eps 0,3 mm): la previsione "il cap 6 risparmia ~20 min" è
+  confutata — cap 6 = tet 3584 s contro 2509 s a default 15 (+43%):
+  il motore converge da solo a pass 9 e il cap forza una fase
+  terminale più cara delle passate risparmiate. Default 15 confermato
+  ottimo in entrambi i regimi; nessuna gamba qualità necessaria.**
+- **`GmshSurfaceWorker` non è usato dalla GUI**: solo test e commenti;
+  la fase superficie gira dentro il CLI volume (`GmshVolumeWorker`).
+  La classe resta (API testata); eventuale rimozione = decisione
+  utente. Aggiungere lì %/ETA non migliorerebbe nulla di visibile.
+- **`FAIL subdivide_tets`**: annotate una volta a log (normali, anche
+  nei run riusciti); troubleshooting aggiornato in USER_GUIDE.
+
 ## Test Matrix
 
 - Fast (no WSL) suite: green.

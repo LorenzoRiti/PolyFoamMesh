@@ -1771,3 +1771,19 @@ l'output continuava) e' chiuso con numeri:
   suite verde (8).  Aperto per l'utente: run GUI di conferma e firma
   PARTIAL (R1 per-difetti).  Release 2.4.0 frozen/installer da
   ricompilare se l'utente usa l'exe.
+
+## 2026-11-16 (segue) - A/B fine opt_iter: previsione confutata, default 15 confermato
+
+A/B su R1/Parte4.stp 18/05 (eps 0,3 mm, detail=medium, stessa config
+entrambe le braccia, sequenziale): cap 15 -> tet 2509 s, convergito a
+pass 9, 1,31M tets; cap 6 -> tet 3584 s (+43%), fermato dal cap,
+1,24M tets.  La previsione "il cap 6 risparmia ~20 min sulle run
+fine" e' CONFUTATA: il motore converge da solo; fermarlo a meta'
+gonfia la fase terminale (post-processing senza ottimizzatore) oltre
+il costo delle passate risparmiate.  Default 15 confermato ottimo in
+entrambi i regimi; niente knob in GUI; gamba qualita' non necessaria
+(nessun candidato default).  Nota onesta: le misure assolute non
+riproducono i 2,37M/62 min storici (config storica non ricostruita),
+ma l'A/B e' internamente fair e la conclusione qualitativa regge.
+Criterio goal (7) rispettato: misura prima di ogni decisione,
+previsione scritta, smentita registrata.
