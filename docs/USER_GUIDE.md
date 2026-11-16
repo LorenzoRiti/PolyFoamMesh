@@ -555,8 +555,11 @@ contrast is checked automatically in CI-style tests.
   only for the cfMesh/checkMesh/foamToVTK features).
 - **Cartesian/cfMesh paths unavailable**: WSL2 + OpenFOAM are required only
   for that mesher; the GMSH-based paths work standalone.
-- **Viewer looks empty after meshing**: press the display combo (try
-  `Surface with Edges`) and check the log for the foamToVTK step.
+- **Viewer looks empty after meshing**: the display defaults to
+  `Surface with Edges` everywhere (CAD included — it draws only sharp
+  edges and open borders on loaded parts, and the full mesh view after
+  meshing switches to it automatically). If the pane still looks empty,
+  check the log for the foamToVTK step.
 
 ## Where to get help
 

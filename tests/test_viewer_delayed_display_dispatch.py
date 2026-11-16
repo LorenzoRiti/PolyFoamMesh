@@ -94,3 +94,30 @@ def test_disabled_selector_is_a_no_op():
     w._display_surface_edges.assert_not_called()
     w._display_mesh_surface.assert_not_called()
     w._display_cad.assert_not_called()
+
+
+# --- 2026-11-16: "Surface with Edges" is THE default (CAD included) ---------- #
+
+def test_show_cad_defaults_to_surface_with_edges():
+    """Geometry load opens in the edges view (user default), not flat
+    Surface: the CAD edges mode draws only sharp >30 deg edges and open
+    borders, so it stays readable and matches the mesh default."""
+    w = ViewerWidget.__new__(ViewerWidget)
+    w._view_selector = MagicMock()
+    w._cad_meshes = []
+    w._showing_cad = True
+    w._mesh_patches = {}
+    w._populate_patch_panel = MagicMock()
+    w._plotter_ready = True
+    w._plotter = MagicMock()
+    w.show_cad([])
+    w._view_selector.setCurrentIndex.assert_called_with(
+        VIEW_MODES.index("Surface with Edges"),
+    )
+
+
+def test_current_mode_fallback_is_surface_with_edges():
+    """An unset combo (-1) still resolves to the edges default, for CAD too."""
+    w = _bare_widget(-1, showing_cad=True)
+    w._view_selector.currentIndex.return_value = -1
+    assert w._current_mode() == "Surface with Edges"

@@ -7,6 +7,20 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+- **Corretto "tet veloce ma niente poly"**: la conversione poliedrica
+  era tentata solo se le tets grezze passavano checkMesh — ma le tets
+  grezze falliscono quasi sempre (non-ortho), quindi il dual non
+  partiva mai e la catena girava a vuoto (misurato sul caso reale: 9
+  run in loop, solo tetti, niente BL).  Ora al primo checkMesh-fail
+  sulle tets grezze il dual+BL parte una volta (la riparazione
+  misurata: tets grezze fail -> dual+BL -> Mesh OK) e il checkMesh
+  dopo il dual e' quello autorevole.
+- **"Sempre poly"**: dopo il retry a detail più grossolano, fTetWild
+  riceve un ultimo tentativo con envelope superficiale allentato
+  (eps x2, limitato a [20%, 30%], dichiarato a log) prima del
+  fallimento onesto.
+- **Visualizzazione**: "Surface with Edges" e' la vista predefinita
+  ovunque, CAD incluso (disegna solo spigoli vivi e bordi aperti).
 - **Log esplicativo della catena tet**: all'avvio di una run Polymesh
   con motore fTetWild la GUI dichiara in anticipo il piano ("surface
   stage first; if it dies on hostile CAD -> fTetWild on the discrete

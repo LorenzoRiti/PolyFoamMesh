@@ -148,13 +148,25 @@ def run_dual(case: Path, ftetwild_path: bool | None = None) -> dict:
 
 
 def reference_first_height(geom: Path) -> float:
-    """h1 at the GUI default fraction of max cell, sized on this geometry."""
+    """h1 at the GUI default fraction of max cell, sized on this geometry.
+
+    Fail-soft for geometries outside the benchmark corpus (real user parts
+    via auto_chain_e2e --geom): the benchmark sizing returns no reference
+    there, so the tool's documented BL default (h1=0.00126) is used with a
+    printed note instead of raising — the chain verdict stays measurable
+    and the caveat is declared.
+    """
     sys.path.insert(0, str(ROOT))
     import benchmarks.run_benchmarks as rb
 
     _, ctx = rb._prepare_geometry(geom, pipeline="auto", require_watertight=False)
     if ctx is None:
-        raise ValueError(f"no reference size for {geom.name}")
+        print(
+            f"[auto] no reference size for {geom.name} - BL default "
+            "h1=0.00126 (declared: not corpus-sized)",
+            flush=True,
+        )
+        return 0.00126
     return 0.01 * float(ctx["max_cell"])
 
 

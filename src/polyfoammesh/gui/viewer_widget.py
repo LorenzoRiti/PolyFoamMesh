@@ -1551,7 +1551,7 @@ class ViewerWidget(QWidget):
         idx = self._view_selector.currentIndex()
         if 0 <= idx < len(VIEW_MODES):
             return VIEW_MODES[idx]
-        return "Surface" if getattr(self, "_showing_cad", True) else "Surface with Edges"
+        return "Surface with Edges"
 
     def _on_view_changed(self, index: int):
         if index < 0 or not self._plotter_ready:
@@ -2265,8 +2265,11 @@ class ViewerWidget(QWidget):
         self._view_selector.blockSignals(True)
         self._view_selector.setCurrentIndex(-1)
         self._view_selector.blockSignals(False)
-        # CAD default representation is "Surface".
-        self._view_selector.setCurrentIndex(VIEW_MODES.index("Surface"))
+        # Default representation is "Surface with Edges" (user request,
+        # 2026-11-16): filled surfaces with visible edges everywhere — CAD
+        # included (the CAD edges mode draws only sharp >30° edges and open
+        # borders, so it stays readable on loaded parts).
+        self._view_selector.setCurrentIndex(VIEW_MODES.index("Surface with Edges"))
         if self._plotter:
             self._plotter.reset_camera()
 

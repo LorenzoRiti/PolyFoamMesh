@@ -195,6 +195,28 @@ def _free_disk_gb(path: str | Path) -> float:
         return 999.0
 
 
+_FTW_LAST_CHANCE_MAX_EPS = 30.0
+_FTW_LAST_CHANCE_MIN_EPS = 20.0
+
+
+def _ftw_last_chance_eps(base: float | None) -> float:
+    """The last-chance surface envelope for an fTetWild recovery attempt.
+
+    Loosening the envelope is fTetWild's own robustness lever (its docs and
+    our measurements: below ~1% it stalls, the default 15% is loose, and a
+    looser value lets the engine move the surface further to close the
+    volume). Doubles the user's value, bounded to [20%, 30%] so the attempt
+    is meaningfully looser without degenerating the geometry. Used ONLY as
+    the last recovery before an honest failure — never as a default.
+    """
+    if not base or base <= 0:
+        base = 15.0
+    return min(
+        _FTW_LAST_CHANCE_MAX_EPS,
+        max(_FTW_LAST_CHANCE_MIN_EPS, float(base) * 2.0),
+    )
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2507,6 +2529,7 @@ class MainWindow(QMainWindow):
         self._run_id += 1
         self._poly_was_converted = False
         self._bl_on_tets_done = False
+        self._dual_on_raw_tets_done = False
         self._poly_fallback_active = False
         self._low_ram_gmsh_threads = False
         self._auto_tet_plan = None
@@ -4300,6 +4323,51 @@ class MainWindow(QMainWindow):
                 heartbeat_timeout_s=600.0,
             )
             return
+        # "Always a poly" last chance (user request, 2026-11-16): an fTetWild
+        # run that failed even at the coarser detail gets ONE attempt with a
+        # looser surface envelope — the engine's own robustness lever, never
+        # touched so far in the recovery chain. A valid poly with a declared,
+        # coarser surface beats no mesh at all; the deviation is stated in
+        # the log so the trade is visible, never silent.
+        if (
+            is_ftet
+            and not ctx.get("ftw_eps_retried")
+            and ctx["detail_retried"]
+        ):
+            ctx["ftw_eps_retried"] = True
+            _base_eps = self._params.get_ftetwild_eps_frac()
+            _loose = _ftw_last_chance_eps(_base_eps)
+            self._log.append_log(
+                f"{Tag.WARN} fTetWild failed at the coarser detail too — "
+                "last-chance attempt with a looser surface envelope "
+                f"(eps {_base_eps or 15}% -> {_loose}%): fTetWild may move "
+                f"the surface up to {_loose}% of the target edge to close "
+                "the volume (declared, coarser surface) instead of "
+                "returning no mesh."
+            )
+            self._log_substitution(
+                "Last-chance fTetWild retry: looser surface envelope "
+                f"({_loose}%)."
+            )
+            w3 = FtetWildVolumeWorker(
+                ctx["step_path"], ctx["msh_path"], ctx["detail"],
+                max_cell_size=ctx["max_cell"],
+                eps_frac=_loose,
+                simplify=self._params.get_ftetwild_simplify(),
+                adaptive=self._params.get_ftetwild_adaptive(),
+                scale=self._params.get_scale_factor(),
+                refinement_zones=ctx.get("refinement_zones"),
+                surface_resolution=ctx.get("surface_resolution", "medium"),
+                feature_angle=ctx.get("feature_angle"),
+            )
+            self._gmsh_worker = w3
+            self._submit_task(
+                "gmsh_volume", w3,
+                on_finished=lambda _n, result: self._on_gmsh_volume_result(result),
+                on_failed=lambda _n, m: self._on_gmsh_volume_failed(m),
+                heartbeat_timeout_s=600.0,
+            )
+            return
         self._log.append_log(f"[ERROR] {_label} volume: {msg}")
         self._params.set_all_enabled(True)
         self._set_run_state(False)
@@ -5258,6 +5326,36 @@ class MainWindow(QMainWindow):
             self._set_workflow_stage("quality", "error")
             self._log.append_log(f"{Tag.QUALITY} {report.status}")
             self._status.showMessage("Mesh quality check failed")
+            # The RAW-tet checkMesh is NOT the authoritative gate: the
+            # measured pipeline (E2E mirror, W18 table) is tet -> dual -> BL
+            # -> checkMesh, and the dual+BL IS the repair for raw-tet
+            # defects (measured on the user's DN1000: raw tets fail, dual+BL
+            # passes Mesh OK). Gateing the poly conversion behind a raw-tet
+            # PASS produced exactly the "tet fast but never poly" report
+            # (2026-11-16, venturiprovabaram.stl: 9 chained runs, dual never
+            # attempted). So: when this is the FIRST checkMesh of this
+            # engine attempt on the unconverted tets, run the dual (+BL)
+            # once — the checkMesh AFTER it is the authoritative gate, and
+            # the existing W18 fallbacks (chain advance, direct leg) apply
+            # to that verdict.
+            if (
+                not getattr(self, "_poly_was_converted", False)
+                and not getattr(self, "_auto_direct_applied", False)
+                and not getattr(self, "_dual_on_raw_tets_done", False)
+                and self._params.get_poly_conversion()
+                and getattr(self, "_current_mesher_type", "")
+                in {"gmsh_direct", "gmsh_direct_poly", "ftetwild_poly"}
+                and (self._case_dir / "constant" / "polyMesh" / "points").exists()
+            ):
+                self._dual_on_raw_tets_done = True
+                self._log.append_log(
+                    f"{Tag.WARN} Raw-tet checkMesh failed ({report.status}) "
+                    "- running the polyhedral conversion (dual + BL): it "
+                    "is the measured repair for raw-tet defects; the "
+                    "checkMesh after it is the authoritative gate."
+                )
+                self._launch_gmsh_poly_dual()
+                return
             # W18: Polymesh auto falls back on UNACCEPTED checkMesh FAILs
             # while the chain has unused engines (keep-best: the first
             # valid attempt wins and stops the chain; an exhausted chain

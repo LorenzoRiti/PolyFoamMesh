@@ -299,6 +299,44 @@ def test_tet_surface_fallback_plan_is_declared_at_start():
     )
 
 
+def test_ftw_last_chance_eps_bounds():
+    """Doubles the user's envelope, bounded to [20%, 30%]; default 15%."""
+    from polyfoammesh.gui.main_window import _ftw_last_chance_eps
+
+    assert _ftw_last_chance_eps(None) == 30.0
+    assert _ftw_last_chance_eps(15.0) == 30.0
+    assert _ftw_last_chance_eps(5.0) == 20.0
+    assert _ftw_last_chance_eps(25.0) == 30.0
+    assert _ftw_last_chance_eps(0) == 30.0
+
+
+def test_ftetwild_last_chance_eps_retry_is_declared():
+    """'Always a poly': after the coarser-detail retry fails, ONE declared
+    looser-envelope attempt precedes the honest failure."""
+    src = _src("_on_gmsh_volume_failed")
+    assert "ftw_eps_retried" in src
+    assert "looser surface envelope" in src
+    assert "_ftw_last_chance_eps" in src
+    # The last chance is gated on the coarser attempt having happened:
+    # it never replaces the contract-respecting recovery order.
+    assert 'ctx.get("ftw_eps_retried")' in src
+    assert 'ctx["detail_retried"]' in src
+
+
+def test_raw_tet_checkmesh_fail_runs_the_dual_once():
+    """'Sempre poly': a RAW-tet checkMesh FAIL must attempt the dual+BL
+    ONCE (the measured repair: the E2E pipeline is tet -> dual -> BL ->
+    checkMesh) instead of looping the chain on bare tets — the exact
+    'tet fast but never poly' regression reported 2026-11-16
+    (venturiprovabaram.stl: 9 chained runs, dual never attempted)."""
+    src = _src("_on_checkmesh_finished")
+    assert "_dual_on_raw_tets_done" in src
+    assert "Raw-tet checkMesh failed" in src
+    assert "_launch_gmsh_poly_dual" in src
+    # One attempt per engine attempt: the flag resets on every run.
+    assert "_dual_on_raw_tets_done = False" in _src("_on_run_meshing")
+
+
 def test_explicit_bypass_is_declared_at_run_start():
     """A restored explicit key bypasses CTA+policy+pin while the buttons
     still show Polymesh: the run must say so loudly (with the remedy),

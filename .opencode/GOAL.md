@@ -1787,3 +1787,32 @@ riproducono i 2,37M/62 min storici (config storica non ricostruita),
 ma l'A/B e' internamente fair e la conclusione qualitativa regge.
 Criterio goal (7) rispettato: misura prima di ogni decisione,
 previsione scritta, smentita registrata.
+
+## 2026-11-16 (sera) - ROOT CAUSE "tet veloce ma niente poly" + fix poly-gate + ampiezza
+
+Il caso utente reale (venturiprovabaram.stl: 9 run in catena, solo
+tetti, niente BL) ha denunciato la radice con il log: la conversione
+poliedrica era gateata dietro un checkMesh PASS sulle TETS GREZZE —
+che falliscono quasi sempre (non-ortho) — quindi il dual non partiva
+mai e la catena avanzava a vuoto.  La pipeline misurata (E2E mirror,
+tabella W18) e' tet -> dual+BL -> checkMesh: il dual+BL E' la
+riparazione.  Fix: al primo checkMesh-fail sulle tets grezze di ogni
+tentativo il dual+BL parte una volta (dichiarato a log, flag per-run
+`_dual_on_raw_tets_done`); il checkMesh dopo il dual e' quello
+autorevole e le ripiegate W18 si applicano a quel verdetto.
+
+Ampiezza catena su casi reali (mirror E2E):
+- gmshprova.stp: AUTO VALID POLY_NO_BL in 57 min — dual 191.527 celle
+  poly, 0 tet residui, chiusura 1.95e-16, keep-best su GMSH (fTet
+  challenger Failed NO 69.3/skew 6.59, scartato).  Niente BL per h1
+  default dello strumento (dichiarato; in GUI vale l'h1 utente).
+- venturi_dn200.stp: la superficie GMSH macina UNA faccia in MeshAdapt
+  >2h (mistero del mirror risolto); in GUI il budget auto 120 s
+  protegge l'utente -> fTet su patch.
+- DN1000: AUTO VALID POLY_BL 66,6 s (giu').
+
+Universal sweep lanciato (10 geometrie: 8 corpus + final.step +
+prendiquesta, cap 40 min/caso, sequenziale, risultati incrementali).
+Blasonato in GOAL anche il secondo fattore BL del caso utente: h1
+suggerito 0,457 m (clamp 0,3) su pezzo 3 m = velocita' pannello
+~0,02 m/s aria — y+ calc corretto, input utente da rivedere.
