@@ -21,6 +21,9 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   a 154 mila in 38 s; catena completa `Mesh OK` con strato al 99-100 % in 67 s.
 - Venturi DN200 e Parte4: da "dual su mesh vuota" a `Mesh OK` con strato limite.
 - `lam.stp`: `Mesh OK`, 542 mila celle, strato al 95 %, 517 s.
+- Misura senza modifiche: A/B sul numero di iterazioni di ottimizzazione di fTetWild
+  (`opt_iter`): un tetto a 6 rallenta la fase tet del 43 % sulle run fini; il default 15
+  resta e non c'è nessun comando in GUI.
 
 ### Added
 - **Galleria del vento virtuale** (Tools > Create Wind Tunnel around Object...):
@@ -50,6 +53,11 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   le righe `FAIL subdivide_tets` di fTetWild (riprovazioni normali) sono annotate.
 - `tools/compare_mesher_bl.py`: confronto GMSH / fTetWild / snappy contando solo
   `Mesh OK` con strato limite reale; i fallback non sono accreditati.
+- Confronto con snappy: parser degli strati per OpenFOAM v2512, copertura dello strato
+  dalle statistiche, tentativi tet nel report; benchmark ed E2E usano la stessa
+  funzione di produzione della GUI (`production_dual_kwargs`).
+- Guida utente: risoluzione dei problemi per il loop di partizione GMSH e per le righe
+  `FAIL subdivide_tets` di fTetWild.
 
 ### Changed (velocità)
 - **fTetWild: campo di taglie adattivo con tetto di crescita** (causa principale della
@@ -108,6 +116,12 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
 - **Report dello strato limite**: lo spessore del primo strato e lo y+ si misurano
   lungo la normale di parete e solo sulle celle sottili (prima "3,01 mm, y+ 87" per
   strati di 0,44 mm).
+- **Cancel e Reset**: dopo Cancel o Reset l'output di una run fermata o sostituita viene
+  scartato (log, avanzamento, notifiche) e un lavoro che termina dopo un Cancel è
+  segnalato come annullato, non come riuscito.  Prima l'output tardivo di una run
+  precedente poteva mescolarsi con quella nuova.
+- **Pin del motore tet**: il click sul pin azzera il mesher salvato nel progetto, che
+  prima continuava a forzare GMSH anche con il pin fTetWild.
 - **Scala applicata due volte** nel ripiego fTetWild su STL a patch.
 - **Auto non dichiara più valido un poly senza strato limite**: esito classificato
   (`POLY_BL`, `POLY_NO_BL`, `TET_BL`...) e loggato; il keep-best preferisce chi ha strato.
@@ -133,7 +147,8 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
 - Il tempo previsto all'avvio è un intervallo (0,7x-1,9x della stima), non una promessa.
 - Il box di raffinamento nel percorso fTetWild è applicato con una griglia grossolana
   (un punto per cella massima): il budget di celle della galleria è approssimato.
-- Non verificato: ripetere più mesh di seguito nella GUI senza riaprire il progetto.
+- Da verificare dal vivo nella GUI: rifare più mesh di seguito.  L'output obsoleto dopo
+  Cancel/Reset è stato corretto, ma non è stato provato su una sessione reale.
 
 ## [2.4.0] - 2026-11-04
 
