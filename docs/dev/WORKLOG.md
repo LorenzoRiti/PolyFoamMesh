@@ -11,18 +11,48 @@ esplicito; i due file utente (`benchmarks/run_comparison.py`,
 
 ## 2026-11-17 — Patch management: rename/deselezione/colonna Role + verdetto mesh utente
 
-### Verdetto utente (mesh generata su Baram)
-- "La mesh non è il massimo, non funziona proprio bene; per farla
-  girare rispetto a snappy è stato un calvario e comunque non ha
-  funzionato bene."  Coerente con i numeri a registro: quel run finiva
-  checkMesh FAIL (skew 19,17 / non-ortho 96,0 / aspect 1444, 22 face
-  wrong-oriented) con BL compresso 0,02x (y+ 0,455 vs 30) — la mesh
-  NON era qualità solver e il log stesso lo dichiarava.  Leva da
-  decidere col verdetto di dettaglio (che cosa ha fallito in Baram:
-  divergenza? tempo? BC?): (a) target edge più fine sul fTetWild
-  (stack più sottili nei gap — consigliata dal log stesso), (b) floor
-  taglia locale sui gap sottili (il budget-correction x1,5 globale va
-  contro il BL), (c) conversione 1:1 come A/B onesto.
+### Verdetto utente: DIVERGENZA in Baram — diagnosis + A/B in corso (17-11)
+- Il caso divergente e' `gmsh_direct_20261117_093620` (Parte4.stp,
+  importato in Baram alle 10:53).  Colpevole primario: **22 face
+  wrong-oriented + skew 19,17** (flussi non conservativi) — non y+.
+- **Sonda 1 (99 s)**: dal backup tets dello stesso caso, duale puro
+  niente BL → checkMesh **Failed** (non-ortho 137,9, 37 bad pyramids,
+  skew 6,31; dual 104.485 poly, 59 difetti, vol_err 0,25%).  →
+  "disattiva il BL" NON basta su questa geometria: il duale da solo
+  rompe l'orientamento.
+- Evidenza chiave dai log GUI: il duale su 2,7M tets fTetWild lasciava
+  5 face capovolte (0,0002%) e le tets GREZZE GMSH erano pulite
+  (pyramids OK, skew 1,23, non-ortho 88,7 < 90) → il problema di
+  orientamento e' CREATO dal duale su questa topologia (89 facce,
+  50+ gap stretti), non dalla taglia.
+- **A/B 2 in corso (~25-40 min)**: GMSH tets alla taglia RAW senza
+  budget-correction x1,5 (`max_cells_target=0`) + BL diretto sulle
+  tets (nLayers=7, h1=0,6745 mm, growth 1,2) saltando il duale —
+  e' il ramo direct-BL dell'auto che l'utente aveva annullato.
+  Criterio: 0 wrong-oriented + skew < 2 → mesh eseguibile (il gate
+  checkMesh resta piu' severo: non-ortho > 70 e' comunque "Failed"
+  formale ma < 90 gira con nonOrthoCorrector).
+- **A/B 2 — esito (18 min GMSH + 100 s conv + BL 31 min + checkMesh)**:
+  GMSH tets alla taglia **RAW senza budget-correction** (`detail=medium`,
+  `max_cells_target=0`) → **8.072.045 tets** (~4,5x il run GUI rindenato
+  x1,5).  gmshToFoam 100 s.  **BL diretto sulle tets: rifiutato** dopo
+  1884 s ("all height scales failed validation; mesh left unchanged")
+  con la config semplificata della sonda (niente local termination del
+  pannello) — la mesh resta valida.  **checkMesh: Mesh OK** (0 check
+  falliti, skew 1,095, 0 bad pyramids, non-ortho 89,7): prima mesh
+  **eseguibile** di questa geometria; la ricetta = taglia raw + salta
+  il duale.  Caso esportato in `C:/baram/probe_tetbl_raw_parte4_mesh`
+  (setup_case placeholder BC).
+- Conclusione operativa (da portare in prodotto con A/B): su geometrie
+  gap-dense il **budget-correction globale x1,5 danneggia la qualita'
+  del tet** (e il duale rompe l'orientamento).  Candidati: policy
+  "raw prima, correzione solo se sopra il tetto RAM" e/o conversione
+  1:1.  Il BL-on-tets con la config completa del pannello resta da
+  misurare (la sonda usava solo la mapping base).
+- Sonda: `Temp/opencode/probe_dual_nobl_parte4.py` (esito:
+  `C:/cfmesh_cases/probe_dual_nobl_093620`) e
+  `probe_tetbl_raw_parte4.py` + `probe_tetbl_resume.py`
+  (`C:/cfmesh_cases/probe_tetbl_raw_parte4`).
 
 ### Patch management (richiesta utente 17-11) — implementato (in tree, test mirati verdi)
 - **Rename che non "non le cambia"**: `_on_patch_item_changed` ora
