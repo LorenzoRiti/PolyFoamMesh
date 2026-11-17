@@ -7,192 +7,133 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
-- **Corretto "tet veloce ma niente poly"**: la conversione poliedrica
-  era tentata solo se le tets grezze passavano checkMesh — ma le tets
-  grezze falliscono quasi sempre (non-ortho), quindi il dual non
-  partiva mai e la catena girava a vuoto (misurato sul caso reale: 9
-  run in loop, solo tetti, niente BL).  Ora al primo checkMesh-fail
-  sulle tets grezze il dual+BL parte una volta (la riparazione
-  misurata: tets grezze fail -> dual+BL -> Mesh OK) e il checkMesh
-  dopo il dual e' quello autorevole.
-- **"Sempre poly"**: dopo il retry a detail più grossolano, fTetWild
-  riceve un ultimo tentativo con envelope superficiale allentato
-  (eps x2, limitato a [20%, 30%], dichiarato a log) prima del
-  fallimento onesto.
-- **Visualizzazione**: "Surface with Edges" e' la vista predefinita
-  ovunque, CAD incluso (disegna solo spigoli vivi e bordi aperti).
-- **Log esplicativo della catena tet**: all'avvio di una run Polymesh
-  con motore fTetWild la GUI dichiara in anticipo il piano ("surface
-  stage first; if it dies on hostile CAD -> fTetWild on the discrete
-  patch STL, one attempt") invece di mostrarlo solo quando scatta;
-  le righe `FAIL subdivide_tets` di fTetWild (riprovazioni interne,
-  normali anche nei run riusciti) sono annotate una volta a log.
-- **Anti-loop GMSH dichiarato e log esplicativo** (misurato su DN1000 "dn1000
-  aperta.stp"): il volume GMSH poteva girare per ore stampando migliaia di
-  volte lo stesso avviso "Partitioning face 4 ... changing tolerance to X"
-  (contatore Level oltre 500 mila tentativi) mentre il watchdog di stall
-  restava muto, perché l'output continuava ad arrivare.  Ora un circuit
-  breaker conta le ripetizioni: a 2000 uccide il processo e la catena
-  normale -> robust -> manuale (e infine il ripiego fTetWild/STL) riparte con
-  un fallimento nominato (faccia e intervallo di tolleranze).  Al log GUI le
-  righe ripetute sono consumate e sostituite da UN riassunto ogni 500, quindi
-  il log spiega il loop invece di allagarlo; l'output completo resta nel file
-  di log della run.
-- fTetWild su input STL (galleria del vento): i box di raffinamento erano ignorati; ora entrano nel campo di taglie del volume, dopo il limite di crescita.  Misurato sul NACA: celle 102k -> 186k, tempo 4,7 -> 11,7 min.  Versione della cache mesh 3 (le mesh fatte con le zone ignorate non vengono riusate).
-- Avviso all'avvio della run: stadi, durata prevista (calibrata sulle misure) e avviso che il tet resta muto per minuti; heartbeat di fTetWild ogni 30 s con "e' normale".
-- Galleria del vento: taglia massima/minima impostate dal budget di 100k celle (prima restava la taglia del solo oggetto, 5,3 mm, ~4,8M celle stimate); motore tet fTetWild per primo con GMSH di ripiego (GMSH sulla galleria STL stallava 2x300 s o andava in segfault, fTetWild 42 s); un mesher salvato nel progetto viene azzerato alla creazione della galleria.
-- Vista CAD "Surface with Edges": solo spigoli vivi (>30 gradi) e bordi aperti, non ogni triangolo.
-- Strato limite, ripiego "chiusura concava" sul percorso GMSH: almeno 6 giri di
-  esclusione invece di 3 (su PRENDI QUESTA ne servivano 5: con 3 nessuno strato
-  dopo ~340 s di tentativi, con 6 strato al 97-99 % in 150-330 s).  La pulizia
-  delle piramidi di parete dopo lo strato, prima solo su fTetWild, ora gira su
-  tutti i percorsi (protetta: scrive solo se le piramidi calano).  Corpus
-  (26 run, catena di produzione): Mesh OK 17 -> 18, nessun caso peggiore,
-  419 -> 469 s.  Sui due tubi reali lo strato ora c'e', ma il verdetto
-  oscilla di 1-3 facce da una generazione di tet all'altra.
+## [2.5.0] - 2026-11-17
 
-- **Taglia suggerita per tubi e condotti**: il suggerimento guardava solo lo
-  spessore locale e dava 70 mm a un tubo da 255 mm di diametro (3,6 celle nel
-  diametro): quasi tutti i vertici finivano sulla parete e il dual produceva
-  30 piramidi.  Ora impone un minimo di celle nella sezione (6/9/12/18/28 per i
-  cinque livelli di dettaglio).  Sui file reali cambiano solo i quattro tubi
-  (70,3 -> 17,6 mm, circa 22 mila celle stimate); gli altri restano uguali.
-  Misurato: Venturi DN200 e Parte4 passano con strato limite; PRENDI QUESTA e
-  gmshprova passano checkMesh ma senza strato limite (i tentativi di strato
-  falliscono per 1-3 difetti), prima avevano lo strato e 29-32 piramidi.
+Release centrata su robustezza e velocità della catena Auto
+(tet -> dual poliedrico -> strato limite -> checkMesh) e sulla nuova galleria
+del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
+(corpus di 26 run, catena di produzione, WSL OpenFOAM 2512).
 
-- Galleria del vento: dopo la creazione non parte piu' il controllo di tenuta
-  con auto-riparazione.  Sul NACA 0024 il guaritore duplicava il riempimento
-  di un buco, la superficie risultava non-manifold e PyMeshFix trasformava la
-  galleria in un guscio da 3274 facce con volume negativo (mesh da 653 tet).
-  Avvisa invece se l'oggetto ha spigoli aperti (fTetWild lo riempirebbe).
-  Verificato sul NACA: 102 mila celle, oggetto presente, strato limite 83 %.
-
-- **Velocita' fTetWild (causa principale della lentezza in GUI)**: il campo di
-  dimensioni adattivo, acceso di default, poteva gonfiare la mesh di decine di
-  volte.  DN1000: 6.7 milioni di tetraedri e 51 minuti con il campo, 73 mila e
-  19 s senza.  Ora la crescita e' limitata a ~5x la mesh uniforme (i rapporti
-  tra zone fini e larghe restano; `FTETWILD_ADAPTIVE_BUDGET` la cambia, 0 la
-  toglie).  DN1000 con la configurazione GUI: 154 mila tet in 38 s.
-- **Gate dei volumi 3D nel file .msh**: leggeva ogni riga numerica, quindi un
-  nome fisico come `2 4 "surface_4"` contava come tetraedro e ogni STEP senza
-  solido con 4 o piu' superfici sembrava avere un volume: niente passaggio a
-  fTetWild, dual su mesh vuota (Venturi DN200, Parte4).  Ora legge solo la
-  sezione `$Elements` (MSH 2.x e 4.x).
-- Avviso al caricamento con tempo indicativo (~4.5 s ogni 1000 celle stimate,
-  misurato su tre pezzi) e cella che porta a ~75 mila celle, da 150 mila
-  celle stimate in su.
-- Galleria del vento: la cella di base si calcola da un budget di celle
-  (default 100 mila; cella di superficie = base/4; avvisa se l'oggetto ha meno
-  di 10 celle nello spessore); la finestra mostra le dimensioni dell'oggetto
-  lungo gli assi scelti.
-
-- Dual: la riparazione delle celle concave ha un tempo massimo (120 s in
-  totale) e segnala il battito al watchdog invece di spostare la barra di
-  avanzamento indietro.  Su final.step (1.69M tet) il watchdog abortiva
-  l'intera conversione dopo 436 s senza progresso; ora la riparazione si ferma
-  e tiene la mesh migliore (keep-best: si fermano solo i miglioramenti).
-- Galleria del vento virtuale (Tools > Create Wind Tunnel around Object...):
-  il CAD caricato diventa l'oggetto e il fluido e' la scatola attorno.
-  Criteri modificabili: a monte 3 L, a valle 8 L, ai lati 4 D, sopra 5 H,
-  ostruzione frontale massima 3 % (la scatola si allarga da sola e lo dice),
-  suolo opzionale.  Patch inlet/outlet/farfield/ground + oggetto con i nomi
-  originali; box di raffinamento attorno all'oggetto e nella scia.
-
-- Avviso al caricamento quando il volume è un guscio sottile o la stima di
-  celle supera 5 milioni (Vaysa_lame_001.stp: 102 m2 di lamiera da 6 mm
-  caricati come fluido -> ~53 milioni di celle, GMSH sembrava bloccato).
-  Il log dice in chiaro il motivo e cosa fare prima di lanciare la mesh.
-
-- Strato limite: quando i difetti smettono di calare tra un'altezza e la
-  successiva, le altezze più sottili vengono saltate.  Corpus 471 -> 419 s,
-  verdetti invariati.
-
-- Strato limite validato sui criteri che fanno fallire checkMesh (piramidi
-  con la decomposizione di OpenFOAM, non-ortogonalità > 90, skew > 4 anche
-  di parete): lo strato non può più aggiungere difetti e la terminazione
-  locale toglie solo le pile responsabili.  Catena di produzione sul
-  corpus: Mesh OK con BL 14 -> 17 su 26, nessun caso peggiore; DN1000 non
-  ha più facce storte dovute allo strato.
-
-- Report BL: lo spessore del primo strato (e lo y+ stimato) si misura lungo
-  la normale di parete e solo sulle celle sottili.  Prima contava lo
-  spostamento laterale del baricentro e celle del dual non stratificate
-  (DN1000: "3.01 mm, y+ 87" per strati di 0.44 mm; box_obstacle GMSH:
-  "82 mm" per 0.938 mm).  Ora coincide con lo strato costruito.
-
-- Velocità dual (2): filtro locale prima del punteggio globale nel taglio
-  delle celle concave e ripristino senza ricalcolo nel rilassamento.  DN1000
-  dual 46 s -> 30 s (stesso risultato).  Catena di produzione sul corpus:
-  806 s -> 391 s, Mesh OK invariato (14/26).
-
-- Velocità (profilo DN1000, stessa mesh): dual 188 s -> 46 s.  Il
-  rilassamento delle piramidi di parete ricalcolava l'intera mesh per ogni
-  mossa candidata (945 volte); ora valuta solo l'intorno dei vertici mossi
-  (`IncrementalDefectScore`, stessi criteri, verificato esatto).  Stesso
-  risultato (13 -> 6 difetti).
-- Velocità BL: il riflusso armonico del nucleo (500 iterazioni di Jacobi per
-  ogni tentativo) usa una matrice sparsa CSR: 9.3 s -> 0.95 s per tentativo
-  sulla DN1000, differenza 3e-14 relativa.  DN1000 catena di produzione
-  (dual + BL): 83 s.
-
-- Dual: when a few defects (<= 8) remain, the dual is rebuilt once from the
-  same tets with boundary feature angle 20 deg and the better mesh is kept.
-  Faceted walls (20-40 deg STL creases) keep their crease vertices, so wall
-  faces stay flat.  Real production chain on the corpus: checkMesh Mesh OK
-  with BL 12 -> 14 of 26 (pipe_constriction, venturi on GMSH), none worse.
-- Dual mixed tet+prism path: internal faces written upper-triangular and
-  unused points removed (checkMesh errors on that path).
-
-### Changed (velocità)
-- **fTetWild su STEP legge le superfici già caricate**: prima passava dal
-  mesher di superficie GMSH, la fase lenta e fragile (DN1000: oltre 6 minuti
-  poi "Impossible to mesh periodic surface"). Ora la GUI passa a fTetWild i
-  patch tessellati in memoria, con i nomi: la stessa valvola fa il tet in
-  30 s (tessellazione 1,2 s, export 2,5 s, fTetWild 26 s, 104k tet). La
-  superficie GMSH resta solo se ci sono zone di raffinamento.
-- **Auto non aspetta GMSH per minuti**: se fTetWild è ancora da provare, GMSH
-  ha 120 s in totale (tutti i tentativi), poi viene fermato e parte fTetWild
-  dai patch caricati. Sul corpus GMSH riesce in 0,1-5 s; sulla DN1000 restava
-  6+ minuti nei tentativi prima di fallire. `POLYFOAMMESH_AUTO_GMSH_BUDGET_S`
-  cambia il limite (0 lo toglie); GMSH scelto a mano non ha limite nuovo.
-
-### Fixed
-- **Scala applicata due volte** nel ripiego fTetWild su STL a patch: le mesh
-  in memoria sono già scalate, il worker ora riceve scala 1.
-- **Auto non dichiara più valido un poly senza BL**: esito classificato
-  (`POLY_BL`, `POLY_NO_BL`, `TET_BL`...) e loggato; BL mancante rende il
-  risultato "debole" e apre il confronto; il keep-best preferisce chi ha BL.
-- **E2E Auto**: applica il BL sul dual prima di checkMesh, con h1 = 1% della
-  cella massima della geometria (prima 1,26 mm fissi, tarati su un solo caso).
-- **Smoother poly**: `np.divide(where=)` senza `out` lasciava memoria non
-  inizializzata sui nodi a direzione nulla.
-- **API REST (sperimentale)**: job non più bloccati in RUNNING, `file_id`
-  validato, upload con limite (413), chiave opzionale `POLYFOAMMESH_API_KEY`,
-  params invalidi = 422, `/batch` fuori dall'event loop, nessun `api_data/`
-  creato all'import. L'API usa ancora il workflow legacy, non la catena Auto.
-
-### Changed
-- **Dual poly, un solo set di opzioni** (`production_dual_kwargs`): anche il
-  percorso GMSH usa lo split delle piramidi di bordo a superficie bloccata.
-  Stessi 28 tet: difetti residui 1313 -> 389, scostamento parete invariato
-  (0,6% della cella). Con BL e checkMesh reali: `Mesh OK` 5 -> 7 su 22,
-  nessuna regressione. Benchmark ed E2E usano la stessa funzione della GUI.
-
-- **Celle a L sugli spigoli concavi** (`poly_cell_split`, attivo in
-  produzione): le piramidi di bordo residue del dual stanno tutte su celle con
-  due facce di parete attorno a uno spigolo concavo. La cella viene tagliata in
-  due lungo lo spigolo (nessun punto mosso, parete intatta), poi si rilassano i
-  soli vertici interni. Keep-best sul rilevatore in-process.
-
-### Fixed (BL)
-- **BL rifiutato sui casi concavi**: due zone scoperte che si toccavano in un
-  solo vertice lasciavano spigoli di bordo con 4 facce e la validazione
-  scartava l'intero strato (`_close_bare_pinches`).
+### Riepilogo misurato
+- Corpus (26 run): `Mesh OK` con strato limite 12 -> 18, tempo totale 806 -> 469 s,
+  nessun caso peggiore.
+- DN1000 (configurazione GUI, fTetWild): tet da 6,7 milioni di tetraedri in 51 minuti
+  a 154 mila in 38 s; catena completa `Mesh OK` con strato al 99-100 % in 67 s.
+- Venturi DN200 e Parte4: da "dual su mesh vuota" a `Mesh OK` con strato limite.
+- `lam.stp`: `Mesh OK`, 542 mila celle, strato al 95 %, 517 s.
 
 ### Added
-- `tools/compare_mesher_bl.py`: confronto GMSH / fTetWild / snappy contando
-  solo `Mesh OK` con BL reale; i fallback non sono accreditati.
+- **Galleria del vento virtuale** (Tools > Create Wind Tunnel around Object...):
+  il CAD caricato diventa l'oggetto e il fluido è la scatola attorno.  Criteri
+  modificabili: a monte 3 L, a valle 8 L, ai lati 4 D, sopra 5 H, ostruzione
+  frontale massima 3 % (la scatola si allarga da sola e lo dice), suolo
+  opzionale.  Patch inlet/outlet/farfield/ground + oggetto con i nomi originali;
+  box di raffinamento sull'oggetto (livello 3) e nella scia (livello 2).
+  - La cella di base viene da un budget di celle (default 100 mila; cella di
+    superficie = base/4); la finestra mostra le dimensioni dell'oggetto lungo gli
+    assi scelti e avvisa se l'oggetto ha meno di 10 celle nello spessore.
+  - Dopo la creazione non parte il controllo di tenuta con auto-riparazione (sul
+    NACA 0024 trasformava la galleria in un guscio da 3274 facce con volume
+    negativo); avvisa invece se l'oggetto ha spigoli aperti.
+  - Motore tet: fTetWild per primo, GMSH di ripiego (GMSH sulla galleria STL
+    stallava 2 x 300 s o andava in segfault; fTetWild 42-100 s).  Un mesher salvato
+    nel progetto viene azzerato alla creazione.
+  - Misurato sul NACA 0024: 102 mila celle senza box (4,7 min, strato 85 %); con i
+    box 186 mila celle (11,7 min, strato 91 %).  checkMesh dà ancora 2-3 facce
+    piramide in entrambi i casi.
+- **Avviso all'avvio della run**: stadi, durata prevista (calibrata sulle misure) e
+  avviso che il tet resta muto per minuti; heartbeat di fTetWild ogni 30 s.
+- **Avviso al caricamento** quando il volume è un guscio sottile o la stima supera
+  5 milioni di celle, e tempo indicativo (~4,5 s ogni 1000 celle stimate) con la
+  cella che porta a ~75 mila celle, da 150 mila celle stimate in su.
+- **Log esplicativo della catena tet**: il piano di ripiego è dichiarato all'avvio;
+  le righe `FAIL subdivide_tets` di fTetWild (riprovazioni normali) sono annotate.
+- `tools/compare_mesher_bl.py`: confronto GMSH / fTetWild / snappy contando solo
+  `Mesh OK` con strato limite reale; i fallback non sono accreditati.
+
+### Changed (velocità)
+- **fTetWild: campo di taglie adattivo con tetto di crescita** (causa principale della
+  lentezza in GUI): poteva gonfiare la mesh di decine di volte.  Ora la crescita è
+  limitata a ~5x la mesh uniforme, con i rapporti tra zone fini e larghe invariati
+  (`FTETWILD_ADAPTIVE_BUDGET` la cambia, 0 la toglie).
+- **fTetWild su STEP legge le superfici già caricate** invece di passare dal mesher di
+  superficie GMSH (lento e fragile): la stessa valvola fa il tet in 30 s.
+- **Auto non aspetta GMSH per minuti**: GMSH ha 120 s in totale, poi parte fTetWild
+  (`POLYFOAMMESH_AUTO_GMSH_BUDGET_S` cambia il limite, 0 lo toglie).
+- **Anti-loop GMSH**: un circuit breaker ferma il volume dopo 2000 ripetizioni dello
+  stesso avviso di partizione (prima poteva girare per ore) e la catena riparte con un
+  fallimento nominato; il log GUI mostra un riassunto ogni 500 ripetizioni.
+- Dual: filtro locale prima del punteggio globale e rilassamento incrementale
+  (`IncrementalDefectScore`, stessi criteri, verificato esatto).  DN1000: dual
+  188 s -> 30 s; corpus 806 s -> 391 s a parità di verdetti.
+- Strato limite: riflusso del nucleo con matrice sparsa CSR (9,3 s -> 0,95 s per
+  tentativo sulla DN1000); le altezze più sottili vengono saltate quando i difetti
+  smettono di calare (corpus 471 -> 419 s).
+- Dual: la riparazione delle celle concave ha un tempo massimo (120 s) e segnala il
+  battito al watchdog; si ferma tenendo la mesh migliore.
+
+### Changed (qualità)
+- **"Tet veloce ma niente poly"**: la conversione poliedrica partiva solo se le tets
+  grezze passavano checkMesh, ma quasi sempre falliscono; la catena girava a vuoto.
+  Ora al primo checkMesh-fail il dual+strato limite parte una volta e il checkMesh
+  dopo il dual è quello autorevole.
+- **"Sempre poly"**: dopo il retry a detail più grossolano, fTetWild riceve un ultimo
+  tentativo con envelope allentato (eps x2, limitato a [20 %, 30 %]).
+- **Taglia suggerita per tubi e condotti**: impone un minimo di celle nella sezione
+  (6/9/12/18/28 per i cinque livelli di dettaglio).  Prima dava 70 mm a un tubo da
+  255 mm (3,6 celle nel diametro); ora 17,6 mm.  Sui file reali cambiano solo i
+  quattro tubi.
+- Strato limite validato sui criteri che fanno fallire checkMesh (piramidi con la
+  decomposizione di OpenFOAM, non-ortogonalità > 90, skew > 4 anche di parete): lo
+  strato non può più aggiungere difetti.  Corpus: `Mesh OK` con strato 14 -> 17.
+- Strato limite, chiusura concava sul percorso GMSH: almeno 6 giri di esclusione
+  (prima 3); la pulizia delle piramidi di parete dopo lo strato gira su tutti i
+  percorsi.  Corpus `Mesh OK` 17 -> 18.
+- Dual: quando restano pochi difetti (<= 8) viene ricostruito una volta con angolo di
+  spigolo 20 gradi e si tiene la mesh migliore (corpus 12 -> 14).
+- Dual poly, un solo set di opzioni (`production_dual_kwargs`) anche sul percorso GMSH;
+  celle a L sugli spigoli concavi (`poly_cell_split`).  Difetti residui 1313 -> 389.
+- Il primo strato viene limitato anche alla taglia della cella (con motivo a log).
+- Vista CAD "Surface with Edges" predefinita: disegna solo spigoli vivi (> 30 gradi) e
+  bordi aperti, non ogni triangolo.
+
+### Fixed
+- **fTetWild su input STL ignorava i box di raffinamento**: ora entrano nel campo di
+  taglie del volume, dopo il tetto di crescita.  Versione della cache mesh 3 (le
+  mesh fatte con le zone ignorate non vengono riusate).
+- **Gate dei volumi 3D nel `.msh`**: leggeva ogni riga numerica, quindi un nome fisico
+  contava come tetraedro e i STEP senza solido con 4 o più superfici sembravano avere
+  un volume (niente passaggio a fTetWild, dual su mesh vuota: Venturi DN200, Parte4).
+  Ora legge solo la sezione `$Elements` (MSH 2.x e 4.x).
+- **Report dello strato limite**: lo spessore del primo strato e lo y+ si misurano
+  lungo la normale di parete e solo sulle celle sottili (prima "3,01 mm, y+ 87" per
+  strati di 0,44 mm).
+- **Scala applicata due volte** nel ripiego fTetWild su STL a patch.
+- **Auto non dichiara più valido un poly senza strato limite**: esito classificato
+  (`POLY_BL`, `POLY_NO_BL`, `TET_BL`...) e loggato; il keep-best preferisce chi ha strato.
+- **E2E Auto**: applica lo strato limite sul dual prima di checkMesh, con h1 = 1 % della
+  cella massima.
+- Smoother poly: `np.divide(where=)` senza `out` lasciava memoria non inizializzata.
+- Dual mixed tet+prism: facce interne scritte in ordine triangolare superiore e punti
+  inutilizzati rimossi (checkMesh dava errori su quel percorso).
+- Strato limite rifiutato sui casi concavi: due zone scoperte che si toccavano in un
+  solo vertice scartavano l'intero strato (`_close_bare_pinches`).
+- API REST (sperimentale): job non più bloccati in RUNNING, `file_id` validato, upload
+  con limite, chiave opzionale `POLYFOAMMESH_API_KEY`, parametri invalidi = 422,
+  `/batch` fuori dall'event loop.  L'API usa ancora il workflow legacy.
+
+### Limiti noti
+- Alcune geometrie reali restano `Failed` per 1-3 facce (tubi PRENDI QUESTA e gmshprova
+  con strato presente; galleria NACA con 2-3 piramidi) e il verdetto oscilla di 1-3
+  facce da una generazione di tet all'altra (la tetraedrizzazione GMSH e il suggerimento
+  della taglia hanno una parte casuale non fissata).
+- Geometrie molto grandi o sottili restano lente (oltre 25 minuti: FUSO DN1000, Parte2,
+  Parte18); lo strato limite pesa oltre le 500 mila celle.
+- Exhaust manifold: né GMSH né fTetWild producono il tet.
+- Il tempo previsto all'avvio è un intervallo (0,7x-1,9x della stima), non una promessa.
+- Il box di raffinamento nel percorso fTetWild è applicato con una griglia grossolana
+  (un punto per cella massima): il budget di celle della galleria è approssimato.
+- Non verificato: ripetere più mesh di seguito nella GUI senza riaprire il progetto.
 
 ## [2.4.0] - 2026-11-04
 

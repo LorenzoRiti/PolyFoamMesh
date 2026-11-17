@@ -10,7 +10,7 @@ not of the Python package — it was historically one minor ahead and is
 not wired to this file. Bump it manually when producing a new installer.
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 
 def build_id() -> str:
