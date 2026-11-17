@@ -2026,6 +2026,10 @@ class ParamsPanel(QWidget):
             params = BLEngine().calculate_from_flow(
                 flow, flow_type=flow_type,
                 growth_rate=float(self._bl_exp.value()),
+                # Mesh-fit sanity: the first layer must fit the mesh it
+                # will live in (measured 2026-11-16: a y+-exact 0.457 m
+                # first layer on a 3 m part at 20 mm/s air is useless).
+                max_cell=float(self._max_cell.value()),
             )
         except Exception as e:
             logger.exception("Boundary-layer physics calculation failed")
