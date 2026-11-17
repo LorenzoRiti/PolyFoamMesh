@@ -94,7 +94,7 @@ from polyfoammesh.gui.settings_migration import AppSettings
 from polyfoammesh.core.patch_roles import is_wall_patch as _shared_is_wall_patch
 from polyfoammesh.gui.style import COLOR_TEXT_DISABLED
 from polyfoammesh.gui.task_runner import FunctionWorker, TaskManager
-from polyfoammesh.gui.viewer_widget import ViewerWidget
+from polyfoammesh.gui.viewer_widget import ViewerWidget, sanitize_patch_name
 from polyfoammesh.octopoda_local import octo
 
 logger = logging.getLogger(__name__)
@@ -778,6 +778,7 @@ class MainWindow(QMainWindow):
         self._viewer.face_picked.connect(self._on_face_picked)
         self._viewer.patch_renamed.connect(self._on_patch_renamed)
         self._viewer.mesh_patch_renamed.connect(self._on_mesh_patch_renamed)
+        self._viewer.patch_role_changed.connect(self._on_patch_role_changed)
         h_splitter.addWidget(self._viewer)
 
         right = QWidget()
@@ -1297,8 +1298,33 @@ class MainWindow(QMainWindow):
     _CASE_SETUP_SUPPORTED_SOLVERS = {"simpleFoam"}
 
     def _case_setup_kwargs(self) -> dict:
-        """application/turbulence_model to pass to setup_case()."""
-        return {}
+        """Extra kwargs for setup_case(): the Role-column overrides as BC roles.
+
+        The Role column (patch panel) lets the user declare what a surface
+        IS; ``setup_case`` honors ``patch_roles`` in place of the name-based
+        classification, so an explicit "this is the inlet" also fixes the
+        boundary-condition lines, not just the BL selection.
+        """
+        roles = {
+            name: role
+            for name, role in self._params.patch_role_overrides.items()
+            if role in ("inlet", "outlet", "wall")
+        }
+        return {"patch_roles": roles} if roles else {}
+
+    def _user_is_wall_patch(self, name: str) -> bool:
+        """BL wall test with the user's Role-column override on top.
+
+        An explicit Role ("wall" / "inlet" / "outlet") always wins; the
+        shared name classifier decides when the user left "auto". The old
+        ``_is_wall_patch`` stays for name-only callers.
+        """
+        role = self._params.patch_role_overrides.get(name)
+        if role in ("inlet", "outlet", "symmetry"):
+            return False
+        if role == "wall":
+            return True
+        return _shared_is_wall_patch(name)
 
     def _heal_geometry(self, meshes: list[trimesh.Trimesh]) -> None:
         """Repair small CAD defects right after loading, before anything else
@@ -2037,15 +2063,24 @@ class MainWindow(QMainWindow):
             self, f"Rename Patch '{patch_name}'",
             "New patch name:", text=patch_name,
         )
-        if not ok or not new_name.strip() or new_name.strip() == patch_name:
+        if not ok:
             return
-        new_name = new_name.strip()
-        import re
-        if re.search(r'[;{}"/\s]', new_name) or not new_name:
-            QMessageBox.warning(self, "Invalid Name",
-                "Patch name must not contain: ; { } \" / or whitespace.")
+        # Sanitize, do not reject: an illegal character becomes "_" so the
+        # rename always lands (the old refuse-with-message-box path read as
+        # "the rename does nothing" — user report 2026-11-17).
+        new_name = sanitize_patch_name(new_name)
+        if not new_name:
+            QMessageBox.warning(
+                self, "Invalid Name",
+                'Patch name is empty: ; { } " / and whitespace are not '
+                "allowed and no other character was typed.",
+            )
             return
-        self._rename_cad_patch(patch_name, new_name)
+        if new_name == patch_name:
+            return
+        self._rename_cad_patch(
+            patch_name, self._viewer.unique_patch_name(new_name)
+        )
 
     def _rename_cad_patch(self, old_name: str, new_name: str) -> None:
         """Apply a CAD patch rename: mesh metadata, viewer and params panel.
@@ -2059,7 +2094,11 @@ class MainWindow(QMainWindow):
             if mesh.metadata.get("name") == old_name:
                 mesh.metadata["name"] = new_name
                 break
-        self._params.set_suggest_meshes(self._meshes)
+        # Only DROP the sizing caches: set_suggest_meshes recomputes the
+        # per-patch sizes synchronously (numpy ray-casts) and froze the GUI
+        # for seconds on every rename (user report 2026-11-17). The stored
+        # mesh objects are shared, so the panel sees the new names anyway.
+        self._params.invalidate_mesh_caches()
         self._viewer.show_cad(self._meshes)
         self._viewer.highlight_patch(new_name)
         self._log.append_log(f"{Tag.PATCH} Renamed '{old_name}' \u2192 '{new_name}'.")
@@ -2124,6 +2163,24 @@ class MainWindow(QMainWindow):
             f"{Tag.PATCH} Renamed mesh patch '{old_name}' \u2192 '{new_name}' "
             f"(written to constant/polyMesh/boundary{fields_note}; "
             "backup: boundary.bak)."
+        )
+
+    @Slot(str, str)
+    def _on_patch_role_changed(self, patch_name: str, role: str) -> None:
+        """Role column: the user declared what a surface IS ("" = auto).
+
+        The override lives on the params panel so every consumer reads one
+        dict: the BL wall selection (``_user_is_wall_patch``) and the case
+        BC roles (``_case_setup_kwargs``). It follows renames on the viewer
+        side and is cleared on Reset.
+        """
+        if role:
+            self._params.patch_role_overrides[patch_name] = role
+        else:
+            self._params.patch_role_overrides.pop(patch_name, None)
+        self._log.append_log(
+            f"{Tag.PATCH} Role '{patch_name}' \u2192 {role or 'auto'} "
+            "(user override — used for the BL walls and the case BCs)."
         )
 
     def _on_pick_refinement(self):
@@ -2368,6 +2425,7 @@ class MainWindow(QMainWindow):
         self._loaded_step_path = None
         self._params.set_meshing_enabled(False)
         self._params.set_suggest_meshes([])
+        self._params.patch_role_overrides.clear()
         self._params.set_case_dir("")
         self._params.set_bbox(0, 0, 0)
         self._viewer.clear()
@@ -3276,7 +3334,7 @@ class MainWindow(QMainWindow):
                 bl_log = f"all {len(wall_patches)} patches (user-forced)"
             else:
                 wall_patches = [
-                    n for n in all_names if _is_wall_patch(n)
+                    n for n in all_names if self._user_is_wall_patch(n)
                 ]
                 bl_log = (
                     f"{len(wall_patches)} wall patch(es): {wall_patches}"
@@ -5109,7 +5167,7 @@ class MainWindow(QMainWindow):
         bl_params = self._params.get_bl_params()
         all_names = [m.metadata.get("name", f"patch_{i}") for i, m in enumerate(self._meshes)]
         if bl_params is not None:
-            wall_patches = [n for n in all_names if _is_wall_patch(n)]
+            wall_patches = [n for n in all_names if self._user_is_wall_patch(n)]
             if wall_patches:
                 bl_params = dict(bl_params)
                 bl_params["wallPatches"] = wall_patches
@@ -6278,7 +6336,7 @@ class MainWindow(QMainWindow):
                     bl_retry = self._params.get_bl_params()
                     if bl_retry is not None:
                         wall_patches = [
-                            n for n in names if _is_wall_patch(n)
+                            n for n in names if self._user_is_wall_patch(n)
                         ]
                         if not wall_patches:
                             bl_retry = None

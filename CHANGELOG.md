@@ -7,6 +7,25 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Fixed
+- **Rinomina patch che "non le cambia veramente"**: un nome con spazi o
+  caratteri `;{}"/` veniva rifiutato in silenzio.  Ora il nome viene
+  sanificato (spazi/illegali → `_`, collisione → suffisso numerato) e
+  commesso sia dalla tabella sia dal click 3D.
+- **Impallamento sul rinomina**: il rinomina rilanciava il ricalcolo
+  completo delle taglie per-patch (numpy su GUI thread).  Ora solo le
+  cache vengono svuotate e ricalcolate al primo uso.
+- **Deselezione impossibile**: ESC cancella la selezione della patch
+  (il toggle con re-click esisteva già dal 2.5.0).
+
+### Added
+- **Colonna Role nel pannello patch** (al posto di "Type"): combo
+  auto/inlet/outlet/symmetry/wall precompilata con il ruolo inferito.
+  La scelta dell'utente guida la selezione delle superfici wall per lo
+  strato limite e i tipi di BC scritti in `setup_case` (parametro
+  `patch_roles` esistente).  Gli override seguono i rinomina e si
+  azzerano con Reset.
+
 ## [2.5.0] - 2026-11-17
 
 Release centrata su robustezza e velocità della catena Auto

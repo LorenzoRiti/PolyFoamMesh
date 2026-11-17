@@ -156,6 +156,10 @@ class ParamsPanel(QWidget):
         self._suggest_meshes: list[trimesh.Trimesh] = []  # ✅ F-017
         self._feature_min_cell_cache: dict[str, float] = {}
         self._patch_sizes_cache: dict[str, dict] = {}
+        # Role-column overrides from the patch panel (patch name -> role).
+        # Consumed by _user_is_wall_patch (BL walls) and _case_setup_kwargs
+        # (BC roles) in the main window; cleared on app Reset.
+        self.patch_role_overrides: dict[str, str] = {}
         self._undo_stack: QUndoStack | None = None
         self._prev_cell_params = {"max_cell": 0.05, "min_cell": 0.01}
         self._setup_ui()
@@ -2252,6 +2256,18 @@ class ParamsPanel(QWidget):
         if hasattr(self, "_detail_slider"):
             self._on_detail_changed(self._detail_slider.value())
         self._refresh_bl_hint()
+
+    def invalidate_mesh_caches(self) -> None:
+        """Drop the sizing caches WITHOUT recomputing them now.
+
+        ``set_suggest_meshes`` recomputes the per-patch sizes synchronously
+        on the GUI thread (numpy ray-casts over every face). A patch rename
+        only changes metadata, so calling it there froze the UI for seconds
+        (user report 2026-11-17). Caches are cleared here and rebuilt
+        lazily on the next use instead.
+        """
+        self._feature_min_cell_cache = {}
+        self._patch_sizes_cache = {}
 
     def set_cell_estimate(self, text: str):
         self._cell_est_label.setText(text)

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pyvista as pv
 import trimesh
-from PySide6.QtCore import QProcess, QTimer, Signal, Qt
+from PySide6.QtCore import QEvent, QProcess, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -96,6 +96,26 @@ def detect_patch_type(name: str, patch_type: str = "") -> str:
     if recorded == "wall":
         return "wall"
     return "other"
+
+
+#: Characters that are structurally illegal in an OpenFOAM patch name:
+#: word-list delimiters, quotes and any whitespace.
+_INVALID_PATCH_NAME_RE = re.compile(r'[;{}"/\s]')
+
+
+def sanitize_patch_name(raw: str) -> str:
+    """Turn a user-typed name into a legal OpenFOAM patch name.
+
+    Invalid characters (``;{}"``, whitespace) become ``_`` and the result
+    is stripped of leading/trailing underscores. Returns ``""`` when
+    nothing usable remains — the caller decides to revert.
+
+    Sanitizing instead of rejecting is deliberate: a silent revert read
+    as "the rename does nothing" (user report 2026-11-17).
+    """
+    cleaned = _INVALID_PATCH_NAME_RE.sub("_", str(raw).strip())
+    cleaned = re.sub(r"_+", "_", cleaned)
+    return cleaned.strip("_")
 
 
 def _patch_type_map(case_dir: Path) -> dict[str, str]:
@@ -684,6 +704,12 @@ class ViewerWidget(QWidget):
     #: back to constant/polyMesh/boundary (after backing it up) and refreshes
     #: the table/BC editor. Additive alongside patch_renamed.
     mesh_patch_renamed = Signal(str, str)
+    #: (patch_name, role) — the user declared what a surface IS in the Role
+    #: column ("" = back to auto). Consumers: the BL wall selection and the
+    #: case-setup BC roles via the main window (see _user_is_wall_patch /
+    #: _case_setup_kwargs). Auto detection keeps working when the name
+    #: carries no signal and geometry says nothing.
+    patch_role_changed = Signal(str, str)
     distance_measured = Signal(str)
     measure_hint = Signal(str)
     refinement_point_picked = Signal(float, float, float)
@@ -854,7 +880,7 @@ class ViewerWidget(QWidget):
         )
         layout.addWidget(title)
         self._patch_table = QTableWidget(0, 3)
-        self._patch_table.setHorizontalHeaderLabels(["Name", "Faces", "Type"])
+        self._patch_table.setHorizontalHeaderLabels(["Name", "Faces", "Role"])
         self._patch_table.verticalHeader().setVisible(False)
         self._patch_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._patch_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -876,6 +902,16 @@ class ViewerWidget(QWidget):
         self._patch_table.itemDoubleClicked.connect(self._on_patch_item_double_clicked)
         layout.addWidget(self._patch_table)
         self._patch_panel.setVisible(False)
+        # User-declared roles from the Role column, keyed by patch name.
+        # Survives panel rebuilds (rename -> show_cad) so a declared role is
+        # never silently dropped; _on_reset clears them from the main window.
+        self._patch_role_overrides: dict[str, str] = {}
+        # ESC clears the patch selection: the empty-click deselect only fires
+        # on background pixels, and there is no other keyboard way out
+        # (user report 2026-11-17). The filter skips the events an inline
+        # table editor needs (cancel an edit), and popup windows / dialogs
+        # are separate top-levels so they never reach it.
+        self.installEventFilter(self)
         # NOT added to the viewer layout: the main window embeds this panel
         # in the left dock (empty space below the workflow tree).
 
@@ -1213,12 +1249,57 @@ class ViewerWidget(QWidget):
             faces_item.setFlags(faces_item.flags() & ~Qt.ItemIsEditable)
             faces_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._patch_table.setItem(row, 1, faces_item)
-            type_item = QTableWidgetItem(ptype)
-            type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
-            self._patch_table.setItem(row, 2, type_item)
+            # Role column (user request 2026-11-17): the user can declare
+            # what a surface IS when the name classifier is silent (GMSH
+            # "surface_N") or wrong. The combo prefills with the inferred
+            # type so the auto answer is visible, not hidden.
+            self._patch_table.setCellWidget(row, 2, self._make_role_combo(name, ptype))
             self._patch_names.append(name)
         self._patch_table.blockSignals(False)
         self._patch_panel.setVisible(bool(entries))
+
+    #: Labels of the Role column combo. "auto" means "no override": the
+    #: name/geometry classifiers keep deciding (see core/patch_roles).
+    #: "symmetry" exists because generated meshes USED to display it and
+    #: losing that answer would be a display regression.
+    _ROLE_AUTO_LABEL = "auto"
+    _ROLE_CHOICES = ("inlet", "outlet", "symmetry", "wall")
+
+    def _make_role_combo(self, patch_name: str, inferred: str) -> QComboBox:
+        """The Role cell for *patch_name*, prefilled from the inference."""
+        combo = QComboBox()
+        combo.addItem(self._ROLE_AUTO_LABEL)
+        for role in self._ROLE_CHOICES:
+            combo.addItem(role)
+        override = self._patch_role_overrides.get(patch_name)
+        prefill = override or (
+            inferred if inferred in self._ROLE_CHOICES else self._ROLE_AUTO_LABEL
+        )
+        combo.setProperty("patchName", patch_name)
+        combo.blockSignals(True)
+        combo.setCurrentText(prefill)
+        combo.blockSignals(False)
+        # Closure (not sender()): the slot knows its patch without asking
+        # the Qt runtime, so it stays testable on bare instances too.
+        combo.currentTextChanged.connect(
+            lambda text, _name=patch_name: self._on_patch_role_combo_changed(
+                _name, text
+            )
+        )
+        return combo
+
+    def _on_patch_role_combo_changed(self, patch_name: str, text: str) -> None:
+        """Store/emit the Role override ("" = back to auto)."""
+        role = "" if text == self._ROLE_AUTO_LABEL else text
+        if role:
+            self._patch_role_overrides[patch_name] = role
+        else:
+            self._patch_role_overrides.pop(patch_name, None)
+        self.patch_role_changed.emit(patch_name, role)
+
+    def patch_role_override(self, patch_name: str) -> str | None:
+        """The user-declared role for *patch_name* or None (auto)."""
+        return self._patch_role_overrides.get(patch_name)
 
     def _clear_patch_panel(self):
         self._patch_table.blockSignals(True)
@@ -1243,9 +1324,10 @@ class ViewerWidget(QWidget):
         if 0 <= row < len(self._patch_names):
             self.highlight_patch(self._patch_names[row])
 
-    # Names may not contain the OpenFOAM structural characters, quotes, or
-    # whitespace (same rule the 3D-click rename has always enforced).
-    _INVALID_PATCH_NAME_RE = re.compile(r'[;{}"/\s]')
+    # Name legality lives in the module-level _INVALID_PATCH_NAME_RE /
+    # sanitize_patch_name: a name carrying an illegal character is
+    # SANITIZED and committed, not rejected (a silent revert read as
+    # "the rename does nothing" — user report 2026-11-17).
 
     def _restore_patch_name(self, row: int, name: str | None = None) -> None:
         """Put *name* (or the tracked original) back into a Name cell."""
@@ -1271,11 +1353,15 @@ class ViewerWidget(QWidget):
             self._restore_patch_name(row, original_name)
 
     def _on_patch_item_changed(self, item: QTableWidgetItem) -> None:
-        """Commit a patch rename or revert an illegal edit.
+        """Commit a patch rename (sanitized) or revert an empty edit.
 
         CAD patches emit ``patch_renamed`` (mesh metadata only). Generated-mesh
         patches emit ``mesh_patch_renamed``; the main window writes the new name
         to constant/polyMesh/boundary (backing it up first) and refreshes.
+
+        An illegal name is SANITIZED (``;{}"``/whitespace -> ``_``) and a
+        collision gets a numbered suffix (``inlet`` -> ``inlet_2``): the edit
+        always lands somewhere the user can see, instead of snapping back.
         """
         if self._patch_rename_guard or item.column() != 0:
             return
@@ -1283,29 +1369,45 @@ class ViewerWidget(QWidget):
         if not (0 <= row < len(self._patch_names)):
             return
         old_name = self._patch_names[row]
-        new_name = item.text().strip()
+        new_name = sanitize_patch_name(item.text())
         if not new_name:
             self._restore_patch_name(row, old_name)
-            logger.warning("Patch name cannot be empty or whitespace.")
-            return
-        if self._INVALID_PATCH_NAME_RE.search(new_name):
-            self._restore_patch_name(row, old_name)
             logger.warning(
-                "Invalid patch name '%s': must not contain ; { } \" / or "
-                "whitespace.", new_name,
+                "Patch name rejected: '%s' contains no legal character "
+                "(; { } \" / and whitespace are not allowed).", item.text(),
             )
             return
         if new_name == old_name:
+            # Same name after sanitizing: normalize the cell text (e.g. a
+            # trailing space the user left behind) without re-emitting.
+            if item.text() != new_name:
+                self._restore_patch_name(row, new_name)
             return
-        if new_name in self._patch_names:
-            self._restore_patch_name(row, old_name)
-            logger.warning("Patch name '%s' is already in use.", new_name)
-            return
-        self._patch_names[row] = new_name
+        final = self.unique_patch_name(new_name)
+        if final != item.text():
+            self._restore_patch_name(row, final)
+        self._patch_names[row] = final
+        # A declared role follows its patch across the rename.
+        if old_name in self._patch_role_overrides:
+            self._patch_role_overrides[final] = (
+                self._patch_role_overrides.pop(old_name)
+            )
+            combo = self._patch_table.cellWidget(row, 2)
+            if combo is not None:
+                combo.setProperty("patchName", final)
         if self.is_showing_cad():
-            self.patch_renamed.emit(old_name, new_name)
+            self.patch_renamed.emit(old_name, final)
         else:
-            self.mesh_patch_renamed.emit(old_name, new_name)
+            self.mesh_patch_renamed.emit(old_name, final)
+
+    def unique_patch_name(self, base: str) -> str:
+        """First unused name derived from *base* (base, base_2, base_3...)."""
+        if base not in self._patch_names:
+            return base
+        i = 2
+        while f"{base}_{i}" in self._patch_names:
+            i += 1
+        return f"{base}_{i}"
 
     def apply_case_patch_rename(self, old_name: str, new_name: str) -> None:
         """Remap an already-committed generated-mesh rename (table already has
@@ -1315,6 +1417,10 @@ class ViewerWidget(QWidget):
         role = self._patch_roles.pop(old_name, None)
         if role is not None:
             self._patch_roles[new_name] = role
+        if old_name in self._patch_role_overrides:
+            self._patch_role_overrides[new_name] = (
+                self._patch_role_overrides.pop(old_name)
+            )
 
     def _on_patch_item_double_clicked(self, item: QTableWidgetItem) -> None:
         """No-op: every Name cell is editable (CAD metadata or case boundary)."""
@@ -1546,6 +1652,42 @@ class ViewerWidget(QWidget):
         # Repaint without the highlight. For a case mesh this re-renders the
         # cached patches / VTU (no foamToVTK re-run).
         self._redisplay_current()
+
+    def _table_is_editing(self) -> bool:
+        """True while a patch-panel cell editor is open (its ESC cancels it)."""
+        try:
+            state = self._patch_table.state()
+            # PySide6 exposes Qt enums as Python enums: the classic
+            # ``state() & flag`` raises TypeError here (measured), so
+            # compare the raw values. getattr covers plain-int states
+            # (older bindings) and bare test doubles.
+            value = int(getattr(state, "value", state))
+            return bool(
+                value & int(QAbstractItemView.EditingState.value)
+            )
+        except Exception:  # noqa: BLE001 - editing probe is best effort
+            return False
+
+    def eventFilter(self, obj, event) -> bool:
+        """ESC clears the patch selection (user report 2026-11-17).
+
+        The filter is installed on the viewer, so it only sees events from
+        the viewer subtree (plotter, patch panel) — modal dialogs and combo
+        popups are separate top-level windows and keep their own ESC. While
+        a table cell editor is open, ESC belongs to the editor (cancel the
+        rename), so it is not consumed here.
+        """
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() == Qt.Key_Escape
+            and getattr(self, "_selected_patch_name", None)
+            and not self._table_is_editing()
+        ):
+            self._clear_patch_selection()
+            return True
+        # QWidget.eventFilter returns False; calling super() here would
+        # need the C++ side of the instance (bare test instances lack it).
+        return False
 
     def _current_mode(self) -> str:
         idx = self._view_selector.currentIndex()
