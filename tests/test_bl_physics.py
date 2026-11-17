@@ -89,3 +89,25 @@ def test_faster_flow_needs_a_thinner_first_layer():
     slow = eng.calculate_from_flow(FlowConditions.from_velocity(1.0, 1.0, NU_AIR))
     fast = eng.calculate_from_flow(FlowConditions.from_velocity(50.0, 1.0, NU_AIR))
     assert fast.first_layer_height < slow.first_layer_height
+
+
+# --- 2026-11-16: the first layer must FIT THE MESH, not just the part ------- #
+
+def test_first_layer_clamped_to_the_mesh_cell_size():
+    """Measured on the user's venturi (2026-11-16): a y+-exact first layer
+    of 0.457 m on a 3 m part at ~20 mm/s air is useless - a prism thicker
+    than the biggest cell cannot exist. With max_cell given, the clamp
+    tightens to max_cell/3 and the warning says WHY."""
+    eng = BLEngine()
+    flow = FlowConditions.from_velocity(
+        0.02, 3.0, 1.5e-5, turbulence_model="kEpsilon",  # y+ ~30, slow air
+    )
+    loose = eng.calculate_from_flow(flow)
+    assert loose.first_layer_height > 0.05  # the y+-exact value is huge
+
+    fitted = eng.calculate_from_flow(flow, max_cell=0.035)
+    assert fitted.first_layer_height == pytest.approx(0.035 / 3.0)
+    # Never LOOSER than the ref-length cap: the mesh bound only tightens.
+    tighter = eng.calculate_from_flow(flow, max_cell=0.0003)
+    assert tighter.first_layer_height == pytest.approx(0.0003 / 3.0)
+    assert tighter.first_layer_height < flow.reference_length * 0.1

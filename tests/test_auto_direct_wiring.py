@@ -368,3 +368,36 @@ def test_demo_action_is_wired():
     ):
         assert token in action_src, token
     assert "venturi" not in action_src.lower()
+
+
+# --- 2026-11-16 refinement batch: the everyday-usage details ----------------- #
+
+def test_geometry_load_refuses_while_a_run_is_active():
+    """Loading a different geometry during a meshing run would overlap
+    processes and leave the log describing a mesh that is not on screen:
+    refused loudly instead."""
+    src = _src("_load_geometry_from_path")
+    assert 'self._tasks.is_running(t)' in src
+    for task in ("gmsh_volume", "gmsh_conv", "polydual", "checkmesh"):
+        assert f'"{task}"' in src, task
+    assert "Run in progress" in src
+
+
+def test_reset_cancels_running_tasks():
+    """Reset must KILL the running meshing tasks: a dual left alive kept
+    logging its heartbeat after the state was cleared ('dead processes
+    keep talking', user report 2026-11-16)."""
+    src = _src("_on_reset")
+    assert "self._tasks.cancel_all" in src
+    assert "Cancelling running tasks" in src
+    assert "self._kill_wsl_processes()" in src
+
+
+def test_stl_header_name_normalized_to_the_file_stem():
+    """An unnamed STL header becomes a patch literally named 'ASCII' -
+    meaningless AND it disabled the auto patch split. Normalized to the
+    file stem, declared in the log."""
+    src = _src("_load_stl_async")
+    assert '"ascii"' in src.lower()
+    assert "name_normalized_from" in src
+    assert 'Path(path).stem' in src

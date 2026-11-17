@@ -4734,31 +4734,56 @@ class GmshVolumeWorker(QObject):
 
 
 class FtetWildLineAnnotator:
-    """Explains the tet engine's internal retry lines once, in the live log.
+    """Explains and coalesces the tet engine's internal retry lines.
 
     pytetwild prints raw ``FAIL subdivide_tets`` lines while it works (its
     own sliver-tet subdivision, retried internally); measured on real runs
-    they ALSO appear in successful runs, so a raw forward reads as an error
-    to the user. The first occurrence triggers exactly ONE explanatory note;
-    later occurrences pass through untouched — full fidelity, no spam.
+    they ALSO appear in successful runs — sometimes dozens per run — so a
+    raw forward reads as an error AND floods the log. The first occurrence
+    triggers exactly ONE explanatory note; later occurrences are coalesced
+    into a periodic count (every ``summary_every`` repeats), the same
+    medicine as the GMSH partition-loop breaker. Other lines pass through
+    untouched — full fidelity everywhere else.
     """
 
-    _RETRY_RE = re.compile(r"^FAIL\s+subdivide_tets\b", re.IGNORECASE)
+    _RETRY_RE = re.compile(r"^(?:SEMI-)?FAIL\s+subdivide_tets\b", re.IGNORECASE)
     NOTE = (
         "[tet:ftetwild] note: 'FAIL subdivide_tets' lines are the tet "
         "engine's internal retries (a sliver subdivision it redoes); they "
-        "also appear in successful runs - they are not an error"
+        "also appear in successful runs - they are not an error. Further "
+        "repeats are coalesced into a count."
     )
 
-    def __init__(self) -> None:
+    def __init__(self, summary_every: int = 20) -> None:
+        self._summary_every = int(summary_every)
+        self._repeats = 0
         self.notified = False
 
     def feed(self, line: str) -> str | None:
-        """Return the explanatory note exactly once, else None."""
-        if self.notified or not self._RETRY_RE.search(line or ""):
+        """Return the note / periodic summary, or None to suppress.
+
+        Non-retry lines return ``None`` too (the caller forwards them
+        unchanged); retry lines return the note once, then a summary every
+        ``summary_every`` repeats, and are suppressed in between.
+        """
+        if not self._RETRY_RE.search(line or ""):
             return None
-        self.notified = True
-        return self.NOTE
+        self._repeats += 1
+        if not self.notified:
+            self.notified = True
+            return self.NOTE
+        if self._repeats % self._summary_every == 0:
+            return (
+                f"[tet:ftetwild] ... {self._repeats} internal "
+                "'subdivide_tets' retries so far (normal, engine still "
+                "working) ..."
+            )
+        return None
+
+
+    def is_retry(self, line: str) -> bool:
+        """True when the line is an engine internal retry (coalesced)."""
+        return bool(self._RETRY_RE.search(line or ""))
 
 
 class FtetWildVolumeWorker(QObject):
@@ -4911,10 +4936,19 @@ class FtetWildVolumeWorker(QObject):
                 watchdog.progress(
                     detector.fraction, detector.evidence(),
                 )
-            self.log_line.emit(f"[tet:ftetwild] {line}")
+            # The engine's internal retry lines are explained once and then
+            # coalesced (they can number dozens per run); everything else is
+            # forwarded with ONE tag (the wrapper already tags some of its
+            # own lines - strip before re-tagging, never double).
             note = annotator.feed(line)
             if note is not None:
                 self.log_line.emit(note)
+            elif not annotator.is_retry(line):
+                out = line
+                _tag = "[tet:ftetwild] "
+                if out.startswith(_tag):
+                    out = out[len(_tag):]
+                self.log_line.emit(f"[tet:ftetwild] {out}")
 
         try:
             returncode, stdout_lines, stderr_lines, timed_out = _stream_subprocess(

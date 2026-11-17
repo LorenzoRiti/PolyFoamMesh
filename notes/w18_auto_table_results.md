@@ -28,6 +28,30 @@ in tabella — BL è stage separato, coperto da W13/lane).
 | gmshprova.stp (reale, 2026-11-16) | tet -> dual -> **191.527 celle poly, 0 tet residui, chiusura 1.95e-16** -> checkMesh Mesh OK | challenger ftet: tet ok, dual -> checkMesh **Failed** (NO 69.3, skew 6.59) — scartato keep-best | **AUTO VALID POLY_NO_BL in 57 min** (niente BL: h1 default dello strumento, dichiarato; in GUI vale l'h1 utente) | AUTO VINCE |
 | venturi_dn200.stp (reale, 2026-11-16) | superficie GMSH **macina una singola faccia in MeshAdapt >2h** (bloccata al 10% della superficie 49, nessun output) | non raggiunto nel mirror | mirror inconclusivo (nessun budget auto nell'E2E); **in GUI il budget 120 s protegge l'utente** -> fTet su patch | n/a (mirror) |
 
+## Universal sweep (2026-11-17, catena su HEAD col fix poly-gate)
+
+10 geometrie in sequenza (cap 40 min/caso, mirror E2E). **7/10 AUTO
+VALID, tutte con 0 tets residui** — il fix poly-gate regge su tutta
+la breadth:
+
+| caso | esito | tempo | note |
+|---|---|---|---|
+| cylinder | AUTO VALID POLY_BL | 29 s | gmsh al primo anello |
+| cube_duct | AUTO VALID POLY_BL | 11 min | keep-best: ftet sfida e vince |
+| multi_inlet | n/a (mirror) | cap | grind silenzioso GMSH >4h su discrete surface; GUI protetta da budget 120 s |
+| groove1 | AUTO VALID POLY_BL | 2,9 min | keep-best ftet |
+| slot1 | AUTO VALID POLY_NO_BL | 6,6 min | WEAK, ftet; BL 0 prismi (h1 tool default) |
+| concave_bracket | AUTO VALID POLY_BL | 3,8 min | keep-best gmsh |
+| dirty_cad | AUTO VALID POLY_BL | 25 s | ftet al primo anello (input open) |
+| venturi | AUTO VALID POLY_BL | 11,8 min | **gmsh Failed -> fallback ftet Mesh OK** (storico W18: tutti Failed) |
+| final_step (utente) | n/a (cap) | 40 min | fTet tet a medium >40 min; GUI ceiling 4 h |
+| prendiquesta (utente) | n/a (cap) | 40 min | Delaunay 3D >40 min; GUI ceiling 4 h |
+
+Verdetto breadth: **la catena auto ora produce una mesh poly valida su
+7/7 casi completabili, con fallback dimostrato in diretta (venturi) e
+keep-best reale (cube_duct, groove1)**. I 3 cap sono limiti del
+mirror (nessun budget/ceiling), non del prodotto.
+
 Note misurate:
 - Dirty_cad/gmsh: il driver ha registrato la mesh di fallback come
   colonna gmsh (effective_source=ftetwild nei tet.stats:

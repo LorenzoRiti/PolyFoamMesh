@@ -155,24 +155,32 @@ def test_fetwild_worker_exposes_progress_and_heartbeat_signals(monkeypatch):
     assert worker.VOLUME_TIMEOUT_S >= worker.STALL_S
 
 
-def test_fetwild_line_annotator_notes_once():
+def test_fetwild_line_annotator_notes_once_and_coalesces():
     import polyfoammesh.core.openfoam_runner as ofr
 
     a = ofr.FtetWildLineAnnotator()
     assert a.feed("Info: starting") is None
+    assert a.is_retry("Info: starting") is False
     note = a.feed("FAIL subdivide_tets")
     assert note is not None
     assert "internal retries" in note
     assert "not an error" in note
-    # Fires once: later occurrences pass through without another note.
+    assert a.is_retry("FAIL subdivide_tets") is True
+    assert a.is_retry("SEMI-FAIL subdivide_tets") is True
+    # Repeats are SUPPRESSED until the summary milestone.
+    for i in range(2, 20):
+        assert a.feed("FAIL subdivide_tets") is None, i
+    summary = a.feed("FAIL subdivide_tets")  # the 20th repeat
+    assert summary is not None
+    assert "20 internal" in summary
     assert a.feed("FAIL subdivide_tets") is None
-    assert a.feed("FAIL subdivide_tets 2") is None
     assert a.feed("") is None
     assert a.notified is True
 
 
-def test_fetwild_worker_logs_retry_note_once(monkeypatch):
-    """One FAIL line -> exactly ONE explanatory note in the live log."""
+def test_fetwild_worker_coalesces_retries_and_single_tag(monkeypatch):
+    """One FAIL line -> note; repeats coalesced; wrapper-tagged lines keep
+    exactly ONE [tet:ftetwild] prefix."""
     import polyfoammesh.core.openfoam_runner as ofr
 
     def fake_stream(cmd, run_cwd, timeout_s, on_line, proc_holder=None,
@@ -180,7 +188,7 @@ def test_fetwild_worker_logs_retry_note_once(monkeypatch):
         on_line("starting fTetWild")
         on_line("FAIL subdivide_tets")
         on_line("FAIL subdivide_tets")
-        on_line("FAIL subdivide_tets 2")
+        on_line("[tet:ftetwild] bounded decimation: 13,022 -> 6,834 triangles")
         return 0, ['{"success": true}'], [], False
 
     monkeypatch.setattr(ofr, "_stream_subprocess", fake_stream)
@@ -194,7 +202,9 @@ def test_fetwild_worker_logs_retry_note_once(monkeypatch):
     assert finished
     notes = [l for l in logs if "internal retries" in l]
     assert len(notes) == 1, notes
-    # The raw lines themselves are still forwarded (full fidelity): the
-    # note line contains the phrase too, so count only tagged raw lines.
+    # The first retry is the note; the REPEAT is suppressed (coalesced).
     raw = [l for l in logs if l.startswith("[tet:ftetwild] FAIL")]
-    assert len(raw) == 3, raw
+    assert len(raw) == 0, raw
+    # Wrapper-tagged lines carry exactly one prefix.
+    tagged = [l for l in logs if "bounded decimation" in l]
+    assert tagged == ["[tet:ftetwild] bounded decimation: 13,022 -> 6,834 triangles"]

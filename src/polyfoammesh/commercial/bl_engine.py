@@ -128,7 +128,7 @@ class BLEngine:
 
     def calculate_from_flow(
         self, flow: FlowConditions, growth_rate: float = 1.2,
-        flow_type: str = "flat_plate",
+        flow_type: str = "flat_plate", max_cell: float | None = None,
     ) -> BLParameters:
         """Calculate BL parameters from flow conditions and target y+.
 
@@ -188,10 +188,19 @@ class BLEngine:
             logger.warning("first_layer=%.2e too small, clamped to 1e-9", first_layer)
             first_layer = 1e-9
         max_allowed_fl = flow.reference_length * 0.1
+        clamp_reason = "10% of ref_length"
+        # Mesh-fit sanity (measured on the user's venturi, 2026-11-16: a
+        # y+-exact first layer of 0.457 m on a 3 m part with 20 mm/s air is
+        # useless — a prism thicker than the biggest cell cannot exist).
+        # The stack spans ~3 near-wall cells (repo measure), so the first
+        # layer alone must stay within a third of the max cell.
+        if max_cell and max_cell > 0 and max_cell / 3.0 < max_allowed_fl:
+            max_allowed_fl = max_cell / 3.0
+            clamp_reason = "mesh fit (max_cell/3)"
         if first_layer > max_allowed_fl:
             logger.warning(
-                "first_layer=%.6f exceeds 10%% of ref_length (%.4f), clamped to %.6f",
-                first_layer, flow.reference_length, max_allowed_fl,
+                "first_layer=%.6f exceeds %s (%.4f), clamped to %.6f",
+                first_layer, clamp_reason, max_allowed_fl, max_allowed_fl,
             )
             first_layer = max_allowed_fl
 

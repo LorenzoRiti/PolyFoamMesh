@@ -1056,6 +1056,25 @@ class MainWindow(QMainWindow):
         def work(worker):
             worker.report_progress("Loading STL...", 30.0)
             meshes = list(load_geometry(path))
+            # An unnamed STL header ("solid ASCII") becomes a patch literally
+            # named "ASCII" - meaningless as a patch name AND it disabled the
+            # auto patch split (which keys on the file stem), so a single-solid
+            # STL kept ONE blind "ASCII" patch and the BL had nothing to key
+            # on (user case 2026-11-16). Normalize to the file stem and
+            # declare the rename.
+            _stem = Path(path).stem
+            _renamed = []
+            for _m in meshes:
+                _old = str(_m.metadata.get("name", "") or "")
+                if _old.strip().lower() in ("ascii", "solid", "unnamed", ""):
+                    _renamed.append(_old or "<empty>")
+                    _m.metadata["name"] = _stem
+                    _m.metadata["name_normalized_from"] = _old or "<empty>"
+            if _renamed:
+                worker.report_progress(
+                    f"STL patch name normalized: {_renamed[0]!r} -> "
+                    f"{_stem!r}", 40.0,
+                )
             # STL has no metadata: auto-detect inlet/outlet/wall from pure
             # geometry (feature-edge components + axis caps) when the file
             # loaded as a single patch. Opt-out: CFMESH_STL_AUTO_PATCHES=0.
@@ -1073,6 +1092,17 @@ class MainWindow(QMainWindow):
 
         def on_done(_name: str, meshes):
             self._unscaled_meshes = meshes
+            renamed = [
+                m for m in meshes if m.metadata.get("name_normalized_from")
+            ]
+            if renamed:
+                _m0 = renamed[0]
+                self._log.append_log(
+                    f"{Tag.GEOM} STL patch name normalized: "
+                    f"{_m0.metadata['name_normalized_from']!r} -> "
+                    f"{_m0.metadata['name']!r} (the STL header word is not "
+                    "a patch name)."
+                )
             self._apply_loaded_meshes("STL")
             split = [m for m in meshes if m.metadata.get("auto_split")]
             if split:
@@ -1890,6 +1920,25 @@ class MainWindow(QMainWindow):
         if not _os.path.isfile(path):
             self._log.append_log(f"{Tag.ERROR} Not a file: {path}")
             return
+        # Loading a different geometry while a meshing run is active would
+        # overlap processes and leave the log talking about a mesh that no
+        # longer matches what is on screen (user refinement report,
+        # 2026-11-16). Refuse loudly instead of silently mixing runs.
+        _busy = [
+            t for t in ("gmsh_volume", "gmsh_conv", "polydual", "checkmesh")
+            if self._tasks.is_running(t)
+        ]
+        if _busy:
+            self._log.append_log(
+                f"{Tag.WARN} A meshing run is active ({', '.join(_busy)}) - "
+                "cancel it before loading a different geometry."
+            )
+            QMessageBox.warning(
+                self, "Run in progress",
+                "A meshing run is active. Cancel it first (the Cancel "
+                "button) before loading a different geometry.",
+            )
+            return
         size = _os.path.getsize(path)
         if size > MAX_STEP_FILE_BYTES:
             mb = size // 1024 // 1024
@@ -2291,6 +2340,17 @@ class MainWindow(QMainWindow):
 
     def _on_reset(self):
         self._run_id += 1
+        # Reset must also KILL the running meshing tasks: a dual/worker left
+        # alive kept logging its heartbeat after the state was cleared (the
+        # user-visible "dead processes keep talking" report, 2026-11-16)
+        # and kept burning CPU on a geometry that no longer exists.
+        running = self._tasks.running()
+        if running:
+            self._log.append_log(
+                f"{Tag.RESET} Cancelling running tasks: {', '.join(running)}"
+            )
+            self._tasks.cancel_all(reason="State reset")
+            self._kill_wsl_processes()
         if self._runner.is_running:
             # Non-blocking stop (terminate() can block the UI for 30 s).
             self._runner.request_stop()
@@ -5796,7 +5856,10 @@ class MainWindow(QMainWindow):
         self._polydual_worker = w
         self._polydual_start_time = time.monotonic()
         heartbeat = QTimer(self)
-        heartbeat.setInterval(8000)
+        # 30 s cadence, matching the run plan's "still running every 30-60s"
+        # promise: an 8 s tick flooded the log during long conversions
+        # (user refinement report, 2026-11-16).
+        heartbeat.setInterval(30000)
         heartbeat.timeout.connect(self._on_polydual_heartbeat)
         heartbeat.start()
         self._polydual_heartbeat = heartbeat

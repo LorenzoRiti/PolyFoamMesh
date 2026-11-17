@@ -423,6 +423,10 @@ class TaskManager(QObject):
         if task is None or task["state"] != "running":
             return False
         task["token"].cancel()
+        # From this moment the task's live output is dropped by the relay
+        # guards: the user asked for silence after Cancel/Reset, not for
+        # the dying process's last words (2026-11-16 refinement).
+        task["cancel_requested"] = True
         self._invoke_cancel_hook(task)
         # If the worker cannot stop itself (e.g. stuck in a blocking call),
         # tear it down after the grace period.
@@ -506,17 +510,29 @@ class TaskManager(QObject):
     @Slot(str, float)
     def _on_progress(self, stage: str, pct: float) -> None:
         name = self._name_of()
-        self._touch(name)
         task = self._tasks.get(name)
-        if task is not None and task["on_progress"]:
+        if (
+            task is None or task["terminal"]
+            or task.get("cancel_requested")
+            or task.get("relay") is not self.sender()
+        ):
+            return  # stale output from a stopped/superseded run
+        self._touch(name)
+        if task["on_progress"]:
             task["on_progress"](name, stage, pct)
 
     @Slot(str)
     def _on_log_line(self, msg: str) -> None:
         name = self._name_of()
-        self._touch(name)
         task = self._tasks.get(name)
-        if task is not None and task["on_log"]:
+        if (
+            task is None or task["terminal"]
+            or task.get("cancel_requested")
+            or task.get("relay") is not self.sender()
+        ):
+            return  # stale output from a stopped/superseded run
+        self._touch(name)
+        if task["on_log"]:
             task["on_log"](name, msg)
 
     @Slot()
@@ -526,9 +542,15 @@ class TaskManager(QObject):
     @Slot(object)
     def _on_notify(self, payload: object) -> None:
         name = self._name_of()
-        self._touch(name)
         task = self._tasks.get(name)
-        if task is not None and task["on_notify"]:
+        if (
+            task is None or task["terminal"]
+            or task.get("cancel_requested")
+            or task.get("relay") is not self.sender()
+        ):
+            return  # stale output from a stopped/superseded run
+        self._touch(name)
+        if task["on_notify"]:
             task["on_notify"](name, payload)
 
     @Slot(object)
@@ -548,6 +570,12 @@ class TaskManager(QObject):
         task = self._tasks.get(name)
         if task is None or task["terminal"]:
             return
+        # A worker that finishes naturally AFTER a Cancel reports
+        # CANCELLED, never finished: the run was stopped on purpose and a
+        # success report would lie about what the user has (2026-11-16
+        # refinement).
+        if task.get("cancel_requested") and kind == "finished":
+            kind = "cancelled"
         task["terminal"] = True
         task["state"] = "done"
         task["last_seen"] = time.monotonic()

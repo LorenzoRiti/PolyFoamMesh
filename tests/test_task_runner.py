@@ -302,3 +302,87 @@ def test_duck_typed_worker_cancel_method_used_as_hook(qapp):
     assert _wait_until(lambda: hook_called)
     assert _wait_until(lambda: cancelled)
     mgr.shutdown()
+
+
+# --- 2026-11-16: stale output from a stopped/superseded run is dropped ------- #
+
+class _EchoWorker(QObject):
+    """A worker that keeps emitting log lines until told to stop."""
+    log_line = Signal(str)
+    progress = Signal(str, float)
+    finished = Signal(object)
+
+    def __init__(self):
+        super().__init__()
+        self._go = True
+
+    def stop_soon(self):
+        self._go = False
+
+    def run(self):
+        import time as _t
+        self.log_line.emit("live line")
+        self.progress.emit("stage", 10.0)
+        self.finished.emit({"ok": True})
+        # Keep emitting AFTER the terminal event: queued signals that used
+        # to flood the log after Cancel/Reset ("dead processes keep
+        # talking", user report 2026-11-16).
+        for _ in range(5):
+            if not self._go:
+                break
+            _t.sleep(0.05)
+            self.log_line.emit("STALE line")
+            self.progress.emit("stage", 50.0)
+
+
+def test_log_and_progress_dropped_after_terminal(qapp):
+    mgr = TaskManager()
+    logs: list[str] = []
+    progress: list[tuple] = []
+    done: list = []
+
+    worker = _EchoWorker()
+    ok = mgr.submit(
+        "t_stale", worker,
+        on_finished=lambda name, result: done.append(result),
+        on_log=lambda name, msg: logs.append(msg),
+        on_progress=lambda name, stage, pct: progress.append((stage, pct)),
+        cancel_hook=worker.stop_soon,
+    )
+    assert ok
+    assert _wait_until(lambda: bool(done))
+    _pump(300)
+
+    # The live line landed; the post-terminal STALE ones did not.
+    assert "live line" in logs
+    assert not any("STALE" in m for m in logs), logs
+    assert ("stage", 10.0) in progress
+    assert not any(pct == 50.0 for _s, pct in progress), progress
+
+
+def test_superseded_relay_lines_are_dropped(qapp):
+    """After Cancel the dying worker's lines are dropped even while it
+    ignores the token and keeps emitting until the force-kill."""
+    mgr = TaskManager()
+    logs: list[str] = []
+
+    class _DeafWorker(QObject):
+        """Ignores the cancellation token (like a native library)."""
+        log_line = Signal(str)
+        finished = Signal(object)
+
+        def run(self):
+            import time as _t
+            _t.sleep(0.5)  # the user cancels during this window
+            self.log_line.emit("old-deaf")
+            self.finished.emit({"ok": True})
+
+    w1 = _DeafWorker()
+    mgr.submit("t_deaf", w1, on_log=lambda n, m: logs.append(m),
+               on_finished=lambda n, r: logs.append("FINISHED"))
+    _pump(50)  # w1 started, inside its sleep
+    assert mgr.cancel("t_deaf", reason="superseded")
+    _pump(700)  # w1 wakes, emits, finishes — all after the Cancel
+
+    assert not any("old-deaf" in m for m in logs), logs
+    assert not any("FINISHED" in m for m in logs), logs
