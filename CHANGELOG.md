@@ -7,25 +7,6 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
-### Fixed
-- **Rinomina patch che "non le cambia veramente"**: un nome con spazi o
-  caratteri `;{}"/` veniva rifiutato in silenzio.  Ora il nome viene
-  sanificato (spazi/illegali → `_`, collisione → suffisso numerato) e
-  commesso sia dalla tabella sia dal click 3D.
-- **Impallamento sul rinomina**: il rinomina rilanciava il ricalcolo
-  completo delle taglie per-patch (numpy su GUI thread).  Ora solo le
-  cache vengono svuotate e ricalcolate al primo uso.
-- **Deselezione impossibile**: ESC cancella la selezione della patch
-  (il toggle con re-click esisteva già dal 2.5.0).
-
-### Added
-- **Colonna Role nel pannello patch** (al posto di "Type"): combo
-  auto/inlet/outlet/symmetry/wall precompilata con il ruolo inferito.
-  La scelta dell'utente guida la selezione delle superfici wall per lo
-  strato limite e i tipi di BC scritti in `setup_case` (parametro
-  `patch_roles` esistente).  Gli override seguono i rinomina e si
-  azzerano con Reset.
-
 ## [2.5.0] - 2026-11-17
 
 Release centrata su robustezza e velocità della catena Auto
@@ -45,6 +26,12 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   resta e non c'è nessun comando in GUI.
 
 ### Added
+- **Colonna Role nel pannello patch** (al posto di "Type"): combo
+  auto/inlet/outlet/symmetry/wall precompilata con il ruolo inferito.
+  La scelta dell'utente guida la selezione delle superfici wall per lo
+  strato limite e i tipi di BC scritti in `setup_case` (parametro
+  `patch_roles` esistente).  Gli override seguono i rinomina e si
+  azzerano con Reset.
 - **Galleria del vento virtuale** (Tools > Create Wind Tunnel around Object...):
   il CAD caricato diventa l'oggetto e il fluido è la scatola attorno.  Criteri
   modificabili: a monte 3 L, a valle 8 L, ai lati 4 D, sopra 5 H, ostruzione
@@ -125,6 +112,15 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   bordi aperti, non ogni triangolo.
 
 ### Fixed
+- **Rinomina patch che "non le cambia veramente"**: un nome con spazi o
+  caratteri `;{}"/` veniva rifiutato in silenzio.  Ora il nome viene
+  sanificato (spazi/illegali → `_`, collisione → suffisso numerato) e
+  commesso sia dalla tabella sia dal click 3D.
+- **Impallamento sul rinomina**: il rinomina rilanciava il ricalcolo
+  completo delle taglie per-patch (numpy su GUI thread).  Ora solo le
+  cache vengono svuotate e ricalcolate al primo uso.
+- **Deselezione impossibile**: ESC cancella la selezione della patch
+  (il toggle con re-click esisteva già).
 - **fTetWild su input STL ignorava i box di raffinamento**: ora entrano nel campo di
   taglie del volume, dopo il tetto di crescita.  Versione della cache mesh 3 (le
   mesh fatte con le zone ignorate non vengono riusate).
@@ -166,6 +162,14 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
 - Il tempo previsto all'avvio è un intervallo (0,7x-1,9x della stima), non una promessa.
 - Il box di raffinamento nel percorso fTetWild è applicato con una griglia grossolana
   (un punto per cella massima): il budget di celle della galleria è approssimato.
+- **Divergenza nel solver su geometrie con molti gap stretti** (misurata su un tubo con 89
+  facce e più di 50 gap, percorso GMSH diretto, risultato importato in Baram): il dual
+  poliedrico crea facce orientate male (22 facce, skew 19) e il solver diverge anche se
+  le tet grezze sono pulite; togliere lo strato limite non basta.  Una mesh ottenuta con
+  tet GMSH alla taglia grezza (senza la correzione globale x1,5) e senza il dual ha dato
+  `Mesh OK` (skew 1,1), a costo di 8 milioni di tet e circa 18 minuti.  Non è ancora
+  una policy del prodotto.  Regola pratica: `Mesh OK` di checkMesh non garantisce che il
+  solver giri; controllare sempre le facce orientate male.
 - Da verificare dal vivo nella GUI: rifare più mesh di seguito.  L'output obsoleto dopo
   Cancel/Reset è stato corretto, ma non è stato provato su una sessione reale.
 
