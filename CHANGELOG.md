@@ -66,6 +66,15 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   `FAIL subdivide_tets` di fTetWild.
 
 ### Changed (velocità)
+- **Campo di taglie adattivo come reticolo, non come funzione Python** (modalità adattiva
+  della GUI, ingressi CAD): GMSH chiamava una funzione Python 7 milioni di volte su un tubo
+  semplice da 2 m (136 s dentro il callback su 109 s di mesh).  Ora il campo si precalcola con
+  numpy e GMSH lo legge in C++ (campo `Structured`, in combinazione Max(Min(base, reticolo),
+  soglia parete) uguale alla semantica precedente).  Misurato: tubo 2 m 109 -> 22 s con la
+  stessa mesh; `lam.stp` 134 -> 22,5 s (8 run su 8); mini_valve 65 -> 6 s (-24 % di tet).
+  Solo per ingressi CAD (su STL GMSH va in segfault), 1D/2D a thread singolo con il reticolo
+  (con più thread crollava una run su tre), mai in modalità robusta; se GMSH cade, la catena
+  normale -> robusta -> manuale riparte senza reticolo.  `POLYFOAMMESH_SIZE_LATTICE=0` lo spegne.
 - **fTetWild: campo di taglie adattivo con tetto di crescita** (causa principale della
   lentezza in GUI): poteva gonfiare la mesh di decine di volte.  Ora la crescita è
   limitata a ~5x la mesh uniforme, con i rapporti tra zone fini e larghe invariati
@@ -112,6 +121,8 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   bordi aperti, non ogni triangolo.
 
 ### Fixed
+- **Log con entità HTML letterali**: le righe senza etichetta ([WARN] ecc.) mostravano
+  `&gt;` e `&#x27;` al posto di `>` e `'`.
 - **Rinomina patch che "non le cambia veramente"**: un nome con spazi o
   caratteri `;{}"/` veniva rifiutato in silenzio.  Ora il nome viene
   sanificato (spazi/illegali → `_`, collisione → suffisso numerato) e

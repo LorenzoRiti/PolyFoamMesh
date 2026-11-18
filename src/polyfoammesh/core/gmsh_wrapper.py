@@ -1107,6 +1107,89 @@ def _sample_passage_thickness_field(
     return pts, target
 
 
+_LATTICE_MAX_POINTS = 6_000_000
+
+
+def _lattice_tmp_path():
+    """Fresh temp file for the size lattice, removed at interpreter exit."""
+    import atexit
+    import tempfile
+
+    fd, name = tempfile.mkstemp(prefix="pfm_size_lattice_", suffix=".txt")
+    os.close(fd)
+    def _cleanup():
+        try:
+            os.remove(name)
+        except OSError:
+            pass    # still open by GMSH at exit, or already gone
+
+    atexit.register(_cleanup)
+    return name
+
+
+def _write_size_lattice(gmsh_mod, tree, sizes, h_min: float, path):
+    """Sample ``sizes[nearest sample]`` on a regular lattice and write it as a
+    GMSH ``Structured`` text field.  Returns None when the lattice would need a
+    spacing coarser than ``h_min`` (too big a domain for the cap)."""
+    import numpy as np
+
+    x0, y0, z0, x1, y1, z1 = gmsh_mod.model.getBoundingBox(-1, -1)
+    lo = np.array([x0, y0, z0], dtype=float)
+    ext = np.maximum(np.array([x1, y1, z1], dtype=float) - lo, 1e-12)
+    pad = 0.5 * float(h_min)
+    lo = lo - pad
+    ext = ext + 2.0 * pad
+    spacing = max(0.75 * float(h_min), (float(np.prod(ext)) / _LATTICE_MAX_POINTS) ** (1.0 / 3.0))
+    if spacing > float(h_min):
+        return None
+    n = np.maximum(np.ceil(ext / spacing).astype(np.int64) + 1, 2)
+    sp = ext / (n - 1)
+    xs = lo[0] + sp[0] * np.arange(n[0])
+    ys = lo[1] + sp[1] * np.arange(n[1])
+    zs = lo[2] + sp[2] * np.arange(n[2])
+    vals = np.empty((int(n[0]), int(n[1]), int(n[2])), dtype=np.float64)
+    yy, zz = np.meshgrid(ys, zs, indexing="ij")
+    plane = np.column_stack([yy.ravel(), zz.ravel()])
+    for i, xv in enumerate(xs):
+        pts = np.column_stack([np.full(len(plane), xv), plane])
+        _d, idx = tree.query(pts, workers=-1)
+        vals[i] = np.asarray(sizes, dtype=np.float64)[idx].reshape(int(n[1]), int(n[2]))
+    with open(path, "w", encoding="ascii") as fh:
+        fh.write(f"{float(lo[0])!r} {float(lo[1])!r} {float(lo[2])!r}\n")
+        fh.write(f"{float(sp[0])!r} {float(sp[1])!r} {float(sp[2])!r}\n")
+        fh.write(f"{int(n[0])} {int(n[1])} {int(n[2])}\n")
+        vals.tofile(fh, sep=" ", format="%.8g")
+        fh.write("\n")
+    return {"n_points": int(vals.size), "spacing": float(spacing)}
+
+
+def _compose_lattice_field(gmsh_mod, lattice_path, bg_pre_floor, wall_floor_field):
+    """Background = Max(Min(base, lattice), wall floor).
+
+    Same result as the old callback (``max(min(lc, T), W)`` with lc already
+    carrying the floor: max(min(max(b, W), T), W) == max(min(b, T), W)), but
+    evaluated by GMSH in C++.  Returns the new background field tag.
+    """
+    fld = gmsh_mod.model.mesh.field
+    f_struct = fld.add("Structured")
+    fld.setString(f_struct, "FileName", str(lattice_path))
+    fld.setNumber(f_struct, "TextFormat", 1)
+    fld.setNumber(f_struct, "SetOutsideValue", 1)
+    fld.setNumber(f_struct, "OutsideValue", 1e22)
+    if bg_pre_floor is not None:
+        base = fld.add("Min")
+        fld.setNumbers(base, "FieldsList", [bg_pre_floor, f_struct])
+    else:
+        base = f_struct
+    if wall_floor_field is not None:
+        final = fld.add("Max")
+        fld.setNumbers(final, "FieldsList", [base, wall_floor_field])
+    else:
+        final = base
+    fld.setAsBackgroundMesh(final)
+    return final
+
+
 def _configure_curvature_size_field(
     gmsh_mod,
     h_min: float,
@@ -1121,6 +1204,7 @@ def _configure_curvature_size_field(
     wall_points=None,
     wall_min_distance: float = 0.0,
     wall_floor: float = 0.0,
+    lattice_path=None,
 ) -> dict:
     """A-priori, geometry-based mesh adaptation: build an explicit local
     Size Field from the CAD model's own discrete curvature (H_MIN/H_MAX/
@@ -1206,6 +1290,34 @@ def _configure_curvature_size_field(
             n_seeded = len(extra_points)
 
     tree = cKDTree(points)
+
+    # Fast path: evaluate the field on a regular lattice here (vectorised) and
+    # hand GMSH a ``Structured`` field to read in C++.  The Python callback
+    # below is called ~7 million times on a plain 2 m tube (136 s of a 109 s
+    # run, measured 2026-11-18): ~95 % of the adaptive-mode meshing time.
+    # The caller composes the lattice with the wall floor exactly as the
+    # callback did (see _compose_lattice_field).  Falls back to the callback
+    # when the lattice would be too coarse or too big.
+    if lattice_path is not None and os.environ.get("POLYFOAMMESH_SIZE_LATTICE", "1") != "0":
+        try:
+            info = _write_size_lattice(
+                gmsh_mod, tree, relaxed, h_min, lattice_path,
+            )
+        except Exception:
+            logger.exception("size lattice failed; using the callback")
+            info = None
+        if info is not None:
+            logger.info(
+                "Curvature size field as lattice: %d samples, %s points, "
+                "spacing %.5g (h_min %.5g)",
+                len(points), f"{info['n_points']:,}", info["spacing"], h_min,
+            )
+            return {
+                "n_samples": len(points), "n_seeded": n_seeded,
+                "size_min": float(relaxed.min()),
+                "size_max": float(relaxed.max()),
+                "lattice": str(lattice_path),
+            }
 
     # BL wall-size floor (upgrade A): the geometry-adaptive/passage fields can
     # ask for cells smaller than the requested BL stack needs, so near a wall
@@ -1599,6 +1711,7 @@ def _configure_adaptive_sizing(
     # Threshold (floor close to the wall, 0 away) with whatever background
     # exists. With no adaptive background at all, the floor field is the
     # background by itself.
+    bg_pre_floor = bg_field
     if wall_floor_field is not None:
         if bg_field is None:
             bg_field = wall_floor_field
@@ -1684,7 +1797,30 @@ def _configure_adaptive_sizing(
                 wall_points=wall_floor_points,
                 wall_min_distance=max(coarse_max, min_size),
                 wall_floor=float(bl_wall_size_floor or 0.0),
+                # STL inputs (discrete surfaces) segfault inside GMSH when a
+                # Structured field is evaluated while meshing the discrete
+                # curves (measured 2026-11-18, cylinder.stl: rc=139): the
+                # lattice is for CAD input only, and never in robust mode.
+                lattice_path=(
+                    _lattice_tmp_path()
+                    if use_curvature_size_field and not _gmsh_robust_mode()
+                    else None
+                ),
             )
+            if curvature_field_info.get("lattice"):
+                bg_field = _compose_lattice_field(
+                    gmsh_mod, curvature_field_info["lattice"],
+                    bg_pre_floor, wall_floor_field,
+                )
+                # GMSH 4.15 crashed (segfault, ~1 run in 3 on a real STEP) when
+                # the Structured field was evaluated by several 1D/2D meshing
+                # threads at once: those two stages run single-threaded with
+                # the lattice (the 3D HXT stage keeps all threads).
+                for _opt in ("Mesh.MaxNumThreads1D", "Mesh.MaxNumThreads2D"):
+                    try:
+                        gmsh_mod.option.setNumber(_opt, 1)
+                    except Exception:
+                        logger.debug("thread option %s not accepted", _opt, exc_info=True)
         except Exception:
             logger.exception("Curvature size field setup failed; continuing without it")
 

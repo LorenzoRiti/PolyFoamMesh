@@ -295,7 +295,10 @@ class LogPanel(QTextEdit):
         html = html.replace(
             "[FIX]", f'<span style="color:{SUCCESS_LIGHT};font-weight:bold">[FIX]</span>'
         )
-        return html
+        # Always rich text: QTextEdit.append() treats a string with no tag
+        # as PLAIN text, so an escaped line without any [TAG] showed the
+        # entities literally ("&gt;", "&#x27;") on screen.
+        return f"<span>{html}</span>"
 
     def _insert_line(self, text: str) -> None:
         """Immediately render one line (kept for compatibility/tests)."""
