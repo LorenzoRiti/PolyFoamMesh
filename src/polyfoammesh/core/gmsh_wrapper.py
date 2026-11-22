@@ -1116,6 +1116,17 @@ def _sample_passage_thickness_field(
 _LATTICE_MAX_POINTS = 6_000_000
 
 
+def _min_size_ratio() -> float:
+    """Finest allowed adaptive size as a fraction of the coarse (bulk) size.
+    0.5 (historic) caps local refinement at 2:1, so a thin gap or a curved
+    patch cannot get finer than half the bulk cell however narrow it is."""
+    try:
+        v = float(os.environ.get("POLYFOAMMESH_GMSH_MIN_RATIO", "0.5"))
+    except ValueError:
+        return 0.5
+    return min(max(v, 0.05), 0.5)
+
+
 def _lattice_tmp_path():
     """Fresh temp file for the size lattice, removed at interpreter exit."""
     import atexit
@@ -1511,7 +1522,7 @@ def _configure_adaptive_sizing(
     # a genuinely higher-resolution budget request either.
     geom_min = min(
         max(feat["min_feature"] * 0.35, max_extent * 1e-5),
-        coarse_max * 0.5,
+        coarse_max * _min_size_ratio(),
     )
     min_size = max(geom_min, hw_floor)
 

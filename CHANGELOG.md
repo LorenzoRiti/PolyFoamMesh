@@ -7,6 +7,23 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Fixed
+- **GMSH adattivo: spigoli degeneri non sono più "dettagli piccoli".** I poli di sfere e
+  raccordi hanno spigoli lunghi come la tolleranza CAD (~2e-7); contati come caratteristiche
+  minime forzavano la taglia minima attorno a loro e il 2D non finiva (famiglia scatole
+  raccordate: 4/4 timeout a 150 s -> 4/4 in ~6 s).
+- **Patch da STEP per angolo** (con la spunta "CAD face names" spenta): ora si raggruppano
+  le facce CAD con l'angolo vero tra facce adiacenti, invece di spezzare i triangoli.
+  Una faccia CAD non viene mai tagliata; un piano tangente a una superficie curva
+  (lato + raccordo) resta separato; cilindro + curva di un tubo restano una parete.
+  Gli STL usano ancora la soglia sui triangoli.
+
+### Added
+- **Famiglie parametriche** (`benchmarks/families.py`, `benchmarks/run_families.py`): 13
+  famiglie di geometrie con scala da 1 cm a 10 m, semi 0-99 per tarare e 1000+ per
+  verificare, tabella per classe.  Errata: la prima tabella era invalida (oggetti 1000 volte
+  più piccoli, costruiti in mm e letti in m).
+
 ## [2.5.0] - 2026-11-17
 
 Release centrata su robustezza e velocità della catena Auto
@@ -70,8 +87,11 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   della GUI, ingressi CAD): GMSH chiamava una funzione Python 7 milioni di volte su un tubo
   semplice da 2 m (136 s dentro il callback su 109 s di mesh).  Ora il campo si precalcola con
   numpy e GMSH lo legge in C++ (campo `Structured`, in combinazione Max(Min(base, reticolo),
-  soglia parete) uguale alla semantica precedente).  Misurato: tubo 2 m 109 -> 22 s con la
-  stessa mesh; `lam.stp` 134 -> 22,5 s (8 run su 8); mini_valve 65 -> 6 s (-24 % di tet).
+  soglia parete) uguale alla semantica precedente).  Misurato: tubo 2 m 109 -> 22 s;
+  `lam.stp` 134 -> 22,5 s (8 run su 8, tet entro il 3 %); mini_valve 65 -> 6 s e multi_inlet
+  con -24 % e -11 % di tetraedri: la mesh NON è identica, il conteggio cambia di
+  qualche decina di punti su alcune geometrie a spigoli vivi (qualità checkMesh con il
+  reticolo non ancora misurata su geometrie reali).
   Solo per ingressi CAD (su STL GMSH va in segfault), 1D/2D a thread singolo con il reticolo
   (con più thread crollava una run su tre), mai in modalità robusta; se GMSH cade, la catena
   normale -> robusta -> manuale riparte senza reticolo.  `POLYFOAMMESH_SIZE_LATTICE=0` lo spegne.
