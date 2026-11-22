@@ -285,7 +285,13 @@ def _scan_feature_sizes(gmsh_mod, max_extent: float) -> dict:
                 # degenerate entity — skip it, keep measuring the rest
                 logger.debug("gmsh_wrapper: getBoundingBox failed dim=%d tag=%d", dim, tag, exc_info=True)
                 continue
-        if length and length > 1e-9:
+        # Degenerate edges (pole/apex points of spheres, cones and fillet
+        # corners: zero-length curves of the size of the CAD tolerance, ~2e-7)
+        # are not features.  Counting them made every filleted solid look like
+        # it had "tiny details", forcing the minimum size around them and
+        # stalling the 2D mesher (filleted_box: 4/4 timeouts).  Same relative
+        # floor (1e-5 of the part) as the geometric minimum size below.
+        if length and length > max(1e-9, max_extent * 1e-5):
             curve_lengths.append((tag, length))
 
     if not curve_lengths:
