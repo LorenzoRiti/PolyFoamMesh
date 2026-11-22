@@ -57,7 +57,7 @@ from polyfoammesh.core.geometry import (
     estimate_cell_count_geometric,
     load_geometry,
     load_step,
-    split_mesh_by_angle,
+    group_cad_faces_by_angle,
     split_single_stl_patch,
     cfmesh_cell_budget,
     scale_meshes,
@@ -1000,13 +1000,13 @@ class MainWindow(QMainWindow):
                 worker.report_progress("Tessellating geometry...", 55.0)
                 meshes = list(tessellate_patches(patches))
             else:
-                # BaramMesh-style: tessellate the whole shape as one patch,
-                # then split faces purely by the chosen feature angle.
-                worker.report_progress("Tessellating geometry...", 45.0)
-                whole = list(tessellate_patches([("surface", list(shape.Faces()))]))
-                mesh = whole[0] if len(whole) == 1 else trimesh.util.concatenate(whole)
-                worker.report_progress("Splitting patches by feature angle...", 60.0)
-                meshes = split_mesh_by_angle(mesh, angle_deg)
+                # Group the CAD faces by the true angle between adjacent faces
+                # (a CAD face is never cut; tessellation density is irrelevant),
+                # then tessellate each group as one patch.
+                worker.report_progress("Grouping faces by feature angle...", 45.0)
+                patches = group_cad_faces_by_angle(shape, angle_deg)
+                worker.report_progress("Tessellating geometry...", 60.0)
+                meshes = list(tessellate_patches(patches))
                 patches = [(m.metadata.get("name", "?"), m.faces) for m in meshes]
             worker.report_progress("Healing geometry...", 75.0)
             heal_lines: list[str] = []

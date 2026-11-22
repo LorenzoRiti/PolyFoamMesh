@@ -1484,6 +1484,82 @@ def height_scale(shape: cq.Shape) -> float:
 # ------------------------------------------------------------------
 # Tessellation
 # ------------------------------------------------------------------
+def group_cad_faces_by_angle(
+    shape: cq.Shape, angle_deg: float = 30.0,
+) -> list[tuple[str, list[cq.Face]]]:
+    """Group the CAD faces of *shape* into patches by the dihedral angle between
+    ADJACENT FACES, measured on the exact surface normals along the shared edge.
+
+    Why not split the tessellation (``split_mesh_by_angle``): a triangle soup has
+    lost the CAD faces, so a coarsely tessellated cylinder is chopped into
+    strips, a planar face can fragment, and a chain of slivers bridges two
+    planes.  Here a CAD face is never cut, tessellation density is irrelevant,
+    and the angle is the true angle between the two faces at the edge (max over
+    3 points along it, so cones/varying joints are caught).
+
+    Returns ``[(name, [faces])]`` named ``surface_1..`` by total area descending.
+    """
+    faces = list(shape.Faces())
+    n = len(faces)
+    if n <= 1:
+        return [("surface_1", faces)] if faces else []
+    thr = math.radians(float(angle_deg))
+
+    edge_faces: dict[int, list[int]] = {}
+    edge_obj: dict[int, cq.Edge] = {}
+    for i, f in enumerate(faces):
+        for e in f.Edges():
+            h = e.hashCode()
+            edge_faces.setdefault(h, []).append(i)
+            edge_obj.setdefault(h, e)
+
+    parent = list(range(n))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for h, fl in edge_faces.items():
+        fl = sorted(set(fl))
+        if len(fl) != 2:
+            continue
+        a, b = fl
+        try:
+            worst = 0.0
+            for t in (0.15, 0.5, 0.85):
+                p = edge_obj[h].positionAt(t)
+                na = faces[a].normalAt(p)
+                nb = faces[b].normalAt(p)
+                c = max(-1.0, min(1.0, na.dot(nb)))
+                worst = max(worst, math.acos(c))
+        except Exception as exc:  # noqa: BLE001 - keep faces separate if unsure
+            logger.debug("face-angle failed on an edge: %s", exc)
+            continue
+        # A flat face tangent to a curved one (box side + its fillet, slot wall
+        # + its rounded end) has dihedral ~0, so the angle alone would fuse the
+        # whole rounded body into one patch.  Flat and curved are different
+        # surfaces to a user: keep them apart.  Curved-curved tangents
+        # (cylinder + torus bend) still merge - that is one pipe wall.
+        if (faces[a].geomType() == "PLANE") != (faces[b].geomType() == "PLANE"):
+            continue
+        if worst <= thr:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+    groups: dict[int, list[cq.Face]] = {}
+    for i, f in enumerate(faces):
+        groups.setdefault(find(i), []).append(f)
+
+    def area(fs: list[cq.Face]) -> float:
+        return float(sum(f.Area() for f in fs))
+
+    ordered = sorted(groups.values(), key=area, reverse=True)
+    return [(f"surface_{k}", fs) for k, fs in enumerate(ordered, start=1)]
+
+
 def tessellate_patches(
     patches: list[tuple[str, list[cq.Face]]],
     tolerance: float = 0.01,
