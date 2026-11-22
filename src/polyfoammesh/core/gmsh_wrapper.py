@@ -107,6 +107,8 @@ _BUDGET_CORRECTION_MAX_TARGET = 2_000_000
 _BUDGET_CORRECTION_DEVIATION = 0.40
 #: Per-correction clamp on the size rescale factor (never more than +/-50%).
 _BUDGET_CORRECTION_FACTOR_CLAMP = 0.5
+#: Maximum number of correction passes (each re-meshes with a global size factor).
+_BUDGET_CORRECTION_MAX_PASSES = 3
 
 
 def _fmt_bytes(n: int) -> str:
@@ -3730,38 +3732,58 @@ def generate_volume_mesh(
                 actual_cells, _budget_target, deviation * 100.0,
             )
         else:
-            factor = (actual_cells / float(_budget_target)) ** (1.0 / 3.0)
-            factor = min(
-                max(factor, 1.0 - _BUDGET_CORRECTION_FACTOR_CLAMP),
-                1.0 + _BUDGET_CORRECTION_FACTOR_CLAMP,
-            )
-            msg = (
-                f"[tet:gmsh] budget correction: actual {actual_cells} vs target "
-                f"{_budget_target} -> rescaling sizes by {factor:.3f}"
-            )
-            logger.info(msg)
-            print(msg, flush=True)
-            try:
-                gmsh.model.mesh.clear()
-                gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", factor)
-                gmsh.model.mesh.generate(3)
-                corrected = _count_volume_cells(gmsh)
+            # Up to _BUDGET_CORRECTION_MAX_PASSES bounded passes.  One pass with a
+            # +/-50% clamp could not close a large miss (straight_pipe landed at
+            # 11.9x the target, venturi 4x), and the cube-root law (cells ~ size^-3)
+            # is only the ideal: with local refinement pinned at its floors the
+            # count reacts less, so the exponent is re-measured after each pass.
+            factor_total = 1.0
+            exponent = 3.0
+            cur = actual_cells
+            for _pass in range(_BUDGET_CORRECTION_MAX_PASSES):
+                dev = abs(cur - _budget_target) / float(_budget_target)
+                if dev <= _BUDGET_CORRECTION_DEVIATION:
+                    break
+                step = (cur / float(_budget_target)) ** (1.0 / exponent)
+                step = min(
+                    max(step, 1.0 - _BUDGET_CORRECTION_FACTOR_CLAMP),
+                    1.0 + _BUDGET_CORRECTION_FACTOR_CLAMP,
+                )
+                new_total = factor_total * step
+                msg = (
+                    f"[tet:gmsh] budget correction (pass {_pass + 1}): actual {cur} "
+                    f"vs target {_budget_target} -> sizes x{step:.3f} "
+                    f"(total x{new_total:.3f})"
+                )
+                logger.info(msg)
+                print(msg, flush=True)
+                try:
+                    gmsh.model.mesh.clear()
+                    gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", new_total)
+                    gmsh.model.mesh.generate(3)
+                    corrected = _count_volume_cells(gmsh)
+                except Exception:
+                    logger.exception(
+                        "Budget correction re-mesh failed; regenerating last good size"
+                    )
+                    gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", factor_total)
+                    gmsh.model.mesh.generate(3)
+                    break
                 result_msg = (
-                    f"[tet:gmsh] budget correction result: {actual_cells} -> "
+                    f"[tet:gmsh] budget correction result: {cur} -> "
                     f"{corrected} cells (target {_budget_target}, "
                     f"{abs(corrected - _budget_target) / _budget_target * 100.0:.0f}% off)"
                 )
                 logger.info(result_msg)
                 print(result_msg, flush=True)
-            except Exception:
-                # The first mesh was cleared before the retry; recover by
-                # regenerating at the original scale rather than failing a run
-                # that already had a usable mesh.
-                logger.exception(
-                    "Budget correction re-mesh failed; regenerating first-size mesh"
-                )
-                gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", 1.0)
-                gmsh.model.mesh.generate(3)
+                if corrected > 0 and cur > 0 and abs(math.log(step)) > 0.02:
+                    k = math.log(cur / corrected) / -math.log(step)
+                    if k > 0:
+                        exponent = min(max(k, 1.0), 3.5)
+                factor_total = new_total
+                cur = corrected
+                if cur <= 0:
+                    break
     else:
         logger.info("[tet:gmsh] budget check skipped: no explicit cell target")
 
