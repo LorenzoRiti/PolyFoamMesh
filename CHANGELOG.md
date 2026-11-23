@@ -9,33 +9,11 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [2.5.0] - 2026-11-23
 
-### Fixed
-- **GMSH adattivo: spigoli degeneri non sono più "dettagli piccoli".** I poli di sfere e
-  raccordi hanno spigoli lunghi come la tolleranza CAD (~2e-7); contati come caratteristiche
-  minime forzavano la taglia minima attorno a loro e il 2D non finiva (famiglia scatole
-  raccordate: 4/4 timeout a 150 s -> 4/4 in ~6 s).
-- **Patch da STEP per angolo** (con la spunta "CAD face names" spenta): ora si raggruppano
-  le facce CAD con l'angolo vero tra facce adiacenti, invece di spezzare i triangoli.
-  Una faccia CAD non viene mai tagliata; un piano tangente a una superficie curva
-  (lato + raccordo) resta separato; cilindro + curva di un tubo restano una parete.
-  Gli STL usano ancora la soglia sui triangoli.
-
-### Changed
-- **GMSH adattivo: correzione del budget a più passaggi** (max 3, esponente rimisurato a ogni
-  passaggio): `straight_pipe` 11,9x -> 2,9x e `venturi` 4,0x -> 1,7x sul budget di tet.
-  Rapporto minimo/massimo delle taglie configurabile con `POLYFOAMMESH_GMSH_MIN_RATIO`
-  (default 0.5; 0.25 raffina le fessure ma costa 2-4x di tempo, qualità del dual non misurata).
-
-### Added
-- **Famiglie parametriche** (`benchmarks/families.py`, `benchmarks/run_families.py`): 13
-  famiglie di geometrie con scala da 1 cm a 10 m, semi 0-99 per tarare e 1000+ per
-  verificare, tabella per classe.  Errata: la prima tabella era invalida (oggetti 1000 volte
-  più piccoli, costruiti in mm e letti in m).
-
 Release centrata su robustezza e velocità della catena Auto
 (tet -> dual poliedrico -> strato limite -> checkMesh) e sulla nuova galleria
-del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
-(corpus di 26 run, catena di produzione, WSL OpenFOAM 2512).
+del vento virtuale.  I numeri del riepilogo sono misurati su geometrie reali dell'autore
+(corpus di 26 run, catena di produzione, WSL OpenFOAM 2512); quelli sulle famiglie
+parametriche (spigoli degeneri, budget di tet, rapporto delle taglie) sono indicati come tali.
 
 ### Riepilogo misurato
 - Corpus (26 run): `Mesh OK` con strato limite 12 -> 18, tempo totale 806 -> 469 s,
@@ -87,6 +65,15 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   funzione di produzione della GUI (`production_dual_kwargs`).
 - Guida utente: risoluzione dei problemi per il loop di partizione GMSH e per le righe
   `FAIL subdivide_tets` di fTetWild.
+- **Famiglie parametriche** (`benchmarks/families.py`, `benchmarks/run_families.py`): 13
+  famiglie di geometrie con scala da 1 cm a 10 m, semi 0-99 per tarare e 1000+ per
+  verificare, tabella per classe.  Errata: la prima tabella era invalida (oggetti 1000 volte
+  più piccoli, costruiti in mm e letti in m).
+- **`AVVIA_PolyFoamMesh.cmd`**: doppio click per avviare l'ultima versione dal sorgente
+  della cartella (Python 3.11 con dipendenze, versione e percorso stampati all'avvio).
+- **Distribuzione portabile**: cartella `PolyFoamMesh` (PyInstaller) anche come zip, senza
+  installer.  L'installer Inno Setup resta in `installer/` ma non è stato assemblato per
+  questa versione.
 
 ### Changed (velocità)
 - **Campo di taglie adattivo come reticolo, non come funzione Python** (modalità adattiva
@@ -120,6 +107,10 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   smettono di calare (corpus 471 -> 419 s).
 - Dual: la riparazione delle celle concave ha un tempo massimo (120 s) e segnala il
   battito al watchdog; si ferma tenendo la mesh migliore.
+- **GMSH adattivo: correzione del budget a più passaggi** (max 3, esponente rimisurato a ogni
+  passaggio): `straight_pipe` 11,9x -> 2,9x e `venturi` 4,0x -> 1,7x sul budget di tet.
+  Rapporto minimo/massimo delle taglie configurabile con `POLYFOAMMESH_GMSH_MIN_RATIO`
+  (default 0.5; 0.25 raffina le fessure ma costa 2-4x di tempo, qualità del dual non misurata).
 
 ### Changed (qualità)
 - **"Tet veloce ma niente poly"**: la conversione poliedrica partiva solo se le tets
@@ -147,6 +138,15 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   bordi aperti, non ogni triangolo.
 
 ### Fixed
+- **GMSH adattivo: spigoli degeneri non sono più "dettagli piccoli".** I poli di sfere e
+  raccordi hanno spigoli lunghi come la tolleranza CAD (~2e-7); contati come caratteristiche
+  minime forzavano la taglia minima attorno a loro e il 2D non finiva (famiglia scatole
+  raccordate: 4/4 timeout a 150 s -> 4/4 in ~6 s).
+- **Patch da STEP per angolo** (con la spunta "CAD face names" spenta): ora si raggruppano
+  le facce CAD con l'angolo vero tra facce adiacenti, invece di spezzare i triangoli.
+  Una faccia CAD non viene mai tagliata; un piano tangente a una superficie curva
+  (lato + raccordo) resta separato; cilindro + curva di un tubo restano una parete.
+  Gli STL usano ancora la soglia sui triangoli.
 - **Log con entità HTML letterali**: le righe senza etichetta ([WARN] ecc.) mostravano
   `&gt;` e `&#x27;` al posto di `>` e `'`.
 - **Rinomina patch che "non le cambia veramente"**: un nome con spazi o
@@ -189,6 +189,19 @@ del vento virtuale.  Tutti i numeri sono misurati su geometrie reali dell'autore
   `/batch` fuori dall'event loop.  L'API usa ancora il workflow legacy.
 
 ### Limiti noti
+- **`airfoil`** (bordo d'uscita reale ~1:1500): il 2D adattivo GMSH va ancora in timeout
+  (4 prove su 4); nelle altre 48 prove delle famiglie nessun timeout.
+- **Budget di tet GMSH**: dopo la correzione a 3 passaggi resta sopra il bersaglio di
+  1,2-1,75x sulla maggior parte delle famiglie e 2,9x su `straight_pipe`.
+- **Superfici vicine / fessure sottili**: con il rapporto 0,5 una fessura può avere meno di
+  2 celle nello spessore; `POLYFOAMMESH_GMSH_MIN_RATIO=0.25` ne dà 3 su 10 mm ma costa 2-4x
+  di tempo, e la qualità del dual con 0,25 non è misurata (default invariato).
+- **Reticolo delle taglie**: qualità checkMesh misurata sulle famiglie parametriche
+  (48/48 senza timeout) ma non ancora su tutte le geometrie reali.
+- **Valvola collassata** (classe gola concava): con `checkMesh -allGeometry -allTopology`
+  restano 8 controlli falliti (340 facce piramide orientate male, 10 errori di
+  non-ortogonalità); lo strato chiude con copertura 81,1 % e primo strato rispettato.
+- Non verificati: installazione su macchina pulita, runner Linux, installer assemblato.
 - Alcune geometrie reali restano `Failed` per 1-3 facce (tubi PRENDI QUESTA e gmshprova
   con strato presente; galleria NACA con 2-3 piramidi) e il verdetto oscilla di 1-3
   facce da una generazione di tet all'altra (la tetraedrizzazione GMSH e il suggerimento
