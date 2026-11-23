@@ -307,7 +307,7 @@ quality report** (`File > Export Mesh > PDF Quality Report...`).
 > A "quality passed" mesh and a "successfully generated" mesh are two
 > different things: if a path fails, the engine may switch strategy and
 > reports the substitution in the log (`[SUBSTITUTED]`) - never silently.
-> See [residual_risks.md](residual_risks.md).
+> See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ### 5. Export
 
@@ -494,7 +494,7 @@ logged.
 
 Known limit: the layer stack cannot be thicker than the first dual cell
 depth; the log tells you when this binds (`capped ...`). This is a mesh
-resolution limit, not a bug - see [residual_risks.md](residual_risks.md).
+resolution limit, not a bug - see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ## Process watchdog and checkMesh
 
@@ -576,7 +576,7 @@ contrast is checked automatically in CI-style tests.
 - **No boundary layer on a complex part**: if the log reports that the BL
   build was refused (boundary not manifold), the app kept the dual-only
   mesh on purpose - a known limitation on some real geometries, with the
-  fix scheduled; see [residual_risks.md](residual_risks.md).
+  fix scheduled; see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 - **Linux**: install from source - see [INSTALL_LINUX.md](INSTALL_LINUX.md)
   for prerequisites, OpenFOAM setup and troubleshooting (OpenFOAM is needed
   only for the cfMesh/checkMesh/foamToVTK features).
@@ -591,7 +591,7 @@ contrast is checked automatically in CI-style tests.
 ## Where to get help
 
 - [INSTALL.md](INSTALL.md) - installation, first run, "try it in two minutes".
-- [residual_risks.md](residual_risks.md) - known limitations, honestly
+- [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) - known limitations, honestly
   documented.
 - The app log (`[SUBSTITUTED]`, `[bl]`, `[poly]` tags) is the single source of
   truth for what the engines actually did.

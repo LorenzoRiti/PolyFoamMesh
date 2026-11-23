@@ -20,7 +20,7 @@ readout before the run, and every substitution declared. Fast suite:
 `tools/auto_chain_e2e.py`: cylinder AUTO VALID in 18.5 s, venturi AUTO
 VALID via the direct-BL leg. See
 [CHANGELOG.md](../CHANGELOG.md) and
-[residual_risks.md](residual_risks.md) for the details and the accepted
+[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for the details and the accepted
 limitations (R1 verdict: PARTIAL by the per-defect reading, max skew 2.9
 declared; corpus quality 3/15; Linux installer not built here).
 

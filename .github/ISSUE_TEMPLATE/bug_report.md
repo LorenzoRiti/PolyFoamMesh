@@ -23,5 +23,5 @@ STEP/STL used (attach if possible, or describe the characteristics: dimensions, 
 **Log**
 Paste `%APPDATA%\polyfoammesh\logs\app.log` (or the relevant part).
 
-**Did you check [docs/residual_risks.md](../../docs/residual_risks.md)?**
+**Did you check [docs/KNOWN_LIMITATIONS.md](../../docs/KNOWN_LIMITATIONS.md)?**
 yes/no — it lists the already known limitations.

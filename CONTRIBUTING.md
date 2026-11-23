@@ -33,7 +33,7 @@ problem), command/path used in the GUI, log from `%APPDATA%\polyfoammesh\logs\ap
 ## Known limitations
 
 Before reporting a behaviour as a bug, check
-[docs/residual_risks.md](docs/residual_risks.md) — it lists the already
+[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — it lists the already
 known and documented limitations (timeouts on very large meshes, concave
 geometry cases, etc.).
 

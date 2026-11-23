@@ -65,7 +65,7 @@ project adds, comes after:
 
 Where this pipeline works well and where it doesn't (there are concave
 geometries where the polyhedral dual doesn't close perfectly) is written
-up without spin in [docs/residual_risks.md](docs/residual_risks.md).
+up without spin in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ## Who this is for
 
@@ -96,7 +96,7 @@ paying for a license to get it.
 - **[Installation](docs/INSTALL.md)** — Windows installer or from source
 - **[Linux installation](docs/INSTALL_LINUX.md)** — native Linux setup, no WSL
 - **[User guide](docs/USER_GUIDE.md)** — how the workflow works, tab by tab
-- **[Known limitations](docs/residual_risks.md)** — what doesn't work yet, and why
+- **[Known limitations](docs/KNOWN_LIMITATIONS.md)** — what doesn't work yet, and why
 - **[Documentation index](docs/README.md)** — map of the whole docs tree
 - **[Open issues](https://github.com/LorenzoRiti/PolyFoamMesh/issues)** — the real, currently-open work, each with a diagnosis and acceptance criteria
 

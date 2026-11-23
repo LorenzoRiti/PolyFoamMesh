@@ -56,7 +56,7 @@ not an error, until you install OpenFOAM.
 Self-intersecting STLs (overlapping triangles, holes left open by the CAD
 tool) can make GMSH fail with `PLC Error: two segments intersect` — export
 clean STLs instead. The formats we recommend are **closed STL** (watertight)
-or **STEP**. See [residual_risks.md](residual_risks.md) for the full list of
+or **STEP**. See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for the full list of
 known limitations of the meshing engine.
 
 ### Uninstalling

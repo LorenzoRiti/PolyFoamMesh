@@ -103,7 +103,7 @@ class GateReport:
         lines.append("  - checkMesh only when WSL2+OpenFOAM is detected;")
         lines.append("  - checkMesh verdict is REPORTED (Mesh OK or Failed with cause),")
         lines.append("    not gated: release quality acceptance stays with the lane")
-        lines.append("    suites + docs/residual_risks.md.")
+        lines.append("    suites + docs/KNOWN_LIMITATIONS.md.")
         return "\n".join(lines)
 
 
@@ -360,7 +360,7 @@ def stage_checkmesh(workdir: Path) -> tuple[str, str]:
     # The verdict is REPORTED, not gated, by design: the coarse E2E case may
     # fail quality on a known, declared wall (e.g. venturi dual-only =
     # WALL-01). Release quality acceptance lives in the lane suites plus
-    # docs/residual_risks.md; this stage proves the OF toolchain runs
+    # docs/KNOWN_LIMITATIONS.md; this stage proves the OF toolchain runs
     # end-to-end from the packaged pipeline and reports honestly.
     detail = f"checkMesh ran (verdict={verdict})"
     if verdict != "Mesh OK":

@@ -2,7 +2,7 @@
 
 Release date: 2026-11-23 (prepared locally; tag and publication pending).
 Full details and measurements: [CHANGELOG.md](../CHANGELOG.md).
-Known limits: [residual_risks.md](residual_risks.md).
+Known limits: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ## Highlights
 
