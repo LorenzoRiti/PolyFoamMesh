@@ -75,17 +75,25 @@ def test_collapsed_valve_vertex_exclusion_closes():
         concavity_criterion="dual_convexity",
     )
     assert r.success, (r.errors, r.warnings)
-    assert r.stats.get("scale") == 0.6, r.stats
-    # 4,143 after the complete-coverage policy (commit 208a61c): the local
-    # termination now drops only faces flagged by the input pyramid
-    # criterion, so its exclusion cascade settles at a different (larger)
-    # count than the historical 4,008; coverage on the kept faces is 100%
-    # (layer_hist has no zeros) and the mesh closes.
-    assert r.stats.get("local_excluded_faces") == 4143, r.stats
+    # 2026-11-23 re-pin.  The H4-era numbers (scale 0.6, 4,143 excluded faces,
+    # 75,974 prisms) stopped reproducing before the 2.5.0 work (27ede11 already
+    # gave 2,958 excluded / 64,472 prisms at scale 0.6).  Since 0fd4552
+    # (validation on checkMesh failure criteria) the build closes at scale 1.0
+    # and honours the requested first layer.  Measured on the same case,
+    # same kwargs, with `checkMesh -allGeometry -allTopology`:
+    #   27ede11: coverage 76.5 %, h1_ratio 3.67, 48 skew faces, 9 failed checks
+    #   now:     coverage 81.1 %, h1_ratio 1.00, 28 skew faces, 8 failed checks
+    assert r.stats.get("scale") == 1.0, r.stats
     assert r.stats.get("local_termination_mode") == "decoupled_vertex"
-    # 75,974 after the complete-coverage policy (was 76,052 after the
-    # drop_bnd units fix, 75,360 before it); see module docstring.
-    assert r.n_prism_cells == 75974, r.n_prism_cells
+    assert r.stats.get("local_excluded_faces") == 3420, r.stats
+    assert r.n_prism_cells == 68340, r.n_prism_cells
+    # the first layer must be the requested one (was 3.7x too thick before)
+    assert abs(r.h1_ratio - 1.0) < 0.01, r.h1_ratio
+    # coverage guard: never fall back below the measured baseline
+    n_layered = sum(v for k, v in r.layer_hist.items() if int(k) > 0)
+    assert n_layered / r.n_wall_faces >= 0.80, r.layer_hist
+    # no new pyramid violations beyond the collapsed-dual input (368)
+    assert r.n_pyramids_after <= 370, r.n_pyramids_after
     # the written mesh must carry the BL invariants
     from polyfoammesh.core import foam_mesh_io as fio
     points, faces, owner, neigh, patches = fio.read_polymesh(poly)
