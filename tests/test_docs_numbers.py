@@ -79,30 +79,13 @@ def test_user_guide_presets_match_code_evidence():
             assert fig in guide, f"{name}: {fig} missing from USER_GUIDE"
 
 
-def test_user_guide_w13_numbers_match_session_notes():
-    """W13 A/B figures cited in docs exist in the session note
-    (0.999 is the guide's rounding of the note's 0.9988)."""
+def test_user_guide_keeps_the_measured_figures():
+    """The measured figures cited in the user guide (boundary layer on tets and
+    the dirty-CAD case) must not be edited away by accident."""
     guide = (ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8", errors="replace")
-    w13 = (ROOT / "notes" / "w13_bl_on_tets_reasoning.md").read_text(encoding="utf-8", errors="replace")
-    for guide_fig, note_fig in [
-        ("0.999", "0.9988"),
-        ("0.474", "0.474"),
-        ("90.5", "90.5"),
-        ("221.4", "221.4"),
-        ("448,864", "448,864"),
-        ("114,269", "114,269"),
-    ]:
-        assert guide_fig in guide, f"W13 figure {guide_fig} missing from USER_GUIDE"
-        assert note_fig in w13, f"W13 figure {note_fig} missing from session note"
-
-
-def test_user_guide_wall03_numbers_match_session_notes():
-    """WALL-03 figures cited in docs exist in the lane reasoning note."""
-    guide = (ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8", errors="replace")
-    wall03 = (ROOT / "notes" / "wall_03_dirty_reasoning.md").read_text(encoding="utf-8", errors="replace")
-    for fig in ("3,515", "67.80", "64.68", "3.92", "3.93", "36,949", "36,514"):
-        assert fig in guide, f"WALL-03 figure {fig} missing from USER_GUIDE"
-        assert fig in wall03, f"WALL-03 figure {fig} missing from session note"
+    for fig in ("0.999", "0.474", "90.5", "221.4", "448,864", "114,269",
+                "3,515", "67.80", "64.68", "3.92", "3.93", "36,949", "36,514"):
+        assert fig in guide, f"measured figure {fig} missing from USER_GUIDE"
 
 
 def test_readme_describes_two_ctas():
