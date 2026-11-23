@@ -97,3 +97,4 @@ refined tube), README screenshots current.
   first item above for that reason.
 - `_solve_global_windings` ~1.2× (safe but small).
 - Hex (cfMesh) corpus baseline refresh after the parity work in item 6.
+- Native C++ core (an earlier `autopoly` prototype, not kept in the repository): a possible future direction, not planned; it depends on project resources and on whether it proves worthwhile.
