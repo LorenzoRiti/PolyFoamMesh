@@ -11,6 +11,7 @@ rest is reference or internal material.
 
 ## Reference
 
+- **[RELEASE_NOTES_2.5.0.md](RELEASE_NOTES_2.5.0.md)** - what changed in 2.5.0, new options, validation and known limits.
 - **[ROADMAP.md](ROADMAP.md)** - where the project stands after 2.4.0 and the planned next steps, with the evidence and acceptance gate for each item.
 - **[residual_risks.md](residual_risks.md)** — known limits and failure modes, with measured evidence; read before trusting a result.
 - **[cfmesh_meshdict_reference.md](cfmesh_meshdict_reference.md)** — verified keys and syntax for the `system/meshDict` read by `cartesianMesh` (v2512).

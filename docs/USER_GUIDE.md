@@ -272,7 +272,11 @@ app treats them as first-class:
   **Feature angle** (5-179 deg): faces joined by a smaller dihedral angle
   are merged into one patch (BaramMesh-style). For STEP files you can also
   keep the CAD face names when available; otherwise the surface is split
-  into `surface_1...N`. The last used angle is remembered.
+  into `surface_1...N`. The last used angle is remembered. Since 2.5.0 the
+  split on STEP files works on the CAD faces themselves, using the true angle
+  between adjacent faces: a CAD face is never cut, a plane tangent to a curved
+  surface (side + fillet) stays separate, and a pipe's cylinder plus its bend
+  remain one wall. STL files still use the angle between triangles.
 - **The patch panel** (left dock, bottom) lists every patch with name,
   face count and **type** - for unnamed `surface_N` meshes the type is
   inferred from the geometry (inlet/outlet/wall) so the boundary layer
@@ -349,6 +353,29 @@ wall - no overlay or colouring is needed.
 
 Mouse: left-drag rotates, middle-drag pans, wheel zooms. `Box 3D` refinement
 zones are edited directly with their gizmo in the viewer.
+
+## Virtual wind tunnel
+
+**Tools > Create Wind Tunnel around Object...** turns the loaded CAD into the
+object and builds the fluid box around it. Editable criteria: upstream 3 L,
+downstream 8 L, sides 4 D, above 5 H, maximum frontal blockage 3 % (the box
+widens by itself and says so), optional ground plane. Patches are `inlet`,
+`outlet`, `farfield`, `ground` plus the object with its original names;
+refinement boxes are added on the object (level 3) and in the wake (level 2).
+The base cell comes from a cell budget (default 100 thousand; surface cell =
+base/4). The dialog shows the object size along the chosen axes and warns when
+the object has fewer than 10 cells across its thickness. No watertightness
+auto-repair runs after creation; the app warns if the object has open edges.
+Tet engine: fTetWild first, GMSH as fallback. Measured on a NACA 0024: 102
+thousand cells without boxes (4.7 min, boundary layer 85 %), 186 thousand with
+boxes (11.7 min, 91 %); checkMesh still reports 2-3 pyramid faces.
+
+## Patch roles
+
+The patch panel has a **Role** column (auto / inlet / outlet / symmetry /
+wall), pre-filled with the inferred role. Your choice drives which surfaces
+get boundary layers and the boundary-condition types written by `setup_case`.
+Overrides follow renames and are cleared by Reset.
 
 ## Boundary layers
 

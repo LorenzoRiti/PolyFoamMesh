@@ -1,12 +1,12 @@
 # PolyFoamMesh Roadmap
 
-Where the project stands after 2.4.0 and where it goes next. This
+Where the project stands after 2.5.0 and where it goes next. This
 document is the planning reference: every item lists the *evidence* that
 motivated it and the *acceptance gate* that closes it, in the same
 measure-first style used so far (profile → fix → keep-best → corpus
 zero-diff → release).
 
-Current state (2.4.0, cut locally — release pending the user's GUI
+Current state (2.5.0, prepared locally; the 2.4.0 text below is kept as the base, see CHANGELOG for the 2.5.0 delta; cut locally — release pending the user's GUI
 validation and PARTIAL sign-off): Polymesh auto picks the tet engine from
 measured geometry features (GMSH-first with fTetWild fallback), never
 silently swaps one for the other, and the chain is closed end to end —
@@ -24,7 +24,18 @@ VALID via the direct-BL leg. See
 limitations (R1 verdict: PARTIAL by the per-defect reading, max skew 2.9
 declared; corpus quality 3/15; Linux installer not built here).
 
-## Next release (2.5)
+## Delivered in 2.5.0 (summary)
+
+Faster and more predictable Auto chain (adaptive GMSH size lattice, capped
+fTetWild growth, GMSH time budget, dual speed-ups, multi-pass budget
+correction), virtual wind tunnel, patch Role column, CAD-face patch grouping
+by angle, parametric geometry families for validation. Details and measured
+numbers: [CHANGELOG.md](../CHANGELOG.md). Still open: `airfoil` (thin
+trailing edge) times out, dual quality with the size lattice is not yet
+measured on real geometries, nearby-surface refinement is opt-in
+(`POLYFOAMMESH_GMSH_MIN_RATIO`).
+
+## Next release (2.6)
 
 ### Engineering
 

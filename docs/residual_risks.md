@@ -123,6 +123,36 @@ measured gain. Full reasoning in `notes/reorg_diagnosis.md` and
   requested (0.116x) and 99.51% coverage over the selected walls.  This is
   the same declared W10.1 support cap; W11 did not lower it or hide it.
 
+## Release 2.5.0 — known limitations (2026-11-23)
+
+Accepted, documented limits of the 2.5.0 release; each is reported in the log
+or in the changelog, none is hidden.
+
+- **Venturi/valve throat class** is unchanged from 2.3.0: collapsed valve dual
+  measured with `checkMesh -allGeometry -allTopology` still fails 8 checks
+  (340 wrongly oriented face pyramids, 10 non-orthogonality errors, 28 highly
+  skew faces). The boundary layer on that case closes at scale 1.0 with
+  81.1 % wall coverage and the requested first layer (h1 ratio 1.00); the
+  previous engine gave 76.5 % coverage and a first layer 3.7x too thick.
+- **GMSH size lattice**: the adaptive size field is a precomputed lattice, so
+  tet counts change by a few tens of percent on some sharp-edged geometries
+  versus 2.4.0; checkMesh quality with the lattice has been measured on the
+  parametric families (48/48 meshed, no timeouts) but not yet on the full set
+  of real geometries. `POLYFOAMMESH_SIZE_LATTICE=0` restores the old field.
+- **Nearby surfaces / thin gaps**: the default size ratio (0.5) can leave fewer
+  than 2 cells across a thin gap. `POLYFOAMMESH_GMSH_MIN_RATIO=0.25` gives 3
+  cells across a 10 mm gap at 2-4x the meshing time; dual/checkMesh quality
+  with 0.25 is not measured, so the default is unchanged.
+- **`airfoil` class** (real thin trailing edge, ~1:1500) still times out in the
+  adaptive GMSH stage (4/4 in the families set).
+- **GMSH tet budget** can still land above target (1.2-1.75x on most
+  families, 2.9x on `straight_pipe`) after the 3-pass correction.
+- **Wind tunnel**: checkMesh still reports 2-3 pyramid faces on the NACA 0024
+  case (with and without refinement boxes).
+- **Not verified**: no clean-machine install of the packaged app (the gate
+  checks module equivalence only), no Linux runner, Inno Setup installer not
+  assembled on the development machine.
+
 ## Release 2.3.0 — known limitations (2026-10-11)
 
 These are the accepted, documented limits of the 2.3.0 release. Everything
