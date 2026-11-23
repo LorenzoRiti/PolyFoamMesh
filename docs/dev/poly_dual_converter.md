@@ -201,7 +201,7 @@ repaired with a greedy closure pass + a checkMesh-style "face pyramids" pass,
 and the whole result is validated in-process (volume conserved, cells closed,
 all positive volumes) before writing. On failure the mesh is left untouched.
 
-Measured (see `tools/bench_bl_poly_dual.py`): cylinder, GMSH tet (398,745
+Measured (with an experiment script no longer kept in the repository): cylinder, GMSH tet (398,745
 tets) -> dual (72,483 poly cells) -> BL (5 layers, 505,950 prism cells) ->
 checkMesh `Mesh OK`, 0 misoriented faces. The cube (9 dual cells -> 108 prism
 cells) also passes `Mesh OK`.
