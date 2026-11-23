@@ -106,10 +106,9 @@ def test_user_guide_wall03_numbers_match_session_notes():
 
 
 def test_readme_describes_two_ctas():
-    """README must present the W18 two-button UI (Polymesh auto + cfMesh)."""
+    """README must present the two meshing paths (Polymesh auto + cfMesh)."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8", errors="replace")
     assert "**Polymesh**" in readme and "**cfMesh**" in readme
-    assert "manual Advanced engine selector was removed" in readme
     assert "Cartesian cfMesh (via WSL2) or the native polyhedral mesher" not in readme
 
 

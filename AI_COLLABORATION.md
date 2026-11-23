@@ -30,7 +30,7 @@ being accepted — read, tested, and where necessary corrected or rewritten.
 | Component | Main author |
 |---|---|
 | GUI (PySide6), panels, wizard | AI, under human direction |
-| Test suite (~1,500 tests) | AI, under human direction |
+| Test suite (~1,900 tests) | AI, under human direction |
 | Mesh/case templates, log parsing | AI, under human direction |
 | Installer/packaging scripts | AI, under human direction |
 | Barycentric dual (tet→poly conversion) | Human |

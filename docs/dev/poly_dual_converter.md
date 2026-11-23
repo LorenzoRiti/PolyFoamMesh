@@ -248,7 +248,7 @@ construction — so this concerns only the tet->poly dual path.
 ### Measuring: `planarity_report`
 
 ```python
-from cfmesh_autogui.core.tet_poly_dual import planarity_report
+from polyfoammesh.core.tet_poly_dual import planarity_report
 rep = planarity_report(points, faces, owner, neigh, n_int)  # or a case dir
 ```
 
@@ -259,8 +259,8 @@ default `rel_tol = 1e-6`), max/mean/p90/sum of the per-face deviation, the
 internal/boundary split, and the worst faces for debugging. CLI:
 
 ```bash
-python -m cfmesh_autogui.core.tet_poly_dual --planarity <case_dir>
-python -m cfmesh_autogui.core.tet_poly_dual --convert <tet_case_dir> --fix triangulate
+python -m polyfoammesh.core.tet_poly_dual --planarity <case_dir>
+python -m polyfoammesh.core.tet_poly_dual --convert <tet_case_dir> --fix triangulate
 ```
 
 ### Fixing: `fix_nonplanar_faces` (default `"none"`)

@@ -40,14 +40,14 @@ foreach ($c in $candidates) {
 
 if (-not $PythonPath) {
     Write-Host ""
-    Write-Host "PolyFoamMesh: nessun Python con le dipendenze dell'app trovato." -ForegroundColor Red
-    Write-Host "Cercati (PySide6 + pyvista mancanti in tutti):"
+    Write-Host "PolyFoamMesh: no Python with the app's dependencies was found." -ForegroundColor Red
+    Write-Host "Searched (PySide6 + pyvista missing in all of them):"
     foreach ($c in $candidates) { Write-Host "  - $c" }
     Write-Host ""
-    Write-Host "Installa le dipendenze, ad esempio:"
+    Write-Host "Install the dependencies, for example:"
     Write-Host '  & "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" -m pip install -e ".[gui]"'
-    Write-Host "oppure imposta la variabile POLYFOAMMESH_PYTHON sul percorso giusto."
-    Read-Host "Premi INVIO per chiudere"
+    Write-Host "or set the POLYFOAMMESH_PYTHON variable to the right interpreter."
+    Read-Host "Press ENTER to close"
     exit 1
 }
 
@@ -56,8 +56,8 @@ Write-Host "Starting PolyFoamMesh (Python: $PythonPath)..." -ForegroundColor Cya
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
-    Write-Host "PolyFoamMesh e' terminata con errore (codice $LASTEXITCODE)." -ForegroundColor Red
-    Write-Host "Se il messaggio sopra non basta, avvia a mano per vedere tutto:"
+    Write-Host "PolyFoamMesh exited with an error (code $LASTEXITCODE)." -ForegroundColor Red
+    Write-Host "If the message above is not enough, run it by hand to see everything:"
     Write-Host "  & `"$PythonPath`" `"$AppPath`""
-    Read-Host "Premi INVIO per chiudere"
+    Read-Host "Press ENTER to close"
 }

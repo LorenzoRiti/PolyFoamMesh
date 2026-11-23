@@ -1,4 +1,4 @@
-# Concurrency architecture — CFMesh-AutoGUI
+# Concurrency architecture — PolyFoamMesh
 
 This document is the authoritative description of how the application runs
 long work off the UI thread. It supersedes all ad-hoc threading patterns that

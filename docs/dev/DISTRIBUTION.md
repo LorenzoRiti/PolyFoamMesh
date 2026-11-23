@@ -1,90 +1,86 @@
-# How to distribute CFMesh-AutoGUI (v2.1.0)
+# Building and distributing PolyFoamMesh
 
-Guide for the developer/maintainer. The user manual (installer,
-requirements, first mesh) is [../INSTALL.md](../INSTALL.md).
+Guide for maintainers. The end-user installation guide is
+[../INSTALL.md](../INSTALL.md).
 
-## The package (choice: no-WSL demo)
+## What gets shipped
 
-The installer does **not** include WSL2/OpenFOAM: the friend immediately tries the
-**no-WSL** paths (CFD Poly GMSH → 100% poly STAR-CCM+ style, FEM Tetra) and
-visualization. The WSL paths (cfMesh, checkMesh) show a clear
-warning and do not proceed.
+| Artifact | How it is made | Notes |
+|---|---|---|
+| `dist/PolyFoamMesh/` (one-dir bundle, about 1.3 GB) | PyInstaller, `PolyFoamMesh.spec` | Self-contained: Python, PySide6, cadquery, trimesh, pyvista, gmsh and the rest. No Python needed on the target machine. |
+| `PolyFoamMesh-X.Y.Z-win64.zip` (portable) | Zip of the bundle | Extract and run `PolyFoamMesh.exe`. No Start Menu entry or uninstaller. |
+| `installer/output/PolyFoamMesh-X.Y.Z-Setup.exe` | Inno Setup 6, `installer/inno_setup.iss` | Per-user install (no admin), Start Menu entry, `.step`/`.stp`/`.stl` associations, clean uninstaller. |
 
-```
-installer/output/
-├── CFMesh-AutoGUI-2.1.0-Setup.exe      ← TO GIVE TO THE FRIEND (279 MB, Inno installer)
-└── CFMesh-AutoGUI-2.1.0-Istruzioni.pdf ← PDF instructions
-```
+The package does **not** include WSL2 or OpenFOAM. The GMSH-based paths work
+standalone; the cfMesh and `checkMesh` paths need OpenFOAM, which the app explains on
+first use. `installer/setup_wsl_openfoam.ps1` installs WSL2 + OpenFOAM v2512 + cfMesh
+(administrator, about 1–2 GB download) if you want to provide it.
 
-## 1. Rebuild the one-dir bundle (on your side, once only)
+Built artifacts are never committed (`dist/` and `installer/output/` are ignored).
 
-```bash
-python -m PyInstaller --noconfirm --clean CFMesh-AutoGUI.spec
-```
+## Release checklist
 
-Result: `dist/CFMesh-AutoGUI/` (1.3 GB) — self-contained app
-(Python + PySide6 + cadquery + trimesh + pyvista + gmsh + pymeshfix):
-**no external dependency on the friend's PC**.
+1. Update the version in `pyproject.toml`, `src/polyfoammesh/_version.py` and
+   `installer/inno_setup.iss`; `python tools/check_version_sync.py` checks they agree.
+2. Move the `[Unreleased]` entries in `CHANGELOG.md` under the new version.
+3. Run the tests:
+   ```bash
+   pytest tests/ -m "not slow and not wsl" -q
+   pytest tests/ -m "slow or wsl" -q        # needs WSL2 + OpenFOAM, run it alone
+   ```
+4. Run the release gate:
+   ```bash
+   python tools/release_gate.py --e2e       # versions, spec checks, smoke, repo-clean, E2E, checkMesh
+   python tools/release_gate.py --build     # adds the PyInstaller bundle (about 7 minutes)
+   python tools/release_gate.py --assemble  # adds the Inno Setup installer (needs ISCC)
+   ```
+   Every stage prints PASS / FAIL / SKIP; a SKIP always states its reason. The gate
+   prints its declared limits (no clean-machine install check, checkMesh verdict
+   reported but not gated).
+5. Smoke-test the bundle: run `dist/PolyFoamMesh/PolyFoamMesh.exe` and check that the
+   window opens and the About dialog shows the new version.
+6. Tag and push (`vX.Y.Z`); see "Release pipeline" below.
 
-Critical points of the spec (verified today):
-- **one-dir** (EXE bootloader + `_internal/`): fast startup, no
-  extraction to temp at every launch, friendlier with SmartScreen.
-- **`gmsh-4.15.dll` added to the datas**: the gmsh wheel installs it in
-  `Python311\Lib\` (outside the packages) → PyInstaller does not see it by itself;
-  without it, the GMSH path in the frozen build crashes with "DLL load failed".
-- **`gmsh_wrapper._cli_main(argv)`**: in the frozen exe the GMSH subprocess
-  starts with `--gmsh-volume` on `sys.executable`; `app.py` calls
-  `_cli_main` directly (the old `runpy.run_path` on a file that
-  does not exist in the bundle failed).
-- `excludes` with torch/cv2/pyarrow/... (junk from the global
-  environment) — if the exe swells, check there.
-
-## 2. Compile the Inno installer
-
-Portable Inno Setup 6.7.3 in `tools/innosetup/is6/ISCC.exe`
-(installed with `/PORTABLE=1`, no admin).
-
-```bash
-tools/innosetup/is6/ISCC.exe installer\inno_setup.iss
-```
-
-Result: `installer/output/CFMesh-AutoGUI-2.1.0-Setup.exe` (279 MB,
-lzma2/max). Properties: **per-user installation without admin**
-(`PrivilegesRequired=lowest`), Start Menu+Desktop shortcut, associations
-for `.step/.stp/.stl` (HKCU), clean uninstaller.
-
-> **Git-Bash warning**: the `/VERYSILENT` switches get eaten into
-> MSYS paths (`C:/Program Files/Git/VERYSILENT`). Use:
-> `MSYS2_ARG_CONV_EXCL='*'` (or launch from cmd/PowerShell).
-
-## 3. Quick test of the installer
+## Rebuilding the bundle by hand
 
 ```bash
-# silent installation (path without spaces)
-MSYS2_ARG_CONV_EXCL='*' ./installer/output/CFMesh-AutoGUI-2.1.0-Setup.exe \
-    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=C:\polybench\install_test" /NOICONS
-# verify the GMSH path from the installed exe
-"C:/polybench/install_test/CFMesh-AutoGUI.exe" --gmsh-volume \
-    --step=C:/cfmesh_poly_bench/venturi.stl --msh=C:/polybench/v.msh \
-    --detail=coarse --max-cell=0.05 --min-cell=0.02   # → {"success": true}
-# uninstall (in the test folder)
+python -m PyInstaller --noconfirm --clean PolyFoamMesh.spec
+```
+
+Points that matter in the spec:
+
+- One-dir (bootloader plus `_internal/`): fast start-up, no extraction on every launch.
+- Native dependencies that static analysis misses (for example `casadi` and `nlopt`) must
+  stay out of the spec's `excludes`; `release_gate.py` checks this.
+- `rthook_casadi_dlls.py` is a runtime hook the spec needs.
+- `templates/` and `plugins/` are bundled as data.
+
+## Testing the installer
+
+```bash
+# silent install into a path without spaces
+installer/output/PolyFoamMesh-X.Y.Z-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=C:\polybench\install_test" /NOICONS
+# uninstall
 "C:/polybench/install_test/unins/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ```
 
-## 4. SmartScreen / signing
+Install on a second, clean machine when you can: the gate verifies module equivalence of
+the bundle, not a real clean install.
 
-The exe **is not signed** (paid certificate ~100 €/year). The friend
-will have to click "More information → Run anyway". To remove
-the warning: Authenticode signing (signtool) or SmartScreen "more info" after
-a few installations.
+## Release pipeline
 
-## 5. App log on the other PC
+Pushing a `v*` tag runs `.github/workflows/release.yml` on Windows: lint, version sync,
+the fast test suite, the PyInstaller build, the Inno Setup installer, and a zip of the
+bundle. The `## [X.Y.Z]` section of `CHANGELOG.md` becomes the body of the GitHub
+Release, so keep that heading format. A Linux job builds a tarball.
 
-`%APPDATA%\cfmesh-autogui\logs\app.log` — ask the friend to paste it
-if something goes wrong.
+## Code signing
 
-## 6. If the package WITH WSL/OpenFOAM is needed in the future
+The executable and installer are not signed, so Windows SmartScreen shows "More info →
+Run anyway" on first run. Authenticode signing (`signtool`, paid certificate) removes
+the warning.
 
-- `installer/setup_wsl_openfoam.ps1` installs WSL2 + OpenFOAM v2512 +
-  cfMesh on the other PC (admin, ~1-2 GB download).
-- After setup, all paths (cfMesh, checkMesh) work.
+## Where the app writes logs
+
+`%APPDATA%\polyfoammesh\logs\app.log` on Windows. Ask for this file when debugging a
+report from another machine.

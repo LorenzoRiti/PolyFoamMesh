@@ -69,7 +69,7 @@ families (degenerate edges, tet budget, size ratio) are marked as such.
 - Comparison with snappy: parser for OpenFOAM v2512 layers, layer coverage from the
   statistics, tet attempts in the report; benchmark and E2E use the same production
   function as the GUI (`production_dual_kwargs`).
-- `AVVIA_PolyFoamMesh.cmd`: double-click to start the latest source in the folder.
+- `launch_from_source.cmd`: double-click to start the latest source in the folder.
 - Portable distribution: the `PolyFoamMesh` folder (PyInstaller) also as a zip, with
   no installer. The Inno Setup installer stays in `installer/` but was not assembled
   for this version.
