@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+message: "If you use PolyFoamMesh in academic work, please cite the software and the relevant internal report."
+title: "PolyFoamMesh"
+abstract: "Desktop mesh generator for OpenFOAM: CAD ingestion, Gmsh/cfMesh/fTetWild tetrahedral stages, barycentric polyhedral dual, geometric quality metrics, repair loops, boundary-layer extrusion, and OpenFOAM case export."
+authors:
+  - family-names: "Riti"
+    given-names: "Lorenzo"
+    affiliation: "Independent researcher"
+    orcid: "https://orcid.org/0009-0002-6976-5506"
+version: "2.3.0"
+date-released: "2026-10-20"
+license: "GPL-3.0-or-later"
+repository-code: "https://github.com/LorenzoRiti/PolyFoamMesh"
+url: "https://github.com/LorenzoRiti/PolyFoamMesh"
+keywords:
+  - "polyhedral mesh"
+  - "barycentric dual"
+  - "cell-centered finite volume"
+  - "OpenFOAM"
+  - "boundary layer"
+  - "mesh quality"
+references:
+  - type: report
+    title: "PolyFoamMesh — Mathematics and Numerical Foundations of the Polyhedral Dual"
+    authors:
+      - family-names: "Riti"
+        given-names: "Lorenzo"
+        affiliation: "Independent researcher"
+        orcid: "https://orcid.org/0009-0002-6976-5506"
+    year: 2026
+    doi: "10.5281/zenodo.23503003"
+    notes: "Internal Technical Report A, v2.3.0, development snapshot 2026-10-20; licensed CC BY 4.0."
+  - type: report
+    title: "PolyFoamMesh — Physics and CFD Practice"
+    authors:
+      - family-names: "Riti"
+        given-names: "Lorenzo"
+        affiliation: "Independent researcher"
+        orcid: "https://orcid.org/0009-0002-6976-5506"
+    year: 2026
+    doi: "10.5281/zenodo.23503005"
+    notes: "Internal Technical Report B, v2.3.0, development snapshot 2026-10-20; licensed CC BY 4.0."
+  - type: report
+    title: "PolyFoamMesh — Software Architecture and Engineering"
+    authors:
+      - family-names: "Riti"
+        given-names: "Lorenzo"
+        affiliation: "Independent researcher"
+        orcid: "https://orcid.org/0009-0002-6976-5506"
+    year: 2026
+    doi: "10.5281/zenodo.23503009"
+    notes: "Internal Technical Report C, v2.3.0, development snapshot 2026-10-20; licensed CC BY 4.0."
+  - type: report
+    title: "PolyFoamMesh — Validation and Benchmark Corpus"
+    authors:
+      - family-names: "Riti"
+        given-names: "Lorenzo"
+        affiliation: "Independent researcher"
+        orcid: "https://orcid.org/0009-0002-6976-5506"
+    year: 2026
+    doi: "10.5281/zenodo.23503011"
+    notes: "Internal Technical Report D, v2.3.0, development snapshot 2026-10-20; licensed CC BY 4.0."

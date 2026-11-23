@@ -10,7 +10,6 @@ Run from the repository root:
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -22,7 +21,7 @@ import matplotlib.font_manager as fm
 from PIL import Image as PILImage
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm

@@ -22,7 +22,6 @@ with --geom): ref1..ref3, valve1, valve2, smoke.
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import re
 import shlex

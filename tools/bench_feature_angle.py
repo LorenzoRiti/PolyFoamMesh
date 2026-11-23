@@ -1,7 +1,7 @@
 """Compare polyDualMesh quality across feature angles."""
 from __future__ import annotations
 
-import json, os, re, shlex, shutil, subprocess, sys, time
+import os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"

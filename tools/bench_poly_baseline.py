@@ -16,7 +16,6 @@ import numpy as np
 import trimesh
 from polyfoammesh.config import OFConfig
 from polyfoammesh.core.meshdict_gen import write_meshdict
-from polyfoammesh.core.of_reader import of_list_count
 
 
 def _wsl_ok(cfg: OFConfig) -> bool:

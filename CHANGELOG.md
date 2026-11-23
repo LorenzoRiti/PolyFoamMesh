@@ -7,6 +7,8 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-23
+
 ### Fixed
 - **GMSH adattivo: spigoli degeneri non sono più "dettagli piccoli".** I poli di sfere e
   raccordi hanno spigoli lunghi come la tolleranza CAD (~2e-7); contati come caratteristiche
@@ -18,13 +20,17 @@ the project follows [Semantic Versioning](https://semver.org/lang/it/).
   (lato + raccordo) resta separato; cilindro + curva di un tubo restano una parete.
   Gli STL usano ancora la soglia sui triangoli.
 
+### Changed
+- **GMSH adattivo: correzione del budget a più passaggi** (max 3, esponente rimisurato a ogni
+  passaggio): `straight_pipe` 11,9x -> 2,9x e `venturi` 4,0x -> 1,7x sul budget di tet.
+  Rapporto minimo/massimo delle taglie configurabile con `POLYFOAMMESH_GMSH_MIN_RATIO`
+  (default 0.5; 0.25 raffina le fessure ma costa 2-4x di tempo, qualità del dual non misurata).
+
 ### Added
 - **Famiglie parametriche** (`benchmarks/families.py`, `benchmarks/run_families.py`): 13
   famiglie di geometrie con scala da 1 cm a 10 m, semi 0-99 per tarare e 1000+ per
   verificare, tabella per classe.  Errata: la prima tabella era invalida (oggetti 1000 volte
   più piccoli, costruiti in mm e letti in m).
-
-## [2.5.0] - 2026-11-17
 
 Release centrata su robustezza e velocità della catena Auto
 (tet -> dual poliedrico -> strato limite -> checkMesh) e sulla nuova galleria
