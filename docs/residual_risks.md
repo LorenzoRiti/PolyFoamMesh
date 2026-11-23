@@ -5,6 +5,13 @@ the known, accepted limitations that remain after the hardening work, so a
 future session does not rediscover them and product decisions have a single
 source of truth.
 
+> **Note on references (2.5.0):** older sections cite experiment scripts under
+> `tools/` (`bench_*`, `cylinder_*`, `r1_*`, `ram_*`, ...) and reasoning notes under
+> `notes/`. Those files are no longer tracked in the repository (they remain in the
+> author's archive); the measured results quoted here are the record. The
+> maintained tools are `release_gate`, `compare_mesher_bl`, `auto_chain_e2e`,
+> `check_version_sync` and the benchmark harness under `benchmarks/`.
+
 ## Release gate + benchmark finale (W17, 2026-10-23)
 
 - **Gate**: `tools/release_gate.py` — versions/spec-static/smoke/
