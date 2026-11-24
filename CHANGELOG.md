@@ -7,7 +7,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [2.5.0] - 2026-11-23
+## [2.5.0] - 2026-11-24
 
 A release focused on the robustness and speed of the Auto chain
 (tet → polyhedral dual → boundary layer → checkMesh), plus the new virtual wind

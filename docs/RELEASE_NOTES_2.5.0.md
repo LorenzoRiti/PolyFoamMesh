@@ -1,6 +1,6 @@
 # PolyFoamMesh 2.5.0 — release notes
 
-Release date: 2026-11-23 (prepared locally; tag and publication pending).
+Release date: 2026-11-24 (prepared locally; tag and publication pending).
 Full details and measurements: [CHANGELOG.md](../CHANGELOG.md).
 Known limits: [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 

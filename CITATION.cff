@@ -8,7 +8,7 @@ authors:
     affiliation: "Independent researcher"
     orcid: "https://orcid.org/0009-0002-6976-5506"
 version: "2.5.0"
-date-released: "2026-11-23"
+date-released: "2026-11-24"
 license: "GPL-3.0-or-later"
 repository-code: "https://github.com/LorenzoRiti/PolyFoamMesh"
 url: "https://github.com/LorenzoRiti/PolyFoamMesh"

@@ -47,14 +47,12 @@ build_gate_error.log
 
 # agent-internal / scratch
 .reasonix/
-.claude/
 .superpowers/
 log.mesh
 .watch_run_monitor.py
 scratch_split_ab.py
 scratch_split_ab_results.json
 
-.opencode/loop-history/
 
 # build artifacts / dev tools (non versionare)
 installer/output/
@@ -78,4 +76,3 @@ VoroCrustLog.txt
 api_data/
 ooda_case/
 cfmesh_workventuri/
-.opencode/
