@@ -51,7 +51,7 @@ jobs:
         run: python -m pip install --upgrade pip
 
       - name: Install package + test deps
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test,ftetwild]"
 
       - name: Install ruff
         run: pip install ruff

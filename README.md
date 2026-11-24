@@ -66,6 +66,12 @@ measured numbers.
 
 ## Install
 
+**Windows, prebuilt:** download `PolyFoamMesh-<version>-Setup.exe` (installer) or
+`PolyFoamMesh-<version>-win64.zip` (portable, just extract and run) from the
+[Releases](https://github.com/LorenzoRiti/PolyFoamMesh/releases) page. The packages are
+not code-signed, so SmartScreen asks for "More info → Run anyway". **Linux:** a tarball
+is on the same page. **From source:** below.
+
 Requirements: Windows 10/11 or Linux; Python 3.11+ (source install only); optionally
 OpenFOAM v2512 (in WSL2 on Windows, native on Linux). GMSH-based meshing runs on
 Windows without WSL; cfMesh and `checkMesh` need OpenFOAM.
@@ -73,7 +79,7 @@ Windows without WSL; cfMesh and `checkMesh` need OpenFOAM.
 ```bash
 git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
 cd PolyFoamMesh
-pip install -e ".[test]"
+pip install -e ".[test,ftetwild]"
 pip install gmsh meshio reportlab
 polyfoammesh
 ```

@@ -27,6 +27,12 @@ needed for the basics.
    on its own. From then on you can launch it any time from
    **Start → PolyFoamMesh** or the desktop icon.
 
+**No installation (portable).** From the same Releases page download
+`PolyFoamMesh-<version>-win64.zip`, extract the folder anywhere and run
+`PolyFoamMesh.exe` inside it. There is no Start Menu entry and no uninstaller;
+delete the folder to remove it. Both packages are built by the release pipeline
+from the tagged source and have not been tested on a clean computer.
+
 ### What works right away (nothing else to install)
 
 The meshing paths that run purely on Windows need no WSL or OpenFOAM: **CFD
@@ -70,7 +76,7 @@ hand.
 ```bash
 git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
 cd PolyFoamMesh
-pip install -e ".[test]"
+pip install -e ".[test,ftetwild]"
 polyfoammesh
 ```
 
@@ -105,7 +111,7 @@ The short version (from the repository root):
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e ".[test]"
+pip install -e ".[test,ftetwild]"
 ./launch.sh          # or: bash launch.sh
 ```
 

@@ -42,7 +42,7 @@ jobs:
 
       - name: Install package + test deps
         shell: pwsh
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test,ftetwild]"
 
       - name: Install ruff
         shell: pwsh
@@ -112,9 +112,12 @@ jobs:
         # Lets users run the exe without installing; the zip contains the
         # PolyFoamMesh/ folder at its root.
         shell: pwsh
-        run: Compress-Archive -Path "dist\PolyFoamMesh" -DestinationPath "dist\PolyFoamMesh.zip"
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          Compress-Archive -Path "dist\PolyFoamMesh" -DestinationPath "dist\PolyFoamMesh-$version-win64.zip"
 
       - name: Extract changelog for release body
+        id: notes
         # Pulls the "## [<version>]" section out of CHANGELOG.md; falls back
         # to the whole file if the section is missing.
         shell: pwsh
@@ -135,16 +138,19 @@ jobs:
           } else {
             $body = Get-Content -LiteralPath CHANGELOG.md -Raw
           }
-          Set-Content -LiteralPath release_body.md -Value $body -Encoding utf8
+          $install = (Get-Content -LiteralPath .github/release_install.md -Raw).Replace('{VERSION}', $version)
+          Set-Content -LiteralPath release_body.md -Value ($install + "`n" + $body) -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          name: PolyFoamMesh ${{ steps.notes.outputs.version }}
           body_path: release_body.md
           files: |
             installer/output/PolyFoamMesh-*-Setup.exe
-            dist/PolyFoamMesh.zip
+            dist/PolyFoamMesh-*-win64.zip
 
   # -------------------------------------------------------------------------
   # Linux release (Phase 1 of the Linux port). Kept as separate jobs so the
@@ -184,7 +190,7 @@ jobs:
 
       - name: Install package + PyInstaller
         run: |
-          pip install -e .
+          pip install -e ".[ftetwild]"
           pip install pyinstaller
 
       # PolyFoamMesh-linux.spec mirrors the Windows spec but discovers the

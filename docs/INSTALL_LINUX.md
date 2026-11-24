@@ -119,7 +119,7 @@ From the repository root, with your environment active:
 ```bash
 git clone https://github.com/LorenzoRiti/PolyFoamMesh.git
 cd PolyFoamMesh
-pip install -e ".[test]"
+pip install -e ".[test,ftetwild]"
 ```
 
 The `.[test]` extra pulls in the test stack (pytest, ruff, ...) alongside the
