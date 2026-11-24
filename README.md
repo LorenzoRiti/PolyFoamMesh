@@ -27,6 +27,14 @@ OpenFOAM case ready for the solver.
 *A 398K-cell polyhedral mesh with 9 boundary layers in the built-in 3D viewer;
 `checkMesh` passes (skewness 2.86, non-orthogonality 79.1°).*
 
+<p align="center">
+  <img src="docs/assets/mesher-selector.png" alt="PolyFoamMesh interface: workflow, patches and mesher selection" width="49%">
+  <img src="docs/assets/boundary-layers.png" alt="PolyFoamMesh interface: mesh fineness and boundary-layer settings" width="49%">
+</p>
+
+*The desktop interface: workflow steps and patches on the left, the 3D viewer in
+the middle, mesher choice and boundary-layer settings on the right.*
+
 - **Two meshing paths.** **Polymesh** (automatic, default) picks the tet engine from the
   measured geometry — GMSH first, fTetWild as fallback, every substitution logged —
   then builds the polyhedral dual and the boundary layer. **cfMesh** is the explicit
