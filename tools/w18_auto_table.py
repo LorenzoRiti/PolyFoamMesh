@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import os
 import sys
 import time
 import traceback
@@ -33,7 +34,7 @@ CASES = [
 ]
 GEO = ROOT / "benchmarks" / "geometries"
 WORK = Path(r"C:\polyfoammesh_w18")
-R1_STEP = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.step")
+R1_STEP = Path(os.environ.get("POLYFOAMMESH_R1_STEP", "r1_part.step"))
 R1_SURFACE = Path(r"C:\polyfoammesh_r1c\parte4_surface.stl")
 
 TABLE = WORK / "w18_table.json"

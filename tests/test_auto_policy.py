@@ -268,10 +268,10 @@ def test_tet_engine_env_override(monkeypatch):
 @pytest.mark.slow
 def test_preflight_counts_step_solids():
     """Prova reale sui due STEP noti (skip dove assenti: path macchina)."""
-    old = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.step")
+    old = Path(r"C:\Users\Jane Doe\Desktop\Report\Part4.step")
     if old.is_file():
         assert preflight_tet_source(old).solid_count == 0
-    new = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp")
+    new = Path(r"C:\Users\Jane Doe\Desktop\Report\Part4.stp")
     if new.is_file():
         assert preflight_tet_source(new).solid_count == 1
     if not old.is_file() and not new.is_file():
@@ -283,8 +283,8 @@ def test_r1_auto_decision_follows_solids_probe():
     -> GMSH-first. STEP skips the watertight probe by design. The
     measured half is the §3.4 table run, not a unit test.
     """
-    old = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.step")
-    new = Path(r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp")
+    old = Path(r"C:\Users\Jane Doe\Desktop\Report\Part4.step")
+    new = Path(r"C:\Users\Jane Doe\Desktop\Report\Part4.stp")
     if not old.is_file() or not new.is_file():
         pytest.skip("R1 STEP inputs not present on this machine")
     assert choose_polymesh_engine(preflight_tet_source(old)).primary == "ftetwild_poly"

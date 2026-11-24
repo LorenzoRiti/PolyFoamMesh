@@ -12,7 +12,7 @@ the physics demands it:
 
 Usage (from repo root, with the Python that has gmsh/pyvista):
 
-    & "C:\\Users\\Davide Valoroso\\AppData\\Local\\Programs\\Python\\Python311\\python.exe" tools\\venturi_amr_validation.py --cycles 3
+    python tools\\venturi_amr_validation.py --cycles 3
 
 Every stage is echoed to the console with the same [tag] conventions the GUI
 uses, and a JSON summary is written into the workdir.
@@ -27,8 +27,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(r"C:\Users\Davide Valoroso\cfmesh-autogui")
-PY = r"C:\Users\Davide Valoroso\AppData\Local\Programs\Python\Python311\python.exe"
+REPO = Path(__file__).resolve().parents[1]
+PY = sys.executable
 
 # Geometry: pipe along X. Stations (x, radius) in mm.
 STATIONS = [

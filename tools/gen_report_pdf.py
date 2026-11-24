@@ -20,8 +20,9 @@ from reportlab.platypus import (
     PageBreak, HRFlowable
 )
 import os
+from pathlib import Path
 
-OUT = r"C:\Users\Davide Valoroso\cfmesh-autogui\PolyFoamMesh_Technical_Report.pdf"
+OUT = str(Path(__file__).resolve().parents[1] / "PolyFoamMesh_Technical_Report.pdf")
 
 # Deprecation guard (W16): this v1 script writes to the same OUT path as
 # tools/gen_report_pdf_v2.py, so an accidental run destroys the canonical

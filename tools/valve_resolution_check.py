@@ -14,13 +14,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import subprocess
 import time
 from pathlib import Path
 
-REPO = Path(r"C:\Users\Davide Valoroso\cfmesh-autogui")
-PY = r"C:\Users\Davide Valoroso\AppData\Local\Programs\Python\Python311\python.exe"
-VALVE = Path(os.environ.get("CFMESH_GEOM", r"C:\Users\Davide Valoroso\Desktop\Report\Parte4.stp"))
+REPO = Path(__file__).resolve().parents[1]
+PY = sys.executable
+VALVE = Path(os.environ.get("CFMESH_GEOM", "valve.stp"))
 WORK = Path(os.environ.get("CFMESH_WORK", r"C:\cfmesh_work\valve_resolution"))
 
 
