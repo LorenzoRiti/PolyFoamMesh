@@ -140,6 +140,9 @@ jobs:
           }
           $install = (Get-Content -LiteralPath .github/release_install.md -Raw).Replace('{VERSION}', $version)
           Set-Content -LiteralPath release_body.md -Value ($install + "`n" + $body) -Encoding utf8
+          # GitHub keeps every newline of a release body, so join the
+          # hard-wrapped lines of the changelog into full-width paragraphs.
+          python .github/unwrap_md.py release_body.md
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Publish GitHub Release
