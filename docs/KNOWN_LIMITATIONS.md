@@ -93,7 +93,7 @@ Detailed, dated measurement logs from earlier releases are in the git history
   real Linux machine; there is no AppImage or `.deb`, only a tarball.
 - **No clean-machine install check.** The release gate verifies module equivalence
   of the packaged bundle, not an install on a second computer. The 2.5.0 package is
-  a portable folder/zip; the Inno Setup installer is not assembled for this version.
+  a portable folder/zip. The Inno Setup installer is assembled only by the release pipeline on GitHub, not on the development machine, and has not been run on a clean computer either.
 - The REST API server is experimental and still uses the legacy workflow.
 
 ## Verification status (2.5.0)
